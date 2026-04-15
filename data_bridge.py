@@ -200,63 +200,64 @@ import pandas as pd
 
 def get_today_consolidated_data(target_date, nse_main, nse_sme, bse_main, bse_sme):
     """
-    SECTION 1A & 1B: Consolidates NSE/BSE Main and SME data into one master dataset.
-    Maps exchange-specific symbols (SYMBOL/SECURITY_ID) to a universal 'symbol' key.
+    SECTION 1A & 1B: Consolidates NSE/BSE data into one master dataset.
+    Uses a Master Mapping to prevent 'Suffix Ghosting' and KeyErrors.
     """
     import pandas as pd
     from reconciler import reconcile_exchanges
     
-    print(f"🔄 Consolidating market data for {target_date.date()}...")
+    print(f"🔄 [V7] Consolidating market data for {target_date.date()}...")
 
-    def standardize_df(df, exchange_type):
-        if df is None or df.empty:
-            return pd.DataFrame()
-            
-        # 1. Clean column headers
-        df.columns = [c.lower().strip() for c in df.columns]
+    def standardize_to_v7_schema(df, exchange):
+        if df is None or df.empty: return pd.DataFrame()
         
-        # 2. Map ISIN variations
-        if 'isin_code' in df.columns:
-            df = df.rename(columns={'isin_code': 'isin'})
-            
-        # 3. Map Symbol variations (CRITICAL for reconciler)
-        # NSE usually uses 'symbol'
-        # BSE uses 'security_id' or 'scrip_id'
-        if exchange_type == 'BSE':
-            for bse_col in ['security_id', 'scrip_id', 'scrip_cd']:
-                if bse_col in df.columns:
-                    df = df.rename(columns={bse_col: 'symbol'})
-                    break
-        elif exchange_type == 'NSE':
-            if 'symbol' not in df.columns and 'syml' in df.columns:
-                df = df.rename(columns={'syml': 'symbol'})
+        # 1. Standardize to lowercase and remove spaces
+        df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
+        
+        # 2. Master Mapping Dictionary (Matches NSE/BSE variants to V7 Schema)
+        mapping = {
+            # Symbol Mapping
+            'sc_name': 'symbol', 'security_id': 'symbol', 'scrip_id': 'symbol', 'syml': 'symbol',
+            # ISIN Mapping
+            'isin_code': 'isin', 'isin': 'isin',
+            # Price Mapping
+            'close_price': 'close', 'last_price': 'close',
+            'prev_close': 'prev_close', 'prevclose': 'prev_close', 'previous_close': 'prev_close',
+            'open_price': 'open', 'high_price': 'high', 'low_price': 'low',
+            # Volume Mapping
+            'tottrdqty': 'volume', 'no_of_shrs': 'volume', 'total_trd_qty': 'volume',
+            'no_of_shares': 'volume', 'total_trades': 'trades', 'no_trades': 'trades'
+        }
+        
+        # Apply mapping (rename only if the source column exists)
+        df = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
+        
+        # 3. Ensure critical columns exist to prevent merge failure
+        critical_cols = ['isin', 'symbol', 'close', 'prev_close', 'volume', 'open', 'high', 'low']
+        for col in critical_cols:
+            if col not in df.columns:
+                df[col] = 0 if col != 'symbol' and col != 'isin' else "UNKNOWN"
                 
-        return df
+        return df[critical_cols] # Keep only what's needed for reconciliation
 
-    # Process NSE Stack
-    nse_m = standardize_df(nse_main, 'NSE')
-    nse_s = standardize_df(nse_sme, 'NSE')
-    all_nse = pd.concat([df for df in [nse_m, nse_s] if not df.empty], ignore_index=True)
+    # Step 1: Standardize all 4 streams
+    n_m = standardize_to_v7_schema(nse_main, 'NSE')
+    n_s = standardize_to_v7_schema(nse_sme, 'NSE')
+    b_m = standardize_to_v7_schema(bse_main, 'BSE')
+    b_s = standardize_to_v7_schema(bse_sme, 'BSE')
 
-    # Process BSE Stack
-    bse_m = standardize_df(bse_main, 'BSE')
-    bse_s = standardize_df(bse_sme, 'BSE')
-    all_bse = pd.concat([df for df in [bse_m, bse_s] if not df.empty], ignore_index=True)
+    # Step 2: Stack Main + SME
+    all_nse = pd.concat([n_m, n_s], ignore_index=True) if not n_m.empty or not n_s.empty else pd.DataFrame()
+    all_bse = pd.concat([b_m, b_s], ignore_index=True) if not b_m.empty or not b_s.empty else pd.DataFrame()
 
-    # Safety: Reconciler needs these columns to exist
-    for df_check, name in [(all_nse, 'NSE'), (all_bse, 'BSE')]:
-        if not df_check.empty:
-            if 'isin' not in df_check.columns: df_check['isin'] = None
-            if 'symbol' not in df_check.columns: df_check['symbol'] = None
-
-    # 4. Reconcile (Creates symbol_NSE and symbol_BSE suffixes internally)
+    # Step 3: Reconcile (Now suffixes like _NSE and _BSE are guaranteed to be created)
     consolidated_df = reconcile_exchanges(all_nse, all_bse)
 
     if consolidated_df is not None and not consolidated_df.empty:
-        print(f"✅ Consolidation Complete: {len(consolidated_df)} instruments.")
         consolidated_df['date'] = pd.to_datetime(target_date).date()
+        print(f"✅ V7 Consolidation Complete: {len(consolidated_df)} records.")
     else:
-        print("⚠️ Consolidation failed: Empty dataset after reconciliation.")
+        print("⚠️ V7 Consolidation returned no data.")
         consolidated_df = pd.DataFrame()
 
     return consolidated_df
