@@ -1,0 +1,25 @@
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# Virtual Environments
+venv/
+env/
+
+# Environment variables
+.env
+
+# Local Database
+market_data.db
+
+# Downloaded Temporary Data Files
+*.zip
+*.csv
+*.DAT
+
+# Output Reports
+*.xlsx
+*.txt
