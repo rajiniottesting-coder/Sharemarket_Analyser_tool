@@ -7,7 +7,7 @@ def calculate_priority_score(row):
     """
     # 1. REAL Volume Spike Ratio (Section 0C)
     current_vol = row.get('volume', 0)
-    avg_vol = get_20d_avg_vol(row.get('symbol')) # <--- CALLED HERE
+    avg_vol = get_20d_avg_vol(row.get('symbol')) 
     
     if avg_vol > 0:
         vol_spike_ratio = current_vol / avg_vol

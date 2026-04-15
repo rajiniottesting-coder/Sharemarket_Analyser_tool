@@ -68,5 +68,4 @@ def gate_check():
 
 if __name__ == "__main__":
     if gate_check():
-        # This is where Pillar 2 (The Funnel) will start!
-        pass
+       pass

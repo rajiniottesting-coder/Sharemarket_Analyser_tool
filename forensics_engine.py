@@ -95,18 +95,14 @@ class ForensicsEngine:
         
         # 3B: ROCE vs WACC (11.5% is the v7.0 standard benchmark)
         results['is_wealth_creator'] = row.get('roce', 0) > 11.5
-        
-        return results
-    
-    @staticmethod
-    def calculate_accounting_forensics(row):
-        results = {}
-        # ... existing CCC and M-Score logic ...
 
-        # SECTION 4: Solvency & Hidden Debt Data
+                # SECTION 4: Solvency & Hidden Debt Data
         results['contingent_liabilities'] = row.get('contingent_liabilities', 0)
         results['networth'] = row.get('networth', 1) # Avoid division by zero
         results['total_debt'] = row.get('total_debt', 0)
         results['cash_equivalents'] = row.get('cash', 0) + row.get('bank_balance', 0)
         
+
+        
         return results
+    
