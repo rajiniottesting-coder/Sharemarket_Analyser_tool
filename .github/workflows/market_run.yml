@@ -2,8 +2,9 @@ name: NSE_BSE_Daily_Pipeline
 
 on:
   schedule:
-    - cron: '30 13 * * 1-5' # 19:00 IST
-  workflow_dispatch:
+    # 14:00 UTC = 19:30 IST (Mon-Fri)
+    - cron: '0 14 * * 1-5'
+  workflow_dispatch: # Allows manual trigger for testing..
 
 permissions:
   contents: write # REQUIRED: Allows the bot to push the DB back
