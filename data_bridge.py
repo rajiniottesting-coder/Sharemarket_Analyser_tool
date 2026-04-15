@@ -1,312 +1,23 @@
 import sqlite3
 import pandas as pd
 
-def get_20d_avg_vol(symbol):
-    """
-    Calculates the 20-day average volume required for Section 0C (Priority Score)
-    """
-    conn = sqlite3.connect('market_data.db')
-    query = f"SELECT AVG(volume) FROM daily_prices WHERE symbol = '{symbol}' LIMIT 20"
-    avg_vol = pd.read_sql_query(query, conn).iloc[0, 0]
-    conn.close()
-    return avg_vol if avg_vol else 0
+# --- SECTION 1: SCHEMA & INITIALIZATION ---
 
-def reconcile_exchanges(nse_df, bse_df):
-    """
-    Implements Section 1B: Cross-Exchange Reconciliation via ISIN.
-    Flags: NSE_ONLY, BSE_ONLY, DUAL_LISTED, BSE_SME.
-    """
-    # Merge on ISIN (Section 1B requirement)
-    merged = pd.merge(nse_df, bse_df, on='ISIN', how='outer', suffixes=('_NSE', '_BSE'))
-    
-    # Logic for Exchange Tagging (Section 1B)
-    def tag_exchange(row):
-        if pd.notnull(row['SYMBOL_NSE']) and pd.notnull(row['SYMBOL_BSE']):
-            return 'DUAL_LISTED'
-        elif pd.notnull(row['SYMBOL_BSE']):
-            return 'BSE_ONLY'
-        return 'NSE_ONLY'
-
-    merged['EXCHANGE_TAG'] = merged.apply(tag_exchange, axis=1)
-    return merged
-
-def save_fo_data(df, target_date):
-    """Saves Section 1A F&O Participant Data to Database"""
-    if df is None or df.empty: return
-    
-    conn = sqlite3.connect('market_data.db')
-    date_str = target_date.strftime('%Y-%m-%d')
-    
-    try:
-        # We only care about the Net Positioning rows (FII/DII)
-        df['date'] = date_str
-        df.to_sql('fo_participant_data', conn, if_exists='append', index=False)
-        print(f"✅ F&O Smart Money data saved for {date_str}")
-    except Exception as e:
-        print(f"❌ F&O DB Error: {e}")
-    finally:
-        conn.close()
-
-import sqlite3
-import pandas as pd
-
-def get_historical_quarter_data(symbols):
-    """
-    SECTION 3F & 3K (90 Days): FII Trends & Pledge Direction.
-    SECTION 4 (360 Days): Balance Sheet YoY Trends (DIO, DSO, Debt).
-    """
-    if not symbols:
-        return {}
-
-    historical_context = {}
-    conn = sqlite3.connect('market_data.db')
-    placeholders = ', '.join(['?'] * len(symbols))
-
-    try:
-        # We query for the most recent record that is AT LEAST 90 days old.
-        # This provides the baseline for 'Previous Quarter' trends.
-        query = f"""
-            SELECT * FROM v7_intelligence 
-            WHERE symbol IN ({placeholders}) 
-            AND timestamp <= datetime('now', '-90 days')
-            GROUP BY symbol
-            HAVING MAX(timestamp)
-        """
-        
-        df_hist = pd.read_sql_query(query, conn, params=symbols)
-        conn.close()
-
-        # Convert the DataFrame into a nested dictionary for the Funnel
-        hist_dict = df_hist.set_index('symbol').to_dict('index')
-
-        for symbol in symbols:
-            # If DB has data, we map it. If not, we return empty dict to trigger Safety Guards.
-            if symbol in hist_dict:
-                data = hist_dict[symbol]
-                historical_context[symbol] = {
-                    # Section 3F & 3K logic
-                    "fii_holding": data.get('fii_holding', 0),
-                    "pledge_pct": data.get('pledge_pct', 0),
-                    
-                    # Section 4 logic (Trend Baselines)
-                    "total_debt": data.get('total_debt', 0),
-                    "dio": data.get('dio', 0),
-                    "dso": data.get('dso', 0),
-                    "roe": data.get('roe', 0),
-                    "networth": data.get('networth', 1)
-                }
-            else:
-                # Return None if no history exists (prevents false 'Rising Debt' alerts)
-                historical_context[symbol] = None
-
-    except Exception as e:
-        print(f"⚠️ Database Lookup Warning: {e}. Using empty history.")
-        return {symbol: None for symbol in symbols}
-
-    return historical_context
-
-def get_symbol_history(symbol, limit=250):
-    """
-    SECTION 5 & 5B: Fetches historical time-series for technical indicators.
-    Returns a Pandas DataFrame formatted for pandas_ta.
-    """
-    conn = sqlite3.connect('market_data.db')
-    
-    # We fetch OHLCV data sorted by date ascending (required for TA math)
-    query = f"""
-        SELECT date, open, high, low, close, volume 
-        FROM daily_prices 
-        WHERE symbol = ? 
-        ORDER BY date ASC 
-        LIMIT ?
-    """
-    
-    try:
-        df = pd.read_sql_query(query, conn, params=(symbol, limit))
-        
-        # Section 5 Technical Note: Ensure numeric types for TA calculations
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-            cols = ['open', 'high', 'low', 'close', 'volume']
-            df[cols] = df[cols].apply(pd.to_numeric, errors='coerce')
-            
-        return df
-    except Exception as e:
-        print(f"❌ Error fetching history for {symbol}: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
-
-def get_nifty_52w_high_from_db():
-    """
-    SECTION 7: Fetches the 52-week high for Nifty 50 to calculate market drawdown.
-    Required for the Mandatory Storm Score trigger (Market > 5% off peak).
-    """
-    conn = sqlite3.connect('market_data.db')
-    
-    # We query the max close price for NIFTY 50 from the last 250 records
-    query = """
-        SELECT MAX(close) FROM daily_prices 
-        WHERE symbol = 'NIFTY 50' 
-        AND date >= date('now', '-365 days')
-    """
-    
-    try:
-        cursor = conn.cursor()
-        cursor.execute(query)
-        result = cursor.fetchone()
-        
-        # If no data exists (new DB), return a safe fallback to prevent division by zero
-        return result[0] if result[0] else 1.0
-        
-    except Exception as e:
-        print(f"❌ Error fetching Nifty 52W High: {e}")
-        return 1.0
-    finally:
-        conn.close()
-
-
-import pandas as pd
-
-def get_today_consolidated_data(target_date, nse_main, nse_sme, bse_main, bse_sme):
-    """
-    SECTION 1A & 1B: Consolidates NSE/BSE data into one master dataset.
-    Uses a Master Mapping to prevent 'Suffix Ghosting' and KeyErrors.
-    """
-    import pandas as pd
-    from reconciler import reconcile_exchanges
-    
-    print(f"🔄 [V7] Consolidating market data for {target_date.date()}...")
-
-    def standardize_to_v7_schema(df, exchange):
-        if df is None or df.empty: return pd.DataFrame()
-        
-        # 1. Standardize to lowercase and remove spaces
-        df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
-        
-        # 2. Master Mapping Dictionary (Matches NSE/BSE variants to V7 Schema)
-        mapping = {
-            # Symbol Mapping
-            'sc_name': 'symbol', 'security_id': 'symbol', 'scrip_id': 'symbol', 'syml': 'symbol',
-            # ISIN Mapping
-            'isin_code': 'isin', 'isin': 'isin',
-            # Price Mapping
-            'close_price': 'close', 'last_price': 'close',
-            'prev_close': 'prev_close', 'prevclose': 'prev_close', 'previous_close': 'prev_close',
-            'open_price': 'open', 'high_price': 'high', 'low_price': 'low',
-            # Volume Mapping
-            'tottrdqty': 'volume', 'no_of_shrs': 'volume', 'total_trd_qty': 'volume',
-            'no_of_shares': 'volume', 'total_trades': 'trades', 'no_trades': 'trades'
-        }
-        
-        # Apply mapping (rename only if the source column exists)
-        df = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
-        
-        # 3. Ensure critical columns exist to prevent merge failure
-        critical_cols = ['isin', 'symbol', 'close', 'prev_close', 'volume', 'open', 'high', 'low']
-        for col in critical_cols:
-            if col not in df.columns:
-                df[col] = 0 if col != 'symbol' and col != 'isin' else "UNKNOWN"
-                
-        return df[critical_cols] # Keep only what's needed for reconciliation
-
-    # Step 1: Standardize all 4 streams
-    n_m = standardize_to_v7_schema(nse_main, 'NSE')
-    n_s = standardize_to_v7_schema(nse_sme, 'NSE')
-    b_m = standardize_to_v7_schema(bse_main, 'BSE')
-    b_s = standardize_to_v7_schema(bse_sme, 'BSE')
-
-    # Step 2: Stack Main + SME
-    all_nse = pd.concat([n_m, n_s], ignore_index=True) if not n_m.empty or not n_s.empty else pd.DataFrame()
-    all_bse = pd.concat([b_m, b_s], ignore_index=True) if not b_m.empty or not b_s.empty else pd.DataFrame()
-
-    # Step 3: Reconcile (Now suffixes like _NSE and _BSE are guaranteed to be created)
-    consolidated_df = reconcile_exchanges(all_nse, all_bse)
-
-    if consolidated_df is not None and not consolidated_df.empty:
-        consolidated_df['date'] = pd.to_datetime(target_date).date()
-        print(f"✅ V7 Consolidation Complete: {len(consolidated_df)} records.")
-    else:
-        print("⚠️ V7 Consolidation returned no data.")
-        consolidated_df = pd.DataFrame()
-
-    return consolidated_df
-
-import sqlite3
-def get_latest_fii_net_cash():
-    """
-    SECTION 7 & 9: Fetches the latest FII Net Cash flow from fo_positioning.
-    Used for the Research Report header and Storm Score context.
-    """
-    conn = sqlite3.connect('market_data.db')
-    try:
-        # Pulls the most recent 'net_value' from FII participant data
-        query = "SELECT net_value FROM fo_positioning WHERE client_type = 'FII' ORDER BY date DESC LIMIT 1"
-        result = pd.read_sql_query(query, conn)
-        return result['net_value'].iloc[0] if not result.empty else 0
-    except Exception as e:
-        print(f"⚠️ Error fetching FII Net: {e}")
-        return 0
-    finally:
-        conn.close()
-
-def get_nifty_200_sma():
-    """
-    SECTION 9: Calculates the 200-day SMA for NIFTY 50 from historical records.
-    Used to determine if the Market Mood is Bullish or Bearish.
-    """
-    conn = sqlite3.connect('market_data.db')
-    try:
-        # Fetches the last 200 closing prices for Nifty 50
-        query = """
-            SELECT close FROM daily_prices 
-            WHERE symbol = 'NIFTY 50' 
-            ORDER BY date DESC LIMIT 200
-        """
-        df = pd.read_sql_query(query, conn)
-        return df['close'].mean() if len(df) >= 200 else df['close'].mean()
-    except Exception as e:
-        print(f"⚠️ Error calculating Nifty 200 SMA: {e}")
-        return 0
-    finally:
-        conn.close()
-
-def load_latest_analysis_results():
-    """
-    Fetches the most recent analysis results from the database 
-    to provide context for the WhatsApp/Chat interface.
-    """
-    import sqlite3
-    import pandas as pd
-    
-    try:
-        conn = sqlite3.connect('market_data.db')
-        # We query the table where master_funnel saves the final results
-        query = "SELECT * FROM latest_analysis_results"
-        df = pd.read_sql(query, conn)
-        conn.close()
-        
-        if df.empty:
-            return []
-        return df.to_dict('records')
-    except Exception as e:
-        print(f"⚠️ Database fetch failed: {e}")
-        return []
-    
 def initialize_v7_tables(conn):
     """
-    Creates necessary V7 tables if they don't exist.
+    SECTION 1.2: Creates all necessary V7 tables if they don't exist.
+    This fixes the 'no such table' errors on fresh GitHub Action runs.
     """
     cursor = conn.cursor()
-    # Table for daily price/volume data
+    # 1. Daily Market Data
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS daily_prices (
             symbol TEXT, date TEXT, isin TEXT, open REAL, high REAL, 
-            low REAL, close REAL, volume INTEGER, prev_close REAL,
+            low REAL, close REAL, volume REAL, prev_close REAL,
             exchange_tag TEXT, PRIMARY KEY(symbol, date)
         )
     ''')
-    # Table for pipeline run status (Section 12B)
+    # 2. Pipeline Execution Stats (Section 12B)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS run_stats (
             run_date TEXT PRIMARY KEY, 
@@ -314,20 +25,44 @@ def initialize_v7_tables(conn):
             gate_check_result TEXT
         )
     ''')
+    # 3. F&O Participant Data (Section 1A)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS fo_participant_data (
+            date TEXT, client_type TEXT, future_index_long REAL, 
+            future_index_short REAL, future_stock_long REAL, 
+            future_stock_short REAL, total_long REAL, total_short REAL,
+            net_value REAL
+        )
+    ''')
+    # 4. Intelligence/Historical Baseline (Section 3 & 4)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS v7_intelligence (
+            symbol TEXT, timestamp TEXT, fii_holding REAL, pledge_pct REAL,
+            total_debt REAL, dio REAL, dso REAL, roe REAL, networth REAL
+        )
+    ''')
+    # 5. Final AI Reports (Section 8)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS latest_analysis_results (
+            symbol TEXT PRIMARY KEY, date TEXT, ai_card TEXT, 
+            final_score REAL, allocation_tag TEXT
+        )
+    ''')
     conn.commit()
 
+# --- SECTION 2: SAVING METHODS ---
+
 def save_to_database(df):
+    """
+    Main bridge for daily consolidated market data.
+    """
     if df is None or df.empty: return
-    
     conn = sqlite3.connect('market_data.db')
     try:
-        # Initialize tables first!
         initialize_v7_tables(conn)
-        
         df.to_sql('daily_prices', conn, if_exists='append', index=False)
         print(f"✅ Bridged {len(df)} records.")
         
-        # Now run_stats will work because the table exists
         run_date = str(df['date'].iloc[0])
         conn.execute('INSERT OR REPLACE INTO run_stats VALUES (?, ?, ?)', 
                      (run_date, len(df), 'RUN_SUCCESS'))
@@ -336,3 +71,141 @@ def save_to_database(df):
         print(f"❌ Database Bridge Error: {e}")
     finally:
         conn.close()
+
+def save_fo_data(df, target_date):
+    """Saves Section 1A F&O Participant Data"""
+    if df is None or df.empty: return
+    conn = sqlite3.connect('market_data.db')
+    date_str = target_date.strftime('%Y-%m-%d')
+    try:
+        initialize_v7_tables(conn)
+        df['date'] = date_str
+        df.to_sql('fo_participant_data', conn, if_exists='append', index=False)
+        print(f"✅ F&O Smart Money data saved for {date_str}")
+    except Exception as e:
+        print(f"❌ F&O DB Error: {e}")
+    finally:
+        conn.close()
+
+# --- SECTION 3: CONSOLIDATION & RECONCILIATION ---
+
+def standardize_to_v7_schema(df):
+    """Helper to ensure NSE/BSE use identical keys before reconciliation."""
+    if df is None or df.empty: return pd.DataFrame()
+    df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
+    mapping = {
+        'sc_name': 'symbol', 'security_id': 'symbol', 'scrip_id': 'symbol', 'syml': 'symbol',
+        'isin_code': 'isin', 'isin': 'isin',
+        'close_price': 'close', 'last_price': 'close',
+        'prev_close': 'prev_close', 'prevclose': 'prev_close', 'previous_close': 'prev_close',
+        'open_price': 'open', 'high_price': 'high', 'low_price': 'low',
+        'tottrdqty': 'volume', 'no_of_shrs': 'volume', 'total_trd_qty': 'volume'
+    }
+    df = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
+    critical_cols = ['isin', 'symbol', 'close', 'prev_close', 'volume', 'open', 'high', 'low']
+    for col in critical_cols:
+        if col not in df.columns:
+            df[col] = 0 if col not in ['symbol', 'isin'] else "UNKNOWN"
+    return df[critical_cols]
+
+def reconcile_exchanges(nse_df, bse_df):
+    """Cross-Exchange Reconciliation via ISIN (Section 1B)."""
+    merged = pd.merge(nse_df, bse_df, on='isin', how='outer', suffixes=('_NSE', '_BSE'))
+    def tag_exchange(row):
+        if pd.notnull(row['symbol_NSE']) and pd.notnull(row['symbol_BSE']): return 'DUAL_LISTED'
+        elif pd.notnull(row['symbol_BSE']): return 'BSE_ONLY'
+        return 'NSE_ONLY'
+    merged['exchange_tag'] = merged.apply(tag_exchange, axis=1)
+    return merged
+
+def get_today_consolidated_data(target_date, nse_main, nse_sme, bse_main, bse_sme):
+    """V7 Consolidation Hub."""
+    print(f"🔄 [V7] Consolidating market data for {target_date.date()}...")
+    n_m = standardize_to_v7_schema(nse_main)
+    n_s = standardize_to_v7_schema(nse_sme)
+    b_m = standardize_to_v7_schema(bse_main)
+    b_s = standardize_to_v7_schema(bse_sme)
+    all_nse = pd.concat([n_m, n_s], ignore_index=True) if not n_m.empty or not n_s.empty else pd.DataFrame()
+    all_bse = pd.concat([b_m, b_s], ignore_index=True) if not b_m.empty or not b_s.empty else pd.DataFrame()
+    consolidated_df = reconcile_exchanges(all_nse, all_bse)
+    if consolidated_df is not None and not consolidated_df.empty:
+        consolidated_df['date'] = pd.to_datetime(target_date).date()
+        print(f"✅ V7 Consolidation Complete: {len(consolidated_df)} records.")
+    return consolidated_df if consolidated_df is not None else pd.DataFrame()
+
+# --- SECTION 4: HISTORICAL & ANALYTICAL RETRIEVAL ---
+
+def get_historical_quarter_data(symbols):
+    """SECTION 3F, 3K & 4: Quarterly Baseline Trends."""
+    if not symbols: return {}
+    hist_context = {}
+    conn = sqlite3.connect('market_data.db')
+    try:
+        placeholders = ', '.join(['?'] * len(symbols))
+        query = f"SELECT * FROM v7_intelligence WHERE symbol IN ({placeholders}) AND timestamp <= datetime('now', '-90 days') GROUP BY symbol"
+        df_hist = pd.read_sql_query(query, conn, params=symbols)
+        hist_dict = df_hist.set_index('symbol').to_dict('index')
+        for s in symbols:
+            if s in hist_dict:
+                d = hist_dict[s]
+                hist_context[s] = {"fii_holding": d.get('fii_holding', 0), "pledge_pct": d.get('pledge_pct', 0),
+                                   "total_debt": d.get('total_debt', 0), "dio": d.get('dio', 0), "dso": d.get('dso', 0)}
+            else: hist_context[s] = None
+    except Exception: return {s: None for s in symbols}
+    finally: conn.close()
+    return hist_context
+
+def get_latest_fii_net_cash():
+    """SECTION 7 & 9: Latest FII Net Cash Flow."""
+    conn = sqlite3.connect('market_data.db')
+    try:
+        query = "SELECT net_value FROM fo_participant_data WHERE client_type = 'FII' ORDER BY date DESC LIMIT 1"
+        result = pd.read_sql_query(query, conn)
+        return result['net_value'].iloc[0] if not result.empty else 0
+    except Exception: return 0
+    finally: conn.close()
+
+def get_nifty_200_sma():
+    """SECTION 9: Nifty 200 SMA Sentiment."""
+    conn = sqlite3.connect('market_data.db')
+    try:
+        df = pd.read_sql_query("SELECT close FROM daily_prices WHERE symbol = 'NIFTY 50' ORDER BY date DESC LIMIT 200", conn)
+        return df['close'].mean() if not df.empty else 0
+    except Exception: return 0
+    finally: conn.close()
+
+def get_20d_avg_vol(symbol):
+    conn = sqlite3.connect('market_data.db')
+    try:
+        query = f"SELECT AVG(volume) FROM daily_prices WHERE symbol = '{symbol}' LIMIT 20"
+        avg_vol = pd.read_sql_query(query, conn).iloc[0, 0]
+        return avg_vol if avg_vol else 0
+    finally: conn.close()
+
+def get_symbol_history(symbol, limit=250):
+    conn = sqlite3.connect('market_data.db')
+    try:
+        query = "SELECT date, open, high, low, close, volume FROM daily_prices WHERE symbol = ? ORDER BY date ASC LIMIT ?"
+        df = pd.read_sql_query(query, conn, params=(symbol, limit))
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+            df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].apply(pd.to_numeric, errors='coerce')
+        return df
+    finally: conn.close()
+
+def get_nifty_52w_high_from_db():
+    conn = sqlite3.connect('market_data.db')
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT MAX(close) FROM daily_prices WHERE symbol = 'NIFTY 50' AND date >= date('now', '-365 days')")
+        result = cursor.fetchone()
+        return result[0] if result and result[0] else 1.0
+    finally: conn.close()
+
+def load_latest_analysis_results():
+    try:
+        conn = sqlite3.connect('market_data.db')
+        df = pd.read_sql("SELECT * FROM latest_analysis_results", conn)
+        conn.close()
+        return df.to_dict('records') if not df.empty else []
+    except Exception: return []

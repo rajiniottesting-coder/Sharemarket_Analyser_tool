@@ -9,8 +9,10 @@ load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 
 def gate_check():
-    # Assume it works until proven otherwise
-    connection_failed = False
+    """
+    SECTION 12B: Institutional Gatekeeper.
+    Standardized to return a Dictionary to prevent 'TypeError: bool not subscriptable'.
+    """
     try:
         # Set time to IST (India Standard Time)
         ist = pytz.timezone('Asia/Kolkata')
@@ -24,56 +26,59 @@ def gate_check():
             "2026-01-26": "Republic Day",
             "2026-03-14": "Holi",
             "2026-04-06": "Ram Navami",
-            "2026-04-14": "Dr. Ambedkar Jayanti", # <--- TODAY!
+            "2026-04-14": "Dr. Ambedkar Jayanti",
             "2026-05-01": "Maharashtra Day",
+            "2026-11-05": "Diwali Balipratipada",
             "2026-12-25": "Christmas Day"
         }
 
-        # C1: Weekend Check (Section 12B)
-        if today.weekday() in [5, 6]: # 5=Saturday, 6=Sunday
-            print("SKIP: It's the weekend. No markets open.")
-            return False
+        # C1: Weekend Check
+        if today.weekday() in [5, 6]:
+            return {"run": False, "reason": "SKIP: Market is closed on Weekends."}
 
-        # C2: Market Holiday Check (NEW)
+        # C2: Holiday Check
         if today_str in HOLIDAYS_2026:
-            print(f"SKIP: Today is a Market Holiday ({HOLIDAYS_2026[today_str]}).")
-            return False
-        # C3: NSE File Availability Check
-        # We check if NSE has uploaded today's Bhavcopy yet
+            return {"run": False, "reason": f"SKIP: Market Holiday ({HOLIDAYS_2026[today_str]})."}
+
+        # C3: NSE Connectivity & File Availability
+        # We use a session and headers to avoid being blocked by NSE
+        session = requests.Session()
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        
         date_str = today.strftime('%d%m%Y')
-        nse_url = f"https://www1.nseindia.com/archives/equities/mto/MTO_{date_str}.DAT"
+        nse_url = f"https://www.nseindia.com/archives/equities/mto/MTO_{date_str}.DAT"
         
         try:
-            response = requests.head(nse_url, timeout=5)
+            # First hit the home page to get cookies
+            session.get("https://www.nseindia.com", headers=headers, timeout=10)
+            response = session.head(nse_url, headers=headers, timeout=10)
+            
             if response.status_code != 200:
-                print("SKIP: NSE data files are not yet available. Try again after 19:15 IST.")
-                return False
-        except:
-            print("ERROR: Connection to NSE failed.")
-            return False
-        
-        # C4: BSE Bhav Copy File Availability (Section 12B)
+                # If the file isn't there yet, we don't crash, we just wait for the next cron run
+                return {"run": False, "reason": "SKIP: NSE Data files not yet available (Status 404)."}
+        except Exception as e:
+            return {"run": False, "reason": f"ERROR: Connection to NSE failed: {str(e)}"}
+
+        # C4: BSE Connectivity Check
         bse_fname = f"EQ{today.strftime('%d%m%y')}_CSV.ZIP"
         bse_url = f"https://www.bseindia.com/download/BhavCopy/Equity/{bse_fname}"
         
         try:
-            bse_res = requests.head(bse_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-            bse_available = (bse_res.status_code == 200)
-            if not bse_available:
-                print("⚠️ BSE data not yet available. Proceeding in NSE-only mode.") 
-                return False
+            bse_res = session.head(bse_url, headers=headers, timeout=10)
+            if bse_res.status_code != 200:
+                print("⚠️ BSE data not yet available. Proceeding in NSE-only mode.")
+                # We still return True because we can run on NSE data alone
+                return {"run": True, "reason": "NSE Available (BSE Missing)"}
         except:
             print("⚠️ BSE Connection failed. Continuing with NSE data only.")
-            return False
-        if connection_failed:
-                return {"run": False, "reason": "NSE Connectivity Issue"}
-                
+            return {"run": True, "reason": "NSE Available (BSE Connection Fail)"}
+
+        # FINAL APPROVAL
         return {"run": True, "reason": "Market Data Available"}
-    except Exception:
-        # FAILSAFE: Ensure it always returns a dictionary, never just a boolean
-        return {"run": False, "reason": "Unexpected Gate Error"}
 
-
-if __name__ == "__main__":
-    if gate_check():
-       pass
+    except Exception as e:
+        # FAILSAFE: Ensure we never return a bare Boolean
+        return {"run": False, "reason": f"CRITICAL GATE ERROR: {str(e)}"}
