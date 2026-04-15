@@ -44,6 +44,20 @@ def cleanup_temp_files():
 def run_master_pipeline():
     cleanup_temp_files()
 
+    today = datetime.datetime.now(ist)
+
+    # 1. HARVEST (Harvester does the downloading)
+    n_m = download_nse_bhavcopy(today)
+    n_s = download_nse_sme_bhavcopy(today)
+    b_m = download_bse_bhavcopy(today)
+    b_s = download_bse_sme_bhavcopy(today)
+
+    # 2. CONSOLIDATE (Bridge does the merging)
+    all_stocks = get_today_consolidated_data(today, n_m, n_s, b_m, b_s)
+
+    # 3. SAVE
+    save_to_database(all_stocks)
+
     # --- SECTION 12B: INSTITUTIONAL GATEKEEPER ---
     gate_result = gate_check()
     if not gate_result["run"]:

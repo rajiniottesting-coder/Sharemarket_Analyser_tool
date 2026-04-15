@@ -8,7 +8,6 @@ import tempfile
 from datetime import datetime
 import pytz
 from bse import BSE 
-from data_bridge import save_to_database
 
 
 IST = pytz.timezone('Asia/Kolkata')
@@ -82,26 +81,3 @@ def download_nse_fo_participant_data(target_date):
     except: 
         return None
     
-# # --- SECTION 3J & 3K: RAW DATA HARVESTING ---
-
-# def download_smart_money_stream():
-#     """
-#     SECTION 3J: Fetches Bulk/Block Deals (Institutional Entry/Exit)
-#     SECTION 3K: Fetches SAST Insider Trading (Promoter/Director Buying)
-#     """
-#     print("🕵️ Harvesting Smart Money footprints (Bulk Deals & Insider Trades)...")
-#     try:
-#         from smart_money import SmartMoneyScraper
-#         scraper = SmartMoneyScraper()
-            
-#         # These variables MUST be defined here to be accessible in the loop below
-#         bulk_deals_df = scraper.fetch_nse_bulk_deals()
-#         insider_trades_df = scraper.fetch_sast_insider_trading()
-            
-#         # Save to DB for historical tracking
-#         save_to_database(bulk_deals_df, table='bulk_deals')
-#         save_to_database(insider_trades_df, table='insider_trades')
-#     except Exception as e:
-#         print(f"⚠️ Smart Money Harvest failed: {e}. Proceeding with empty datasets.")
-#         bulk_deals_df = pd.DataFrame()
-#         insider_trades_df = pd.DataFrame()

@@ -195,47 +195,43 @@ def get_nifty_52w_high_from_db():
     finally:
         conn.close()
 
-# Add this to data_bridge.py
 
-from harvester import (
-    download_nse_bhavcopy, download_bse_bhavcopy, 
-    download_nse_sme_bhavcopy, download_bse_sme_bhavcopy
-)
-from reconciler import reconcile_exchanges
 import pandas as pd
 
-def get_today_consolidated_data(target_date):
+def get_today_consolidated_data(target_date, nse_main, nse_sme, bse_main, bse_sme):
     """
     SECTION 1A & 1B: Consolidates NSE/BSE Main and SME data into one master dataset.
     This acts as the single source of truth for the rest of the pipeline.
     """
     print(f"🔄 Consolidating market data for {target_date.date()}...")
 
-    # 1. Download all 4 raw data streams (Section 1A & 1B) 
-    nse_main = download_nse_bhavcopy(target_date)
-    nse_sme = download_nse_sme_bhavcopy(target_date)
-    bse_main = download_bse_bhavcopy(target_date)
-    bse_sme = download_bse_sme_bhavcopy(target_date)
+    # 1. Stack Main + SME for each exchange 
+    # We check if data exists before concatenating to avoid errors
+    all_nse = pd.DataFrame()
+    if nse_main is not None or nse_sme is not None:
+        all_nse = pd.concat([df for df in [nse_main, nse_sme] if df is not None], ignore_index=True)
 
-    # 2. Stack Main + SME for each exchange 
-    # We use ignore_index=True to create a fresh index for the combined list
-    all_nse = pd.concat([nse_main, nse_sme], ignore_index=True) if nse_main is not None else nse_sme
-    all_bse = pd.concat([bse_main, bse_sme], ignore_index=True) if bse_main is not None else bse_sme
+    all_bse = pd.DataFrame()
+    if bse_main is not None or bse_sme is not None:
+        all_bse = pd.concat([df for df in [bse_main, bse_sme] if df is not None], ignore_index=True)
 
-    # 3. Cross-Exchange Reconciliation (Section 1B) 
-    # This uses the ISIN-based matching logic you defined in reconciler.py
+    # 2. Cross-Exchange Reconciliation (Section 1B) 
+    # We import reconciler locally inside the function to further prevent circular loops
+    from reconciler import reconcile_exchanges
+    
     consolidated_df = reconcile_exchanges(all_nse, all_bse)
 
-    if consolidated_df is not None:
+    if consolidated_df is not None and not consolidated_df.empty:
         print(f"✅ Consolidation Complete: {len(consolidated_df)} unique instruments identified.")
+        # Standardize date column for Section 1.2 DB Sync
+        consolidated_df['date'] = pd.to_datetime(target_date).date()
     else:
         print("⚠️ Consolidation failed: No data returned from exchanges.")
+        consolidated_df = pd.DataFrame()
 
     return consolidated_df
 
 import sqlite3
-import pandas as pd
-
 def get_latest_fii_net_cash():
     """
     SECTION 7 & 9: Fetches the latest FII Net Cash flow from fo_positioning.
