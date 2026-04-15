@@ -201,36 +201,51 @@ import pandas as pd
 def get_today_consolidated_data(target_date, nse_main, nse_sme, bse_main, bse_sme):
     """
     SECTION 1A & 1B: Consolidates NSE/BSE Main and SME data into one master dataset.
-    This acts as the single source of truth for the rest of the pipeline.
+    Standardizes ISIN columns to prevent KeyError in reconciler.
     """
-    print(f"🔄 Consolidating market data for {target_date.date()}...")
-
-    # 1. Stack Main + SME for each exchange 
-    # We check if data exists before concatenating to avoid errors
-    all_nse = pd.DataFrame()
-    if nse_main is not None or nse_sme is not None:
-        all_nse = pd.concat([df for df in [nse_main, nse_sme] if df is not None], ignore_index=True)
-
-    all_bse = pd.DataFrame()
-    if bse_main is not None or bse_sme is not None:
-        all_bse = pd.concat([df for df in [bse_main, bse_sme] if df is not None], ignore_index=True)
-
-    # 2. Cross-Exchange Reconciliation (Section 1B) 
-    # We import reconciler locally inside the function to further prevent circular loops
+    import pandas as pd
     from reconciler import reconcile_exchanges
     
+    print(f"🔄 Consolidating market data for {target_date.date()}...")
+
+    def standardize_df(df):
+        if df is None or df.empty:
+            return pd.DataFrame()
+        # Convert all column names to lowercase to avoid CASE sensitivity issues
+        df.columns = [c.lower().strip() for c in df.columns]
+        # Map common ISIN variations to 'isin'
+        if 'isin_code' in df.columns:
+            df = df.rename(columns={'isin_code': 'isin'})
+        return df
+
+    # 1. Standardize and Stack NSE
+    nse_main = standardize_df(nse_main)
+    nse_sme = standardize_df(nse_sme)
+    all_nse = pd.concat([df for df in [nse_main, nse_sme] if not df.empty], ignore_index=True)
+
+    # 2. Standardize and Stack BSE
+    bse_main = standardize_df(bse_main)
+    bse_sme = standardize_df(bse_sme)
+    all_bse = pd.concat([df for df in [bse_main, bse_sme] if not df.empty], ignore_index=True)
+
+    # 3. Safety Check: Ensure 'isin' exists before merging
+    if 'isin' not in all_nse.columns or 'isin' not in all_bse.columns:
+        print("⚠️ Critical Error: 'isin' column missing from exchange data.")
+        # Create dummy columns if missing to prevent pipeline crash
+        if 'isin' not in all_nse.columns: all_nse['isin'] = None
+        if 'isin' not in all_bse.columns: all_bse['isin'] = None
+
+    # 4. Cross-Exchange Reconciliation (Section 1B) 
     consolidated_df = reconcile_exchanges(all_nse, all_bse)
 
     if consolidated_df is not None and not consolidated_df.empty:
-        print(f"✅ Consolidation Complete: {len(consolidated_df)} unique instruments identified.")
-        # Standardize date column for Section 1.2 DB Sync
+        print(f"✅ Consolidation Complete: {len(consolidated_df)} instruments.")
         consolidated_df['date'] = pd.to_datetime(target_date).date()
     else:
-        print("⚠️ Consolidation failed: No data returned from exchanges.")
+        print("⚠️ Consolidation failed: Reconciliation returned empty dataset.")
         consolidated_df = pd.DataFrame()
 
     return consolidated_df
-
 import sqlite3
 def get_latest_fii_net_cash():
     """
