@@ -30,7 +30,12 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
-        run: python master_funnel.py
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_APP_PASSWORD: ${{ secrets.SENDER_APP_PASSWORD }}
+          USER_EMAIL_ID: ${{ secrets.USER_EMAIL_ID }}
+        run: python master_funnel.py || true
+        # We use "|| true" to ensure the DB Commit step still runs 
+        # to log the "Skip" reason even if the gatekeeper halts.
 
       - name: Commit and Push Updated Database
         # This "if" condition ensures we only try to push if a DB exists

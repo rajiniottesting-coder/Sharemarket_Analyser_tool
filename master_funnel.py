@@ -1,6 +1,7 @@
 import os
 import glob
 import datetime
+import sys
 import pytz
 import pandas as pd
 
@@ -331,6 +332,32 @@ def run_master_pipeline():
     # 3. DB Maintenance (Circular Queue Rule)
     enforce_circular_queue('market_data.db')
     print("Database ready for GitHub Commit.")
+
+    from email_service import send_analysis_email
+    gate_result = gate_check()
+
+    # 2. Logic to handle a "SKIP" (Section 12E)
+    if not gate_result["run"]:
+        print(f"Halt: {gate_result['reason']}")
+        
+        # Now gate_result["reason"] is valid and defined
+        send_analysis_email(is_skip=True, skip_reason=gate_result["reason"])
+        
+        # Exit gracefully so GitHub Actions sees a "Success" skip
+        sys.exit(0)
+
+    # 3. Logic to handle a "RUN"
+    try:
+        # ... your Stage 1, 2, 3 and AI Analysis logic here ...
+        
+        # 4. Completion & Delivery (20:30 IST)
+        attachments = ['Full_Dashboard.xlsx', 'Gold_List.xlsx']
+        send_analysis_email(attachments=attachments)
+        
+    except Exception as e:
+        # Emergency notification if the pipeline crashes mid-way
+        send_analysis_email(is_skip=True, skip_reason=f"System Error: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     run_master_pipeline()
