@@ -43,9 +43,10 @@ def cleanup_temp_files():
 
 def run_master_pipeline():
     cleanup_temp_files()
-
+    
+    ist = pytz.timezone('Asia/Kolkata')
     today = datetime.datetime.now(ist)
-
+    
     # 1. HARVEST (Harvester does the downloading)
     n_m = download_nse_bhavcopy(today)
     n_s = download_nse_sme_bhavcopy(today)
@@ -65,9 +66,6 @@ def run_master_pipeline():
         send_analysis_email(is_skip=True, skip_reason=gate_result["reason"])
         return
 
-    ist = pytz.timezone('Asia/Kolkata')
-    today = datetime.datetime.now(ist)
-    
     try:
         # --- SECTION 1: MULTI-STREAM HARVESTING ---
         print("🚀 [Section 1] Harvesting Market Streams...")
