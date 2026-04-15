@@ -63,6 +63,7 @@ def run_master_pipeline():
     gate_result = gate_check()
     if not gate_result["run"]:
         from email_service import send_analysis_email
+        print(f"🛑 Pipeline Halted: {gate_result['reason']}")
         send_analysis_email(is_skip=True, skip_reason=gate_result["reason"])
         return
 

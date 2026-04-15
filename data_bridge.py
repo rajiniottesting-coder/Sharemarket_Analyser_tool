@@ -1,36 +1,6 @@
 import sqlite3
 import pandas as pd
 
-def save_to_database(df):
-    """
-    Saves consolidated NSE/BSE data to the V2 database tables (Section 1A/1B)
-    """
-    if df is None or df.empty:
-        print("⚠️ No data available to save.")
-        return
-
-    conn = sqlite3.connect('market_data.db')
-    
-    try:
-        # Saving to daily_prices table
-        # We use 'append' to keep historical data for the 20-day average calculations
-        df.to_sql('daily_prices', conn, if_exists='append', index=False)
-        print(f"✅ Successfully bridged {len(df)} records to V2 Database.")
-        
-        # Section 0E: Initializing Run Stats for today
-        run_date = df['date'].iloc[0]
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO run_stats (run_date, total_universe, gate_check_result)
-            VALUES (?, ?, ?)
-        ''', (run_date, len(df), 'RUN_APPROVED'))
-        conn.commit()
-        
-    except Exception as e:
-        print(f"❌ Database Bridge Error: {e}")
-    finally:
-        conn.close()
-
 def get_20d_avg_vol(symbol):
     """
     Calculates the 20-day average volume required for Section 0C (Priority Score)
@@ -322,3 +292,47 @@ def load_latest_analysis_results():
     except Exception as e:
         print(f"⚠️ Database fetch failed: {e}")
         return []
+    
+def initialize_v7_tables(conn):
+    """
+    Creates necessary V7 tables if they don't exist.
+    """
+    cursor = conn.cursor()
+    # Table for daily price/volume data
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS daily_prices (
+            symbol TEXT, date TEXT, isin TEXT, open REAL, high REAL, 
+            low REAL, close REAL, volume INTEGER, prev_close REAL,
+            exchange_tag TEXT, PRIMARY KEY(symbol, date)
+        )
+    ''')
+    # Table for pipeline run status (Section 12B)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS run_stats (
+            run_date TEXT PRIMARY KEY, 
+            total_universe INTEGER, 
+            gate_check_result TEXT
+        )
+    ''')
+    conn.commit()
+
+def save_to_database(df):
+    if df is None or df.empty: return
+    
+    conn = sqlite3.connect('market_data.db')
+    try:
+        # Initialize tables first!
+        initialize_v7_tables(conn)
+        
+        df.to_sql('daily_prices', conn, if_exists='append', index=False)
+        print(f"✅ Bridged {len(df)} records.")
+        
+        # Now run_stats will work because the table exists
+        run_date = str(df['date'].iloc[0])
+        conn.execute('INSERT OR REPLACE INTO run_stats VALUES (?, ?, ?)', 
+                     (run_date, len(df), 'RUN_SUCCESS'))
+        conn.commit()
+    except Exception as e:
+        print(f"❌ Database Bridge Error: {e}")
+    finally:
+        conn.close()
