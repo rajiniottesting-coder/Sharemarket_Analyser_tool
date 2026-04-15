@@ -9,6 +9,8 @@ on:
 jobs:
   run-analyser:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # This removes the warning
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -21,7 +23,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas openpyxl requests flask twilio pytz
+          pip install pandas openpyxl requests google-generativeai twilio pytz flask python-dotenv
 
       - name: Execute Master Pipeline
         env:
