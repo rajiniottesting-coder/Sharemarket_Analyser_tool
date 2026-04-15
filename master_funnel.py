@@ -30,6 +30,7 @@ from v7_analysis_engine import V7AnalysisEngine
 from ownership_tracker import analyze_ownership_trends
 from forensics_engine import ForensicsEngine
 from rotation_engine import SectorRotationRadar
+from db_maintenance import enforce_circular_queue
 
 # Section 2 & 3I Catalyst Search
 from intel_fetcher import fetch_latest_intelligence 
@@ -327,6 +328,9 @@ def run_master_pipeline():
 
         print(f"✅ Pipeline Complete. Section 9 Research Summary, Section 8 Cards & Section 10 Excel ready.")
         return final_100_list
+    # 3. DB Maintenance (Circular Queue Rule)
+    enforce_circular_queue('market_data.db')
+    print("Database ready for GitHub Commit.")
 
 if __name__ == "__main__":
     run_master_pipeline()

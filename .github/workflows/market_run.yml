@@ -2,15 +2,17 @@ name: NSE_BSE_Daily_Pipeline
 
 on:
   schedule:
-    # Runs at 13:30 UTC, which is 19:00 IST every Mon-Fri 
-    - cron: '30 13 * * 1-5'
-  workflow_dispatch: # Allows you to trigger it manually for testing
+    - cron: '30 13 * * 1-5' # 19:00 IST
+  workflow_dispatch:
+
+permissions:
+  contents: write # REQUIRED: Allows the bot to push the DB back
 
 jobs:
   run-analyser:
     runs-on: ubuntu-latest
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # This removes the warning
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -21,14 +23,20 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas openpyxl requests google-generativeai twilio pytz flask python-dotenv
+        run: pip install pandas openpyxl requests google-generativeai twilio pytz flask python-dotenv
 
       - name: Execute Master Pipeline
         env:
-          # Add your API keys/Tokens in GitHub Settings > Secrets
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python master_funnel.py
+
+      - name: Commit and Push Updated Database
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "actions@github.com"
+          git add market_data.db
+          # Only commits if the DB actually changed
+          git commit -m "Automated DB Update (Circular Queue): $(date +'%Y-%m-%d')" || echo "No changes to commit"
+          git push
