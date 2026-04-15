@@ -12,9 +12,6 @@ env/
 # Environment variables
 .env
 
-# Local Database
-market_data.db
-
 # Downloaded Temporary Data Files
 *.zip
 *.csv
