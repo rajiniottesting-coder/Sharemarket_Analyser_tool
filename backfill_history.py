@@ -1102,9 +1102,16 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
     cutoff    = (datetime.datetime.now(IST) - timedelta(days=7)).strftime("%Y-%m-%d")
 
     # Find symbols that need updating
-    already = {r[0] for r in conn.execute(
-        "SELECT symbol FROM fundamental_metrics WHERE date >= ?", (cutoff,)
+    # A symbol is "already updated" only if fundamental_metrics has a recent row
+    # AND symbol_master has a non-empty company_name (guards against blocked API runs)
+    already_fm = {r[0] for r in conn.execute(
+        "SELECT symbol FROM fundamental_metrics WHERE date >= ? AND pe_ttm > 0", (cutoff,)
     ).fetchall()}
+    already_cn = {r[0] for r in conn.execute(
+        "SELECT symbol FROM symbol_master WHERE company_name != '' AND company_name IS NOT NULL"
+    ).fetchall()}
+    # Only skip if BOTH conditions met: recent fundamentals AND company name exists
+    already = already_fm & already_cn
     to_fetch = [s for s in symbols if s not in already][:max_symbols]
 
     if not to_fetch:

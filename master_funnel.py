@@ -408,19 +408,58 @@ def run_master_pipeline():
             stock["spike_suppressed"] = guard["suppressed"]
             stock["guard_reasons"]    = ", ".join(guard["reasons"])
 
-            # Section 3I: Early Detection Score — use EarlyDetectionEngine
+            # Section 3I: Early Entry Score — augmented with price-action signals
             try:
                 from early_detection_engine import EarlyDetectionEngine
-                _ede = EarlyDetectionEngine()
+                _ede   = EarlyDetectionEngine()
                 _early = _ede.calculate_early_score(stock, {})
-                stock["early_entry_score"] = _early.get("total_score", 0)
-                stock["early_mover_badge"] = _early.get("badge", "")
-                stock["early_label"]       = _early.get("label", "EMERGING")
-            except Exception:
-                early_data = v7_engine.calculate_section_3I_early_score(stock)
-                stock["early_entry_score"] = early_data["early_score"]
-                stock["early_mover_badge"] = early_data.get("badge", "")
-                stock["early_label"]       = early_data.get("label", "EMERGING")
+                _escore = _early.get("total_score", 0)
+                _esigs  = list(_early.get("active_signals", []))
+
+                # Augment with signals derivable from available data
+                _vol_r  = float(stock.get("vol_ratio", 1.0) or 1.0)
+                _rsi_e  = float(stock.get("rsi", 50) or 50)
+                _4w_e   = float(stock.get("4w_chg", 0) or 0)
+                _2w_e   = float(stock.get("2w_chg", 0) or 0)
+                _st_e   = str(stock.get("supertrend", "NEUTRAL"))
+                _macd_e = str(stock.get("macd_signal", "NEUTRAL"))
+                _etag   = str(stock.get("exchange_tag", ""))
+
+                # Signal: Volume surge + RSI in accumulation zone (not overbought)
+                if _vol_r >= 2.5 and 50 < _rsi_e <= 68:
+                    _escore += 15
+                    _esigs.append("VOL SURGE + RSI ACCUMULATION")
+                # Signal: 2w momentum turning positive after flat/down period
+                if _2w_e > 1.5 and _4w_e < _2w_e:
+                    _escore += 10
+                    _esigs.append("MOMENTUM BUILDING")
+                # Signal: Supertrend BUY + MACD BUY confluence
+                if _st_e == "BUY" and _macd_e == "BUY":
+                    _escore += 12
+                    _esigs.append("TREND CONFLUENCE")
+                # Signal: Delivery > 70% with vol spike (institutional footprint)
+                _del_e = float(stock.get("delivery_pct", 0) or 0)
+                if _del_e >= 70 and _vol_r >= 2.0:
+                    _escore += 10
+                    _esigs.append("INSTITUTIONAL FOOTPRINT")
+                # Signal: DUAL_LISTED cross-exchange
+                if _etag == "DUAL_LISTED":
+                    _escore += 8
+                    _esigs.append("DUAL-LISTED DISCOVERY")
+
+                _escore = min(100, _escore)
+                stock["early_entry_score"] = _escore
+                stock["early_mover_badge"] = "EARLY MOVER" if _escore >= 70 else ""
+                stock["early_label"] = (
+                    "EARLY MOVER — Act before the crowd" if _escore >= 80 else
+                    "AHEAD OF CONSENSUS" if _escore >= 60 else "EMERGING"
+                )
+                if _esigs:
+                    stock["early_signals"] = " | ".join(_esigs)
+            except Exception as _ee:
+                stock.setdefault("early_entry_score", 0)
+                stock.setdefault("early_mover_badge", "")
+                stock.setdefault("early_label", "EMERGING")
 
             # Section 3L: Sector Rotation Stage — use 4w_chg + FII trend
             _sec_ret   = float(stock.get("4w_chg", 0) or 0)
@@ -446,9 +485,29 @@ def run_master_pipeline():
                                   (", ".join(_flags) if _flags else "No concerns"))
 
         # ─────────────────────────────────────────────────────────────────────
+        # SECTION 4B: NSE FUNDAMENTALS REFRESH (before DB enrichment reads)
+        # Fetch PE, EPS, sector, company_name, promoter%, FII%, DII%
+        # for today's top-100 NSE stocks via free NSE API (~2 min)
+        # Must run BEFORE Section 5 so DB is populated when we read it
+        # ─────────────────────────────────────────────────────────────────────
+        print("\n🏦 [Section 4B] Refreshing NSE fundamentals for top-100 stocks...")
+        try:
+            from backfill_history import fetch_nse_fundamentals
+            import sqlite3 as _sq_pre
+            _conn_pre = _sq_pre.connect("market_data.db")
+            _nse_syms = [s.get("symbol","") for s in final_100_list
+                        if s.get("exchange_tag","") not in ("BSE_SME","BSE_ONLY")
+                        and s.get("symbol","")]
+            fetch_nse_fundamentals(_conn_pre, _nse_syms, max_symbols=100)
+            _conn_pre.close()
+            print(f"   ✅ NSE fundamentals refreshed for {len(_nse_syms)} stocks")
+        except Exception as _epre:
+            print(f"   ⚠️  NSE fundamentals refresh: {_epre}")
+
+        # ─────────────────────────────────────────────────────────────────────
         # SECTION 5: WEEKLY MOMENTUM DELTAS + DB ENRICHMENT
         # Pull 52w high/low, day_chg, technical indicators, company_name
-        # from tables already populated by backfill_history.py
+        # from tables already populated by backfill_history.py + Section 4B
         # ─────────────────────────────────────────────────────────────────────
         print("📈 [Section 5] Calculating Weekly Momentum + DB Enrichment...")
         import sqlite3 as _sq
@@ -569,30 +628,33 @@ def run_master_pipeline():
                 for k in ["2w_chg", "4w_chg", "6w_chg", "8w_chg"]:
                     stock[k] = 0
 
-            # Beta — computed from 90-day price returns vs Nifty 50
+            # Beta — read from weekly_momentum.beta_90d (computed by backfill)
+            # Falls back to volatility-based estimate if not available
             if not stock.get("beta") or stock.get("beta") == "—":
                 try:
                     import sqlite3 as _sq2
                     _bc = _sq2.connect("market_data.db")
-                    _stock_rets = _bc.execute(
-                        """SELECT close FROM daily_prices WHERE symbol=? AND exchange='NSE'
-                           ORDER BY date DESC LIMIT 91""", (sym,)
-                    ).fetchall()
-                    _nifty_rets = _bc.execute(
-                        """SELECT close FROM daily_prices WHERE symbol='NIFTY 50'
-                           ORDER BY date DESC LIMIT 91"""
-                    ).fetchall()
+                    _beta_row = _bc.execute(
+                        """SELECT beta_90d FROM weekly_momentum
+                           WHERE symbol=? ORDER BY date DESC LIMIT 1""", (sym,)
+                    ).fetchone()
                     _bc.close()
-                    if len(_stock_rets) >= 20 and len(_nifty_rets) >= 20:
-                        import pandas as _pd2
-                        _sc = _pd2.Series([r[0] for r in reversed(_stock_rets)]).pct_change().dropna()
-                        _nc = _pd2.Series([r[0] for r in reversed(_nifty_rets)]).pct_change().dropna()
-                        _n  = min(len(_sc), len(_nc))
-                        if _n >= 10:
-                            _cov = _sc.iloc[-_n:].cov(_nc.iloc[-_n:])
-                            _var = _nc.iloc[-_n:].var()
-                            if _var > 0:
-                                stock["beta"] = round(_cov / _var, 2)
+                    if _beta_row and _beta_row[0] and float(_beta_row[0]) > 0:
+                        stock["beta"] = round(float(_beta_row[0]), 2)
+                    else:
+                        # Volatility-based estimate from price history
+                        import sqlite3 as _sq2b
+                        _bc2 = _sq2b.connect("market_data.db")
+                        _pr = _bc2.execute(
+                            """SELECT close FROM daily_prices WHERE symbol=?
+                               AND exchange='NSE' ORDER BY date DESC LIMIT 91""", (sym,)
+                        ).fetchall()
+                        _bc2.close()
+                        if len(_pr) >= 20:
+                            import pandas as _pd2
+                            _rets = _pd2.Series([r[0] for r in reversed(_pr)]).pct_change().dropna()
+                            if len(_rets) >= 10:
+                                stock["beta"] = round(float(_rets.std() * (252**0.5) / 0.15), 2)
                 except Exception:
                     pass
 
@@ -849,17 +911,20 @@ def run_master_pipeline():
                 stock.setdefault("storm_score", 0)
                 stock.setdefault("storm_label", "N/A")
 
-            # Spike Score — call SpikeScreener (spike_screener.py)
+            # Spike Score — call SpikeScreener with correct key mappings
             try:
                 from spike_screener import SpikeScreener
                 _spiker = SpikeScreener()
-                _spike_result = _spiker.calculate_spike_score(stock, {})
+                # SpikeScreener uses 'vol_spike_50d' — map from our 'vol_ratio'
+                _spike_input = dict(stock)
+                _spike_input['vol_spike_50d'] = float(stock.get('vol_ratio', 1.0) or 1.0)
+                _spike_result = _spiker.calculate_spike_score(_spike_input, {})
                 stock["spike_count"] = _spike_result.get("score", 0)
                 stock["spike_score"] = _spike_result.get("score", 0)
                 _spike_tags = _spike_result.get("tags", [])
                 if _spike_tags:
                     stock["spike_triggers"] = " | ".join(_spike_tags)
-            except Exception:
+            except Exception as _esp:
                 stock.setdefault("spike_count", 0)
                 stock.setdefault("spike_score", 0)
 
@@ -1053,50 +1118,7 @@ def run_master_pipeline():
         # ─────────────────────────────────────────────────────────────────────
         enforce_circular_queue("market_data.db")
 
-        # ── Refresh NSE fundamentals for today's top-100 NSE stocks ──────────
-        # Fast (~2 min for 100 stocks) — fills company_name, sector,
-        # PE, EPS, promoter%, FII%, DII% for the stocks that matter today
-        try:
-            from backfill_history import fetch_nse_fundamentals
-            import sqlite3 as _sq3
-            _conn3 = _sq3.connect("market_data.db")
-            _top100_syms = [s.get("symbol","") for s in final_100_list
-                           if s.get("exchange_tag","") not in ("BSE_SME","BSE_ONLY")
-                           and s.get("symbol","")]
-            print(f"\n🏦 Refreshing NSE fundamentals for {len(_top100_syms)} stocks...")
-            fetch_nse_fundamentals(_conn3, _top100_syms, max_symbols=100)
-            _conn3.close()
-            # Re-read updated fundamental data back into stocks
-            _conn4 = _sq3.connect("market_data.db")
-            for _stk in final_100_list:
-                _s = _stk.get("symbol","")
-                _row = _conn4.execute(
-                    "SELECT company_name, sector, updated_on FROM symbol_master WHERE symbol=?",
-                    (_s,)
-                ).fetchone()
-                if _row:
-                    if _row[0] and not _stk.get("company_name"):
-                        _stk["company_name"] = _row[0]
-                    if _row[1] and (not _stk.get("sector") or _stk.get("sector") == "General"):
-                        _stk["sector"] = _row[1]
-                    if _row[2] and "|eps=" in str(_row[2]):
-                        import re as _re2
-                        _em = _re2.search(r"eps=([0-9.]+)", str(_row[2]))
-                        _pm = _re2.search(r"pe=([0-9.]+)",  str(_row[2]))
-                        if _em and not _stk.get("eps"): _stk["eps"] = float(_em.group(1))
-                        if _pm and not _stk.get("pe"):  _stk["pe"]  = float(_pm.group(1))
-                _fm = _conn4.execute(
-                    "SELECT promoter_pct, fii_pct, dii_pct, public_float FROM shareholding WHERE symbol=? ORDER BY date DESC LIMIT 1",
-                    (_s,)
-                ).fetchone()
-                if _fm:
-                    if _fm[0] and not _stk.get("promoter_pct"): _stk["promoter_pct"] = float(_fm[0])
-                    if _fm[1] and not _stk.get("fii_pct"):      _stk["fii_pct"]      = float(_fm[1])
-                    if _fm[2] and not _stk.get("dii_pct"):      _stk["dii_pct"]      = float(_fm[2])
-                    if _fm[3] and not _stk.get("public_float"): _stk["public_float"] = float(_fm[3])
-            _conn4.close()
-        except Exception as _e3:
-            print(f"⚠️  NSE fundamentals refresh: {_e3}")
+
 
         # Log run stats
         import sqlite3
