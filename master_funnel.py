@@ -45,7 +45,7 @@ def run_master_pipeline():
     cleanup_temp_files()
     
     ist = pytz.timezone('Asia/Kolkata')
-    today = datetime.datetime.now(ist)
+    today = datetime.datetime.now(ist)- datetime.timedelta(days=1)  # 2. Logic Change: 'today' is now current time minus 1 day
     
     # 1. HARVEST (Harvester does the downloading)
     n_m = download_nse_bhavcopy(today)

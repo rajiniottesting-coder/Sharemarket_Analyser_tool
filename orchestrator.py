@@ -16,7 +16,7 @@ def gate_check():
     try:
         # Set time to IST (India Standard Time)
         ist = pytz.timezone('Asia/Kolkata')
-        today = datetime.datetime.now(ist)
+        today = datetime.datetime.now(ist)- datetime.timedelta(days=1)  # 2. Logic Change: 'today' is now current time minus 1 day
         today_str = today.strftime('%Y-%m-%d')
         
         print(f"--- Running Gate Check for {today.strftime('%Y-%m-%d %H:%M')} IST ---")

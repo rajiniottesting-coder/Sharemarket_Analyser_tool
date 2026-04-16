@@ -2,8 +2,8 @@ name: NSE_BSE_Daily_Pipeline
 
 on:
   schedule:
-    # 18:25 UTC is 23:55 IST (Indian Standard Time)
-    - cron: '25 18 * * 1-5'
+    # 02:00 UTC is 07:30 IST
+    - cron: '0 2 * * *'
   workflow_dispatch: # Allows manual trigger for testing..
 
 permissions:
