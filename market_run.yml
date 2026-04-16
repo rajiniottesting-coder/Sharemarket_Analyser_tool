@@ -4,7 +4,7 @@ on:
   schedule:
     # 01:30 UTC = 07:00 IST  (next morning after market close)
     # This gives 12+ hours after NSE/BSE publish Bhav Copy (~18:00 IST previous day)
-    # Gate check inside orchestrator.py confirms files are available before proceeding
+    # Gate check inside orchestrator.py confirms files are available before proceeding..
     - cron: '30 1 * * 2-6'   # Tue–Sat UTC = Mon–Fri IST
   workflow_dispatch:           # Manual trigger for testing
 
