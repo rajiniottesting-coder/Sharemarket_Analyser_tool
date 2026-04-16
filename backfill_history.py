@@ -964,8 +964,6 @@ def run_backfill():
     print("\n🔧 Computing technical indicators & weekly momentum for all symbols...")
     _compute_all_indicators(conn)
 
-    conn.close()
-
     # ── Section 10: Fetch NSE fundamentals for all symbols ────────────────────
     print("\n🏦 Fetching NSE fundamentals (PE, sector, promoter%, FII%)...")
     try:
@@ -1132,7 +1130,10 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             shold = _nse_shareholding(sym, session)
 
             if quote:
-                # Update symbol_master
+                # Update symbol_master with all available fields
+                _mcap_v = quote.get("mcap_cr", 0)
+                _eps_v  = quote.get("eps", 0)
+                _pe_v   = quote.get("pe", 0)
                 conn.execute("""
                     UPDATE symbol_master
                     SET company_name=?, sector=?, face_value=?, isin=?, updated_on=?
@@ -1142,7 +1143,8 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
                     quote.get("sector", ""),
                     quote.get("face_value", 10),
                     quote.get("isin", ""),
-                    today_str, sym
+                    today_str + f"|eps={_eps_v}|mcap={_mcap_v}|pe={_pe_v}",
+                    sym
                 ))
 
                 # fundamental_metrics row (price-derived ratios)
@@ -1156,12 +1158,26 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
                 pb  = quote.get("pb", 0)
                 earn_yield = round((eps / cmp * 100), 2) if cmp > 0 and eps > 0 else 0
 
+                # Also compute M3_PE model input directly here
+                mcap  = quote.get("mcap_cr", 0)
                 fm_rows.append({
-                    "symbol": sym, "date": today_str,
-                    "pe_ttm": pe, "pb": pb,
-                    "earn_yield": earn_yield,
-                    "div_yield": 0,  # not in NSE quote API
+                    "symbol":      sym,
+                    "date":        today_str,
+                    "pe_ttm":      pe,
+                    "pb":          pb,
+                    "earn_yield":  earn_yield,
+                    "div_yield":   0,
+                    "roe":         round(eps * pe / (pb * cmp), 2) if pb > 0 and cmp > 0 and pe > 0 else 0,
+                    # Store eps as earn_yield denominator for FV models
+                    # pe_ttm * earn_yield/100 * cmp ≈ EPS
+                    "rev_yoy":     0,   # not in quote API
+                    "pat_yoy":     0,
                 })
+                # Store EPS in stock for FV engine via symbol_master extended
+                conn.execute(
+                    "UPDATE symbol_master SET updated_on=? WHERE symbol=?",
+                    (today_str + f"|eps={eps}|mcap={mcap}|pe={pe}", sym)
+                )
 
                 ok += 1
             else:

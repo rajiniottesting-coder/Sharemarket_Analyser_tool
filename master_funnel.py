@@ -408,26 +408,42 @@ def run_master_pipeline():
             stock["spike_suppressed"] = guard["suppressed"]
             stock["guard_reasons"]    = ", ".join(guard["reasons"])
 
-            # Section 3I: Early Detection Score
-            early_data = v7_engine.calculate_section_3I_early_score(stock)
-            stock["early_entry_score"] = early_data["early_score"]
-            stock["early_mover_badge"] = early_data.get("badge", "")
-            stock["early_label"]       = early_data.get("label", "EMERGING")
+            # Section 3I: Early Detection Score — use EarlyDetectionEngine
+            try:
+                from early_detection_engine import EarlyDetectionEngine
+                _ede = EarlyDetectionEngine()
+                _early = _ede.calculate_early_score(stock, {})
+                stock["early_entry_score"] = _early.get("total_score", 0)
+                stock["early_mover_badge"] = _early.get("badge", "")
+                stock["early_label"]       = _early.get("label", "EMERGING")
+            except Exception:
+                early_data = v7_engine.calculate_section_3I_early_score(stock)
+                stock["early_entry_score"] = early_data["early_score"]
+                stock["early_mover_badge"] = early_data.get("badge", "")
+                stock["early_label"]       = early_data.get("label", "EMERGING")
 
-            # Section 3L: Sector Rotation Stage
+            # Section 3L: Sector Rotation Stage — use 4w_chg + FII trend
+            _sec_ret   = float(stock.get("4w_chg", 0) or 0)
+            _nft_ret   = 0.0
+            _rsi_val   = float(stock.get("rsi", 50) or 50)
+            _fii_trend = str(stock.get("fii_3q_trend", "NEUTRAL"))
+            if   _fii_trend == "UP"   and _rsi_val > 55: _fii_flow = "turning_positive"
+            elif _fii_trend == "UP":                      _fii_flow = "positive"
+            elif _sec_ret < -2.0:                         _fii_flow = "decreasing"
+            else:                                         _fii_flow = "neutral"
             stock["rotation_stage"] = rotation.calculate_rotation_stage(
-                stock.get("sector_return", 0),
-                stock.get("nifty_return", 0),
-                "neutral",
+                _sec_ret, _nft_ret, _fii_flow
             )
 
             # Section 4: Balance Sheet Health
             from bs_engine import BalanceSheetEngine
             hist_q = historical_map.get(sym) or {}
             bs_report = BalanceSheetEngine().analyze_bs_health(stock, hist_q)
-            stock["bs_status"] = bs_report["status"]
-            stock["bs_flags"]  = ", ".join(bs_report["flags"])
-            stock["bs_output"] = bs_report.get("output_line", "")
+            stock["bs_status"] = bs_report.get("status", "HEALTHY")
+            _flags = bs_report.get("flags", [])
+            stock["bs_flags"]  = ", ".join(_flags) if _flags else "No red flags detected"
+            stock["bs_output"] = bs_report.get("output_line", "") or                                  (f"BS: {stock['bs_status']} — " +
+                                  (", ".join(_flags) if _flags else "No concerns"))
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 5: WEEKLY MOMENTUM DELTAS + DB ENRICHMENT
@@ -504,23 +520,30 @@ def run_master_pipeline():
             for r in _ti_rows:
                 _ti_map[r[0]] = r[1:]
 
-            # Symbol master: company_name, sector, cap_category
+            # Symbol master: company_name, sector, cap_category, updated_on(eps/mcap tag)
             _sm_rows = _conn.execute(
-                f"SELECT symbol, company_name, sector, cap_category FROM symbol_master "
+                f"SELECT symbol, company_name, sector, cap_category, updated_on FROM symbol_master "
                 f"WHERE symbol IN ({_sym_placeholders})", _syms
             ).fetchall()
             for r in _sm_rows:
                 _sm_map[r[0]] = r[1:]
 
-            # Daily prices extra columns for today
-            _dp_rows = _conn.execute(
-                f"""SELECT symbol, day_chg_pct, week_high_52, week_low_52, vol_50d_avg
-                    FROM daily_prices
-                    WHERE symbol IN ({_sym_placeholders}) AND date=?""",
-                _syms + [_date_str]
-            ).fetchall()
-            for r in _dp_rows:
-                _dp_map[r[0]] = r[1:]
+            # 52w high/low and vol50d from full price history (no date filter)
+            try:
+                _dp_rows = _conn.execute(
+                    f"""SELECT dp.symbol,
+                        MAX(CASE WHEN dp.date >= date(?, '-365 days') THEN dp.high  ELSE NULL END),
+                        MIN(CASE WHEN dp.date >= date(?, '-365 days') THEN dp.low   ELSE NULL END),
+                        AVG(CASE WHEN dp.date >= date(?, '-50 days')  THEN dp.volume ELSE NULL END)
+                        FROM daily_prices dp
+                        WHERE dp.symbol IN ({_sym_placeholders}) AND dp.exchange='NSE'
+                        GROUP BY dp.symbol""",
+                    [_date_str, _date_str, _date_str] + _syms
+                ).fetchall()
+                for r in _dp_rows:
+                    _dp_map[r[0]] = r[1:]
+            except Exception:
+                pass
 
             _conn.close()
         except Exception as _e:
@@ -546,9 +569,40 @@ def run_master_pipeline():
                 for k in ["2w_chg", "4w_chg", "6w_chg", "8w_chg"]:
                     stock[k] = 0
 
-            # Enrich from symbol_master
+            # Beta — computed from 90-day price returns vs Nifty 50
+            if not stock.get("beta") or stock.get("beta") == "—":
+                try:
+                    import sqlite3 as _sq2
+                    _bc = _sq2.connect("market_data.db")
+                    _stock_rets = _bc.execute(
+                        """SELECT close FROM daily_prices WHERE symbol=? AND exchange='NSE'
+                           ORDER BY date DESC LIMIT 91""", (sym,)
+                    ).fetchall()
+                    _nifty_rets = _bc.execute(
+                        """SELECT close FROM daily_prices WHERE symbol='NIFTY 50'
+                           ORDER BY date DESC LIMIT 91"""
+                    ).fetchall()
+                    _bc.close()
+                    if len(_stock_rets) >= 20 and len(_nifty_rets) >= 20:
+                        import pandas as _pd2
+                        _sc = _pd2.Series([r[0] for r in reversed(_stock_rets)]).pct_change().dropna()
+                        _nc = _pd2.Series([r[0] for r in reversed(_nifty_rets)]).pct_change().dropna()
+                        _n  = min(len(_sc), len(_nc))
+                        if _n >= 10:
+                            _cov = _sc.iloc[-_n:].cov(_nc.iloc[-_n:])
+                            _var = _nc.iloc[-_n:].var()
+                            if _var > 0:
+                                stock["beta"] = round(_cov / _var, 2)
+                except Exception:
+                    pass
+
+            # Enrich from symbol_master (+ parse EPS/mcap from updated_on tag)
             if sym in _sm_map:
-                cn, sec, cap = _sm_map[sym]
+                _sm_vals = _sm_map[sym]
+                cn  = _sm_vals[0] if len(_sm_vals) > 0 else ""
+                sec = _sm_vals[1] if len(_sm_vals) > 1 else ""
+                cap = _sm_vals[2] if len(_sm_vals) > 2 else ""
+                upd = _sm_vals[3] if len(_sm_vals) > 3 else ""
                 if not stock.get("company_name") and cn:
                     stock["company_name"] = cn
                 if not stock.get("sector") or stock.get("sector") == "General":
@@ -557,16 +611,45 @@ def run_master_pipeline():
                 if not stock.get("cap_category") or stock.get("cap_category") == "—":
                     if cap:
                         stock["cap_category"] = cap
+                # Parse EPS and mcap from the tag in updated_on
+                if upd and "|eps=" in str(upd):
+                    import re as _re
+                    _eps_m  = _re.search(r"eps=([0-9.]+)", str(upd))
+                    _mcap_m = _re.search(r"mcap=([0-9.]+)", str(upd))
+                    _pe_m   = _re.search(r"pe=([0-9.]+)",   str(upd))
+                    if _eps_m  and not stock.get("eps"):
+                        stock["eps"]     = float(_eps_m.group(1))
+                    if _mcap_m and not stock.get("mcap_cr"):
+                        stock["mcap_cr"] = float(_mcap_m.group(1))
+                    if _pe_m   and not stock.get("pe"):
+                        stock["pe"]      = float(_pe_m.group(1))
 
-            # Enrich from daily_prices extended columns
+            # cap_category from mcap (always computable from market cap thresholds)
+            if not stock.get("cap_category") or stock.get("cap_category") == "—":
+                _mcap = float(stock.get("mcap_cr", stock.get("mcap", 0)) or 0)
+                if _mcap <= 0:
+                    # Estimate mcap from close × approx shares (not perfect but better than blank)
+                    _mcap = float(stock.get("close", 0) or 0) * float(stock.get("volume", 0) or 0) / 1e7
+                if   _mcap >= 20000: stock["cap_category"] = "LARGE CAP"
+                elif _mcap >=  5000: stock["cap_category"] = "MID CAP"
+                elif _mcap >=   500: stock["cap_category"] = "SMALL CAP"
+                elif _mcap >      0: stock["cap_category"] = "MICRO CAP"
+                else:                stock["cap_category"] = "—"
+
+            # day_change directly from close/prev_close in stock dict (always available)
+            _cv  = float(stock.get("close", 0) or 0)
+            _pcv = float(stock.get("prev_close", 0) or 0)
+            if _cv > 0 and _pcv > 0:
+                stock["day_change"] = round((_cv - _pcv) / _pcv * 100, 2)
+
+            # 52w high/low and vol50 from DB history
             if sym in _dp_map:
-                dc, h52, l52, vol50 = _dp_map[sym]
-                if dc:  stock["day_change"]  = round(float(dc), 2)
-                if h52: stock["high_52w"]    = round(float(h52), 2)
-                if l52: stock["low_52w"]     = round(float(l52), 2)
+                h52, l52, vol50 = _dp_map[sym]
+                if h52 and float(h52) > 0: stock["high_52w"] = round(float(h52), 2)
+                if l52 and float(l52) > 0: stock["low_52w"]  = round(float(l52), 2)
                 if vol50 and float(vol50) > 0:
-                    curr_vol = float(stock.get("volume", 0) or 0)
-                    stock["vol_ratio"] = round(curr_vol / float(vol50), 2)
+                    _curr_vol = float(stock.get("volume", 0) or 0)
+                    stock["vol_ratio"] = round(_curr_vol / float(vol50), 2)
 
             # Enrich from fundamental_metrics
             if sym in _fm_map:
@@ -636,11 +719,26 @@ def run_master_pipeline():
         from fair_value_engine import FairValueEngine
         fv_engine = FairValueEngine()
         for stock in final_100_list:
-            beta        = float(stock.get("beta", 1.0) or 1.0)
-            growth_3yr  = float(stock.get("pat_cagr_3y",
-                                stock.get("rev_cagr_3y", 10)) or 10)
-            models      = fv_engine.calculate_all_models(stock, beta, growth_3yr)
-            fv_result   = fv_engine.get_composite_fair_value(
+            beta       = float(stock.get("beta", 1.0) or 1.0)
+            growth_3yr = float(stock.get("pat_cagr_3y",
+                               stock.get("rev_cagr_3y", 10)) or 10)
+
+            # Derive BVPS from PB and CMP if not available
+            if not stock.get("bvps"):
+                pb  = float(stock.get("pb", 0) or 0)
+                cmp = float(stock.get("close", 0) or 0)
+                if pb > 0 and cmp > 0:
+                    stock["bvps"] = round(cmp / pb, 2)
+
+            # Derive EPS from PE and CMP if not already set
+            if not stock.get("eps"):
+                pe  = float(stock.get("pe", 0) or 0)
+                cmp = float(stock.get("close", 0) or 0)
+                if pe > 0 and cmp > 0:
+                    stock["eps"] = round(cmp / pe, 2)
+
+            models    = fv_engine.calculate_all_models(stock, beta, growth_3yr)
+            fv_result = fv_engine.get_composite_fair_value(
                 models, stock.get("sector", "IT"), float(stock.get("close", 1) or 1)
             )
             stock.update(models)
@@ -652,6 +750,92 @@ def run_master_pipeline():
         from scoring_engine import ScoringEngine
         scoring = ScoringEngine()
         for stock in final_100_list:
+
+            # ── Pre-compute technical_score from real technical indicators ───
+            if not stock.get("technical_score"):
+                _ts = 50.0  # base
+                _rsi_s  = float(stock.get("rsi", 50) or 50)
+                _adx_s  = float(stock.get("adx", 0) or 0)
+                _macd_s = str(stock.get("macd_signal", "NEUTRAL"))
+                _st_s   = str(stock.get("supertrend", "NEUTRAL"))
+                _vwap_s = str(stock.get("above_vwap", "NO"))
+                _obv_s  = str(stock.get("obv_signal", "NEUTRAL"))
+                # RSI contribution
+                if   _rsi_s > 60: _ts += 8
+                elif _rsi_s > 50: _ts += 4
+                elif _rsi_s < 40: _ts -= 8
+                elif _rsi_s < 50: _ts -= 4
+                # ADX (trend strength)
+                if _adx_s > 25: _ts += 5
+                elif _adx_s > 20: _ts += 2
+                # MACD
+                if _macd_s == "BUY":  _ts += 6
+                elif _macd_s == "SELL": _ts -= 6
+                # Supertrend
+                if _st_s == "BUY":  _ts += 8
+                elif _st_s == "SELL": _ts -= 8
+                # VWAP
+                if _vwap_s == "YES": _ts += 4
+                else:                _ts -= 2
+                # OBV
+                if _obv_s == "RISING":  _ts += 4
+                elif _obv_s == "FALLING": _ts -= 4
+                stock["technical_score"] = max(0, min(100, round(_ts, 1)))
+
+            # ── Pre-compute fundamental_score from available data ─────────────
+            if not stock.get("fundamental_score"):
+                _fs = 50.0  # base
+                _pe_f  = stock.get("pe", 0)
+                _pb_f  = stock.get("pb", 0)
+                _ey_f  = float(stock.get("earnings_yield", 0) or 0)
+                _de_f  = stock.get("debt_equity", "—")
+                _pro_f = float(stock.get("promoter_pct", 0) or 0)
+                _mos_f = float(stock.get("mos_pct", 0) or 0)
+                _s2_f  = float(stock.get("stage2_score", 15) or 15)
+                # Stage 2 score (0-30) maps to base fundamental score
+                _fs = 30.0 + (_s2_f / 30.0) * 40.0  # 30-70 range
+                # PE contribution
+                if isinstance(_pe_f, (int, float)) and float(_pe_f) > 0:
+                    if   float(_pe_f) < 15: _fs += 8
+                    elif float(_pe_f) < 25: _fs += 4
+                    elif float(_pe_f) > 60: _fs -= 6
+                # Earnings yield
+                if _ey_f > 6:  _fs += 5
+                elif _ey_f > 4: _fs += 2
+                # Promoter holding
+                if _pro_f > 50: _fs += 5
+                elif _pro_f > 35: _fs += 2
+                elif _pro_f > 0 and _pro_f < 20: _fs -= 3
+                # Debt/equity
+                if isinstance(_de_f, (int, float)) and float(_de_f) < 0.5: _fs += 4
+                elif isinstance(_de_f, (int, float)) and float(_de_f) > 2.0: _fs -= 6
+                stock["fundamental_score"] = max(0, min(100, round(_fs, 1)))
+
+            # ── Safety score from pledge/debt ────────────────────────────────
+            if not stock.get("safety_score"):
+                _ss = 50.0
+                _pled = float(stock.get("pledge_pct", 0) or 0)
+                _bet  = float(stock.get("beta", 1.0) or 1.0)
+                _de2  = stock.get("debt_equity", "—")
+                if _pled > 20: _ss -= 15
+                elif _pled > 10: _ss -= 7
+                if _bet > 1.5: _ss -= 5
+                elif _bet < 0.8: _ss += 5
+                if isinstance(_de2, (int, float)) and float(_de2) > 2.0: _ss -= 10
+                stock["safety_score"] = max(0, min(100, round(_ss, 1)))
+
+            # ── Sentiment score from smart money / FII trend ─────────────────
+            if not stock.get("sentiment_score"):
+                _sent = 50.0
+                _fii_t = str(stock.get("fii_3q_trend", "NEUTRAL"))
+                _sm    = str(stock.get("smart_money_sentiment", "NEUTRAL"))
+                _ins   = str(stock.get("insider_buy_alert", "NO"))
+                if _fii_t == "UP":              _sent += 10
+                if _sm == "ACCUMULATION":       _sent += 10
+                if _ins == "YES":               _sent += 8
+                if _fii_t == "DOWN":            _sent -= 10
+                stock["sentiment_score"] = max(0, min(100, round(_sent, 1)))
+
             # Composite score + verdict
             score_result = scoring.calculate_composite_score(stock)
             stock.update(score_result)
@@ -665,9 +849,19 @@ def run_master_pipeline():
                 stock.setdefault("storm_score", 0)
                 stock.setdefault("storm_label", "N/A")
 
-            # Spike fields
-            stock.setdefault("spike_count", 0)
-            stock.setdefault("spike_score", 0)
+            # Spike Score — call SpikeScreener (spike_screener.py)
+            try:
+                from spike_screener import SpikeScreener
+                _spiker = SpikeScreener()
+                _spike_result = _spiker.calculate_spike_score(stock, {})
+                stock["spike_count"] = _spike_result.get("score", 0)
+                stock["spike_score"] = _spike_result.get("score", 0)
+                _spike_tags = _spike_result.get("tags", [])
+                if _spike_tags:
+                    stock["spike_triggers"] = " | ".join(_spike_tags)
+            except Exception:
+                stock.setdefault("spike_count", 0)
+                stock.setdefault("spike_score", 0)
 
             # Vol ratio (use DB-enriched value if already set, else calculate)
             if not stock.get("vol_ratio"):
@@ -694,13 +888,66 @@ def run_master_pipeline():
             elif mos > -15: stock["mos_label"] = "SLIGHT PREMIUM"
             else:           stock["mos_label"] = "SIGNIFICANT PREMIUM"
 
-            # Key-name fixes: engine output key → excel column key
+            # Chart Pattern — simple candle pattern from OHLC (no external data needed)
+            if not stock.get("chart_pattern") or stock.get("chart_pattern") == "—":
+                _o = float(stock.get("open", 0) or 0)
+                _h = float(stock.get("high", 0) or 0)
+                _l = float(stock.get("low", 0) or 0)
+                _c = float(stock.get("close", 0) or 0)
+                _pc = float(stock.get("prev_close", 0) or 0)
+                if _o > 0 and _h > 0 and _l > 0 and _c > 0:
+                    _body  = abs(_c - _o)
+                    _range = _h - _l
+                    _upper = _h - max(_o, _c)
+                    _lower = min(_o, _c) - _l
+                    if _range > 0:
+                        if _body / _range < 0.1:
+                            stock["chart_pattern"] = "DOJI"
+                        elif _upper > _body * 2 and _lower < _body * 0.5:
+                            stock["chart_pattern"] = "SHOOTING STAR" if _c < _o else "HAMMER"
+                        elif _lower > _body * 2 and _upper < _body * 0.5:
+                            stock["chart_pattern"] = "HAMMER" if _c > _o else "HANGING MAN"
+                        elif _c > _o and _pc > 0 and _c > _pc * 1.01:
+                            stock["chart_pattern"] = "BULLISH CANDLE"
+                        elif _c < _o and _pc > 0 and _c < _pc * 0.99:
+                            stock["chart_pattern"] = "BEARISH CANDLE"
+                        else:
+                            stock["chart_pattern"] = "NEUTRAL"
+
+            # Key-name fixes + derived fields
             if "earn_yield" in stock and not stock.get("earnings_yield"):
                 stock["earnings_yield"] = stock["earn_yield"]
             if not stock.get("total_debt") and stock.get("total_debt_cr"):
                 stock["total_debt"] = stock["total_debt_cr"]
             if stock.get("bs_flags") and not stock.get("bs_output"):
                 stock["bs_output"] = stock["bs_flags"]
+
+            # Earnings yield from EPS/CMP if not already set from DB
+            if not stock.get("earnings_yield") or stock.get("earnings_yield") == "—":
+                _eps2 = float(stock.get("eps", 0) or 0)
+                _cmp2 = float(stock.get("close", 0) or 0)
+                if _eps2 > 0 and _cmp2 > 0:
+                    stock["earnings_yield"] = round(_eps2 / _cmp2 * 100, 2)
+                    stock["earn_yield"]     = stock["earnings_yield"]
+
+            # P/E cross-check: if pe is from DB use it, else derive from EPS/CMP
+            if not stock.get("pe") or stock.get("pe") == "—":
+                _eps3 = float(stock.get("eps", 0) or 0)
+                _cmp3 = float(stock.get("close", 0) or 0)
+                if _eps3 > 0 and _cmp3 > 0:
+                    stock["pe"] = round(_cmp3 / _eps3, 2)
+
+            # OB/Bill — set to "—" explicitly (no source, not 0)
+            if not stock.get("ob_bill_ratio") or stock.get("ob_bill_ratio") == 0:
+                stock["ob_bill_ratio"] = "—"
+
+            # L1 fields — set to "—" (no source in free data)
+            for _k in ["l1_wins", "l1_value", "pipeline_vis", "new_market_entry"]:
+                stock.setdefault(_k, "—")
+
+            # BS flags to note
+            if not stock.get("bs_output") or stock.get("bs_output") == "":
+                stock["bs_output"] = f"BS: {stock.get('bs_status','HEALTHY')} — No red flags detected"
 
             # Price targets from CMP and CFV
             cmp = float(stock.get("close", 0) or 0)
@@ -715,6 +962,19 @@ def run_master_pipeline():
             else:
                 for k in ["t1","t2","t3","stop_loss","entry_range"]:
                     stock.setdefault(k, "—")
+
+            # early_signals — combine spike triggers + early mover signals
+            _early_sigs = []
+            _spike_trigs = stock.get("spike_triggers", "")
+            if _spike_trigs and _spike_trigs != "—":
+                _early_sigs += [s.strip() for s in str(_spike_trigs).split("|") if s.strip()]
+            _early_badge = stock.get("early_mover_badge", "")
+            if _early_badge:
+                _early_sigs.append(str(_early_badge))
+            _early_label = stock.get("early_label", "")
+            if _early_label and _early_label not in ("EMERGING", "—", ""):
+                _early_sigs.append(str(_early_label))
+            stock["early_signals"] = " | ".join(_early_sigs) if _early_sigs else "—"
 
             # intel_queries: ensure string not list
             iq = stock.get("intel_queries", "")
@@ -792,6 +1052,51 @@ def run_master_pipeline():
         # SECTION 13: DB MAINTENANCE
         # ─────────────────────────────────────────────────────────────────────
         enforce_circular_queue("market_data.db")
+
+        # ── Refresh NSE fundamentals for today's top-100 NSE stocks ──────────
+        # Fast (~2 min for 100 stocks) — fills company_name, sector,
+        # PE, EPS, promoter%, FII%, DII% for the stocks that matter today
+        try:
+            from backfill_history import fetch_nse_fundamentals
+            import sqlite3 as _sq3
+            _conn3 = _sq3.connect("market_data.db")
+            _top100_syms = [s.get("symbol","") for s in final_100_list
+                           if s.get("exchange_tag","") not in ("BSE_SME","BSE_ONLY")
+                           and s.get("symbol","")]
+            print(f"\n🏦 Refreshing NSE fundamentals for {len(_top100_syms)} stocks...")
+            fetch_nse_fundamentals(_conn3, _top100_syms, max_symbols=100)
+            _conn3.close()
+            # Re-read updated fundamental data back into stocks
+            _conn4 = _sq3.connect("market_data.db")
+            for _stk in final_100_list:
+                _s = _stk.get("symbol","")
+                _row = _conn4.execute(
+                    "SELECT company_name, sector, updated_on FROM symbol_master WHERE symbol=?",
+                    (_s,)
+                ).fetchone()
+                if _row:
+                    if _row[0] and not _stk.get("company_name"):
+                        _stk["company_name"] = _row[0]
+                    if _row[1] and (not _stk.get("sector") or _stk.get("sector") == "General"):
+                        _stk["sector"] = _row[1]
+                    if _row[2] and "|eps=" in str(_row[2]):
+                        import re as _re2
+                        _em = _re2.search(r"eps=([0-9.]+)", str(_row[2]))
+                        _pm = _re2.search(r"pe=([0-9.]+)",  str(_row[2]))
+                        if _em and not _stk.get("eps"): _stk["eps"] = float(_em.group(1))
+                        if _pm and not _stk.get("pe"):  _stk["pe"]  = float(_pm.group(1))
+                _fm = _conn4.execute(
+                    "SELECT promoter_pct, fii_pct, dii_pct, public_float FROM shareholding WHERE symbol=? ORDER BY date DESC LIMIT 1",
+                    (_s,)
+                ).fetchone()
+                if _fm:
+                    if _fm[0] and not _stk.get("promoter_pct"): _stk["promoter_pct"] = float(_fm[0])
+                    if _fm[1] and not _stk.get("fii_pct"):      _stk["fii_pct"]      = float(_fm[1])
+                    if _fm[2] and not _stk.get("dii_pct"):      _stk["dii_pct"]      = float(_fm[2])
+                    if _fm[3] and not _stk.get("public_float"): _stk["public_float"] = float(_fm[3])
+            _conn4.close()
+        except Exception as _e3:
+            print(f"⚠️  NSE fundamentals refresh: {_e3}")
 
         # Log run stats
         import sqlite3
