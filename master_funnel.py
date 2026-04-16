@@ -297,17 +297,75 @@ def run_master_pipeline():
         # SECTION 5B: FAIR VALUE ENGINE
         # ─────────────────────────────────────────────────────────────────────
         from fair_value_engine import FairValueEngine
+        from scoring_engine import ScoringEngine
         fv_engine = FairValueEngine()
+        scoring   = ScoringEngine()
+
         for stock in final_100_list:
-            beta        = float(stock.get("beta", 1.0) or 1.0)
-            growth_3yr  = float(stock.get("pat_cagr_3y",
-                                stock.get("rev_cagr_3y", 10)) or 10)
-            models      = fv_engine.calculate_all_models(stock, beta, growth_3yr)
-            fv_result   = fv_engine.get_composite_fair_value(
-                models, stock.get("sector", "IT"), float(stock.get("close", 1) or 1)
+            # ── Ensure fields that come from Bhav Copy are accessible ────────
+            # 'sector' and 'exchange_tag' come from consolidated data already
+            # but guard them with defaults in case columns differ
+            if not stock.get("sector"):
+                stock["sector"] = "General"
+            if not stock.get("exchange_tag"):
+                stock["exchange_tag"] = stock.get("exchange", "NSE")
+
+            # ── Fair Value (Section 5B) ───────────────────────────────────────
+            beta       = float(stock.get("beta", 1.0) or 1.0)
+            growth_3yr = float(stock.get("pat_cagr_3y",
+                               stock.get("rev_cagr_3y", 10)) or 10)
+            models     = fv_engine.calculate_all_models(stock, beta, growth_3yr)
+            fv_result  = fv_engine.get_composite_fair_value(
+                models, stock.get("sector", "IT"),
+                float(stock.get("close", 1) or 1)
             )
             stock.update(models)
-            stock.update(fv_result)
+            stock.update(fv_result)  # sets: cfv, mos_pct, upside, score_adjustment
+
+            # ── Composite Score + Verdict (Section 6) ────────────────────────
+            score_result = scoring.calculate_composite_score(stock)
+            stock.update(score_result)  # sets: composite_score, verdict, label
+
+            # ── Storm Score (Section 7) ───────────────────────────────────────
+            storm = scoring.calculate_storm_score(stock, market_vix=12.0,
+                                                   market_off_peak=3.0)
+            if storm:
+                stock.update(storm)
+            else:
+                stock.setdefault("storm_score", 0)
+                stock.setdefault("storm_label", "N/A")
+                stock.setdefault("storm_comment", "VIX stable — storm filter not active")
+
+            # ── Spike fields (used by report/excel) ──────────────────────────
+            stock.setdefault("spike_count", 0)
+            stock.setdefault("spike_triggers", [])
+            stock.setdefault("spike_score", 0)
+
+            # ── Vol ratio (used by report/excel) ──────────────────────────────
+            curr_vol = float(stock.get("volume", 0) or 0)
+            from data_bridge import get_20d_avg_vol
+            avg_vol  = get_20d_avg_vol(str(stock.get("symbol", "") or ""))
+            stock["vol_ratio"] = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
+
+            # ── Smart money signals (string for Excel/report) ─────────────────
+            if "smart_money_signals" not in stock:
+                sentiment = stock.get("smart_money_sentiment", "NEUTRAL")
+                insider   = stock.get("insider_buy_alert", "NO")
+                signals   = []
+                if sentiment == "ACCUMULATION":
+                    signals.append("INST ACCUMULATION")
+                if insider == "YES":
+                    signals.append("INSIDER BUYING")
+                stock["smart_money_signals"] = ", ".join(signals) if signals else "NEUTRAL"
+
+            # ── MoS label ─────────────────────────────────────────────────────
+            mos = float(stock.get("mos_pct", 0) or 0)
+            if   mos > 40:  stock["mos_label"] = "EXCEPTIONAL"
+            elif mos > 25:  stock["mos_label"] = "STRONG"
+            elif mos > 10:  stock["mos_label"] = "ADEQUATE"
+            elif mos > 0:   stock["mos_label"] = "THIN"
+            elif mos > -15: stock["mos_label"] = "SLIGHT PREMIUM"
+            else:           stock["mos_label"] = "SIGNIFICANT PREMIUM"
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 7 & 8: AI INVESTOR CARDS
