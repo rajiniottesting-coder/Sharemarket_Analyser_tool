@@ -9,4 +9,3 @@ python-dotenv
 flask
 bse
 cloudscraper
-pandas-ta
