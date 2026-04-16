@@ -193,13 +193,20 @@ def download_nse_delivery(target_date, retries: int = 3) -> pd.DataFrame | None:
 def download_bse_delivery(target_date, retries: int = 2) -> pd.DataFrame | None:
     """
     SECTION 1B: BSE Gross Deliverable Data.
-    URL uses DDMMYY format.
-    Strategy: try cloudscraper first (handles Cloudflare), then plain requests.
-    Returns None gracefully if unavailable — pipeline continues without BSE delivery.
+    Tries multiple known URL formats — BSE changes these periodically.
+    Strategy: cloudscraper first (Cloudflare bypass), then plain requests.
+    Returns None gracefully — pipeline continues without BSE delivery data.
     """
     d = _as_date(target_date)
-    ds = d.strftime("%d%m%y")
-    url = f"https://www.bseindia.com/BhavCopy/Gross_Deliverable_{ds}.zip"
+    ds_ddmmyy   = d.strftime("%d%m%y")
+    ds_ddmmyyyy = d.strftime("%d%m%Y")
+
+    # All known URL formats tried in order
+    urls = [
+        f"https://www.bseindia.com/download/BhavCopy/Equity/BhavDataDelivery{ds_ddmmyyyy}.zip",
+        f"https://www.bseindia.com/BSEDATA/gross-deliverable-position/GrossDeliverablePosition{ds_ddmmyyyy}.zip",
+        f"https://www.bseindia.com/BhavCopy/Gross_Deliverable_{ds_ddmmyy}.zip",
+    ]
 
     def _parse_zip(content):
         with zipfile.ZipFile(io.BytesIO(content)) as z:
@@ -208,37 +215,43 @@ def download_bse_delivery(target_date, retries: int = 2) -> pd.DataFrame | None:
                 return None
             return pd.read_csv(z.open(csv_files[0]))
 
-    # Strategy 1: cloudscraper (bypasses Cloudflare TLS fingerprinting)
+    # Strategy 1: cloudscraper across all URLs
     try:
         import cloudscraper
         scraper = cloudscraper.create_scraper(
             browser={"browser": "chrome", "platform": "windows"}
         )
-        r = scraper.get(url, timeout=30)
-        if r.status_code == 200 and len(r.content) > 500:
-            df = _parse_zip(r.content)
-            if df is not None:
-                print(f"✅ BSE Delivery downloaded via cloudscraper: {len(df)} records for {d}")
-                return df
+        for try_url in urls:
+            try:
+                r = scraper.get(try_url, timeout=30)
+                if r.status_code == 200 and len(r.content) > 500:
+                    df = _parse_zip(r.content)
+                    if df is not None:
+                        print(f"✅ BSE Delivery downloaded via cloudscraper: {len(df)} records for {d}")
+                        return df
+            except Exception:
+                continue
     except ImportError:
         pass
     except Exception:
         pass
 
-    # Strategy 2: plain requests fallback
-    for attempt in range(retries):
-        try:
-            r = requests.get(url, headers=BSE_HEADERS, timeout=30)
-            if r.status_code == 200 and len(r.content) > 500:
-                df = _parse_zip(r.content)
-                if df is not None:
-                    print(f"✅ BSE Delivery downloaded: {len(df)} records for {d}")
-                    return df
-        except Exception as e:
-            if attempt < retries - 1:
-                time.sleep(5 * (attempt + 1))
+    # Strategy 2: plain requests across all URLs
+    for try_url in urls:
+        for attempt in range(retries):
+            try:
+                r = requests.get(try_url, headers=BSE_HEADERS, timeout=30)
+                if r.status_code == 200 and len(r.content) > 500:
+                    df = _parse_zip(r.content)
+                    if df is not None:
+                        print(f"✅ BSE Delivery downloaded: {len(df)} records for {d}")
+                        return df
+            except Exception:
+                if attempt < retries - 1:
+                    time.sleep(3)
+                break
 
-    print(f"ℹ️  BSE Delivery not available for {d} (Cloudflare). Skipping.")
+    print(f"ℹ️  BSE Delivery not available for {d} (Cloudflare blocks delivery endpoint). Skipping.")
     return None
 
 
@@ -268,31 +281,51 @@ def download_nse_sme_bhavcopy(target_date, retries: int = 3) -> pd.DataFrame | N
 
 def download_bse_sme_bhavcopy(target_date) -> pd.DataFrame | None:
     """
-    SECTION 1B: BSE SME — filtered from the main BSE Bhav Copy.
-    BSE SME groups: M, MT (SME Migrated), S, ST
+    SECTION 1B: BSE SME — filtered from the direct BSE equity ZIP.
+    The bse pip package CSV does NOT include SC_GROUP so we cannot filter SME
+    from it. We must use the direct BSE website ZIP (via cloudscraper) which
+    contains SC_GROUP. BSE SME groups: M, MT (SME Migrated), S, ST.
     """
-    df = download_bse_bhavcopy(target_date)
+    d = _as_date(target_date)
+    ds = d.strftime("%d%m%y").upper()
+    url = f"https://www.bseindia.com/download/BhavCopy/Equity/EQ{ds}_CSV.ZIP"
+
+    df = None
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows"}
+        )
+        r = scraper.get(url, timeout=30)
+        if r.status_code == 200 and len(r.content) > 500:
+            with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+                csv_files = [f for f in z.namelist() if f.endswith(".csv")]
+                if csv_files:
+                    df = pd.read_csv(z.open(csv_files[0]))
+    except Exception as e:
+        print(f"⚠️  BSE SME download failed: {e}")
+
     if df is None:
+        print(f"ℹ️  BSE SME: Could not fetch BSE equity bhav for {d}. Skipping.")
         return None
 
-    # Normalise column names to lowercase for safety
-    df.columns = [str(c).strip() for c in df.columns]
-
-    # Find the group column
+    # Find SC_GROUP column — only present in the direct BSE ZIP, not bse package CSV
     group_col = None
-    for col in ["SC_GROUP", "sc_group", "SCRIP_GRP", "GROUP"]:
+    for col in ["SC_GROUP", "sc_group", "SCRIP_GRP", "GROUP", "Group"]:
         if col in df.columns:
             group_col = col
             break
 
-    if group_col:
-        sme_df = df[df[group_col].isin(["M", "MT", "S", "ST"])].copy()
-        print(f"✅ BSE SME filtered: {len(sme_df)} SME records for {_as_date(target_date)}")
-        return sme_df
+    if not group_col:
+        print(f"⚠️  BSE SME: SC_GROUP not found. Columns seen: {list(df.columns[:8])}")
+        return None
 
-    # If no group column found, return None rather than returning all BSE data
-    print("⚠️  BSE SME: Could not identify group column in BSE Bhav Copy.")
-    return None
+    sme_df = df[df[group_col].str.strip().isin(["M", "MT", "S", "ST"])].copy()
+    if sme_df.empty:
+        print(f"ℹ️  BSE SME: No SME records found for {d}")
+        return None
+    print(f"✅ BSE SME filtered: {len(sme_df)} SME records for {d}")
+    return sme_df
 
 
 def download_nse_fo_participant_data(target_date, retries: int = 3) -> pd.DataFrame | None:

@@ -951,7 +951,7 @@ def run_backfill():
     finally:
         if bse_client:
             try:
-                bse_client.exit()
+                bse_client.__exit__(None, None, None)
             except Exception:
                 pass
         try:
