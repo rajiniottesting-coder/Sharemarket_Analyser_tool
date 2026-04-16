@@ -19,7 +19,7 @@ def gate_check():
         today = datetime.datetime.now(ist)- datetime.timedelta(days=1)  # 2. Logic Change: 'today' is now current time minus 1 day
         today_str = today.strftime('%Y-%m-%d')
         
-        print(f"--- Running Gate Check for {today.strftime('%Y-%m-%d %H:%M')} IST ---")
+        print(f"--- Running Gate Check for {today_str} IST ---")
 
         # SECTION 12C: 2026 Holiday Calendar (Master Prompt v7)
         HOLIDAYS_2026 = {
@@ -48,8 +48,8 @@ def gate_check():
             "Accept-Language": "en-US,en;q=0.9"
         }
         
-        date_str = today.strftime('%d%m%Y')
-        nse_url = f"https://www.nseindia.com/archives/equities/mto/MTO_{date_str}.DAT"
+        # date_str = today.strftime('%d%m%Y')
+        nse_url = f"https://www.nseindia.com/archives/equities/mto/MTO_{today_str}.DAT"
         
         try:
             # First hit the home page to get cookies
@@ -63,7 +63,7 @@ def gate_check():
             return {"run": False, "reason": f"ERROR: Connection to NSE failed: {str(e)}"}
 
         # C4: BSE Connectivity Check
-        bse_fname = f"EQ{today.strftime('%d%m%y')}_CSV.ZIP"
+        bse_fname = f"EQ{today_str}_CSV.ZIP"
         bse_url = f"https://www.bseindia.com/download/BhavCopy/Equity/{bse_fname}"
         
         try:
