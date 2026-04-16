@@ -1,65 +1,136 @@
+"""
+reconciler.py
+SECTION 1B — Cross-Exchange Reconciliation (v7 FINAL)
+
+Fixes:
+- Uses 'isin' as primary merge key (both NSE and BSE standardised to have it)
+- Handles missing 'close_NSE' / 'close_BSE' gracefully after merge
+- 'final_symbol' prefers NSE ticker over BSE SC_NAME
+- 'final_close' prefers NSE close
+- diff_pct computation fully safe (zero-division protected)
+- exchange_tag correctly identifies BSE_SME via sc_group column
+"""
+
 import pandas as pd
 import numpy as np
 
-def reconcile_exchanges(nse_df, bse_df):
-    """
-    Implements Section 1B: Cross-Exchange Reconciliation & Tagging.
-    Matches via ISIN to identify DUAL_LISTED, NSE_ONLY, and BSE_ONLY.
-    """
-    if nse_df is None: return bse_df
-    if bse_df is None: return nse_df
 
-    # 1. Merge on ISIN (Section 1B primary key requirement)
-    # We use an outer join to keep stocks present on either or both exchanges
+def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    SECTION 1B: Cross-Exchange Reconciliation via ISIN.
+    Identifies DUAL_LISTED, NSE_ONLY, BSE_ONLY, BSE_SME stocks.
+    Computes NSE/BSE price differential for dual-listed stocks.
+    """
+    # Safety: handle None inputs
+    if nse_df is None or nse_df.empty:
+        if bse_df is None or bse_df.empty:
+            return pd.DataFrame()
+        bse_df = bse_df.copy()
+        bse_df["exchange_tag"] = bse_df.apply(_bse_exchange_tag, axis=1)
+        bse_df["final_symbol"] = bse_df["symbol"].astype(str)
+        bse_df["final_close"]  = pd.to_numeric(bse_df.get("close", 0), errors="coerce").fillna(0)
+        bse_df["diff_pct"]     = 0.0
+        return bse_df
+
+    if bse_df is None or bse_df.empty:
+        nse_df = nse_df.copy()
+        nse_df["exchange_tag"] = "NSE_ONLY"
+        nse_df["final_symbol"] = nse_df["symbol"].astype(str)
+        nse_df["final_close"]  = pd.to_numeric(nse_df.get("close", 0), errors="coerce").fillna(0)
+        nse_df["diff_pct"]     = 0.0
+        return nse_df
+
+    # ── Ensure isin column exists in both ─────────────────────────────────────
+    for df in [nse_df, bse_df]:
+        if "isin" not in df.columns:
+            df["isin"] = ""
+
+    # Clean ISIN values
+    nse_df = nse_df.copy()
+    bse_df = bse_df.copy()
+    nse_df["isin"] = nse_df["isin"].astype(str).str.strip().str.upper()
+    bse_df["isin"] = bse_df["isin"].astype(str).str.strip().str.upper()
+
+    # ── Outer merge on ISIN ───────────────────────────────────────────────────
     merged = pd.merge(
-        nse_df, 
-        bse_df, 
-        on='isin', 
-        how='outer', 
-        suffixes=('_NSE', '_BSE')
+        nse_df,
+        bse_df,
+        on="isin",
+        how="outer",
+        suffixes=("_NSE", "_BSE"),
     )
 
-    # 2. Exchange Tagging Logic (Section 1B)
-    def apply_tags(row):
-        # DUAL_LISTED: Found on both
-        if pd.notnull(row['symbol_NSE']) and pd.notnull(row['symbol_BSE']):
-            return 'DUAL_LISTED'
-        # BSE_SME: Specifically flag if it's on the BSE SME platform
-        if pd.notnull(row['symbol_BSE']) and str(row.get('group_BSE', '')).strip() in ['M', 'MT']:
-            return 'BSE_SME'
-        # BSE_ONLY: Not on NSE
-        if pd.notnull(row['symbol_BSE']):
-            return 'BSE_ONLY'
-        return 'NSE_ONLY'
+    # ── Exchange Tagging ──────────────────────────────────────────────────────
+    def _apply_exchange_tag(row) -> str:
+        sym_nse = row.get("symbol_NSE", row.get("symbol", ""))
+        sym_bse = row.get("symbol_BSE", "")
+        grp     = str(row.get("sc_group_BSE", row.get("sc_group", "")) or "").strip().upper()
 
-    merged['exchange_tag'] = merged.apply(apply_tags, axis=1)
+        has_nse = pd.notnull(sym_nse) and str(sym_nse).strip() not in ["", "nan", "0"]
+        has_bse = pd.notnull(sym_bse) and str(sym_bse).strip() not in ["", "nan", "0"]
 
-    # 3. Arbitrage Signal Logic (Section 1B)
-    # Compute NSE/BSE price differential: (NSE_close − BSE_close) / BSE_close × 100
-    # INITIALIZE with 0.0 to prevent NaN issues
-    merged['diff_pct'] = 0.0
-    
-    # --- CRITICAL SAFETY FIX: ZERO DIVISION PROTECTION ---
-    # Create a condition that MUST be true for the calculation to run:
-    # 1. Stock must be DUAL_LISTED
-    # 2. NSE price must be a valid number and > 0
-    # 3. BSE price must be a valid number and > 0 (The Denominator)
-    safe_calc_mask = (
-        (merged['exchange_tag'] == 'DUAL_LISTED') & 
-        (merged['close_NSE'] > 0) & 
-        (merged['close_BSE'] > 0)
+        if has_nse and has_bse:
+            return "DUAL_LISTED"
+        if has_bse and grp in ["M", "MT", "S", "ST"]:
+            return "BSE_SME"
+        if has_bse:
+            return "BSE_ONLY"
+        return "NSE_ONLY"
+
+    merged["exchange_tag"] = merged.apply(_apply_exchange_tag, axis=1)
+
+    # ── Derive close columns after merge ─────────────────────────────────────
+    # After outer merge, 'close' may appear as 'close_NSE' and 'close_BSE'
+    # or as a single 'close' if one side was empty
+    def _get_col(df, *candidates):
+        for c in candidates:
+            if c in df.columns:
+                return pd.to_numeric(df[c], errors="coerce").fillna(0)
+        return pd.Series(0.0, index=df.index)
+
+    close_nse = _get_col(merged, "close_NSE", "close")
+    close_bse = _get_col(merged, "close_BSE")
+
+    # ── Arbitrage Signal (NSE/BSE price diff for DUAL_LISTED) ────────────────
+    merged["diff_pct"] = 0.0
+    dual_mask = (
+        (merged["exchange_tag"] == "DUAL_LISTED") &
+        (close_nse > 0) &
+        (close_bse > 0)
     )
-    
-    # Only perform the calculation on the safe rows
-    if safe_calc_mask.any():
-        merged.loc[safe_calc_mask, 'diff_pct'] = (
-            (merged.loc[safe_calc_mask, 'close_NSE'] - merged.loc[safe_calc_mask, 'close_BSE']) / 
-            merged.loc[safe_calc_mask, 'close_BSE'] * 100
-        )
+    if dual_mask.any():
+        merged.loc[dual_mask, "diff_pct"] = (
+            (close_nse[dual_mask] - close_bse[dual_mask]) /
+            close_bse[dual_mask] * 100
+        ).round(3)
 
-    # 4. Primary Price Selection (Section 1B Rule)
-    # Use NSE as primary for liquid, BSE for others
-    merged['final_close'] = merged['close_NSE'].fillna(merged['close_BSE'])
-    merged['final_symbol'] = merged['symbol_NSE'].fillna(merged['symbol_BSE'])
-    
+    # ── Primary Price and Symbol Selection ───────────────────────────────────
+    # NSE ticker takes priority (it's the human-readable symbol)
+    sym_nse_col = _get_sym_col(merged, "symbol_NSE", "symbol")
+    sym_bse_col = _get_sym_col(merged, "symbol_BSE")
+
+    merged["final_close"]  = close_nse.where(close_nse > 0, close_bse)
+    merged["final_symbol"] = sym_nse_col.where(
+        sym_nse_col.astype(str).str.strip().isin(["", "nan", "0"]) == False,
+        sym_bse_col,
+    )
+
+    # Convenience: also provide a unified 'symbol' and 'close' for downstream use
+    merged["symbol"] = merged["final_symbol"]
+    merged["close"]  = merged["final_close"]
+
     return merged
+
+
+def _bse_exchange_tag(row) -> str:
+    grp = str(row.get("sc_group", "") or "").strip().upper()
+    if grp in ["M", "MT", "S", "ST"]:
+        return "BSE_SME"
+    return "BSE_ONLY"
+
+
+def _get_sym_col(df, *candidates) -> pd.Series:
+    for c in candidates:
+        if c in df.columns:
+            return df[c].astype(str).str.strip()
+    return pd.Series("", index=df.index)

@@ -2,7 +2,7 @@ pandas
 openpyxl
 requests
 pytz
-google-generativeai
+anthropic
 twilio
 python-dotenv
 flask

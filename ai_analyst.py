@@ -1,90 +1,143 @@
+"""
+ai_analyst.py
+SECTION 0D & 7 — AI Batch Analysis Engine (v7 FINAL)
+
+Switched from deprecated google-generativeai (Gemini) to Anthropic Claude.
+Master prompt v7 goes into the system parameter.
+Batch data goes into the user message.
+"""
+
 import os
 import time
-import google.generativeai as genai
+import anthropic
 from dotenv import load_dotenv
-from fundamental_engine import FundamentalEngine # Import our math engine
+from fundamental_engine import FundamentalEngine
 
-# load_dotenv()
-# genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-# model = genai.GenerativeModel('gemini-1.5-pro')
-
-# import os
-# from dotenv import load_dotenv
-# import google.generativeai as genai
-
-# Only loads if .env exists (local); ignored on GitHub Actions
 load_dotenv()
 
-# Section 12 Integration: Fetch key from GitHub Secrets injected into Env
-gemini_key = os.getenv("GEMINI_API_KEY")
+_anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+if not _anthropic_key:
+    raise ValueError(
+        "CRITICAL ERROR: ANTHROPIC_API_KEY is missing from environment secrets. "
+        "Add it to GitHub Secrets or your .env file."
+    )
 
-if not gemini_key:
-    # This acts as a Section 12B Gatekeeper for API integrity
-    raise ValueError("CRITICAL ERROR: GEMINI_API_KEY is missing from environment secrets.")
+client = anthropic.Anthropic(api_key=_anthropic_key)
+MASTER_PROMPT_PATH = "master_prompt/NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt"
 
-genai.configure(api_key=gemini_key)
-model = genai.GenerativeModel('gemini-1.5-pro')
 
-def get_ai_analysis(stock_list_df):
+def _load_master_prompt() -> str:
+    try:
+        with open(MASTER_PROMPT_PATH, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        print(f"⚠️  Master prompt not found at {MASTER_PROMPT_PATH}. Using minimal fallback.")
+        return (
+            "You are a senior equity research analyst. "
+            "For each stock in the data batch, produce a concise investor card "
+            "with: verdict, fair value estimate, key strengths, key risks, "
+            "and a 150-word analysis summary."
+        )
+
+
+def get_ai_analysis(stock_list_df) -> str:
     """
-    Implements Section 0D & 3: Grounded Batch Processing
-    Uses FundamentalEngine math to prevent AI 'guessing'.
+    SECTION 0D & 3: Grounded Batch Processing via Anthropic Claude.
+
+    Pre-calculates Graham Number, PEG Ratio, and CFV using FundamentalEngine
+    so the AI uses our computed values rather than estimating them.
+
+    Batch size: 10–15 stocks per API call (Section 0D).
+    Rate limiting: 2s delay between batches.
+    Timeout/retry: 1 retry per failed batch.
     """
     all_investor_cards = []
-    batch_size = 10 
-    engine = FundamentalEngine()
-    
-    # 1. PRE-CALCULATION: Inject Math into the DataFrame
-    # This ensures the AI sees our calculated CFV and Graham Number
-    print("🧮 Running Python Fundamental Engine for Batch...")
-    
+    batch_size = 12  # 10-15 per Section 0D
+
+    engine       = FundamentalEngine()
+    master_prompt = _load_master_prompt()
+
+    # ── Pre-calculation: Inject hard math into the DataFrame ──────────────────
+    print("🧮 Running Python Fundamental Engine pre-calculations...")
+    import pandas as pd
+    if not isinstance(stock_list_df, pd.DataFrame):
+        stock_list_df = pd.DataFrame(stock_list_df)
+
     for index, row in stock_list_df.iterrows():
-        # Calculate Graham Number (Section 3A)
-        stock_list_df.at[index, 'Graham_No'] = engine.calculate_graham_number(
-            row.get('eps', 0), row.get('bvps', 0)
+        # Graham Number (Section 3A)
+        stock_list_df.at[index, "Graham_No"] = engine.calculate_graham_number(
+            float(row.get("eps", 0) or 0),
+            float(row.get("bvps", 0) or 0),
         )
-        
-        # Calculate PEG Ratio (Section 3A)
-        stock_list_df.at[index, 'PEG_Ratio'] = engine.calculate_peg_ratio(
-            row.get('pe', 0), row.get('growth_rate', 0)
+        # PEG Ratio (Section 3A)
+        stock_list_df.at[index, "PEG_Ratio"] = engine.calculate_peg_ratio(
+            float(row.get("pe", 0) or 0),
+            float(row.get("pat_cagr_3y", row.get("growth_rate", 0)) or 0),
         )
-        
-        # Calculate Section 5B: Composite Fair Value (CFV)
-        # We pass calculated models to get the weighted average
+        # Composite Fair Value (Section 5B) — uses pre-calculated model values
         models_data = {
-            "DCF": row.get('dcf_val', 0),
-            "PE": row.get('pe_val', 0),
-            "PEG": row.get('peg_val', 0)
+            "DCF": float(row.get("M1_DCF", row.get("dcf_val", 0)) or 0),
+            "PE":  float(row.get("M3_PE",  row.get("pe_val",  0)) or 0),
+            "PEG": float(row.get("M7_PEG", row.get("peg_val", 0)) or 0),
         }
-        stock_list_df.at[index, 'Calculated_CFV'] = engine.calculate_composite_fair_value(
-            row.get('symbol'), row.get('sector', 'General'), models_data
+        stock_list_df.at[index, "Calculated_CFV"] = engine.calculate_composite_fair_value(
+            str(row.get("symbol", "")),
+            str(row.get("sector", "General")),
+            models_data,
         )
 
-    # 2. BATCH EXECUTION
-    batches = [stock_list_df[i:i + batch_size] for i in range(0, len(stock_list_df), batch_size)]
-    
-    with open("master_prompt/NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt", "r") as f:
-        master_prompt = f.read()
+    # ── Batch execution ───────────────────────────────────────────────────────
+    batches = [
+        stock_list_df.iloc[i: i + batch_size]
+        for i in range(0, len(stock_list_df), batch_size)
+    ]
+    total_batches = len(batches)
+
+    grounding_instruction = (
+        "\n\nCRITICAL INSTRUCTION: Do NOT calculate valuations yourself. "
+        "USE the provided 'Calculated_CFV' column as the Composite Fair Value "
+        "and 'Graham_No' as the Graham Number. "
+        "These values were computed by the Python Fundamental Engine — trust them. "
+        "For each stock, output: "
+        "(1) Investor Card (Section 8 Blocks A–G), "
+        "(2) Analysis Summary (Block H: 150–250 words, absolute facts, recent events)."
+    )
 
     for idx, batch in enumerate(batches):
-        print(f"Processing Batch {idx + 1}/{len(batches)}...")
-        
-        # Now the string contains our Hard Math columns
-        stock_data_text = batch.to_string()
-        
-        # Explicit Instruction to the AI to USE these numbers
-        grounding_instruction = (
-            "\n\nCRITICAL: DO NOT calculate valuations yourself. "
-            "USE the provided 'Calculated_CFV' and 'Graham_No' columns for your Section 8 cards."
-        )
-        
-        full_query = f"{master_prompt}{grounding_instruction}\n\nDATA BATCH {idx+1}:\n{stock_data_text}"
+        print(f"🤖 Processing batch {idx + 1}/{total_batches} "
+              f"({len(batch)} stocks)...")
 
-        try:
-            response = model.generate_content(full_query)
-            all_investor_cards.append(response.text)
-            time.sleep(2) # Section 0D Rate Limiting
-        except Exception as e:
-            print(f"❌ Batch {idx+1} Error: {e}")
+        stock_data_text = batch.to_string(max_colwidth=120)
+        user_message    = (
+            f"{grounding_instruction}\n\n"
+            f"DATA BATCH {idx + 1}/{total_batches}:\n{stock_data_text}"
+        )
+
+        # Try once, retry once on failure
+        for attempt in range(2):
+            try:
+                response = client.messages.create(
+                    model="claude-sonnet-4-5",
+                    max_tokens=4096,
+                    system=master_prompt,
+                    messages=[{"role": "user", "content": user_message}],
+                )
+                card_text = response.content[0].text
+                all_investor_cards.append(card_text)
+                print(f"   ✅ Batch {idx + 1} complete.")
+                break
+            except Exception as e:
+                if attempt == 0:
+                    print(f"   ⚠️  Batch {idx + 1} attempt 1 failed: {e}. Retrying in 10s...")
+                    time.sleep(10)
+                else:
+                    print(f"   ❌ Batch {idx + 1} failed after retry: {e}")
+                    all_investor_cards.append(
+                        f"[Batch {idx + 1} analysis unavailable due to API error: {e}]"
+                    )
+
+        # Section 0D: Rate limiting — 2s between batches
+        if idx < total_batches - 1:
+            time.sleep(2)
 
     return "\n\n".join(all_investor_cards)

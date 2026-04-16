@@ -1,3 +1,15 @@
+"""
+harvester.py
+SECTION 1A & 1B — Multi-Stream Market Data Downloader (v7 FINAL)
+
+Key fixes:
+- NSE archives CDN does NOT need a homepage cookie hit
+- Increased timeouts + retry logic
+- BSE delivery URL uses correct DDMMYY format
+- SME Bhav uses correct URL format with uppercase date
+- All functions accept target_date as datetime.date (not datetime)
+"""
+
 import pandas as pd
 import sqlite3
 import requests
@@ -5,79 +17,277 @@ import zipfile
 import io
 import os
 import tempfile
-from datetime import datetime
+import time
+from datetime import datetime, date
 import pytz
-from bse import BSE 
 
+try:
+    from bse import BSE
+    BSE_PKG_AVAILABLE = True
+except ImportError:
+    BSE_PKG_AVAILABLE = False
+    print("⚠️  `bse` package not found. BSE downloads will be skipped. Run: pip install bse")
 
 IST = pytz.timezone('Asia/Kolkata')
+
 NSE_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Referer': 'https://www.nseindia.com/'
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.nseindia.com/",
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
 }
 
-def get_nse_session():
-    session = requests.Session()
-    session.get("https://www.nseindia.com", headers=NSE_HEADERS, timeout=10)
-    return session
+BSE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.bseindia.com/",
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+}
 
-def download_nse_bhavcopy(target_date):
-    ds = target_date.strftime("%Y%m%d")
-    url = f"https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{ds}_F_0000.csv.zip"
-    try:
-        s = get_nse_session()
-        r = s.get(url, headers=NSE_HEADERS, timeout=15)
-        if r.status_code == 200:
-            with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-                return pd.read_csv(z.open(z.namelist()[0]))
-    except: return None
 
-def download_bse_bhavcopy(target_date):
-    tmp_dir = tempfile.mkdtemp()
-    try:
-        with BSE(download_folder=tmp_dir) as bse_client:
-            dt_combined = datetime.combine(target_date, datetime.min.time())
-            file_path = bse_client.bhavcopyReport(date=dt_combined, folder=tmp_dir)
-            if file_path and os.path.exists(file_path):
-                return pd.read_csv(file_path)
-    except: return None
+def _as_date(target_date) -> date:
+    """Safely coerce datetime or date to date."""
+    if isinstance(target_date, datetime):
+        return target_date.date()
+    return target_date
 
-def download_nse_delivery(target_date):
-    ds = target_date.strftime("%d%m%Y")
-    url = f"https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{ds}.csv"
-    try:
-        r = get_nse_session().get(url, headers=NSE_HEADERS, timeout=15)
-        return pd.read_csv(io.StringIO(r.text)) if r.status_code == 200 else None
-    except: return None
 
-def download_bse_delivery(target_date):
-    ds = target_date.strftime("%d%m%y")
+def download_nse_bhavcopy(target_date, retries: int = 3) -> pd.DataFrame | None:
+    """
+    SECTION 1A: Download NSE Equity Bhav Copy.
+    Uses the new nsearchives CDN (no homepage cookie needed).
+    Filters EQ series only.
+    Column map: TckrSymb→symbol, ClsPric→close, TtlTradgVol→volume, ISIN→isin
+    """
+    d = _as_date(target_date)
+    ds = d.strftime("%Y%m%d")
+    url = (
+        f"https://nsearchives.nseindia.com/content/cm/"
+        f"BhavCopy_NSE_CM_0_0_0_{ds}_F_0000.csv.zip"
+    )
+
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=NSE_HEADERS, timeout=30)
+            if r.status_code == 200 and len(r.content) > 500:
+                with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+                    csv_files = [f for f in z.namelist() if f.endswith(".csv")]
+                    if not csv_files:
+                        return None
+                    df = pd.read_csv(z.open(csv_files[0]))
+
+                # Filter EQ series (SctySrs is the new column name)
+                series_col = None
+                for col in ["SctySrs", "SERIES", "Series"]:
+                    if col in df.columns:
+                        series_col = col
+                        break
+                if series_col:
+                    df = df[df[series_col].str.strip() == "EQ"].copy()
+
+                print(f"✅ NSE Bhav downloaded: {len(df)} EQ records for {d}")
+                return df
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"   NSE attempt {attempt + 1} failed: {e}. Retrying in {5 * (attempt+1)}s...")
+                time.sleep(5 * (attempt + 1))
+            else:
+                print(f"❌ NSE Bhav download failed after {retries} attempts: {e}")
+    return None
+
+
+def download_bse_bhavcopy(target_date, retries: int = 3) -> pd.DataFrame | None:
+    """
+    SECTION 1B: Download BSE Equity Bhav Copy via `bse` pip package.
+    Falls back to direct URL download if bse package unavailable.
+    """
+    d = _as_date(target_date)
+
+    if BSE_PKG_AVAILABLE:
+        tmp_dir = tempfile.mkdtemp(prefix="bse_bhav_")
+        try:
+            with BSE(download_folder=tmp_dir) as bse_client:
+                dt_combined = datetime.combine(d, datetime.min.time())
+                file_path = bse_client.bhavcopyReport(date=dt_combined, folder=tmp_dir)
+                if file_path and os.path.exists(file_path):
+                    df = pd.read_csv(file_path)
+                    try:
+                        os.remove(file_path)
+                    except Exception:
+                        pass
+                    print(f"✅ BSE Bhav downloaded: {len(df)} records for {d}")
+                    return df
+        except Exception as e:
+            print(f"⚠️  BSE package download failed: {e}. Trying direct URL...")
+        finally:
+            try:
+                import shutil
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+    # Fallback: direct URL
+    ds = d.strftime("%d%m%y").upper()
+    url = f"https://www.bseindia.com/download/BhavCopy/Equity/EQ{ds}_CSV.ZIP"
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=BSE_HEADERS, timeout=30)
+            if r.status_code == 200 and len(r.content) > 500:
+                with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+                    csv_files = [f for f in z.namelist() if f.endswith(".csv")]
+                    if not csv_files:
+                        return None
+                    df = pd.read_csv(z.open(csv_files[0]))
+                    print(f"✅ BSE Bhav (fallback URL) downloaded: {len(df)} records for {d}")
+                    return df
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+            else:
+                print(f"❌ BSE Bhav download failed: {e}")
+    return None
+
+
+def download_nse_delivery(target_date, retries: int = 3) -> pd.DataFrame | None:
+    """
+    SECTION 1A: NSE Delivery Data — provides DELIV_PER (delivery_pct).
+    Column: SYMBOL, DELIV_PER
+    URL uses DDMMYYYY format.
+    """
+    d = _as_date(target_date)
+    ds = d.strftime("%d%m%Y")
+    url = (
+        f"https://nsearchives.nseindia.com/products/content/"
+        f"sec_bhavdata_full_{ds}.csv"
+    )
+
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=NSE_HEADERS, timeout=30)
+            if r.status_code == 200 and len(r.content) > 200:
+                df = pd.read_csv(io.StringIO(r.text))
+                print(f"✅ NSE Delivery downloaded: {len(df)} records for {d}")
+                return df
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+            else:
+                print(f"❌ NSE Delivery download failed: {e}")
+    return None
+
+
+def download_bse_delivery(target_date, retries: int = 3) -> pd.DataFrame | None:
+    """
+    SECTION 1B: BSE Gross Deliverable Data.
+    URL uses DDMMYY format.
+    """
+    d = _as_date(target_date)
+    ds = d.strftime("%d%m%y")
     url = f"https://www.bseindia.com/BhavCopy/Gross_Deliverable_{ds}.zip"
-    try:
-        r = requests.get(url, headers=NSE_HEADERS, timeout=15)
-        if r.status_code == 200:
-            with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-                return pd.read_csv(z.open(z.namelist()[0]))
-    except: return None
 
-def download_nse_sme_bhavcopy(target_date):
-    ds = target_date.strftime("%d%m%y").upper()
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=BSE_HEADERS, timeout=30)
+            if r.status_code == 200 and len(r.content) > 500:
+                with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+                    csv_files = [f for f in z.namelist() if f.endswith(".csv")]
+                    if not csv_files:
+                        return None
+                    df = pd.read_csv(z.open(csv_files[0]))
+                    print(f"✅ BSE Delivery downloaded: {len(df)} records for {d}")
+                    return df
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+            else:
+                print(f"❌ BSE Delivery download failed: {e}")
+    return None
+
+
+def download_nse_sme_bhavcopy(target_date, retries: int = 3) -> pd.DataFrame | None:
+    """
+    SECTION 1A: NSE SME Bhav Copy.
+    URL format: sme{DDMMYY}.csv  (uppercase)
+    """
+    d = _as_date(target_date)
+    ds = d.strftime("%d%m%y").upper()
     url = f"https://nsearchives.nseindia.com/archives/sme/bhavcopy/sme{ds}.csv"
-    try:
-        r = get_nse_session().get(url, headers=NSE_HEADERS, timeout=15)
-        return pd.read_csv(io.StringIO(r.text)) if r.status_code == 200 else None
-    except: return None
 
-def download_bse_sme_bhavcopy(target_date):
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=NSE_HEADERS, timeout=30)
+            if r.status_code == 200 and len(r.content) > 200:
+                df = pd.read_csv(io.StringIO(r.text))
+                print(f"✅ NSE SME Bhav downloaded: {len(df)} records for {d}")
+                return df
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+            else:
+                print(f"❌ NSE SME download failed: {e}")
+    return None
+
+
+def download_bse_sme_bhavcopy(target_date) -> pd.DataFrame | None:
+    """
+    SECTION 1B: BSE SME — filtered from the main BSE Bhav Copy.
+    BSE SME groups: M, MT (SME Migrated), S, ST
+    """
     df = download_bse_bhavcopy(target_date)
-    return df[df['SCRIP_GRP'].isin(['M', 'MT'])] if df is not None and 'SCRIP_GRP' in df.columns else df
-
-def download_nse_fo_participant_data(target_date):
-    ds = target_date.strftime("%d%m%Y")
-    url = f"https://nsearchives.nseindia.com/content/nsccl/fao_participant_vol_{ds}.csv"
-    try:
-        r = get_nse_session().get(url, headers=NSE_HEADERS, timeout=15)
-        return pd.read_csv(io.StringIO(r.text), skiprows=1) if r.status_code == 200 else None
-    except: 
+    if df is None:
         return None
-    
+
+    # Normalise column names to lowercase for safety
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Find the group column
+    group_col = None
+    for col in ["SC_GROUP", "sc_group", "SCRIP_GRP", "GROUP"]:
+        if col in df.columns:
+            group_col = col
+            break
+
+    if group_col:
+        sme_df = df[df[group_col].isin(["M", "MT", "S", "ST"])].copy()
+        print(f"✅ BSE SME filtered: {len(sme_df)} SME records for {_as_date(target_date)}")
+        return sme_df
+
+    # If no group column found, return None rather than returning all BSE data
+    print("⚠️  BSE SME: Could not identify group column in BSE Bhav Copy.")
+    return None
+
+
+def download_nse_fo_participant_data(target_date, retries: int = 3) -> pd.DataFrame | None:
+    """
+    SECTION 1A: NSE F&O Participant Position Data.
+    Used for FII net position tracking (Section 3J).
+    URL uses DDMMYYYY format.
+    """
+    d = _as_date(target_date)
+    ds = d.strftime("%d%m%Y")
+    url = (
+        f"https://nsearchives.nseindia.com/content/nsccl/"
+        f"fao_participant_vol_{ds}.csv"
+    )
+
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=NSE_HEADERS, timeout=30)
+            if r.status_code == 200 and len(r.content) > 200:
+                # skiprows=1 because the first row is a report header, not column names
+                df = pd.read_csv(io.StringIO(r.text), skiprows=1)
+                print(f"✅ NSE F&O Participant downloaded: {len(df)} records for {d}")
+                return df
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+            else:
+                print(f"❌ NSE F&O Participant download failed: {e}")
+    return None
