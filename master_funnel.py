@@ -178,7 +178,11 @@ def _bse_bhav(target_date):
 
 
 def _bse_delivery(target_date):
-    """BSE delivery report — via bse package."""
+    """
+    BSE delivery report — via bse package.
+    Validates the file is a delivery report (has delivery_pct equivalent)
+    not a bhav copy. Returns None if the file doesn't contain delivery data.
+    """
     client = _get_bse_client()
     if client is None:
         return None
@@ -190,13 +194,26 @@ def _bse_delivery(target_date):
         if fp is None or not Path(fp).exists():
             return None
         df = pd.read_csv(fp)
-        try: os.remove(fp)
-        except Exception: pass
+        try:
+            os.remove(fp)
+        except Exception:
+            pass
         df.columns = [c.lower().strip() for c in df.columns]
+        # Validate: must have a delivery percentage column.
+        # If it looks like a bhav copy (has OPEN/HIGH/LOW/CLOSE) but no
+        # delivery column, the bse package returned bhav data instead.
+        _delivery_cols = {"delivery_pct", "deliv_per", "deliv_qty",
+                          "net_delivery", "delivery_quantity", "deliveryquantity"}
+        has_delivery = bool(_delivery_cols & set(df.columns))
+        _bhav_cols   = {"close", "open", "high", "low", "clspric", "opnpric"}
+        looks_like_bhav = bool(_bhav_cols & set(df.columns))
+        if not has_delivery:
+            # Not a delivery file — discard silently
+            return None
         print(f"✅ BSE Delivery downloaded: {len(df)} records for {target_date}")
         return df
     except (RuntimeError, FileNotFoundError):
-        return None   # holiday / not yet published — silent
+        return None
     except Exception as e:
         print(f"⚠️  BSE delivery error {target_date}: {type(e).__name__}: {e}")
         return None
