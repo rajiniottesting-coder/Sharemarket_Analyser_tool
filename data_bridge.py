@@ -168,7 +168,10 @@ COLUMN_MAP = {
     "ttltradgvol":     "volume",
     "ttltrfval":       "turnover",
     "sctysrs":         "series",
-    "fininstrmid":     "symbol",      # alternate NSE new format
+    # "fininstrmid" intentionally NOT mapped to symbol —
+    # FinInstrmId is NSE's internal numeric instrument ID, NOT the ticker.
+    # TckrSymb is the correct ticker symbol (e.g. "RELIANCE").
+    # Mapping both to "symbol" creates duplicate columns → KeyError: 0.
     # NSE old bhav (pre-July 2024)
     "symbol":          "symbol",
     "series":          "series",
@@ -241,8 +244,13 @@ def standardize_to_v7_schema(df, exchange: str = "NSE") -> pd.DataFrame:
     # ── Step 2: Apply master column map ──────────────────────────────────────
     df = df.rename(columns={k: v for k, v in COLUMN_MAP.items()
                              if k in df.columns})
-    # Reset index immediately after rename — prevents KeyError: 0 when
-    # the DataFrame has a non-default index (e.g. from prior filtering)
+    # Remove duplicate column names — if two source cols mapped to the same
+    # target (e.g. both TckrSymb and FinInstrmId → "symbol") the DataFrame
+    # ends up with two cols both named "symbol". df["symbol"] then returns
+    # a 2-column DataFrame instead of a Series → KeyError: 0.
+    # Keep the FIRST occurrence of each column name (TckrSymb comes first).
+    df = df.loc[:, ~df.columns.duplicated(keep="first")]
+    # Reset index — prevents index-alignment errors on subsequent assignments
     df = df.reset_index(drop=True)
 
     # ── Step 3: BSE guard — SC_CODE (numeric) must NOT become symbol ─────────
