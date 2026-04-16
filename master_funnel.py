@@ -144,12 +144,17 @@ def run_master_pipeline():
 
         # Save bulk deals and insider trades directly — do NOT pass through
         # save_to_database which calls standardize_to_v7_schema and corrupts them
+        _today_str = target_date.strftime("%Y-%m-%d") if hasattr(target_date,"strftime") else str(target_date)
         if not bulk_deals_df.empty:
             try:
                 import sqlite3 as _sq3
                 _conn = _sq3.connect("market_data.db")
-                bulk_deals_df.to_sql("bulk_deals", _conn,
-                                     if_exists="append", index=False)
+                # Idempotent: remove today's existing rows before re-inserting
+                _conn.execute("DELETE FROM bulk_deals WHERE date = ?", (_today_str,))
+                _conn.commit()
+                bulk_deals_df.to_sql("_tmp_bulk", _conn, if_exists="replace", index=False)
+                _conn.execute("INSERT OR IGNORE INTO bulk_deals SELECT * FROM _tmp_bulk")
+                _conn.execute("DROP TABLE IF EXISTS _tmp_bulk")
                 _conn.commit(); _conn.close()
                 print(f"✅ Bulk deals saved: {len(bulk_deals_df)} records.")
             except Exception as _e:
@@ -158,8 +163,11 @@ def run_master_pipeline():
             try:
                 import sqlite3 as _sq3
                 _conn = _sq3.connect("market_data.db")
-                insider_trades_df.to_sql("insider_trades", _conn,
-                                         if_exists="append", index=False)
+                _conn.execute("DELETE FROM insider_trades WHERE date = ?", (_today_str,))
+                _conn.commit()
+                insider_trades_df.to_sql("_tmp_ins", _conn, if_exists="replace", index=False)
+                _conn.execute("INSERT OR IGNORE INTO insider_trades SELECT * FROM _tmp_ins")
+                _conn.execute("DROP TABLE IF EXISTS _tmp_ins")
                 _conn.commit(); _conn.close()
                 print(f"✅ Insider trades saved: {len(insider_trades_df)} records.")
             except Exception as _e:

@@ -87,7 +87,8 @@ def initialize_v7_tables(conn):
             future_stock_short REAL DEFAULT 0,
             total_long         REAL DEFAULT 0,
             total_short        REAL DEFAULT 0,
-            net_value          REAL DEFAULT 0
+            net_value          REAL DEFAULT 0,
+            PRIMARY KEY (date, client_type)
         )
     """)
 
@@ -132,7 +133,8 @@ def initialize_v7_tables(conn):
             client   TEXT,
             type     TEXT,
             quantity REAL DEFAULT 0,
-            price    REAL DEFAULT 0
+            price    REAL DEFAULT 0,
+            PRIMARY KEY (symbol, date, client, type)
         )
     """)
 
@@ -143,7 +145,8 @@ def initialize_v7_tables(conn):
             name   TEXT,
             mode   TEXT,
             qty    REAL DEFAULT 0,
-            value  REAL DEFAULT 0
+            value  REAL DEFAULT 0,
+            PRIMARY KEY (symbol, date, name, mode)
         )
     """)
 
@@ -489,15 +492,24 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
                 combined = pd.concat(frames, ignore_index=True)
                 if "date" not in combined.columns:
                     combined["date"] = today_str
+                # Delete today's existing rows before re-inserting (idempotent)
+                try:
+                    conn.execute("DELETE FROM daily_prices WHERE date = ?", (today_str,))
+                    conn.commit()
+                except Exception:
+                    pass
                 _safe_insert(combined, "daily_prices", conn)
 
         if (participant_data is not None
                 and isinstance(participant_data, pd.DataFrame)
                 and not participant_data.empty):
-            participant_data.to_sql("fo_participant_data", conn,
-                                    if_exists="append", index=False)
-            conn.commit()
-            print(f"✅ F&O data saved: {len(participant_data)} records.")
+            # Idempotent: delete today's F&O rows before re-inserting
+            try:
+                conn.execute("DELETE FROM fo_participant_data WHERE date = ?", (today_str,))
+                conn.commit()
+            except Exception:
+                pass
+            _safe_insert(participant_data, "fo_participant_data", conn)
 
     except Exception as e:
         print(f"❌ Database Bridge Error: {e}")
@@ -532,7 +544,19 @@ def _safe_insert(df: pd.DataFrame, table: str, conn) -> None:
     conn.execute(f"INSERT OR IGNORE INTO {table} SELECT * FROM {tmp}")
     conn.execute(f"DROP TABLE IF EXISTS {tmp}")
     conn.commit()
-    print(f"✅ Saved {len(df)} records → {table}.")
+
+    # Report DB size after every insert
+    try:
+        import os as _os
+        db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+        if db_path and _os.path.exists(db_path):
+            size_mb = _os.path.getsize(db_path) / 1_048_576
+            row_count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            print(f"✅ Saved {len(df)} records → {table} | DB total: {row_count:,} rows | Size: {size_mb:.2f} MB")
+        else:
+            print(f"✅ Saved {len(df)} records → {table}.")
+    except Exception:
+        print(f"✅ Saved {len(df)} records → {table}.")
 
 
 def save_fo_data(df: pd.DataFrame, target_date) -> None:

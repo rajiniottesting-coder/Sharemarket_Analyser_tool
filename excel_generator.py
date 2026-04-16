@@ -232,7 +232,13 @@ class ExcelGeneratorV6:
     def _safe_val(v): return _sv(v)
 
     def generate_excel_reports(self):
-        return self._full(), self._gold_file()
+        """Generates a single Excel file with all 6 sheets.
+        Sheet 2 (Gold – Early Movers) is embedded inside the Full Dashboard file.
+        No separate Gold file is produced — avoids duplication.
+        Returns (master_file, master_file) so callers get the same path twice.
+        """
+        master = self._full()
+        return master, master
 
     def _full(self):
         wb=Workbook(); wb.active.title="📊 Full Dashboard"
@@ -246,13 +252,8 @@ class ExcelGeneratorV6:
         fn=f"NSE_BSE_Full_Dashboard_{self.date_str}.xlsx"; wb.save(fn); return fn
 
     def _gold_file(self):
-        wb=Workbook(); wb.active.title="⭐ Gold – Early Movers"
-        self._gold_ws(wb.active)
-        self._trade_summary(wb)
-        self._alert_log(wb)
-        self._glossary(wb)
-        for ws in wb.worksheets: ws.sheet_view.showGridLines=False
-        fn=f"NSE_BSE_Gold_EarlyMovers_{self.date_str}.xlsx"; wb.save(fn); return fn
+        """Kept for backward compatibility — returns master file path."""
+        return f"NSE_BSE_Full_Dashboard_{self.date_str}.xlsx"
 
     def _full_sheet(self,ws):
         N=len(FULL_COLS)
@@ -273,10 +274,18 @@ class ExcelGeneratorV6:
             if sp>1: ws.merge_cells(start_row=3,start_column=sc,end_row=3,end_column=ec)
             c=ws.cell(3,sc,nm); c.fill=_f(col); c.font=_ft(True,WHITE,8); c.alignment=_al()
         # R4 headers
+        # Build col→group_color map so each header cell matches its section
+        _col_color = {}
+        for _sc,_nm,_col,_sp in FULL_GROUPS:
+            for _ci in range(_sc, _sc+_sp):
+                _col_color[_ci] = _col
+
         ws.row_dimensions[4].height=40
         for i,(h,w,_) in enumerate(FULL_COLS,1):
             ws.column_dimensions[get_column_letter(i)].width=w
-            c=ws.cell(4,i,h); c.fill=_f(NAVY); c.font=_ft(True,WHITE,8)
+            hdr_bg = _col_color.get(i, NAVY)
+            # Slightly lighter shade for header vs group bar — use 15% lighter
+            c=ws.cell(4,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
             c.alignment=_al("center","center",True)
         ws.freeze_panes="A5"
         ws.auto_filter.ref=f"A4:{get_column_letter(N)}4"
@@ -337,10 +346,17 @@ class ExcelGeneratorV6:
             if sp>1: ws.merge_cells(start_row=4,start_column=sc,end_row=4,end_column=ec)
             c=ws.cell(4,sc,nm); c.fill=_f(col); c.font=_ft(True,WHITE,8); c.alignment=_al()
         # R5 headers
+        # Build col→group_color map for gold headers
+        _gcol_color = {}
+        for _sc,_nm,_col,_sp in GOLD_GROUPS:
+            for _ci in range(_sc, _sc+_sp):
+                _gcol_color[_ci] = _col
+
         ws.row_dimensions[5].height=38
         for i,(h,w,_) in enumerate(GOLD_COLS,1):
             ws.column_dimensions[get_column_letter(i)].width=w
-            c=ws.cell(5,i,h); c.fill=_f("92400E"); c.font=_ft(True,WHITE,8)
+            hdr_bg = _gcol_color.get(i, "92400E")
+            c=ws.cell(5,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
             c.alignment=_al("center","center",True)
         ws.freeze_panes="A6"
         ws.auto_filter.ref=f"A5:{get_column_letter(N)}5"
