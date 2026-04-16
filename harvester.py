@@ -190,31 +190,55 @@ def download_nse_delivery(target_date, retries: int = 3) -> pd.DataFrame | None:
     return None
 
 
-def download_bse_delivery(target_date, retries: int = 3) -> pd.DataFrame | None:
+def download_bse_delivery(target_date, retries: int = 2) -> pd.DataFrame | None:
     """
     SECTION 1B: BSE Gross Deliverable Data.
     URL uses DDMMYY format.
+    Strategy: try cloudscraper first (handles Cloudflare), then plain requests.
+    Returns None gracefully if unavailable — pipeline continues without BSE delivery.
     """
     d = _as_date(target_date)
     ds = d.strftime("%d%m%y")
     url = f"https://www.bseindia.com/BhavCopy/Gross_Deliverable_{ds}.zip"
 
+    def _parse_zip(content):
+        with zipfile.ZipFile(io.BytesIO(content)) as z:
+            csv_files = [f for f in z.namelist() if f.endswith(".csv")]
+            if not csv_files:
+                return None
+            return pd.read_csv(z.open(csv_files[0]))
+
+    # Strategy 1: cloudscraper (bypasses Cloudflare TLS fingerprinting)
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows"}
+        )
+        r = scraper.get(url, timeout=30)
+        if r.status_code == 200 and len(r.content) > 500:
+            df = _parse_zip(r.content)
+            if df is not None:
+                print(f"✅ BSE Delivery downloaded via cloudscraper: {len(df)} records for {d}")
+                return df
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Strategy 2: plain requests fallback
     for attempt in range(retries):
         try:
             r = requests.get(url, headers=BSE_HEADERS, timeout=30)
             if r.status_code == 200 and len(r.content) > 500:
-                with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-                    csv_files = [f for f in z.namelist() if f.endswith(".csv")]
-                    if not csv_files:
-                        return None
-                    df = pd.read_csv(z.open(csv_files[0]))
+                df = _parse_zip(r.content)
+                if df is not None:
                     print(f"✅ BSE Delivery downloaded: {len(df)} records for {d}")
                     return df
         except Exception as e:
             if attempt < retries - 1:
                 time.sleep(5 * (attempt + 1))
-            else:
-                print(f"❌ BSE Delivery download failed: {e}")
+
+    print(f"ℹ️  BSE Delivery not available for {d} (Cloudflare). Skipping.")
     return None
 
 

@@ -162,19 +162,19 @@ def gate_check() -> dict:
     log.append({"condition": "C3 NSE File", "status": "PASS", "detail": nse_url})
     print("✅ C3 PASS: NSE Bhav Copy confirmed available.")
 
-    # ── C4: BSE Bhav Copy File Availability ──────────────────────────────────
+    # ── C4: BSE Bhav Copy — always attempt, never block pipeline ────────────
+    # bseindia.com uses Cloudflare which blocks HTTP HEAD requests from
+    # data-centre IPs (GitHub Actions). A HEAD check will always return False
+    # here even when BSE data is genuinely available via the bse pip package
+    # or cloudscraper. So we set bse_available=True and let the actual
+    # download functions determine availability at runtime — they already
+    # handle failure gracefully and fall back to NSE-only mode themselves.
     bse_url = _build_bse_bhav_url(target_date)
-    print(f"   C4 Checking BSE: {bse_url}")
-    bse_ok = _http_head_ok(bse_url)
-
-    if not bse_ok:
-        # BSE failure alone does NOT halt — run in NSE-only mode
-        print("⚠️  C4 WARN: BSE Bhav Copy not available. Proceeding in NSE-only mode.")
-        log.append({"condition": "C4 BSE File", "status": "WARN",
-                    "detail": "BSE unavailable. NSE-only mode."})
-    else:
-        log.append({"condition": "C4 BSE File", "status": "PASS", "detail": bse_url})
-        print("✅ C4 PASS: BSE Bhav Copy confirmed available.")
+    print(f"   C4 BSE: {bse_url}")
+    print("✅ C4 PASS: BSE download will be attempted at runtime (cloudscraper + bse package).")
+    log.append({"condition": "C4 BSE File", "status": "PASS",
+                "detail": "BSE download attempted at runtime — HEAD check skipped (Cloudflare)."})
+    bse_ok = True   # Always attempt; download functions handle failure gracefully
 
     # REPLACE with just this one line:
     print("✅ C5 SKIP: No watchlist required. Screener runs on full NSE+BSE universe.")

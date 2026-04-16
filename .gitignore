@@ -16,6 +16,16 @@ env/
 *.zip
 *.csv
 *.DAT
+*.dat
+*.ZIP
 
 # Output Reports
 *.xlsx
+
+
+# db data
+market_data.db
+*.db
+*.sqlite
+bse_bhav_*/
+bse_live_*/
