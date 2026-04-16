@@ -60,71 +60,6 @@ def cleanup_temp_files():
                 pass
 
 
-def _download_bse_via_package(target_date) -> pd.DataFrame:
-    """
-    Fallback BSE downloader using the `bse` pip package (pip install bse).
-    This correctly handles BSE's Akamai bot-detection via proper session auth.
-    Returns a normalised DataFrame or None if unavailable.
-    """
-    try:
-        from bse import BSE
-        import tempfile, os
-        from pathlib import Path
-
-        # Column map for BSE bhav copy format
-        BSE_COL_MAP = {
-            "SC_CODE": "bse_code", "SC_NAME": "symbol", "SC_GROUP": "sc_group",
-            "SC_TYPE": "sc_type", "OPEN": "open", "HIGH": "high", "LOW": "low",
-            "CLOSE": "close", "LAST": "last", "PREVCLOSE": "prev_close",
-            "NO_TRADES": "num_trades", "NO_OF_SHRS": "volume",
-            "NET_TURNOV": "turnover", "TDCLOINDI": "td_close_ind",
-            "ISIN_CODE": "isin",
-        }
-
-        tmp_dir = tempfile.mkdtemp(prefix="bse_bhav_")
-        with BSE(download_folder=tmp_dir) as bse_client:
-            file_path = bse_client.bhavcopyReport(
-                date=datetime.datetime.combine(
-                    target_date, datetime.datetime.min.time()
-                ),
-                folder=tmp_dir,
-            )
-
-        if file_path is None or not Path(file_path).exists():
-            return None
-
-        df = pd.read_csv(file_path)
-        try:
-            os.remove(file_path)
-            import shutil
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        except Exception:
-            pass
-
-        df = df.rename(columns=BSE_COL_MAP)
-        df.columns = [c.lower().strip() for c in df.columns]
-
-        if "symbol" not in df.columns and "sc_name" in df.columns:
-            df["symbol"] = df["sc_name"]
-
-        # Coerce numerics
-        for col in ["open", "high", "low", "close", "volume"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-        df = df.dropna(subset=["close"])
-        df = df[df["close"] > 0]
-
-        print(f"✅ BSE (bse package fallback): {len(df)} records for {target_date}")
-        return df.reset_index(drop=True)
-
-    except ImportError:
-        print("⚠️  BSE fallback skipped: `bse` package not installed (pip install bse)")
-        return None
-    except Exception as e:
-        print(f"⚠️  BSE fallback error: {e}")
-        return None
-
-
 def run_master_pipeline():
     cleanup_temp_files()
 
@@ -160,12 +95,7 @@ def run_master_pipeline():
         # ─────────────────────────────────────────────────────────────────────
         print("🚀 [Section 1] Harvesting Market Streams...")
         raw_nse   = download_nse_bhavcopy(target_date)
-        # ── BSE: try harvester first, then fall back to `bse` pip package ────
-        raw_bse = None
-        if bse_available:
-            raw_bse = download_bse_bhavcopy(target_date)
-            if raw_bse is None or (isinstance(raw_bse, pd.DataFrame) and raw_bse.empty):
-                raw_bse = _download_bse_via_package(target_date)
+        raw_bse   = download_bse_bhavcopy(target_date) if bse_available else None
         nse_deliv = download_nse_delivery(target_date)
         bse_deliv = download_bse_delivery(target_date) if bse_available else None
         sme_nse   = download_nse_sme_bhavcopy(target_date)
@@ -212,10 +142,28 @@ def run_master_pipeline():
             participant_data=fo_data,
         )
 
+        # Save bulk deals and insider trades directly — do NOT pass through
+        # save_to_database which calls standardize_to_v7_schema and corrupts them
         if not bulk_deals_df.empty:
-            save_to_database(df=bulk_deals_df, table="bulk_deals")
+            try:
+                import sqlite3 as _sq3
+                _conn = _sq3.connect("market_data.db")
+                bulk_deals_df.to_sql("bulk_deals", _conn,
+                                     if_exists="append", index=False)
+                _conn.commit(); _conn.close()
+                print(f"✅ Bulk deals saved: {len(bulk_deals_df)} records.")
+            except Exception as _e:
+                print(f"⚠️  Bulk deals save warning: {_e}")
         if not insider_trades_df.empty:
-            save_to_database(df=insider_trades_df, table="insider_trades")
+            try:
+                import sqlite3 as _sq3
+                _conn = _sq3.connect("market_data.db")
+                insider_trades_df.to_sql("insider_trades", _conn,
+                                         if_exists="append", index=False)
+                _conn.commit(); _conn.close()
+                print(f"✅ Insider trades saved: {len(insider_trades_df)} records.")
+            except Exception as _e:
+                print(f"⚠️  Insider trades save warning: {_e}")
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 0: PRE-SCREENING FUNNEL (STAGES 1–3)

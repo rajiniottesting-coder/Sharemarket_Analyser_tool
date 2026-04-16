@@ -241,6 +241,9 @@ def standardize_to_v7_schema(df, exchange: str = "NSE") -> pd.DataFrame:
     # ── Step 2: Apply master column map ──────────────────────────────────────
     df = df.rename(columns={k: v for k, v in COLUMN_MAP.items()
                              if k in df.columns})
+    # Reset index immediately after rename — prevents KeyError: 0 when
+    # the DataFrame has a non-default index (e.g. from prior filtering)
+    df = df.reset_index(drop=True)
 
     # ── Step 3: BSE guard — SC_CODE (numeric) must NOT become symbol ─────────
     # After rename, if 'symbol' column is all-numeric it means SC_CODE was
@@ -272,11 +275,6 @@ def standardize_to_v7_schema(df, exchange: str = "NSE") -> pd.DataFrame:
             else:
                 df[col] = 0.0
 
-    # ── Step 4b: Reset index NOW — prevents KeyError: 0 when the DataFrame
-    #            has a non-contiguous index (e.g. after a merge or filter).
-    #            Must happen before any column assignment that uses .apply().
-    df = df.reset_index(drop=True)
-
     # ── Step 5: Coerce numeric columns ───────────────────────────────────────
     for col in ["open", "high", "low", "close", "prev_close",
                 "volume", "turnover", "delivery_pct"]:
@@ -288,11 +286,12 @@ def standardize_to_v7_schema(df, exchange: str = "NSE") -> pd.DataFrame:
     # ── Step 7: Drop garbage rows ─────────────────────────────────────────────
     df = df[~df["symbol"].isin(["", "0", "nan", "none", "NaN"])]
     df = df[df["close"] > 0]
+    df = df.reset_index(drop=True)
 
     # ── Step 8: Tag exchange ──────────────────────────────────────────────────
     df["exchange"] = exchange
 
-    return df.reset_index(drop=True)
+    return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -495,23 +494,6 @@ def _safe_insert(df: pd.DataFrame, table: str, conn) -> None:
     """INSERT OR IGNORE via a temp table — handles PRIMARY KEY conflicts."""
     if df is None or df.empty:
         return
-
-    # ── Column guard: only keep columns that exist in the target table ───────
-    # Prevents "table X has N columns but M values were supplied" when the
-    # source DataFrame (e.g. from SmartMoneyScraper) has extra columns.
-    try:
-        cursor = conn.execute(f"PRAGMA table_info({table})")
-        table_cols = [row[1] for row in cursor.fetchall()]
-        if table_cols:
-            # Keep only columns present in both df and the table
-            keep = [c for c in table_cols if c in df.columns]
-            if not keep:
-                print(f"⚠️  _safe_insert: no matching columns for table '{table}'. Skipping.")
-                return
-            df = df[keep]
-    except Exception:
-        pass  # If PRAGMA fails, proceed as-is
-
     tmp = f"_tmp_{table}"
     df.to_sql(tmp, conn, if_exists="replace", index=False)
     conn.execute(f"INSERT OR IGNORE INTO {table} SELECT * FROM {tmp}")
