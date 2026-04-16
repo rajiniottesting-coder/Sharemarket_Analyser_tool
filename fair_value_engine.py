@@ -1,3 +1,5 @@
+import math
+
 class FairValueEngine:
     def __init__(self, gsec_yield=6.0):
         self.gsec = gsec_yield # Section 5B: 10Y Gsec benchmark
