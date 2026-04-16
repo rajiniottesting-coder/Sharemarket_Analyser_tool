@@ -2,12 +2,11 @@ name: NSE_BSE_Daily_Pipeline
 
 on:
   schedule:
-    - cron: '30 0 * * 2-6'   # Tue-Sat UTC = Mon-Fri IST (06:00 IST)
-  workflow_dispatch:           # Manual trigger for testing
+    - cron: '30 0 * * 2-6'
+  workflow_dispatch:
 
 permissions:
-  contents: read               # read repo code
-  actions: read                # needed to download artifacts from previous runs
+  contents: read
 
 jobs:
   run-analyser:
@@ -41,34 +40,9 @@ jobs:
         run: |
           if [ -f market_data.db ]; then
             SIZE=$(du -sh market_data.db | cut -f1)
-            echo "Restored market_data.db — size: $SIZE"
+            echo "Restored market_data.db - size: $SIZE"
           else
-            echo "No existing DB found — pipeline will create fresh DB"
-          fi
-
-      - name: Backfill if DB is missing or has less than 30 days of history
-        # On a fresh runner (no artifact restored) or after DB loss,
-        # run a 90-day backfill so Stage 1-3 filters have volume/delivery history.
-        # On normal daily runs the artifact provides 365 days — this step is skipped.
-        run: |
-          python3 - <<'PYEOF'
-          import sqlite3, os, sys
-          if not os.path.exists('market_data.db'):
-              print("No DB — need backfill"); sys.exit(1)
-          try:
-              c = sqlite3.connect('market_data.db')
-              days = c.execute("SELECT COUNT(DISTINCT date) FROM daily_prices").fetchone()[0]
-              c.close()
-              print(f"DB has {days} days")
-              sys.exit(0 if days >= 30 else 1)
-          except Exception as e:
-              print(f"DB check failed: {e}"); sys.exit(1)
-          PYEOF
-          if [ $? -ne 0 ]; then
-            echo "Running 90-day backfill to seed history..."
-            python backfill_history.py 90
-          else
-            echo "DB has sufficient history — skipping backfill"
+            echo "No existing DB found - pipeline will create fresh DB"
           fi
 
       - name: Execute Master Pipeline
@@ -95,15 +69,8 @@ jobs:
         run: |
           if [ -f market_data.db ]; then
             SIZE=$(du -sh market_data.db | cut -f1)
-            python3 - <<'PYEOF'
-          import sqlite3, sys
-          try:
-              c = sqlite3.connect('market_data.db')
-              r = c.execute('SELECT COUNT(*), MIN(date), MAX(date) FROM daily_prices').fetchone()
-              print(f"DB rows: {r[0]:,} | Date range: {r[1]} to {r[2]}")
-              c.close()
-          except Exception as e:
-              print(f"DB not readable: {e}")
-          sys.exit(0)
-          PYEOF
+            echo "DB size: $SIZE"
+            python3 -c "import sqlite3; c=sqlite3.connect('market_data.db'); r=c.execute('SELECT COUNT(*),MIN(date),MAX(date) FROM daily_prices').fetchone(); print(f'Rows: {r[0]:,} | Range: {r[1]} to {r[2]}'); c.close()" 2>/dev/null || echo "DB stats not available yet"
+          else
+            echo "No market_data.db present after pipeline run"
           fi
