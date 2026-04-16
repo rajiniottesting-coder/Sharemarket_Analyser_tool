@@ -110,14 +110,49 @@ def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFr
     sym_bse_col = _get_sym_col(merged, "symbol_BSE")
 
     merged["final_close"]  = close_nse.where(close_nse > 0, close_bse)
-    merged["final_symbol"] = sym_nse_col.where(
-        sym_nse_col.astype(str).str.strip().isin(["", "nan", "0"]) == False,
-        sym_bse_col,
+    # Use pd.isna() to detect actual NaN (float), and string checks for empty/zero.
+    # astype(str).isin(["nan"]) does NOT catch float NaN — must check separately.
+    _nse_valid = (
+        sym_nse_col.notna() &
+        (sym_nse_col.astype(str).str.strip() != "") &
+        (sym_nse_col.astype(str).str.strip() != "nan") &
+        (sym_nse_col.astype(str).str.strip() != "0")
     )
+    merged["final_symbol"] = sym_nse_col.where(_nse_valid, sym_bse_col)
 
-    # Convenience: also provide a unified 'symbol' and 'close' for downstream use
+    # ── Unified columns — all OHLCV fields Stage 1/2/3 need ────────────────────
+    # After outer merge, columns become col_NSE / col_BSE.
+    # We create unified col = NSE value if non-zero, else BSE value.
     merged["symbol"] = merged["final_symbol"]
     merged["close"]  = merged["final_close"]
+
+    _num_cols = ["open", "high", "low", "prev_close",
+                 "volume", "turnover", "delivery_pct"]
+    _str_cols = ["bse_code", "isin", "exchange"]
+
+    for col in _num_cols + _str_cols:
+        nse_col = f"{col}_NSE"
+        bse_col = f"{col}_BSE"
+        if nse_col in merged.columns and bse_col in merged.columns:
+            if col in _num_cols:
+                nse_v = pd.to_numeric(merged[nse_col], errors="coerce").fillna(0)
+                bse_v = pd.to_numeric(merged[bse_col], errors="coerce").fillna(0)
+                merged[col] = nse_v.where(nse_v > 0, bse_v)
+            else:
+                nse_v = merged[nse_col].astype(str).str.strip()
+                bse_v = merged[bse_col].astype(str).str.strip()
+                _valid = nse_v.notna() & (nse_v != "") & (nse_v != "nan")
+                merged[col] = nse_v.where(_valid, bse_v)
+        elif nse_col in merged.columns:
+            if col in _num_cols:
+                merged[col] = pd.to_numeric(merged[nse_col], errors="coerce").fillna(0)
+            else:
+                merged[col] = merged[nse_col].astype(str).str.strip()
+        elif bse_col in merged.columns:
+            if col in _num_cols:
+                merged[col] = pd.to_numeric(merged[bse_col], errors="coerce").fillna(0)
+            else:
+                merged[col] = merged[bse_col].astype(str).str.strip()
 
     return merged
 

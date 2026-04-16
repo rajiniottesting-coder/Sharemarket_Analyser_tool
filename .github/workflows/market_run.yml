@@ -46,6 +46,31 @@ jobs:
             echo "No existing DB found — pipeline will create fresh DB"
           fi
 
+      - name: Backfill if DB is missing or has less than 30 days of history
+        # On a fresh runner (no artifact restored) or after DB loss,
+        # run a 90-day backfill so Stage 1-3 filters have volume/delivery history.
+        # On normal daily runs the artifact provides 365 days — this step is skipped.
+        run: |
+          python3 - <<'PYEOF'
+          import sqlite3, os, sys
+          if not os.path.exists('market_data.db'):
+              print("No DB — need backfill"); sys.exit(1)
+          try:
+              c = sqlite3.connect('market_data.db')
+              days = c.execute("SELECT COUNT(DISTINCT date) FROM daily_prices").fetchone()[0]
+              c.close()
+              print(f"DB has {days} days")
+              sys.exit(0 if days >= 30 else 1)
+          except Exception as e:
+              print(f"DB check failed: {e}"); sys.exit(1)
+          PYEOF
+          if [ $? -ne 0 ]; then
+            echo "Running 90-day backfill to seed history..."
+            python backfill_history.py 90
+          else
+            echo "DB has sufficient history — skipping backfill"
+          fi
+
       - name: Execute Master Pipeline
         env:
           ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}

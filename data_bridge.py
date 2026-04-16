@@ -480,67 +480,46 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
         today_str = _date.today().strftime("%Y-%m-%d")
 
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
-            # Normalise bulk_deals columns (NSE API uses different names)
             if table == "bulk_deals":
                 df = df.copy()
                 df.columns = [str(c).lower().strip() for c in df.columns]
-                bulk_col_map = {
-                    "symbol":         "symbol",
-                    "scrip_cd":       "symbol",
-                    "scrip_name":     "symbol",    # fallback if no symbol col
-                    "clientname":     "client",
-                    "client_name":    "client",
-                    "client":         "client",
-                    "dealtype":       "type",
-                    "deal_type":      "type",
-                    "buysell":        "type",
-                    "buy_sell":       "type",
-                    "type":           "type",
-                    "trdqty":         "quantity",
-                    "quantity":       "quantity",
-                    "price":          "price",
-                    "trdval":         "price",
+                _bmap = {
+                    "symbol":"symbol",  "scrip_cd":"symbol",
+                    "clientname":"client", "client_name":"client", "client":"client",
+                    "dealtype":"type",  "deal_type":"type",
+                    "buysell":"type",   "buy_sell":"type",
+                    "trdqty":"quantity","quantity":"quantity",
+                    "price":"price",    "trdval":"price",
                 }
-                df = df.rename(columns={k: v for k, v in bulk_col_map.items()
-                                        if k in df.columns and v not in df.columns})
-                # Ensure symbol column exists
+                df = df.rename(columns={k:v for k,v in _bmap.items()
+                                         if k in df.columns and v not in df.columns})
                 if "symbol" not in df.columns:
-                    for alt in ["scrip_cd", "scrip_name", "security"]:
-                        if alt in df.columns:
-                            df["symbol"] = df[alt]
-                            break
+                    for _alt in ["scrip_name","security","company"]:
+                        if _alt in df.columns:
+                            df["symbol"] = df[_alt]; break
                 if "date" not in df.columns:
                     df["date"] = today_str
-            # Normalise insider_trades columns
             elif table == "insider_trades":
                 df = df.copy()
                 df.columns = [str(c).lower().strip() for c in df.columns]
-                ins_col_map = {
-                    "symbol":         "symbol",
-                    "company":        "symbol",
-                    "name":           "name",
-                    "personname":     "name",
-                    "person_name":    "name",
-                    "acqmode":        "mode",
-                    "acqui_mode":     "mode",
-                    "mode":           "mode",
-                    "secacq":         "qty",
-                    "qty":            "qty",
-                    "totacqshares":   "qty",
-                    "secval":         "value",
-                    "value":          "value",
+                _imap = {
+                    "symbol":"symbol",    "company":"symbol",
+                    "name":"name",        "personname":"name",   "person_name":"name",
+                    "acqmode":"mode",     "acqui_mode":"mode",   "mode":"mode",
+                    "secacq":"qty",       "qty":"qty",
+                    "totacqshares":"qty", "secval":"value",      "value":"value",
                 }
-                df = df.rename(columns={k: v for k, v in ins_col_map.items()
-                                        if k in df.columns and v not in df.columns})
+                df = df.rename(columns={k:v for k,v in _imap.items()
+                                         if k in df.columns and v not in df.columns})
                 if "date" not in df.columns:
                     df["date"] = today_str
             _safe_insert(df, table, conn)
         else:
-            # IMPORTANT: delivery streams (nse_del, bse_del) are intentionally
-            # excluded here. They contain DELIV_PER not OHLCV, so running them
-            # through standardize_to_v7_schema produces volume=0 rows that
-            # contaminate the price universe and cause Stage 1 to drop all stocks.
-            # Delivery data is merged in get_today_consolidated_data instead.
+            # Delivery streams (nse_del, bse_del) excluded intentionally:
+            # they contain DELIV_PER not OHLCV, so standardize_to_v7_schema
+            # produces volume=0 rows that contaminate the price universe
+            # and cause Stage 1 to drop all stocks as no_vol.
+            # Delivery pct is applied separately in get_today_consolidated_data.
             streams = [
                 (nse_data, "NSE"),
                 (bse_data, "BSE"),
@@ -572,13 +551,10 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
                 and not participant_data.empty):
             fo = participant_data.copy()
             fo.columns = [str(c).lower().strip().replace(" ", "_") for c in fo.columns]
-            # NSE F&O CSV columns (actual headers from fao_participant_vol CSV)
             fo_col_map = {
-                # client type
                 "client_type":           "client_type",
                 "clienttype":            "client_type",
                 "client":                "client_type",
-                # futures
                 "future_index_long":     "future_index_long",
                 "fut_index_long":        "future_index_long",
                 "future_index_short":    "future_index_short",
@@ -587,27 +563,24 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
                 "fut_stk_long":          "future_stock_long",
                 "future_stock_short":    "future_stock_short",
                 "fut_stk_short":         "future_stock_short",
-                # totals
                 "total_long_contracts":  "total_long",
                 "total_long":            "total_long",
                 "total_short_contracts": "total_short",
                 "total_short":           "total_short",
-                # net value variants
                 "net":                   "net_value",
                 "net_oi":                "net_value",
                 "net_value":             "net_value",
             }
             fo = fo.rename(columns={k: v for k, v in fo_col_map.items() if k in fo.columns})
-            # Compute net_value if not present (total_long - total_short)
+            # Compute net_value = total_long - total_short if not in CSV
             if "net_value" not in fo.columns:
                 tl = pd.to_numeric(fo.get("total_long",  0), errors="coerce").fillna(0)
                 ts = pd.to_numeric(fo.get("total_short", 0), errors="coerce").fillna(0)
                 fo["net_value"] = tl - ts
-            # Coerce all numeric columns
-            for col in ["future_index_long","future_index_short","future_stock_long",
-                        "future_stock_short","total_long","total_short","net_value"]:
-                if col in fo.columns:
-                    fo[col] = pd.to_numeric(fo[col], errors="coerce").fillna(0)
+            for _c in ["future_index_long","future_index_short","future_stock_long",
+                       "future_stock_short","total_long","total_short","net_value"]:
+                if _c in fo.columns:
+                    fo[_c] = pd.to_numeric(fo[_c], errors="coerce").fillna(0)
             fo["date"] = today_str
             try:
                 conn.execute("DELETE FROM fo_participant_data WHERE date = ?", (today_str,))
@@ -645,7 +618,7 @@ def _safe_insert(df: pd.DataFrame, table: str, conn) -> None:
 
     tmp = f"_tmp_{table}"
     df.to_sql(tmp, conn, if_exists="replace", index=False)
-    col_list = ", ".join(keep) if keep else ", ".join(df.columns)
+    col_list = ", ".join(keep)
     conn.execute(
         f"INSERT OR IGNORE INTO {table} ({col_list}) "
         f"SELECT {col_list} FROM {tmp}"

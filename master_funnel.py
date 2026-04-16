@@ -180,8 +180,9 @@ def _bse_bhav(target_date):
 def _bse_delivery(target_date):
     """
     BSE delivery report — via bse package.
-    Validates the file is a delivery report (has delivery_pct equivalent)
-    not a bhav copy. Returns None if the file doesn't contain delivery data.
+    Validates the downloaded file actually contains delivery percentage data.
+    If bse.deliveryReport() returns a bhav copy instead (wrong format),
+    returns None so the pipeline isn't contaminated with duplicate price rows.
     """
     client = _get_bse_client()
     if client is None:
@@ -199,17 +200,14 @@ def _bse_delivery(target_date):
         except Exception:
             pass
         df.columns = [c.lower().strip() for c in df.columns]
-        # Validate: must have a delivery percentage column.
-        # If it looks like a bhav copy (has OPEN/HIGH/LOW/CLOSE) but no
-        # delivery column, the bse package returned bhav data instead.
-        _delivery_cols = {"delivery_pct", "deliv_per", "deliv_qty",
-                          "net_delivery", "delivery_quantity", "deliveryquantity"}
-        has_delivery = bool(_delivery_cols & set(df.columns))
-        _bhav_cols   = {"close", "open", "high", "low", "clspric", "opnpric"}
-        looks_like_bhav = bool(_bhav_cols & set(df.columns))
-        if not has_delivery:
-            # Not a delivery file — discard silently
-            return None
+        # Validate: must have a delivery-percentage column.
+        # If the file has OHLC price columns but no delivery column,
+        # the bse package returned a bhav copy — discard it.
+        _deliv_cols = {"delivery_pct", "deliv_per", "deliv_qty",
+                       "net_delivery", "delivery_quantity", "deliveryquantity",
+                       "delivery_%", "del_qty", "del_per"}
+        if not (_deliv_cols & set(df.columns)):
+            return None   # not a delivery file — discard silently
         print(f"✅ BSE Delivery downloaded: {len(df)} records for {target_date}")
         return df
     except (RuntimeError, FileNotFoundError):
