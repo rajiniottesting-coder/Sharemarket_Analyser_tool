@@ -203,9 +203,9 @@ def run_master_pipeline():
             sym = stock.get("symbol", "")
 
             # Section 2: Latest Intelligence
-            stock["intel_queries"] = fetch_latest_intelligence(
-                sym, stock.get("sector", "")
-            )
+            # Store as a joined string — Excel cannot store Python lists
+            queries = fetch_latest_intelligence(sym, stock.get("sector", ""))
+            stock["intel_queries"] = " | ".join(queries) if isinstance(queries, list) else str(queries or "")
 
             # Section 3J: Bulk Deal Sentiment
             if not bulk_deals_df.empty and "symbol" in bulk_deals_df.columns:

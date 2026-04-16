@@ -468,20 +468,27 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             _safe_insert(df, table, conn)
         else:
+            from datetime import date as _date
+            today_str = _date.today().strftime("%Y-%m-%d")
             streams = [
                 (nse_data, "NSE"),     (bse_data,  "BSE"),
                 (nse_del,  "NSE"),     (bse_del,   "BSE"),
                 (sme_nse,  "NSE_SME"), (sme_bse,   "BSE_SME"),
             ]
             frames = []
-            for src, exch in streams:
-                if src is not None and isinstance(src, pd.DataFrame) \
-                        and not src.empty:
-                    std = standardize_to_v7_schema(src, exchange=exch)
+            for stream_src, exch in streams:
+                if stream_src is not None and isinstance(stream_src, pd.DataFrame) \
+                        and not stream_src.empty:
+                    std = standardize_to_v7_schema(stream_src, exchange=exch)
                     if not std.empty:
+                        # Ensure date column is present — delivery files don't have it
+                        if "date" not in std.columns:
+                            std["date"] = today_str
                         frames.append(std)
             if frames:
                 combined = pd.concat(frames, ignore_index=True)
+                if "date" not in combined.columns:
+                    combined["date"] = today_str
                 _safe_insert(combined, "daily_prices", conn)
 
         if (participant_data is not None

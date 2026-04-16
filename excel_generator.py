@@ -6,7 +6,7 @@ from openpyxl.formatting.rule import ColorScaleRule
 import datetime
     
 class ExcelGeneratorV6:
-    # Columns required by the Excel sheets — filled with defaults if absent
+    # Columns required by Excel sheets — filled with safe defaults if absent
     REQUIRED_COLS = {
         'early_entry_score': 0, 'composite_score': 0, 'spike_count': 0,
         'mos_pct': 0.0, 'upside': 0.0, 'verdict': 'WATCHLIST',
@@ -21,21 +21,41 @@ class ExcelGeneratorV6:
     def __init__(self, data, date_str):
         self.df = pd.DataFrame(data) if data else pd.DataFrame()
         self.date_str = date_str
-        # Ensure all required columns exist with safe defaults
-        for col, default in self.REQUIRED_COLS.items():
-            if col not in self.df.columns:
-                self.df[col] = default
         self.tab_colors = {
             "Dashboard": "1E293B", "Gold": "B45309", "Trade": "059669",
             "Alert": "7C3AED", "Preview": "0D9488", "Glossary": "475569"
         }
         self.verdict_styles = {
-        "DEEP VALUE EARLY MOVER": {"bg": "FAC775", "text": "412402", "summary_bg": "B45309"}, # Dark Gold
-        "DEEP VALUE": {"bg": "D1FAE5", "text": "065F46", "summary_bg": "064E3B"},             # Dark Green
-        "BUY / EARLY MOVER": {"bg": "DBEAFE", "text": "1E3A5F", "summary_bg": "1E3A8A"},      # Dark Blue
-        "WATCHLIST": {"bg": "FEF3C7", "text": "78350F", "summary_bg": "92400E"},              # Dark Amber
-        "AVOID / EXIT": {"bg": "FEE2E2", "text": "7F1D1D", "summary_bg": "991B1B"}            # Dark Red
-            }
+            "DEEP VALUE EARLY MOVER": {"bg": "FAC775", "text": "412402", "summary_bg": "B45309"},
+            "DEEP VALUE":             {"bg": "D1FAE5", "text": "065F46", "summary_bg": "064E3B"},
+            "BUY / EARLY MOVER":      {"bg": "DBEAFE", "text": "1E3A5F", "summary_bg": "1E3A8A"},
+            "WATCHLIST":              {"bg": "FEF3C7", "text": "78350F", "summary_bg": "92400E"},
+            "AVOID / EXIT":           {"bg": "FEE2E2", "text": "7F1D1D", "summary_bg": "991B1B"},
+        }
+        # Ensure all required columns exist with safe defaults
+        for col, default in self.REQUIRED_COLS.items():
+            if col not in self.df.columns:
+                self.df[col] = default
+
+    @staticmethod
+    def _safe_val(value):
+        """Convert any value to Excel-safe type (str/int/float/bool/None/datetime).
+        Lists, dicts, sets are joined/stringified — Excel cannot store them."""
+        if value is None:
+            return None
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, (list, tuple)):
+            return " | ".join(str(v) for v in value) if value else ""
+        if isinstance(value, dict):
+            return str(value)
+        try:
+            import datetime as _dt
+            if isinstance(value, (_dt.date, _dt.datetime)):
+                return value
+        except Exception:
+            pass
+        return str(value)
 
     def generate_excel_reports(self):
         master_file = self._create_workbook(type="FULL")
@@ -136,7 +156,7 @@ class ExcelGeneratorV6:
         
         for r_idx, row in enumerate(dataframe_to_rows(data_df, index=False, header=True), 4):
             for c_idx, value in enumerate(row, 1):
-                cell = ws.cell(row=r_idx, column=c_idx, value=value)
+                cell = ws.cell(row=r_idx, column=c_idx, value=self._safe_val(value))
                 if r_idx == 4:
                     cell.font = Font(bold=True, size=8)
                     cell.fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
@@ -500,7 +520,7 @@ class ExcelGeneratorV6:
             current_fill = lakh_green_fill if r_idx % 2 == 0 else white_fill
             
             for c_idx, col_name in enumerate(columns, 1):
-                cell = ws.cell(row=r_idx, column=c_idx, value=stock.get(col_name))
+                cell = ws.cell(row=r_idx, column=c_idx, value=self._safe_val(stock.get(col_name)))
                 cell.fill = current_fill
                 cell.font = Font(name='Calibri', size=9, color="065F46" if r_idx % 2 == 0 else "000000")
 
