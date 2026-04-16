@@ -1045,11 +1045,87 @@ def _compute_all_indicators(conn):
 # Runs once per symbol — skips if updated within 7 days
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _make_nse_session():
+    """
+    Create a session that bypasses NSE's Akamai bot detection.
+    Tries cloudscraper first (handles JS challenges), falls back to requests.
+    GitHub Actions IPs are blocked by NSE's JSON API with plain requests.
+    """
+    # Try cloudscraper — already in requirements.txt, handles Akamai/Cloudflare
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        )
+        # Warm up with homepage to get cookies
+        try:
+            scraper.get("https://www.nseindia.com", headers=NSE_HEADERS, timeout=12)
+        except Exception:
+            pass
+        return scraper, "cloudscraper"
+    except ImportError:
+        pass
+
+    # Fallback: plain requests with full headers
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                           'AppleWebKit/537.36 (KHTML, like Gecko) '
+                           'Chrome/124.0.0.0 Safari/537.36',
+        'Accept':          'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection':      'keep-alive',
+        'Referer':         'https://www.nseindia.com/',
+        'Origin':          'https://www.nseindia.com',
+        'sec-ch-ua':       '"Chromium";v="124", "Google Chrome";v="124"',
+        'sec-ch-ua-mobile':'?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'Sec-Fetch-Dest':  'empty',
+        'Sec-Fetch-Mode':  'cors',
+        'Sec-Fetch-Site':  'same-origin',
+        'X-Requested-With':'XMLHttpRequest',
+    })
+    try:
+        session.get("https://www.nseindia.com", timeout=10)
+        time.sleep(1)
+        session.get("https://www.nseindia.com/market-data/live-equity-market", timeout=10)
+        time.sleep(0.5)
+    except Exception:
+        pass
+    return session, "requests"
+
+
+def _fetch_equity_master() -> dict:
+    """
+    Download NSE EQUITY_L.csv — static file, no bot protection.
+    Returns {symbol: company_name} for all listed NSE stocks.
+    Works reliably on GitHub Actions (no Akamai, no session needed).
+    """
+    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    try:
+        r = requests.get(url, headers=NSE_HEADERS, timeout=20)
+        if r.status_code == 200 and len(r.content) > 1000:
+            import io
+            df = pd.read_csv(io.StringIO(r.text))
+            # Columns: SYMBOL, NAME OF COMPANY, SERIES, DATE OF LISTING, ...
+            sym_col  = next((c for c in df.columns if 'SYMBOL' in c.upper()), None)
+            name_col = next((c for c in df.columns if 'NAME' in c.upper()), None)
+            if sym_col and name_col:
+                return dict(zip(
+                    df[sym_col].str.strip(),
+                    df[name_col].str.strip()
+                ))
+    except Exception as e:
+        print(f"   ⚠️  EQUITY_L.csv fetch failed: {e}")
+    return {}
+
+
 def _nse_quote(symbol: str, session) -> dict:
-    """Fetch equity quote from NSE API (free, session-based)."""
+    """Fetch equity quote from NSE API using bot-bypass session."""
     try:
         url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
-        r = session.get(url, headers=NSE_HEADERS, timeout=10)
+        r = session.get(url, timeout=12)
         if r.status_code != 200:
             return {}
         d = r.json()
@@ -1077,7 +1153,7 @@ def _nse_shareholding(symbol: str, session) -> dict:
     """Fetch shareholding pattern from NSE corp-info API."""
     try:
         url = f"https://www.nseindia.com/api/corp-info?symbol={symbol}"
-        r = session.get(url, headers=NSE_HEADERS, timeout=10)
+        r = session.get(url, timeout=12)
         if r.status_code != 200:
             return {}
         d = r.json()
@@ -1120,21 +1196,41 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
 
     print(f"   Fetching fundamentals for {len(to_fetch)} symbols via NSE API...")
 
-    # Warm up NSE session
-    session = requests.Session()
-    try:
-        session.get("https://www.nseindia.com", headers=NSE_HEADERS, timeout=8)
-    except Exception:
-        pass
+    # Step 1: Fetch company names from EQUITY_L.csv (no bot protection, always works)
+    equity_master = _fetch_equity_master()
+    if equity_master:
+        print(f"   ✅ EQUITY_L.csv: {len(equity_master)} company names loaded")
+        # Immediately update symbol_master with company names — reliable source
+        for sym in to_fetch:
+            cname = equity_master.get(sym, "")
+            if cname:
+                conn.execute(
+                    "UPDATE symbol_master SET company_name=? WHERE symbol=? AND (company_name='' OR company_name IS NULL)",
+                    (cname, sym)
+                )
+        conn.commit()
+    else:
+        print("   ⚠️  EQUITY_L.csv unavailable — will rely on NSE API for company names")
+
+    # Step 2: Use cloudscraper session for PE/shareholding (handles Akamai bot detection)
+    session, session_type = _make_nse_session()
+    print(f"   Using {session_type} session for NSE API calls")
+    time.sleep(2)  # Let session cookies settle
 
     ok = fail = 0
     fm_rows = []
     sh_rows = []
+    first_fail_reason = None
 
     for i, sym in enumerate(to_fetch, 1):
         try:
             quote = _nse_quote(sym, session)
             shold = _nse_shareholding(sym, session)
+
+            # If using equity_master, fill company_name from it even if API fails
+            if not quote and equity_master.get(sym):
+                quote = {"company_name": equity_master[sym], "sector": "", "pe": 0,
+                         "eps": 0, "pb": 0, "face_value": 10, "isin": "", "mcap_cr": 0}
 
             if quote:
                 # Update symbol_master with all available fields
@@ -1208,9 +1304,14 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
         if i % 50 == 0:
             conn.commit()
             print(f"   ... {i}/{len(to_fetch)} ({ok} ok, {fail} failed)", flush=True)
-            time.sleep(1.0)  # polite delay
+            if ok == 0 and i == 50:
+                # All failing — NSE API still blocked, but company names from EQUITY_L.csv are saved
+                print(f"   ⚠️  NSE JSON API blocked (0 ok after 50 tries). "
+                      f"Company names saved via EQUITY_L.csv. PE/shareholding unavailable.")
+                break  # Don't waste time on remaining symbols..
+            time.sleep(1.5)  # slightly longer delay between batches
         else:
-            time.sleep(0.3)
+            time.sleep(0.4)
 
     conn.commit()
 
