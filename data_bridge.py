@@ -467,12 +467,12 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
     conn = sqlite3.connect("market_data.db")
     try:
         initialize_v7_tables(conn)
+        from datetime import date as _date
+        today_str = _date.today().strftime("%Y-%m-%d")
 
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             _safe_insert(df, table, conn)
         else:
-            from datetime import date as _date
-            today_str = _date.today().strftime("%Y-%m-%d")
             streams = [
                 (nse_data, "NSE"),     (bse_data,  "BSE"),
                 (nse_del,  "NSE"),     (bse_del,   "BSE"),
@@ -503,13 +503,30 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
         if (participant_data is not None
                 and isinstance(participant_data, pd.DataFrame)
                 and not participant_data.empty):
+            # Normalise F&O participant columns to our schema
+            fo = participant_data.copy()
+            fo.columns = [str(c).lower().strip().replace(" ", "_") for c in fo.columns]
+            # Map NSE F&O API column names → our table columns
+            fo_col_map = {
+                "client_type": "client_type", "clienttype": "client_type",
+                "future_index_long": "future_index_long",
+                "future_index_short": "future_index_short",
+                "future_stock_long": "future_stock_long",
+                "future_stock_short": "future_stock_short",
+                "total_long_contracts": "total_long",
+                "total_short_contracts": "total_short",
+                "net": "net_value", "net_oi": "net_value",
+            }
+            fo = fo.rename(columns={k: v for k, v in fo_col_map.items() if k in fo.columns})
+            # Inject date
+            fo["date"] = today_str
             # Idempotent: delete today's F&O rows before re-inserting
             try:
                 conn.execute("DELETE FROM fo_participant_data WHERE date = ?", (today_str,))
                 conn.commit()
             except Exception:
                 pass
-            _safe_insert(participant_data, "fo_participant_data", conn)
+            _safe_insert(fo, "fo_participant_data", conn)
 
     except Exception as e:
         print(f"❌ Database Bridge Error: {e}")
@@ -680,7 +697,7 @@ def get_symbol_history(symbol: str, limit: int = 250) -> pd.DataFrame:
             conn, params=(symbol, limit),
         )
         if not df.empty:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         return df

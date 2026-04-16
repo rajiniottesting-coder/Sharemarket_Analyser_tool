@@ -145,33 +145,55 @@ def run_master_pipeline():
         # Save bulk deals and insider trades directly — do NOT pass through
         # save_to_database which calls standardize_to_v7_schema and corrupts them
         _today_str = target_date.strftime("%Y-%m-%d") if hasattr(target_date,"strftime") else str(target_date)
-        if not bulk_deals_df.empty:
+
+        def _map_and_save_deals(raw_df, table_name, col_map, today):
+            """Map raw API columns → table schema and save idempotently."""
+            if raw_df is None or raw_df.empty:
+                return
             try:
                 import sqlite3 as _sq3
+                df = raw_df.copy()
+                df.columns = [str(c).lower().strip().replace(" ","_") for c in df.columns]
+                df = df.rename(columns={k:v for k,v in col_map.items() if k in df.columns})
+                df["date"] = today
+                # Keep only columns that exist in our table
                 _conn = _sq3.connect("market_data.db")
-                # Idempotent: remove today's existing rows before re-inserting
-                _conn.execute("DELETE FROM bulk_deals WHERE date = ?", (_today_str,))
+                _cur = _conn.execute(f"PRAGMA table_info({table_name})")
+                tbl_cols = [r[1] for r in _cur.fetchall()]
+                keep = [c for c in tbl_cols if c in df.columns]
+                if not keep:
+                    print(f"⚠️  No matching columns for {table_name}. Skipping.")
+                    _conn.close(); return
+                df = df[keep].copy()
+                _conn.execute(f"DELETE FROM {table_name} WHERE date = ?", (today,))
                 _conn.commit()
-                bulk_deals_df.to_sql("_tmp_bulk", _conn, if_exists="replace", index=False)
-                _conn.execute("INSERT OR IGNORE INTO bulk_deals SELECT * FROM _tmp_bulk")
-                _conn.execute("DROP TABLE IF EXISTS _tmp_bulk")
+                df.to_sql(f"_tmp_{table_name}", _conn, if_exists="replace", index=False)
+                _conn.execute(f"INSERT OR IGNORE INTO {table_name} SELECT * FROM _tmp_{table_name}")
+                _conn.execute(f"DROP TABLE IF EXISTS _tmp_{table_name}")
                 _conn.commit(); _conn.close()
-                print(f"✅ Bulk deals saved: {len(bulk_deals_df)} records.")
+                print(f"✅ {table_name} saved: {len(df)} records.")
             except Exception as _e:
-                print(f"⚠️  Bulk deals save warning: {_e}")
-        if not insider_trades_df.empty:
-            try:
-                import sqlite3 as _sq3
-                _conn = _sq3.connect("market_data.db")
-                _conn.execute("DELETE FROM insider_trades WHERE date = ?", (_today_str,))
-                _conn.commit()
-                insider_trades_df.to_sql("_tmp_ins", _conn, if_exists="replace", index=False)
-                _conn.execute("INSERT OR IGNORE INTO insider_trades SELECT * FROM _tmp_ins")
-                _conn.execute("DROP TABLE IF EXISTS _tmp_ins")
-                _conn.commit(); _conn.close()
-                print(f"✅ Insider trades saved: {len(insider_trades_df)} records.")
-            except Exception as _e:
-                print(f"⚠️  Insider trades save warning: {_e}")
+                print(f"⚠️  {table_name} save warning: {_e}")
+
+        # NSE Bulk Deals API columns → our bulk_deals table (symbol, date, client, type, quantity, price)
+        _bulk_map = {
+            "symbol": "symbol", "scrip_nm": "symbol", "security": "symbol",
+            "client_nm": "client", "clientname": "client", "client": "client",
+            "buy_sell": "type", "buysell": "type", "deal_type": "type",
+            "quantity_traded": "quantity", "quantity": "quantity", "qty": "quantity",
+            "trade_price": "price", "tradeprice": "price", "price": "price",
+        }
+        _map_and_save_deals(bulk_deals_df, "bulk_deals", _bulk_map, _today_str)
+
+        # NSE Insider Trades API columns → our insider_trades table (symbol, date, name, mode, qty, value)
+        _insider_map = {
+            "symbol": "symbol", "scrip_nm": "symbol", "security": "symbol",
+            "acq_name": "name", "acquirer_name": "name", "name": "name",
+            "acq_mode": "mode", "mode": "mode", "transaction_type": "mode",
+            "no_securities": "qty", "quantity": "qty", "qty": "qty",
+            "value": "value", "transaction_value": "value",
+        }
+        _map_and_save_deals(insider_trades_df, "insider_trades", _insider_map, _today_str)
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 0: PRE-SCREENING FUNNEL (STAGES 1–3)
