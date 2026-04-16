@@ -2,50 +2,50 @@
 data_bridge.py
 SECTION 1A & 1B — Data Consolidation & DB Bridge (v7 FINAL)
 
-Key fixes:
-- standardize_to_v7_schema: handles NSE new bhav format (TckrSymb, ClsPric etc.)
-  AND old format AND BSE (SC_NAME→symbol, NOT SC_CODE)
-- delivery_pct joined from NSE delivery file
-- save_to_database: accepts both single-df and multi-stream keyword call
-- daily_prices table includes delivery_pct and isin columns
-- get_today_consolidated_data signature matches master_funnel.py call
+Handles:
+  NSE new bhav  : TckrSymb, ClsPric, PrvsClsgPric, HghPric, LwPric,
+                  TtlTradgVol, TtlTrfVal, ISIN, SctySrs
+  NSE old bhav  : SYMBOL, SERIES, CLOSE, PREV_CLOSE, OPEN, HIGH, LOW,
+                  TOTTRDQTY, TOTTRDVAL
+  NSE delivery  : SYMBOL, CLOSE_PRICE, DELIV_PER
+  BSE bhav      : SC_NAME→symbol, SC_CODE→bse_code, ISIN, CLOSE,
+                  OPEN, HIGH, LOW, NO_OF_SHRS, NET_TURNOV, SC_GROUP
+  BSE = None    : treated as NSE-only mode, never blocks pipeline
 """
 
 import sqlite3
 import pandas as pd
 
 
-# ── SECTION 1: SCHEMA & TABLE INITIALISATION ─────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 1 — TABLE INITIALISATION
+# ─────────────────────────────────────────────────────────────────────────────
 
 def initialize_v7_tables(conn):
-    """
-    SECTION 1.2: Creates all v7 tables if they don't exist.
-    """
-    cursor = conn.cursor()
+    """Creates all v7 tables if they don't exist. Safe to call every run."""
+    c = conn.cursor()
 
-    # 1. Daily Market Data (core table)
-    cursor.execute("""
+    c.execute("""
         CREATE TABLE IF NOT EXISTS daily_prices (
             symbol       TEXT,
-            bse_code     TEXT,
-            isin         TEXT,
+            bse_code     TEXT DEFAULT '',
+            isin         TEXT DEFAULT '',
             date         TEXT,
-            open         REAL,
-            high         REAL,
-            low          REAL,
-            close        REAL,
-            prev_close   REAL,
-            volume       REAL,
-            turnover     REAL,
+            open         REAL DEFAULT 0,
+            high         REAL DEFAULT 0,
+            low          REAL DEFAULT 0,
+            close        REAL DEFAULT 0,
+            prev_close   REAL DEFAULT 0,
+            volume       REAL DEFAULT 0,
+            turnover     REAL DEFAULT 0,
             delivery_pct REAL DEFAULT 0,
-            exchange     TEXT,
-            exchange_tag TEXT,
+            exchange     TEXT DEFAULT '',
+            exchange_tag TEXT DEFAULT '',
             PRIMARY KEY (symbol, date, exchange)
         )
     """)
 
-    # 2. Watchlist
-    cursor.execute("""
+    c.execute("""
         CREATE TABLE IF NOT EXISTS watchlist (
             symbol   TEXT PRIMARY KEY,
             active   INTEGER DEFAULT 1,
@@ -53,8 +53,7 @@ def initialize_v7_tables(conn):
         )
     """)
 
-    # 3. Market Holidays
-    cursor.execute("""
+    c.execute("""
         CREATE TABLE IF NOT EXISTS market_holidays (
             date     TEXT,
             name     TEXT,
@@ -63,384 +62,423 @@ def initialize_v7_tables(conn):
         )
     """)
 
-    # 4. Pipeline Execution Stats (Section 12B)
-    cursor.execute("""
+    c.execute("""
         CREATE TABLE IF NOT EXISTS run_stats (
-            run_date         TEXT PRIMARY KEY,
-            total_universe   INTEGER,
-            stage1_passed    INTEGER,
-            stage2_passed    INTEGER,
-            stage3_selected  INTEGER,
-            claude_analysed  INTEGER,
-            gold_count       INTEGER,
-            gate_check_result TEXT,
-            bse_available    INTEGER,
-            delivery_time    TEXT
+            run_date          TEXT PRIMARY KEY,
+            total_universe    INTEGER DEFAULT 0,
+            stage1_passed     INTEGER DEFAULT 0,
+            stage2_passed     INTEGER DEFAULT 0,
+            stage3_selected   INTEGER DEFAULT 0,
+            claude_analysed   INTEGER DEFAULT 0,
+            gold_count        INTEGER DEFAULT 0,
+            gate_check_result TEXT    DEFAULT '',
+            bse_available     INTEGER DEFAULT 0,
+            delivery_time     TEXT    DEFAULT ''
         )
     """)
 
-    # 5. F&O Participant Data (Section 1A)
-    cursor.execute("""
+    c.execute("""
         CREATE TABLE IF NOT EXISTS fo_participant_data (
-            date              TEXT,
-            client_type       TEXT,
-            future_index_long REAL,
-            future_index_short REAL,
-            future_stock_long REAL,
-            future_stock_short REAL,
-            total_long        REAL,
-            total_short       REAL,
-            net_value         REAL
+            date               TEXT,
+            client_type        TEXT,
+            future_index_long  REAL DEFAULT 0,
+            future_index_short REAL DEFAULT 0,
+            future_stock_long  REAL DEFAULT 0,
+            future_stock_short REAL DEFAULT 0,
+            total_long         REAL DEFAULT 0,
+            total_short        REAL DEFAULT 0,
+            net_value          REAL DEFAULT 0
         )
     """)
 
-    # 6. Intelligence / Quarterly Baseline (Sections 3F, 3K, 4)
-    cursor.execute("""
+    c.execute("""
         CREATE TABLE IF NOT EXISTS v7_intelligence (
             symbol       TEXT,
             timestamp    TEXT,
-            fii_holding  REAL,
-            dii_holding  REAL,
-            pledge_pct   REAL,
-            promoter_pct REAL,
-            total_debt   REAL,
-            dio          REAL,
-            dso          REAL,
-            roe          REAL,
-            networth     REAL,
+            fii_holding  REAL DEFAULT 0,
+            dii_holding  REAL DEFAULT 0,
+            pledge_pct   REAL DEFAULT 0,
+            promoter_pct REAL DEFAULT 0,
+            total_debt   REAL DEFAULT 0,
+            dio          REAL DEFAULT 0,
+            dso          REAL DEFAULT 0,
+            roe          REAL DEFAULT 0,
+            networth     REAL DEFAULT 1,
             PRIMARY KEY (symbol, timestamp)
         )
     """)
 
-    # 7. Final AI Analysis Results (Section 8)
-    cursor.execute("""
+    c.execute("""
         CREATE TABLE IF NOT EXISTS latest_analysis_results (
-            symbol         TEXT PRIMARY KEY,
-            date           TEXT,
-            composite_score REAL,
-            early_score    REAL,
-            spike_score    INTEGER,
-            storm_score    REAL,
-            cfv            REAL,
-            mos_pct        REAL,
-            verdict        TEXT,
-            ai_card        TEXT,
-            analysis_summary TEXT,
-            allocation_tag TEXT
+            symbol           TEXT PRIMARY KEY,
+            date             TEXT,
+            composite_score  REAL DEFAULT 0,
+            early_score      REAL DEFAULT 0,
+            spike_score      INTEGER DEFAULT 0,
+            storm_score      REAL DEFAULT 0,
+            cfv              REAL DEFAULT 0,
+            mos_pct          REAL DEFAULT 0,
+            verdict          TEXT DEFAULT '',
+            ai_card          TEXT DEFAULT '',
+            analysis_summary TEXT DEFAULT '',
+            allocation_tag   TEXT DEFAULT ''
         )
     """)
 
-    # 8. Bulk Deals (Section 3J)
-    cursor.execute("""
+    c.execute("""
         CREATE TABLE IF NOT EXISTS bulk_deals (
-            symbol    TEXT,
-            date      TEXT,
-            client    TEXT,
-            type      TEXT,
-            quantity  REAL,
-            price     REAL
+            symbol   TEXT,
+            date     TEXT,
+            client   TEXT,
+            type     TEXT,
+            quantity REAL DEFAULT 0,
+            price    REAL DEFAULT 0
         )
     """)
 
-    # 9. Insider Trades (Section 3K)
-    cursor.execute("""
+    c.execute("""
         CREATE TABLE IF NOT EXISTS insider_trades (
             symbol TEXT,
             date   TEXT,
             name   TEXT,
             mode   TEXT,
-            qty    REAL,
-            value  REAL
+            qty    REAL DEFAULT 0,
+            value  REAL DEFAULT 0
         )
     """)
 
     conn.commit()
 
 
-# ── SECTION 2: SCHEMA NORMALISATION ──────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 2 — COLUMN MAPPING
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Complete column mapping covering:
-#   NSE new bhav (TckrSymb, ClsPric, PrvsClsgPric, HghPric, LwPric, TtlTradgVol, TtlTrfVal, ISIN, SctySrs)
-#   NSE old bhav (SYMBOL, SERIES, CLOSE, PREV_CLOSE, OPEN, HIGH, LOW, TOTTRDQTY, TOTTRDVAL)
-#   NSE delivery  (SYMBOL, CLOSE_PRICE, DELIV_PER)
-#   BSE bhav      (SC_NAME→symbol, SC_CODE→bse_code, ISIN, CLOSE, OPEN, HIGH, LOW, NO_OF_SHRS, NET_TURNOV, SC_GROUP)
-
+# All keys are LOWERCASE (we lowercase headers before lookup).
+# Maps every known raw column name → canonical v7 name.
 COLUMN_MAP = {
-    # ── NSE new bhav format ──
-    "tckrsymb":       "symbol",
-    "isin":           "isin",
-    "clspric":        "close",
-    "prvsclsgpric":   "prev_close",
-    "opnpric":        "open",
-    "hghpric":        "high",
-    "lwpric":         "low",
-    "ttltradgvol":    "volume",
-    "ttltrfval":      "turnover",
-    "sctysrs":        "series",
-    # ── NSE old bhav format ──
-    "symbol":         "symbol",
-    "series":         "series",
-    "close_price":    "close",
-    "close":          "close",
-    "prev_close":     "prev_close",
-    "prevclose":      "prev_close",
-    "previous_close": "prev_close",
-    "open_price":     "open",
-    "open":           "open",
-    "high_price":     "high",
-    "high":           "high",
-    "low_price":      "low",
-    "low":            "low",
-    "tottrdqty":      "volume",
-    "total_trd_qty":  "volume",
-    "ttl_trd_qnty":   "volume",
-    "tottrdval":      "turnover",
-    # ── NSE delivery ──
-    "deliv_per":      "delivery_pct",
-    "deliv_qty":      "deliv_qty",
-    # ── BSE bhav ──
-    "sc_name":        "symbol",       # ← ticker string e.g. "RELIANCE" — USE THIS
-    "sc_code":        "bse_code",     # ← numeric 6-digit code — stored separately
-    "sc_group":       "sc_group",
-    "isin_code":      "isin",
-    "no_of_shrs":     "volume",
-    "net_turnover":   "turnover",
-    "net_turnov":     "turnover",
-    # ── Other aliases ──
-    "no_of_trades":   "num_trades",
-    "fininstrmid":    "symbol",
-    "security_id":    "symbol",
-    "scrip_id":       "symbol",
-    "syml":           "symbol",
+    # NSE new bhav (post-July 2024 UDiFF format)
+    "tckrsymb":        "symbol",
+    "isin":            "isin",
+    "clspric":         "close",
+    "prvsclsgpric":    "prev_close",
+    "opnpric":         "open",
+    "hghpric":         "high",
+    "lwpric":          "low",
+    "ttltradgvol":     "volume",
+    "ttltrfval":       "turnover",
+    "sctysrs":         "series",
+    "fininstrmid":     "symbol",      # alternate NSE new format
+    # NSE old bhav (pre-July 2024)
+    "symbol":          "symbol",
+    "series":          "series",
+    "close_price":     "close",
+    "close":           "close",
+    "prev_close":      "prev_close",
+    "prevclose":       "prev_close",
+    "previous_close":  "prev_close",
+    "open_price":      "open",
+    "open":            "open",
+    "high_price":      "high",
+    "high":            "high",
+    "low_price":       "low",
+    "low":             "low",
+    "tottrdqty":       "volume",
+    "total_trd_qty":   "volume",
+    "ttl_trd_qnty":    "volume",
+    "tottrdval":       "turnover",
+    # NSE delivery file
+    "deliv_per":       "delivery_pct",
+    "deliv_qty":       "deliv_qty",
+    # BSE bhav  ← SC_NAME is the ticker string; SC_CODE is the numeric code
+    "sc_name":         "symbol",      # "RELIANCE", "HDFCBANK" — USE THIS
+    "sc_code":         "bse_code",    # 500325 — store separately, NOT as symbol
+    "sc_group":        "sc_group",
+    "isin_code":       "isin",
+    "no_of_shrs":      "volume",
+    "net_turnover":    "turnover",
+    "net_turnov":      "turnover",
+    # Generic aliases
+    "no_of_trades":    "num_trades",
+    "security_id":     "symbol",
+    "scrip_id":        "symbol",
+    "syml":            "symbol",
+    "name":            "company_name",
 }
 
-REQUIRED_COLS = ["symbol", "open", "high", "low", "close", "volume"]
+REQUIRED_COLS  = ["symbol", "open", "high", "low", "close", "volume"]
+OPTIONAL_COLS  = ["isin", "bse_code", "prev_close", "turnover",
+                  "delivery_pct", "sc_group", "exchange", "exchange_tag"]
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 3 — SCHEMA NORMALISATION
+# ─────────────────────────────────────────────────────────────────────────────
 
 def standardize_to_v7_schema(df, exchange: str = "NSE") -> pd.DataFrame:
     """
-    SECTION 1A & 1B: Defensive Schema Enforcement.
-    Normalises any raw Bhav Copy DataFrame to the canonical v7 column set.
-    Always returns a DataFrame — never None — with at minimum the REQUIRED_COLS.
-    """
-    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-        return pd.DataFrame(columns=REQUIRED_COLS + ["isin", "bse_code", "delivery_pct",
-                                                       "turnover", "exchange"])
+    Normalises ANY raw Bhav Copy DataFrame to the canonical v7 column set.
 
-    # 1. Lowercase and strip all column names
+    Safe against:
+      - None input
+      - Mixed-type symbol columns (int, float, str)
+      - BSE numeric SC_CODE being mapped to symbol by mistake
+      - Missing columns (filled with safe defaults)
+      - .str accessor on non-string series (AttributeError fixed)
+
+    Always returns a DataFrame, never None.
+    """
+    # ── Guard: invalid input ──────────────────────────────────────────────────
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        empty = pd.DataFrame(columns=REQUIRED_COLS + OPTIONAL_COLS)
+        return empty
+
     df = df.copy()
+
+    # ── Step 1: Normalise column names to lowercase, no spaces ───────────────
     df.columns = [str(c).lower().strip().replace(" ", "_") for c in df.columns]
 
-    # 2. Apply the master column mapping
-    df = df.rename(columns={k: v for k, v in COLUMN_MAP.items() if k in df.columns})
+    # ── Step 2: Apply master column map ──────────────────────────────────────
+    df = df.rename(columns={k: v for k, v in COLUMN_MAP.items()
+                             if k in df.columns})
 
-    # 3. BSE special: prefer sc_name (ticker) over numeric codes
-    #    If 'symbol' still looks numeric (BSE code was mapped), try to use 'sc_name' fallback
+    # ── Step 3: BSE guard — SC_CODE (numeric) must NOT become symbol ─────────
+    # After rename, if 'symbol' column is all-numeric it means SC_CODE was
+    # mapped (SC_NAME was missing or came after).  Move it to bse_code and
+    # look for a name-like column to use as symbol instead.
     if "symbol" in df.columns:
-        # If all values are numeric strings, this is a BSE code column — not a ticker
-        sample = df["symbol"].dropna().head(10)
-        if sample.apply(lambda x: str(x).strip().isdigit()).all():
-            # We mistakenly mapped SC_CODE to symbol — check if sc_name exists
+        # Force to string first so .str accessor works safely
+        sym_series = df["symbol"].fillna("").apply(lambda x: str(x).strip())
+        non_empty  = sym_series[sym_series != ""]
+        if len(non_empty) > 0 and non_empty.apply(lambda x: x.isdigit()).all():
+            # All values are numeric → this is BSE SC_CODE, not the ticker
             if "bse_code" not in df.columns:
-                df["bse_code"] = df["symbol"]
-            # Try to find a name-like column
-            for alt in ["sc_name", "name", "security_name", "scrip_name"]:
-                if alt in df.columns:
-                    df["symbol"] = df[alt]
+                df["bse_code"] = sym_series
+            # Replace symbol with the name column if available
+            for alt in ["sc_name", "name", "security_name", "scrip_name", "company_name"]:
+                if alt in df.columns and df[alt].notna().any():
+                    df["symbol"] = df[alt].fillna("").apply(lambda x: str(x).strip())
                     break
+            else:
+                # No name column found — symbol stays numeric (BSE code)
+                df["symbol"] = sym_series
 
-    # 4. Ensure all required columns exist
-    for col in REQUIRED_COLS + ["isin", "bse_code", "delivery_pct", "turnover",
-                                  "exchange", "prev_close", "sc_group"]:
+    # ── Step 4: Guarantee all required + optional columns exist ──────────────
+    for col in REQUIRED_COLS + OPTIONAL_COLS:
         if col not in df.columns:
-            df[col] = 0 if col not in ["symbol", "isin", "bse_code", "sc_group", "exchange"] else ""
+            if col in ("symbol", "isin", "bse_code", "sc_group",
+                       "exchange", "exchange_tag"):
+                df[col] = ""
+            else:
+                df[col] = 0.0
 
-    # 5. Coerce numeric columns
-    for col in ["open", "high", "low", "close", "prev_close", "volume",
-                "turnover", "delivery_pct"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    # ── Step 5: Coerce numeric columns ───────────────────────────────────────
+    for col in ["open", "high", "low", "close", "prev_close",
+                "volume", "turnover", "delivery_pct"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    # 6. Force symbol to plain Python string Series BEFORE any .str accessor
+    # ── Step 6: Force symbol to clean string (MUST come before any filtering)─
     df["symbol"] = df["symbol"].fillna("").apply(lambda x: str(x).strip())
 
-    # 7. Drop rows with no symbol or no close price
-    df = df[df["symbol"] != ""]
-    df = df[df["symbol"] != "0"]
-    df = df[df["symbol"] != "nan"]
+    # ── Step 7: Drop garbage rows ─────────────────────────────────────────────
+    df = df[~df["symbol"].isin(["", "0", "nan", "none", "NaN"])]
     df = df[df["close"] > 0]
 
-    # 7. Tag exchange
+    # ── Step 8: Tag exchange ──────────────────────────────────────────────────
     df["exchange"] = exchange
 
-    return df
+    return df.reset_index(drop=True)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 4 — DELIVERY DATA MERGE
+# ─────────────────────────────────────────────────────────────────────────────
 
 def merge_delivery_data(price_df: pd.DataFrame,
-                        delivery_df: pd.DataFrame,
+                        delivery_df,
                         exchange: str = "NSE") -> pd.DataFrame:
     """
-    Joins delivery percentage from the delivery file onto the price DataFrame.
-    NSE: SYMBOL + DELIV_PER (normalised to delivery_pct)
-    BSE: SC_CODE + delivery data (if available)
+    Left-joins delivery_pct from the NSE/BSE delivery file onto the price df.
+    Safe when delivery_df is None — returns price_df unchanged.
     """
-    if delivery_df is None or delivery_df.empty:
+    if delivery_df is None or not isinstance(delivery_df, pd.DataFrame) \
+            or delivery_df.empty:
         return price_df
 
-    deliv = delivery_df.copy()
-    deliv.columns = [str(c).lower().strip().replace(" ", "_") for c in deliv.columns]
-    deliv = deliv.rename(columns=COLUMN_MAP)
-
-    if "symbol" not in deliv.columns or "delivery_pct" not in deliv.columns:
+    if price_df is None or not isinstance(price_df, pd.DataFrame) \
+            or price_df.empty:
         return price_df
 
-    deliv = deliv[["symbol", "delivery_pct"]].dropna()
-    deliv["delivery_pct"] = pd.to_numeric(deliv["delivery_pct"], errors="coerce").fillna(0)
-    deliv["symbol"] = deliv["symbol"].astype(str).str.strip().str.upper()
+    try:
+        deliv = delivery_df.copy()
+        deliv.columns = [str(c).lower().strip().replace(" ", "_")
+                         for c in deliv.columns]
+        deliv = deliv.rename(columns={k: v for k, v in COLUMN_MAP.items()
+                                       if k in deliv.columns})
 
-    price_df = price_df.copy()
-    price_df["symbol"] = price_df["symbol"].astype(str).str.strip().str.upper()
+        if "symbol" not in deliv.columns or "delivery_pct" not in deliv.columns:
+            return price_df
 
-    # Drop existing delivery_pct before merging to avoid _x/_y suffixes
-    if "delivery_pct" in price_df.columns:
-        price_df = price_df.drop(columns=["delivery_pct"])
+        deliv = deliv[["symbol", "delivery_pct"]].copy()
+        deliv["delivery_pct"] = pd.to_numeric(
+            deliv["delivery_pct"], errors="coerce").fillna(0)
+        # Normalise symbol to uppercase string for reliable join
+        deliv["symbol"] = deliv["symbol"].fillna("").apply(
+            lambda x: str(x).strip().upper())
 
-    merged = price_df.merge(deliv, on="symbol", how="left")
-    merged["delivery_pct"] = merged["delivery_pct"].fillna(0)
-    return merged
+        price = price_df.copy()
+        price["symbol"] = price["symbol"].fillna("").apply(
+            lambda x: str(x).strip().upper())
+
+        # Remove existing delivery_pct to avoid _x/_y suffix collision
+        if "delivery_pct" in price.columns:
+            price = price.drop(columns=["delivery_pct"])
+
+        merged = price.merge(deliv, on="symbol", how="left")
+        merged["delivery_pct"] = merged["delivery_pct"].fillna(0)
+        return merged
+
+    except Exception as e:
+        print(f"⚠️  merge_delivery_data error: {e}. Skipping delivery merge.")
+        return price_df
 
 
-# ── SECTION 3: CONSOLIDATION HUB ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 5 — CONSOLIDATION HUB
+# ─────────────────────────────────────────────────────────────────────────────
 
-def get_today_consolidated_data(target_date, nse_main=None, nse_sme=None,
+def get_today_consolidated_data(target_date,
+                                nse_main=None, nse_sme=None,
                                 bse_main=None, bse_sme=None,
                                 nse_deliv=None, bse_deliv=None) -> pd.DataFrame:
     """
-    V7 Consolidation Hub.
-    Standardises all 4 price streams + 2 delivery streams.
-    Returns a single canonical DataFrame ready for Stage 1 filter.
+    Standardises all 4 price streams + 2 delivery streams into one DataFrame.
+    BSE streams being None is normal in NSE-only mode — handled gracefully.
     """
     from reconciler import reconcile_exchanges
 
-    date_str = str(target_date) if not hasattr(target_date, "strftime") else target_date.strftime("%Y-%m-%d")
+    date_str = (target_date.strftime("%Y-%m-%d")
+                if hasattr(target_date, "strftime")
+                else str(target_date))
     print(f"🔄 [V7] Consolidating market data for {date_str}...")
 
-    # Standardise all streams
-    n_m = standardize_to_v7_schema(nse_main,  exchange="NSE")
-    n_s = standardize_to_v7_schema(nse_sme,   exchange="NSE_SME")
-    b_m = standardize_to_v7_schema(bse_main,  exchange="BSE")
-    b_s = standardize_to_v7_schema(bse_sme,   exchange="BSE_SME")
+    # Standardise all 4 streams (None-safe)
+    n_m = standardize_to_v7_schema(nse_main, exchange="NSE")
+    n_s = standardize_to_v7_schema(nse_sme,  exchange="NSE_SME")
+    b_m = standardize_to_v7_schema(bse_main, exchange="BSE")
+    b_s = standardize_to_v7_schema(bse_sme,  exchange="BSE_SME")
 
-    # Merge delivery pct into price streams
+    # Merge delivery percentages
     n_m = merge_delivery_data(n_m, nse_deliv, exchange="NSE")
     b_m = merge_delivery_data(b_m, bse_deliv, exchange="BSE")
 
-    # Stack NSE and BSE streams separately
+    # Stack NSE and BSE separately (concat is safe even if both sides empty)
     all_nse = pd.concat([n_m, n_s], ignore_index=True)
     all_bse = pd.concat([b_m, b_s], ignore_index=True)
 
     if all_nse.empty and all_bse.empty:
-        print("⚠️  Both NSE and BSE streams empty. Skipping consolidation.")
+        print("⚠️  Both NSE and BSE streams empty. Returning empty DataFrame.")
         return pd.DataFrame()
 
-    # Cross-exchange reconciliation (deduplication by ISIN)
-    consolidated_df = reconcile_exchanges(all_nse, all_bse)
+    # Cross-exchange reconciliation via ISIN
+    try:
+        consolidated_df = reconcile_exchanges(all_nse, all_bse)
+    except Exception as e:
+        print(f"⚠️  Reconciler error: {e}. Using NSE-only data.")
+        consolidated_df = all_nse
 
     if consolidated_df is not None and not consolidated_df.empty:
         consolidated_df["date"] = date_str
         print(f"✅ V7 Consolidation Complete: {len(consolidated_df)} records.")
-    else:
-        consolidated_df = pd.DataFrame()
+        return consolidated_df
 
-    return consolidated_df
+    return pd.DataFrame()
 
 
-# ── SECTION 4: DATA INTEGRITY CHECK (C5) ─────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 6 — DATA INTEGRITY CHECK (C5 Gate)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def check_data_integrity(nse_df, bse_df) -> dict:
     """
-    SECTION 12B C5: Validate downloaded data before pipeline proceeds.
-    Returns {"pass": bool, "message": str}
-    Handles None inputs and any pandas type errors defensively.
+    Lightweight C5 check: validates only row count and DataFrame type.
+    Does NOT call standardize_to_v7_schema — that runs in consolidation.
+    BSE=None is always acceptable (NSE-only mode).
     """
-    def _check(df, name, min_rows):
-        if df is None:
-            return False, f"{name}: not downloaded (None)."
-        if not isinstance(df, pd.DataFrame):
-            return False, f"{name}: unexpected type {type(df)}."
-        if df.empty:
-            return False, f"{name}: DataFrame is empty."
-        try:
-            df_std = standardize_to_v7_schema(df)
-        except Exception as e:
-            return False, f"{name}: standardisation error - {e}"
+    # NSE is the only hard requirement
+    if nse_df is None:
+        return {"pass": False,
+                "message": "C5 FAIL: NSE DataFrame is None — download failed."}
+    if not isinstance(nse_df, pd.DataFrame):
+        return {"pass": False,
+                "message": f"C5 FAIL: NSE unexpected type {type(nse_df)}."}
+    if nse_df.empty:
+        return {"pass": False,
+                "message": "C5 FAIL: NSE DataFrame is empty."}
+    if len(nse_df) < 500:
+        return {"pass": False,
+                "message": (f"C5 FAIL: NSE only {len(nse_df)} rows "
+                            f"(minimum 500). File may be corrupt.")}
 
-        if "symbol" not in df_std.columns or len(df_std) == 0:
-            return False, f"{name}: no symbol column after normalisation."
-        if "close" not in df_std.columns:
-            return False, f"{name}: no close column after normalisation."
-        if len(df_std) < min_rows:
-            return False, f"{name}: only {len(df_std)} rows (minimum {min_rows} required)."
+    nse_msg = f"NSE OK — {len(nse_df)} rows, {len(nse_df.columns)} columns"
+    print(f"✅ C5 PASS: {nse_msg}")
 
-        return True, f"{name}: OK ({len(df_std)} rows)."
+    if bse_df is None or not isinstance(bse_df, pd.DataFrame) or bse_df.empty:
+        bse_msg = "BSE not available (NSE-only mode — normal on cloud runners)"
+    else:
+        bse_msg = f"BSE OK — {len(bse_df)} rows"
 
-    nse_pass, nse_msg = _check(nse_df, "NSE", 500)
-    bse_pass, bse_msg = _check(bse_df, "BSE", 100)
-
-    if not nse_pass:
-        return {"pass": False, "message": f"C5 FAIL: {nse_msg}"}
-
-    # BSE failure alone is a warning, not a blocker
-    message = f"C5 PASS: {nse_msg} | BSE: {bse_msg}"
-    return {"pass": True, "message": message, "bse_ok": bse_pass}
+    return {
+        "pass":    True,
+        "message": f"C5 PASS: {nse_msg} | {bse_msg}",
+        "bse_ok":  isinstance(bse_df, pd.DataFrame) and not bse_df.empty,
+    }
 
 
-# ── SECTION 5: SAVE METHODS ───────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 7 — SAVE METHODS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def save_to_database(df=None, nse_data=None, bse_data=None,
-                     nse_del=None, bse_del=None, sme_nse=None,
-                     sme_bse=None, participant_data=None,
+                     nse_del=None, bse_del=None,
+                     sme_nse=None, sme_bse=None,
+                     participant_data=None,
                      table: str = "daily_prices") -> None:
     """
-    Main bridge for saving market data to SQLite.
-    Accepts EITHER:
-      - A single positional df (for consolidated data)
-      - Named keyword streams (nse_data, bse_data, etc.)
+    Saves market data to SQLite.
+    Accepts EITHER a single positional df OR named keyword streams.
+    None streams are silently skipped.
     """
     conn = sqlite3.connect("market_data.db")
     try:
         initialize_v7_tables(conn)
 
-        if df is not None and not isinstance(df, pd.DataFrame):
-            # Called with positional non-DataFrame (safety guard)
-            df = None
-
-        if df is not None and not df.empty:
-            # Direct consolidated df
+        if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             _safe_insert(df, table, conn)
         else:
-            # Named streams — standardise and combine
-            streams_with_exchange = [
-                (nse_data, "NSE"), (bse_data, "BSE"),
-                (nse_del,  "NSE"), (bse_del,  "BSE"),
-                (sme_nse,  "NSE_SME"), (sme_bse, "BSE_SME"),
+            streams = [
+                (nse_data, "NSE"),     (bse_data,  "BSE"),
+                (nse_del,  "NSE"),     (bse_del,   "BSE"),
+                (sme_nse,  "NSE_SME"), (sme_bse,   "BSE_SME"),
             ]
             frames = []
-            for src, exchange in streams_with_exchange:
-                if src is not None and isinstance(src, pd.DataFrame) and not src.empty:
-                    std = standardize_to_v7_schema(src, exchange=exchange)
+            for src, exch in streams:
+                if src is not None and isinstance(src, pd.DataFrame) \
+                        and not src.empty:
+                    std = standardize_to_v7_schema(src, exchange=exch)
                     if not std.empty:
                         frames.append(std)
             if frames:
                 combined = pd.concat(frames, ignore_index=True)
                 _safe_insert(combined, "daily_prices", conn)
 
-        # F&O participant data
-        if participant_data is not None and isinstance(participant_data, pd.DataFrame) \
-                and not participant_data.empty:
+        if (participant_data is not None
+                and isinstance(participant_data, pd.DataFrame)
+                and not participant_data.empty):
             participant_data.to_sql("fo_participant_data", conn,
                                     if_exists="append", index=False)
             conn.commit()
-            print(f"✅ F&O participant data saved: {len(participant_data)} records.")
+            print(f"✅ F&O data saved: {len(participant_data)} records.")
 
     except Exception as e:
         print(f"❌ Database Bridge Error: {e}")
@@ -449,24 +487,23 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
 
 
 def _safe_insert(df: pd.DataFrame, table: str, conn) -> None:
-    """Insert with duplicate handling — uses INSERT OR IGNORE for primary key conflicts."""
-    if df.empty:
+    """INSERT OR IGNORE via a temp table — handles PRIMARY KEY conflicts."""
+    if df is None or df.empty:
         return
-    df.to_sql(f"_tmp_{table}", conn, if_exists="replace", index=False)
-    conn.execute(f"""
-        INSERT OR IGNORE INTO {table}
-        SELECT * FROM _tmp_{table}
-    """)
-    conn.execute(f"DROP TABLE IF EXISTS _tmp_{table}")
+    tmp = f"_tmp_{table}"
+    df.to_sql(tmp, conn, if_exists="replace", index=False)
+    conn.execute(f"INSERT OR IGNORE INTO {table} SELECT * FROM {tmp}")
+    conn.execute(f"DROP TABLE IF EXISTS {tmp}")
     conn.commit()
-    print(f"✅ Saved {len(df)} records to {table}.")
+    print(f"✅ Saved {len(df)} records → {table}.")
 
 
 def save_fo_data(df: pd.DataFrame, target_date) -> None:
-    """Section 1A: Saves F&O Participant Data."""
-    if df is None or df.empty:
+    """Saves F&O Participant Data (Section 1A)."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return
-    date_str = target_date.strftime("%Y-%m-%d") if hasattr(target_date, "strftime") else str(target_date)
+    date_str = (target_date.strftime("%Y-%m-%d")
+                if hasattr(target_date, "strftime") else str(target_date))
     conn = sqlite3.connect("market_data.db")
     try:
         initialize_v7_tables(conn)
@@ -481,41 +518,39 @@ def save_fo_data(df: pd.DataFrame, target_date) -> None:
         conn.close()
 
 
-# ── SECTION 6: RETRIEVAL METHODS ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 8 — RETRIEVAL METHODS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def get_historical_quarter_data(symbols: list) -> dict:
-    """SECTIONS 3F, 3K & 4: Quarterly Baseline Trends."""
+    """Sections 3F, 3K & 4: Quarterly baseline trends per symbol."""
     if not symbols:
         return {}
     conn = sqlite3.connect("market_data.db")
     try:
         placeholders = ", ".join(["?"] * len(symbols))
-        query = f"""
-            SELECT * FROM v7_intelligence
-            WHERE symbol IN ({placeholders})
-              AND timestamp <= datetime('now', '-90 days')
-            GROUP BY symbol
-        """
-        df_hist = pd.read_sql_query(query, conn, params=symbols)
-        if df_hist.empty:
+        df = pd.read_sql_query(
+            f"""SELECT * FROM v7_intelligence
+                WHERE symbol IN ({placeholders})
+                  AND timestamp <= datetime('now', '-90 days')
+                GROUP BY symbol""",
+            conn, params=symbols,
+        )
+        if df.empty:
             return {s: None for s in symbols}
-        hist_dict = df_hist.set_index("symbol").to_dict("index")
-        result = {}
-        for s in symbols:
-            if s in hist_dict:
-                d = hist_dict[s]
-                result[s] = {
-                    "fii_holding":  d.get("fii_holding", 0),
-                    "pledge_pct":   d.get("pledge_pct", 0),
-                    "total_debt":   d.get("total_debt", 0),
-                    "dio":          d.get("dio", 0),
-                    "dso":          d.get("dso", 0),
-                    "roe":          d.get("roe", 0),
-                    "networth":     d.get("networth", 1),
-                }
-            else:
-                result[s] = None
-        return result
+        hist = df.set_index("symbol").to_dict("index")
+        return {
+            s: {
+                "fii_holding": hist[s].get("fii_holding", 0),
+                "pledge_pct":  hist[s].get("pledge_pct",  0),
+                "total_debt":  hist[s].get("total_debt",  0),
+                "dio":         hist[s].get("dio",         0),
+                "dso":         hist[s].get("dso",         0),
+                "roe":         hist[s].get("roe",         0),
+                "networth":    hist[s].get("networth",    1),
+            } if s in hist else None
+            for s in symbols
+        }
     except Exception:
         return {s: None for s in symbols}
     finally:
@@ -523,16 +558,13 @@ def get_historical_quarter_data(symbols: list) -> dict:
 
 
 def get_latest_fii_net_cash() -> float:
-    """SECTION 7 & 9: Latest FII Net Cash Flow."""
+    """Latest FII net cash flow from F&O participant data."""
     conn = sqlite3.connect("market_data.db")
     try:
-        query = """
-            SELECT net_value FROM fo_participant_data
-            WHERE client_type = 'FII'
-            ORDER BY date DESC LIMIT 1
-        """
-        result = pd.read_sql_query(query, conn)
-        return float(result["net_value"].iloc[0]) if not result.empty else 0.0
+        r = pd.read_sql_query(
+            "SELECT net_value FROM fo_participant_data "
+            "WHERE client_type='FII' ORDER BY date DESC LIMIT 1", conn)
+        return float(r["net_value"].iloc[0]) if not r.empty else 0.0
     except Exception:
         return 0.0
     finally:
@@ -540,13 +572,12 @@ def get_latest_fii_net_cash() -> float:
 
 
 def get_nifty_200_sma() -> float:
-    """SECTION 9: Nifty 50 200-day SMA."""
+    """Nifty 50 200-day simple moving average."""
     conn = sqlite3.connect("market_data.db")
     try:
         df = pd.read_sql_query(
-            "SELECT close FROM daily_prices WHERE symbol = 'NIFTY 50' ORDER BY date DESC LIMIT 200",
-            conn
-        )
+            "SELECT close FROM daily_prices "
+            "WHERE symbol='NIFTY 50' ORDER BY date DESC LIMIT 200", conn)
         return float(df["close"].mean()) if not df.empty else 0.0
     except Exception:
         return 0.0
@@ -555,18 +586,19 @@ def get_nifty_200_sma() -> float:
 
 
 def get_20d_avg_vol(symbol: str) -> float:
-    """Used by priority_ranker for vol spike ratio."""
+    """20-day average volume for a symbol — used by priority_ranker."""
+    if not symbol:
+        return 0.0
     conn = sqlite3.connect("market_data.db")
     try:
-        query = """
-            SELECT AVG(volume) FROM (
-                SELECT volume FROM daily_prices
-                WHERE symbol = ?
-                ORDER BY date DESC LIMIT 20
-            )
-        """
-        result = pd.read_sql_query(query, conn, params=(symbol,))
-        val = result.iloc[0, 0]
+        r = pd.read_sql_query(
+            "SELECT AVG(volume) FROM ("
+            "  SELECT volume FROM daily_prices "
+            "  WHERE symbol=? ORDER BY date DESC LIMIT 20"
+            ")",
+            conn, params=(symbol,),
+        )
+        val = r.iloc[0, 0]
         return float(val) if val and val > 0 else 0.0
     except Exception:
         return 0.0
@@ -575,19 +607,19 @@ def get_20d_avg_vol(symbol: str) -> float:
 
 
 def get_symbol_history(symbol: str, limit: int = 250) -> pd.DataFrame:
-    """Returns historical OHLCV for a symbol, sorted ascending."""
+    """Historical OHLCV for a symbol, ascending by date."""
+    if not symbol:
+        return pd.DataFrame()
     conn = sqlite3.connect("market_data.db")
     try:
-        query = """
-            SELECT date, open, high, low, close, volume
-            FROM daily_prices
-            WHERE symbol = ?
-            ORDER BY date ASC
-            LIMIT ?
-        """
-        df = pd.read_sql_query(query, conn, params=(symbol, limit))
+        df = pd.read_sql_query(
+            "SELECT date, open, high, low, close, volume "
+            "FROM daily_prices WHERE symbol=? "
+            "ORDER BY date ASC LIMIT ?",
+            conn, params=(symbol, limit),
+        )
         if not df.empty:
-            df["date"] = pd.to_datetime(df["date"])
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         return df
@@ -598,16 +630,15 @@ def get_symbol_history(symbol: str, limit: int = 250) -> pd.DataFrame:
 
 
 def get_nifty_52w_high_from_db() -> float:
-    """SECTION 7 & 9: Nifty 50 52-week high."""
+    """Nifty 50 52-week high close price."""
     conn = sqlite3.connect("market_data.db")
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT MAX(close) FROM daily_prices "
-            "WHERE symbol = 'NIFTY 50' AND date >= date('now', '-365 days')"
-        )
-        result = cursor.fetchone()
-        return float(result[0]) if result and result[0] else 1.0
+        c = conn.cursor()
+        c.execute("SELECT MAX(close) FROM daily_prices "
+                  "WHERE symbol='NIFTY 50' "
+                  "AND date >= date('now','-365 days')")
+        r = c.fetchone()
+        return float(r[0]) if r and r[0] else 1.0
     except Exception:
         return 1.0
     finally:
@@ -615,7 +646,7 @@ def get_nifty_52w_high_from_db() -> float:
 
 
 def load_latest_analysis_results() -> list:
-    """Load last AI analysis results for score comparison."""
+    """Load most recent AI analysis results for score comparison."""
     try:
         conn = sqlite3.connect("market_data.db")
         df = pd.read_sql("SELECT * FROM latest_analysis_results", conn)

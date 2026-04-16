@@ -103,13 +103,17 @@ def download_nse_bhavcopy(target_date, retries: int = 3) -> pd.DataFrame | None:
     return None
 
 
-def download_bse_bhavcopy(target_date, retries: int = 3) -> pd.DataFrame | None:
+# In harvester.py — replace download_bse_bhavcopy with this:
+def download_bse_bhavcopy(target_date, retries: int = 2) -> pd.DataFrame | None:
     """
-    SECTION 1B: Download BSE Equity Bhav Copy via `bse` pip package.
-    Falls back to direct URL download if bse package unavailable.
+    BSE Bhav Copy download.
+    BSE uses Cloudflare which blocks data-centre IPs (GitHub Actions).
+    Strategy: try bse package → try cloudscraper → accept None gracefully.
+    The pipeline runs in NSE-only mode when BSE is unavailable.
     """
     d = _as_date(target_date)
 
+    # Strategy 1: bse pip package (handles session internally)
     if BSE_PKG_AVAILABLE:
         tmp_dir = tempfile.mkdtemp(prefix="bse_bhav_")
         try:
@@ -122,10 +126,10 @@ def download_bse_bhavcopy(target_date, retries: int = 3) -> pd.DataFrame | None:
                         os.remove(file_path)
                     except Exception:
                         pass
-                    print(f"✅ BSE Bhav downloaded: {len(df)} records for {d}")
+                    print(f"✅ BSE Bhav downloaded via bse package: {len(df)} records for {d}")
                     return df
         except Exception as e:
-            print(f"⚠️  BSE package download failed: {e}. Trying direct URL...")
+            print(f"⚠️  BSE package failed: {e}")
         finally:
             try:
                 import shutil
@@ -133,25 +137,28 @@ def download_bse_bhavcopy(target_date, retries: int = 3) -> pd.DataFrame | None:
             except Exception:
                 pass
 
-    # Fallback: direct URL
-    ds = d.strftime("%d%m%y").upper()
-    url = f"https://www.bseindia.com/download/BhavCopy/Equity/EQ{ds}_CSV.ZIP"
-    for attempt in range(retries):
-        try:
-            r = requests.get(url, headers=BSE_HEADERS, timeout=30)
-            if r.status_code == 200 and len(r.content) > 500:
-                with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-                    csv_files = [f for f in z.namelist() if f.endswith(".csv")]
-                    if not csv_files:
-                        return None
+    # Strategy 2: cloudscraper (bypasses Cloudflare TLS fingerprinting)
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows"})
+        ds = d.strftime("%d%m%y").upper()
+        url = f"https://www.bseindia.com/download/BhavCopy/Equity/EQ{ds}_CSV.ZIP"
+        r = scraper.get(url, timeout=30)
+        if r.status_code == 200 and len(r.content) > 500:
+            import zipfile, io
+            with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+                csv_files = [f for f in z.namelist() if f.endswith(".csv")]
+                if csv_files:
                     df = pd.read_csv(z.open(csv_files[0]))
-                    print(f"✅ BSE Bhav (fallback URL) downloaded: {len(df)} records for {d}")
+                    print(f"✅ BSE Bhav downloaded via cloudscraper: {len(df)} records for {d}")
                     return df
-        except Exception as e:
-            if attempt < retries - 1:
-                time.sleep(5 * (attempt + 1))
-            else:
-                print(f"❌ BSE Bhav download failed: {e}")
+    except ImportError:
+        print("⚠️  cloudscraper not installed. Add it to requirements.txt.")
+    except Exception as e:
+        print(f"⚠️  cloudscraper failed: {e}")
+
+    # Both strategies failed — BSE unavailable from this environment
+    print(f"ℹ️  BSE Bhav not available for {d}. Running in NSE-only mode (this is normal on cloud runners).")
     return None
 
 

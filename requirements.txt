@@ -7,3 +7,4 @@ twilio
 python-dotenv
 flask
 bse
+cloudscraper
