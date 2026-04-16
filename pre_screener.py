@@ -111,12 +111,21 @@ def stage_2_fundamental_scorer(df: pd.DataFrame) -> pd.DataFrame:
         # ── HARD DROP RULES (Section 0B) — check before scoring ─────────────
 
         # HD1: Zero promoter holding AND no institutional holding
+        # Only apply this hard drop when we have actual shareholding data loaded.
+        # If fundamentals DB is empty (first run), all values default to 0 —
+        # in that case skip HD1 to avoid dropping everything.
         promoter = float(row.get("promoter_holding",
-                          row.get("promoter_pct", 0)) or 0)
-        fii = float(row.get("fii_holding", row.get("fii", 0)) or 0)
-        dii = float(row.get("dii_holding", row.get("dii", 0)) or 0)
-        if promoter == 0.0 and (fii + dii) < 1.0:
+                          row.get("promoter_pct", -1)) or -1)
+        fii = float(row.get("fii_holding", row.get("fii", -1)) or -1)
+        dii = float(row.get("dii_holding", row.get("dii", -1)) or -1)
+        # -1 means data absent — only hard-drop if data was present and explicitly 0
+        has_shareholding_data = (promoter >= 0 or fii >= 0 or dii >= 0)
+        if has_shareholding_data and promoter == 0.0 and max(fii, 0) + max(dii, 0) < 1.0:
             continue  # HD1: governance black hole — hard drop
+        # Use 0 as default for scoring when data absent
+        if promoter < 0: promoter = 0
+        if fii < 0: fii = 0
+        if dii < 0: dii = 0
 
         # HD2: 3+ consecutive quarterly losses
         if int(row.get("consecutive_losses", 0) or 0) >= 3:

@@ -499,9 +499,27 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
 
 
 def _safe_insert(df: pd.DataFrame, table: str, conn) -> None:
-    """INSERT OR IGNORE via a temp table — handles PRIMARY KEY conflicts."""
+    """INSERT OR IGNORE via a temp table — handles PRIMARY KEY conflicts.
+    Only inserts columns that actually exist in the target table.
+    Extra columns from reconciler (final_symbol, diff_pct etc.) are silently dropped.
+    """
     if df is None or df.empty:
         return
+    # Get the columns that exist in the target table
+    try:
+        cur = conn.execute(f"PRAGMA table_info({table})")
+        table_cols = [row[1] for row in cur.fetchall()]
+    except Exception:
+        table_cols = []
+
+    if table_cols:
+        # Keep only columns that exist in both df and the target table
+        cols_to_insert = [c for c in table_cols if c in df.columns]
+        if not cols_to_insert:
+            print(f"⚠️  No matching columns for {table}. Skipping insert.")
+            return
+        df = df[cols_to_insert].copy()
+
     tmp = f"_tmp_{table}"
     df.to_sql(tmp, conn, if_exists="replace", index=False)
     conn.execute(f"INSERT OR IGNORE INTO {table} SELECT * FROM {tmp}")

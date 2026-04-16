@@ -6,9 +6,25 @@ from openpyxl.formatting.rule import ColorScaleRule
 import datetime
     
 class ExcelGeneratorV6:
+    # Columns required by the Excel sheets — filled with defaults if absent
+    REQUIRED_COLS = {
+        'early_entry_score': 0, 'composite_score': 0, 'spike_count': 0,
+        'mos_pct': 0.0, 'upside': 0.0, 'verdict': 'WATCHLIST',
+        'spike_suppressed': False, 'symbol': '', 'close': 0.0,
+        'company_name': '', 'sector': '', 'exchange_tag': 'NSE',
+        'Analysis_Summary_Block_H': '—', '2w_chg': 0, '4w_chg': 0,
+        '6w_chg': 0, '8w_chg': 0, 'cfv': 0.0, 'entry_range': '—',
+        'stop_loss': '—', 't1': 0, 't2': 0, 't3': 0,
+        'horizon': 'POSITIONAL', 'risk_level': 'MEDIUM',
+    }
+
     def __init__(self, data, date_str):
-        self.df = pd.DataFrame(data)
+        self.df = pd.DataFrame(data) if data else pd.DataFrame()
         self.date_str = date_str
+        # Ensure all required columns exist with safe defaults
+        for col, default in self.REQUIRED_COLS.items():
+            if col not in self.df.columns:
+                self.df[col] = default
         self.tab_colors = {
             "Dashboard": "1E293B", "Gold": "B45309", "Trade": "059669",
             "Alert": "7C3AED", "Preview": "0D9488", "Glossary": "475569"
@@ -100,10 +116,12 @@ class ExcelGeneratorV6:
         # 2. Summary Strip for Gold Sheet (Row 2)
         if is_gold:
             ws.merge_cells("A2:H2")
+            avg_e = data_df['early_entry_score'].mean() if 'early_entry_score' in data_df.columns and not data_df.empty else 0
+            avg_u = data_df['upside'].mean() if 'upside' in data_df.columns and not data_df.empty else 0
             summary_text = (
                 f"# gold stocks: {len(data_df)} | "
-                f"Avg Early Score: {data_df['early_entry_score'].mean():.0f} | "
-                f"Avg Upside: {data_df['upside'].mean():.1f}%"
+                f"Avg Early Score: {avg_e:.0f} | "
+                f"Avg Upside: {avg_u:.1f}%"
             )
             cell = ws.cell(row=2, column=1, value=summary_text)
             cell.font = Font(bold=True, color="B45309")
@@ -123,8 +141,8 @@ class ExcelGeneratorV6:
                     cell.font = Font(bold=True, size=8)
                     cell.fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
                 elif r_idx > 4:
-                    verdict = data_df.iloc[r_idx-5]['verdict']
-                    style = self.verdict_styles.get(verdict, self.verdict_styles["NEUTRAL"])
+                    verdict = data_df.iloc[r_idx-5].get('verdict', 'WATCHLIST')
+                    style = self.verdict_styles.get(verdict, {"bg": "F1F5F9", "text": "1E293B"})
                     cell.fill = PatternFill(start_color=style["bg"], end_color=style["bg"], fill_type="solid")
                     if r_idx % 2 == 0: cell.fill = even_fill
                     cell.font = Font(color=style["text"], size=9)
@@ -138,7 +156,7 @@ class ExcelGeneratorV6:
             cell.alignment = Alignment(wrap_text=True, vertical='top')
             ws.column_dimensions[cell.column_letter].width = 80
             # Background: dark shade of verdict
-            verdict = data_df.iloc[r_idx-5]['verdict']
+            verdict = data_df.iloc[r_idx-5].get('verdict', 'WATCHLIST')
             style = self.verdict_styles.get(verdict, {"bg": "1E293B"})
             cell.fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
             cell.font = Font(color="FFFFFF")
@@ -329,20 +347,22 @@ class ExcelGeneratorV6:
         # Note: In a live run, this pulls from the 'alerts' list generated during analysis
         row_idx = 2
         for stock in self.df.to_dict('records'):
-            if stock.get('spike_count', 0) >= 1 or stock.get('early_entry_score', 0) >= 70:
-                # Mocking the row data structure based on your screenshot
-                alert_type = "SPIKE FIRED" if stock['spike_count'] >= 1 else "EARLY MOVER DETECTED"
-                
+            spike = stock.get('spike_count', 0) or 0
+            early = stock.get('early_entry_score', 0) or 0
+            comp  = stock.get('composite_score', 0) or 0
+            verd  = stock.get('verdict', 'WATCHLIST') or 'WATCHLIST'
+            if spike >= 1 or early >= 70:
+                alert_type = "SPIKE FIRED" if spike >= 1 else "EARLY MOVER DETECTED"
                 row_data = [
-                    self.date_str, 
-                    "20:30", 
-                    stock['symbol'], 
+                    self.date_str,
+                    "20:30",
+                    stock.get('symbol', ''),
                     alert_type,
-                    f"Spike {stock['spike_count']}/6 | Score: {stock['composite_score']}",
+                    f"Spike {spike}/6 | Score: {comp}",
                     stock.get('prev_score', '—'),
-                    stock['composite_score'],
+                    comp,
                     stock.get('score_delta', 0),
-                    "REVIEW FOR ENTRY" if "BUY" in stock['verdict'] else "WATCH",
+                    "REVIEW FOR ENTRY" if "BUY" in verd else "WATCH",
                     stock.get('exchange_tag', 'NSE')
                 ]
                 
@@ -375,7 +395,7 @@ class ExcelGeneratorV6:
         # 2. Get Top Data for the Preview (Section 9/10 Logic)
         top_stock = self.df.iloc[0] if not self.df.empty else {}
         gold_count = len(self._get_gold_data())
-        avg_upside = self.df['upside'].mean() if not self.df.empty else 0
+        avg_upside = self.df['upside'].mean() if not self.df.empty and 'upside' in self.df.columns else 0
         
         # 3. WhatsApp Message Preview Section
         ws.cell(row=1, column=1, value="WHATSAPP PREVIEW").font = Font(bold=True, color="059669")
@@ -416,15 +436,22 @@ class ExcelGeneratorV6:
     def _get_gold_data(self):
         """
         Section 10 Sheet 2 Filter Logic (Strict Enforcement).
-        Criteria: Early Entry Score >= 70 OR (MoS >= 25% AND Score >= 70) 
+        Criteria: Early Entry Score >= 70 OR (MoS >= 25% AND Score >= 70)
         AND Verdict != AVOID / EXIT AND Spike Suppressed = FALSE.
+        Returns empty DataFrame safely if df is empty or columns missing.
         """
-        return self.df[
-            ((self.df['early_entry_score'] >= 70) | 
-             ((self.df['mos_pct'] >= 25) & (self.df['composite_score'] >= 70))) &
-            (self.df['verdict'] != "AVOID / EXIT") &
-            (self.df['spike_suppressed'] == False)
-        ].copy()
+        if self.df.empty:
+            return pd.DataFrame()
+        try:
+            mask = (
+                ((self.df['early_entry_score'] >= 70) |
+                 ((self.df['mos_pct'] >= 25) & (self.df['composite_score'] >= 70))) &
+                (self.df['verdict'] != "AVOID / EXIT") &
+                (self.df['spike_suppressed'] == False)
+            )
+            return self.df[mask].copy()
+        except Exception:
+            return pd.DataFrame()
     
     def _build_gold_sheet(self, wb):
         """
@@ -442,9 +469,12 @@ class ExcelGeneratorV6:
 
         # 2. Row 2: Summary Strip (Dynamic Calc from Attachment)
         ws.merge_cells("A2:H2")
+        avg_early = gold_df['early_entry_score'].mean() if not gold_df.empty else 0
+        avg_upside = gold_df['upside'].mean() if not gold_df.empty else 0
+        avg_spike = gold_df['spike_count'].mean() if not gold_df.empty else 0
         summary_text = (
-            f"# gold stocks: {len(gold_df)} | Avg Early Score: {gold_df['early_entry_score'].mean():.0f} | "
-            f"Avg Upside: {gold_df['upside'].mean():.1f}% | Avg Spike: {gold_df['spike_count'].mean():.1f} | "
+            f"# gold stocks: {len(gold_df)} | Avg Early Score: {avg_early:.0f} | "
+            f"Avg Upside: {avg_upside:.1f}% | Avg Spike: {avg_spike:.1f} | "
             f"Delivery date: {self.date_str}"
         )
         summary_cell = ws.cell(row=2, column=1, value=summary_text)
@@ -496,8 +526,6 @@ class ExcelGeneratorV6:
             # 4. Set column width (enforce scannability)
             ws.column_dimensions[cell.column_letter].width = 80
 
-        # Final Settings
+        # Final Settings..
         ws.freeze_panes = "A5" 
-        ws.sheet_properties.tabColor = "B45309" 
-
-
+        ws.sheet_properties.tabColor = "B45309"
