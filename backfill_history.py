@@ -966,6 +966,19 @@ def run_backfill():
 
     conn.close()
 
+    # ── Section 10: Fetch NSE fundamentals for all symbols ────────────────────
+    print("\n🏦 Fetching NSE fundamentals (PE, sector, promoter%, FII%)...")
+    try:
+        all_syms = pd.read_sql(
+            "SELECT DISTINCT symbol FROM daily_prices WHERE exchange='NSE' ORDER BY symbol",
+            conn
+        )['symbol'].tolist()
+        fetch_nse_fundamentals(conn, all_syms, max_symbols=500)
+    except Exception as e:
+        print(f"   ⚠️  Fundamentals fetch warning: {e}")
+
+    conn.close()
+
     print("\n" + "─" * 60)
     print(f"✅ NSE    : {stats['nse_ok']} days  |  {stats['nse_fail']} failed")
     print(f"✅ BSE    : {stats['bse_ok']} days  |  {stats['bse_fail']} failed")
@@ -1024,6 +1037,167 @@ def _compute_all_indicators(conn):
         upsert(pd.DataFrame(wm_rows), 'weekly_momentum', conn)
         print(f"   ✅ weekly_momentum: {len(wm_rows)} rows")
 
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 10 — NSE FUNDAMENTALS FETCH (free, no API key)
+# Fetches: companyName, sector, PE, EPS, 52w H/L, marketCap,
+#          promoter%, pledge%, FII%, DII% for all symbols
+# Runs once per symbol — skips if updated within 7 days
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _nse_quote(symbol: str, session) -> dict:
+    """Fetch equity quote from NSE API (free, session-based)."""
+    try:
+        url = f"https://www.nseindia.com/api/quote-equity?symbol={symbol}"
+        r = session.get(url, headers=NSE_HEADERS, timeout=10)
+        if r.status_code != 200:
+            return {}
+        d = r.json()
+        info  = d.get("info", {})
+        quote = d.get("priceInfo", {})
+        meta  = d.get("metadata", {})
+        wk52  = quote.get("weekHighLow", {})
+        return {
+            "company_name": info.get("companyName", ""),
+            "sector":       info.get("industry", ""),
+            "isin":         info.get("isin", ""),
+            "face_value":   float(meta.get("pdFaceValue", 10) or 10),
+            "pe":           float(quote.get("pdSymbolPe") or 0),
+            "eps":          float(quote.get("eps") or 0),
+            "pb":           float(quote.get("pb") or 0),
+            "high_52w":     float(wk52.get("max") or 0),
+            "low_52w":      float(wk52.get("min") or 0),
+            "mcap_cr":      float(d.get("securityInfo", {}).get("totalMcap") or 0) / 1e7,
+        }
+    except Exception:
+        return {}
+
+
+def _nse_shareholding(symbol: str, session) -> dict:
+    """Fetch shareholding pattern from NSE corp-info API."""
+    try:
+        url = f"https://www.nseindia.com/api/corp-info?symbol={symbol}"
+        r = session.get(url, headers=NSE_HEADERS, timeout=10)
+        if r.status_code != 200:
+            return {}
+        d = r.json()
+        sh = d.get("shareholdingPatterns", {}).get("data", [{}])[0] if d.get("shareholdingPatterns") else {}
+        return {
+            "promoter_pct": float(sh.get("promoterAndPromoterGroupTotal") or 0),
+            "fii_pct":      float(sh.get("fiisTotal") or 0),
+            "dii_pct":      float(sh.get("diisTotal") or 0),
+            "public_float": float(sh.get("publicTotal") or 0),
+        }
+    except Exception:
+        return {}
+
+
+def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
+    """
+    Fetch fundamental data for up to max_symbols symbols via NSE free API.
+    Skips symbols already updated within 7 days.
+    Stores in: symbol_master, fundamental_metrics, shareholding tables.
+    """
+    today_str = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+    cutoff    = (datetime.datetime.now(IST) - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    # Find symbols that need updating
+    already = {r[0] for r in conn.execute(
+        "SELECT symbol FROM fundamental_metrics WHERE date >= ?", (cutoff,)
+    ).fetchall()}
+    to_fetch = [s for s in symbols if s not in already][:max_symbols]
+
+    if not to_fetch:
+        print(f"   Fundamentals: all {len(symbols)} symbols up to date. Skipping.")
+        return
+
+    print(f"   Fetching fundamentals for {len(to_fetch)} symbols via NSE API...")
+
+    # Warm up NSE session
+    session = requests.Session()
+    try:
+        session.get("https://www.nseindia.com", headers=NSE_HEADERS, timeout=8)
+    except Exception:
+        pass
+
+    ok = fail = 0
+    fm_rows = []
+    sh_rows = []
+
+    for i, sym in enumerate(to_fetch, 1):
+        try:
+            quote = _nse_quote(sym, session)
+            shold = _nse_shareholding(sym, session)
+
+            if quote:
+                # Update symbol_master
+                conn.execute("""
+                    UPDATE symbol_master
+                    SET company_name=?, sector=?, face_value=?, isin=?, updated_on=?
+                    WHERE symbol=?
+                """, (
+                    quote.get("company_name", ""),
+                    quote.get("sector", ""),
+                    quote.get("face_value", 10),
+                    quote.get("isin", ""),
+                    today_str, sym
+                ))
+
+                # fundamental_metrics row (price-derived ratios)
+                cmp = float(conn.execute(
+                    "SELECT close FROM daily_prices WHERE symbol=? ORDER BY date DESC LIMIT 1",
+                    (sym,)
+                ).fetchone() or (0,))[0]
+
+                eps = quote.get("eps", 0)
+                pe  = quote.get("pe", 0)
+                pb  = quote.get("pb", 0)
+                earn_yield = round((eps / cmp * 100), 2) if cmp > 0 and eps > 0 else 0
+
+                fm_rows.append({
+                    "symbol": sym, "date": today_str,
+                    "pe_ttm": pe, "pb": pb,
+                    "earn_yield": earn_yield,
+                    "div_yield": 0,  # not in NSE quote API
+                })
+
+                ok += 1
+            else:
+                fail += 1
+
+            if shold:
+                sh_rows.append({
+                    "symbol":       sym,
+                    "date":         today_str,
+                    "promoter_pct": shold.get("promoter_pct", 0),
+                    "fii_pct":      shold.get("fii_pct", 0),
+                    "dii_pct":      shold.get("dii_pct", 0),
+                    "public_float": shold.get("public_float", 0),
+                    "pledge_pct":   0,  # requires separate API call
+                })
+
+        except Exception as e:
+            fail += 1
+
+        # Batch commit every 50 symbols
+        if i % 50 == 0:
+            conn.commit()
+            print(f"   ... {i}/{len(to_fetch)} ({ok} ok, {fail} failed)", flush=True)
+            time.sleep(1.0)  # polite delay
+        else:
+            time.sleep(0.3)
+
+    conn.commit()
+
+    if fm_rows:
+        upsert(pd.DataFrame(fm_rows), "fundamental_metrics", conn)
+    if sh_rows:
+        upsert(pd.DataFrame(sh_rows), "shareholding", conn)
+
+    print(f"   Fundamentals: {ok} fetched, {fail} failed → "
+          f"fundamental_metrics: {len(fm_rows)} rows, shareholding: {len(sh_rows)} rows")
 
 if __name__ == "__main__":
     run_backfill()

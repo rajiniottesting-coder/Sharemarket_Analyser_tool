@@ -50,9 +50,9 @@ jobs:
         run: |
           ROWS=$(python3 -c "import sqlite3,os; c=sqlite3.connect('market_data.db') if os.path.exists('market_data.db') else None; print(c.execute('SELECT COUNT(*) FROM daily_prices').fetchone()[0] if c else 0)" 2>/dev/null || echo 0)
           echo "daily_prices rows: $ROWS"
-          if [ "$ROWS" -lt "5000" ]; then
-            echo "Fresh DB - running 60-day backfill to build history..."
-            python3 backfill_history.py 60 || echo "Backfill completed (some dates may have failed - normal on cloud runners)"
+          if [ "$ROWS" -lt "50000" ]; then
+            echo "Fresh DB - running 365-day backfill to build history..."
+            python3 backfill_history.py 365 || echo "Backfill completed (some dates may have failed - normal on cloud runners)"
           else
             echo "Sufficient history ($ROWS rows) - skipping backfill"
           fi

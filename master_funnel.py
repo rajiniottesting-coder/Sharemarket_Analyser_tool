@@ -430,12 +430,107 @@ def run_master_pipeline():
             stock["bs_output"] = bs_report.get("output_line", "")
 
         # ─────────────────────────────────────────────────────────────────────
-        # SECTION 5: WEEKLY MOMENTUM DELTAS
+        # SECTION 5: WEEKLY MOMENTUM DELTAS + DB ENRICHMENT
+        # Pull 52w high/low, day_chg, technical indicators, company_name
+        # from tables already populated by backfill_history.py
         # ─────────────────────────────────────────────────────────────────────
-        print("📈 [Section 5] Calculating Weekly Momentum Deltas...")
+        print("📈 [Section 5] Calculating Weekly Momentum + DB Enrichment...")
+        import sqlite3 as _sq
+        _db = "market_data.db"
+        _date_str = target_date.strftime("%Y-%m-%d")
+
+        # Bulk-load technical indicators for all 100 symbols in one query
+        _syms = [s.get("symbol","") for s in final_100_list]
+        _sym_placeholders = ",".join(["?"]*len(_syms))
+        _ti_map = {}
+        _sm_map = {}   # symbol_master: company_name, sector, cap_category
+        _dp_map = {}   # daily_prices extra cols: day_chg_pct, 52w high/low
+        try:
+            _conn = _sq.connect(_db)
+            # Fundamental metrics (latest per symbol)
+            _fm_map = {}
+            try:
+                _fm_rows = _conn.execute(
+                    f"""SELECT fm.symbol, fm.pe_ttm, fm.pb, fm.earn_yield,
+                        fm.div_yield, fm.piotroski_f, fm.altman_z, fm.beneish_m,
+                        fm.roe, fm.roce, fm.roa, fm.gross_margin, fm.ebitda_margin,
+                        fm.net_margin, fm.debt_equity, fm.current_ratio,
+                        fm.rev_cagr_1y, fm.rev_cagr_3y, fm.pat_cagr_1y, fm.pat_cagr_3y,
+                        fm.rev_yoy, fm.pat_yoy, fm.total_debt_cr, fm.fcf_cr,
+                        fm.nd_ebitda, fm.int_coverage
+                        FROM fundamental_metrics fm
+                        INNER JOIN (
+                            SELECT symbol, MAX(date) as md FROM fundamental_metrics
+                            WHERE symbol IN ({_sym_placeholders}) GROUP BY symbol
+                        ) lt ON fm.symbol=lt.symbol AND fm.date=lt.md""",
+                    _syms
+                ).fetchall()
+                for r in _fm_rows:
+                    _fm_map[r[0]] = r[1:]
+            except Exception:
+                pass
+
+            # Shareholding (latest per symbol)
+            _sh_map = {}
+            try:
+                _sh_rows = _conn.execute(
+                    f"""SELECT sh.symbol, sh.promoter_pct, sh.promoter_qoq,
+                        sh.pledge_pct, sh.pledge_dir, sh.fii_pct, sh.fii_qoq,
+                        sh.dii_pct, sh.dii_qoq, sh.public_float
+                        FROM shareholding sh
+                        INNER JOIN (
+                            SELECT symbol, MAX(date) as md FROM shareholding
+                            WHERE symbol IN ({_sym_placeholders}) GROUP BY symbol
+                        ) lt ON sh.symbol=lt.symbol AND sh.date=lt.md""",
+                    _syms
+                ).fetchall()
+                for r in _sh_rows:
+                    _sh_map[r[0]] = r[1:]
+            except Exception:
+                pass
+
+            # Technical indicators (latest date per symbol)
+            _ti_rows = _conn.execute(
+                f"""SELECT t.symbol, t.sma_200, t.supertrend, t.adx, t.rsi_14,
+                    t.macd_signal_txt, t.stoch_k, t.mfi_14, t.obv_signal,
+                    t.above_vwap, t.support1, t.support2, t.resist1, t.resist2
+                    FROM technical_indicators t
+                    INNER JOIN (
+                        SELECT symbol, MAX(date) as md FROM technical_indicators
+                        WHERE symbol IN ({_sym_placeholders}) GROUP BY symbol
+                    ) latest ON t.symbol=latest.symbol AND t.date=latest.md""",
+                _syms
+            ).fetchall()
+            for r in _ti_rows:
+                _ti_map[r[0]] = r[1:]
+
+            # Symbol master: company_name, sector, cap_category
+            _sm_rows = _conn.execute(
+                f"SELECT symbol, company_name, sector, cap_category FROM symbol_master "
+                f"WHERE symbol IN ({_sym_placeholders})", _syms
+            ).fetchall()
+            for r in _sm_rows:
+                _sm_map[r[0]] = r[1:]
+
+            # Daily prices extra columns for today
+            _dp_rows = _conn.execute(
+                f"""SELECT symbol, day_chg_pct, week_high_52, week_low_52, vol_50d_avg
+                    FROM daily_prices
+                    WHERE symbol IN ({_sym_placeholders}) AND date=?""",
+                _syms + [_date_str]
+            ).fetchall()
+            for r in _dp_rows:
+                _dp_map[r[0]] = r[1:]
+
+            _conn.close()
+        except Exception as _e:
+            print(f"⚠️  DB enrichment warning: {_e}")
+
         for stock in final_100_list:
             sym = stock.get("symbol", "")
             history = get_symbol_history(sym)
+
+            # Weekly momentum from price history
             if not history.empty:
                 curr = float(history.iloc[-1]["close"])
                 def _chg(n):
@@ -443,13 +538,97 @@ def run_master_pipeline():
                         base = float(history.iloc[-n]["close"])
                         return round((curr - base) / base * 100, 2) if base > 0 else 0
                     return 0
-                stock["2w_chg"] = _chg(11)   # ~2 weeks = 10 trading days + 1
+                stock["2w_chg"] = _chg(11)
                 stock["4w_chg"] = _chg(21)
                 stock["6w_chg"] = _chg(31)
                 stock["8w_chg"] = _chg(41)
             else:
                 for k in ["2w_chg", "4w_chg", "6w_chg", "8w_chg"]:
                     stock[k] = 0
+
+            # Enrich from symbol_master
+            if sym in _sm_map:
+                cn, sec, cap = _sm_map[sym]
+                if not stock.get("company_name") and cn:
+                    stock["company_name"] = cn
+                if not stock.get("sector") or stock.get("sector") == "General":
+                    if sec:
+                        stock["sector"] = sec
+                if not stock.get("cap_category") or stock.get("cap_category") == "—":
+                    if cap:
+                        stock["cap_category"] = cap
+
+            # Enrich from daily_prices extended columns
+            if sym in _dp_map:
+                dc, h52, l52, vol50 = _dp_map[sym]
+                if dc:  stock["day_change"]  = round(float(dc), 2)
+                if h52: stock["high_52w"]    = round(float(h52), 2)
+                if l52: stock["low_52w"]     = round(float(l52), 2)
+                if vol50 and float(vol50) > 0:
+                    curr_vol = float(stock.get("volume", 0) or 0)
+                    stock["vol_ratio"] = round(curr_vol / float(vol50), 2)
+
+            # Enrich from fundamental_metrics
+            if sym in _fm_map:
+                pe, pb, ey, dy, pf, az, bm, roe, roce, roa, gm, em, nm,                 de, cr, rc1, rc3, pc1, pc3, ry, py, td, fcf, nde, ic = _fm_map[sym]
+                def _fv(v): return float(v) if v and float(v) != 0 else "—"
+                stock.setdefault("pe",           _fv(pe))
+                stock.setdefault("pb",           _fv(pb))
+                stock.setdefault("earnings_yield", _fv(ey))
+                stock.setdefault("earn_yield",   _fv(ey))
+                stock.setdefault("div_yield",    _fv(dy))
+                stock.setdefault("piotroski_f",  _fv(pf))
+                stock.setdefault("altman_z",     _fv(az))
+                stock.setdefault("beneish_m",    _fv(bm))
+                stock.setdefault("roe",          _fv(roe))
+                stock.setdefault("roce",         _fv(roce))
+                stock.setdefault("roa",          _fv(roa))
+                stock.setdefault("gross_margin", _fv(gm))
+                stock.setdefault("ebitda_margin",_fv(em))
+                stock.setdefault("npm",          _fv(nm))
+                stock.setdefault("debt_equity",  _fv(de))
+                stock.setdefault("current_ratio",_fv(cr))
+                stock.setdefault("rev_cagr_1y",  _fv(rc1))
+                stock.setdefault("rev_cagr_3y",  _fv(rc3))
+                stock.setdefault("pat_cagr_1y",  _fv(pc1))
+                stock.setdefault("pat_cagr_3y",  _fv(pc3))
+                stock.setdefault("rev_yoy",      _fv(ry))
+                stock.setdefault("pat_yoy",      _fv(py))
+                stock.setdefault("total_debt",   _fv(td))
+                stock.setdefault("fcf",          _fv(fcf))
+                stock.setdefault("nd_ebitda",    _fv(nde))
+                stock.setdefault("int_coverage", _fv(ic))
+
+            # Enrich from shareholding
+            if sym in _sh_map:
+                pro, proq, pled, pledd, fii, fiiq, dii, diiq, pub = _sh_map[sym]
+                def _fv2(v): return float(v) if v and float(v) != 0 else "—"
+                stock.setdefault("promoter_pct",    _fv2(pro))
+                stock.setdefault("promoter_qoq",    _fv2(proq))
+                stock.setdefault("pledge_pct",      _fv2(pled))
+                stock.setdefault("pledge_direction",pledd or "—")
+                stock.setdefault("fii_pct",         _fv2(fii))
+                stock.setdefault("fii_qoq",         _fv2(fiiq))
+                stock.setdefault("dii_pct",         _fv2(dii))
+                stock.setdefault("dii_qoq",         _fv2(diiq))
+                stock.setdefault("public_float",    _fv2(pub))
+
+            # Enrich from technical_indicators
+            if sym in _ti_map:
+                sma200, st, adx, rsi, macd_s, stk, mfi, obv_s, vwap_s, s1, s2, r1, r2 = _ti_map[sym]
+                stock["sma_200"]    = round(float(sma200), 2) if sma200 else "—"
+                stock["supertrend"] = st or "NEUTRAL"
+                stock["adx"]        = round(float(adx), 2) if adx else "—"
+                stock["rsi"]        = round(float(rsi), 2) if rsi else "—"
+                stock["macd_signal"]= macd_s or "NEUTRAL"
+                stock["stoch_k"]    = round(float(stk), 2) if stk else "—"
+                stock["mfi"]        = round(float(mfi), 2) if mfi else "—"
+                stock["obv_signal"] = obv_s or "—"
+                stock["above_vwap"] = vwap_s or "—"
+                stock["support_1"]  = round(float(s1), 2) if s1 else "—"
+                stock["support_2"]  = round(float(s2), 2) if s2 else "—"
+                stock["resist_1"]   = round(float(r1), 2) if r1 else "—"
+                stock["resist_2"]   = round(float(r2), 2) if r2 else "—"
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 5B: FAIR VALUE ENGINE
@@ -466,6 +645,81 @@ def run_master_pipeline():
             )
             stock.update(models)
             stock.update(fv_result)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # SECTION 6: SCORING + KEY FIXES + PRICE TARGETS
+        # ─────────────────────────────────────────────────────────────────────
+        from scoring_engine import ScoringEngine
+        scoring = ScoringEngine()
+        for stock in final_100_list:
+            # Composite score + verdict
+            score_result = scoring.calculate_composite_score(stock)
+            stock.update(score_result)
+
+            # Storm score
+            storm = scoring.calculate_storm_score(stock, market_vix=12.0,
+                                                   market_off_peak=3.0)
+            if storm:
+                stock.update(storm)
+            else:
+                stock.setdefault("storm_score", 0)
+                stock.setdefault("storm_label", "N/A")
+
+            # Spike fields
+            stock.setdefault("spike_count", 0)
+            stock.setdefault("spike_score", 0)
+
+            # Vol ratio (use DB-enriched value if already set, else calculate)
+            if not stock.get("vol_ratio"):
+                from data_bridge import get_20d_avg_vol
+                avg_vol = get_20d_avg_vol(str(stock.get("symbol", "") or ""))
+                curr_vol = float(stock.get("volume", 0) or 0)
+                stock["vol_ratio"] = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
+
+            # Smart money signals
+            if not stock.get("smart_money_signals"):
+                sentiment = stock.get("smart_money_sentiment", "NEUTRAL")
+                insider   = stock.get("insider_buy_alert", "NO")
+                signals = []
+                if sentiment == "ACCUMULATION": signals.append("INST ACCUMULATION")
+                if insider == "YES":            signals.append("INSIDER BUYING")
+                stock["smart_money_signals"] = ", ".join(signals) if signals else "NEUTRAL"
+
+            # MoS label
+            mos = float(stock.get("mos_pct", 0) or 0)
+            if   mos > 40:  stock["mos_label"] = "EXCEPTIONAL"
+            elif mos > 25:  stock["mos_label"] = "STRONG"
+            elif mos > 10:  stock["mos_label"] = "ADEQUATE"
+            elif mos > 0:   stock["mos_label"] = "THIN"
+            elif mos > -15: stock["mos_label"] = "SLIGHT PREMIUM"
+            else:           stock["mos_label"] = "SIGNIFICANT PREMIUM"
+
+            # Key-name fixes: engine output key → excel column key
+            if "earn_yield" in stock and not stock.get("earnings_yield"):
+                stock["earnings_yield"] = stock["earn_yield"]
+            if not stock.get("total_debt") and stock.get("total_debt_cr"):
+                stock["total_debt"] = stock["total_debt_cr"]
+            if stock.get("bs_flags") and not stock.get("bs_output"):
+                stock["bs_output"] = stock["bs_flags"]
+
+            # Price targets from CMP and CFV
+            cmp = float(stock.get("close", 0) or 0)
+            cfv = float(stock.get("cfv", 0) or 0)
+            if cmp > 0:
+                stock.setdefault("stop_loss",   round(cmp * 0.93, 2))
+                stock.setdefault("entry_range", f"{round(cmp*0.98,1)}–{round(cmp*1.01,1)}")
+                t_base = cfv if cfv > cmp else cmp
+                stock.setdefault("t1", round(cmp * 1.05, 2))
+                stock.setdefault("t2", round(cmp * 1.10, 2))
+                stock.setdefault("t3", round(t_base, 2) if cfv > 0 else round(cmp * 1.20, 2))
+            else:
+                for k in ["t1","t2","t3","stop_loss","entry_range"]:
+                    stock.setdefault(k, "—")
+
+            # intel_queries: ensure string not list
+            iq = stock.get("intel_queries", "")
+            if isinstance(iq, list):
+                stock["intel_queries"] = " | ".join(iq)
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 7 & 8: AI INVESTOR CARDS
