@@ -14,16 +14,18 @@ Key fixes:
 import os
 import glob
 import datetime
+import tempfile
 import sys
 import pytz
 import pandas as pd
+from pathlib import Path
 
 # Section 1: System & Data Imports
 from orchestrator import gate_check
 from harvester import (
-    download_nse_bhavcopy, download_bse_bhavcopy,
-    download_nse_delivery, download_bse_delivery,
-    download_nse_sme_bhavcopy, download_bse_sme_bhavcopy,
+    download_nse_bhavcopy,
+    download_nse_delivery,
+    download_nse_sme_bhavcopy,
     download_nse_fo_participant_data,
 )
 from data_bridge import (
@@ -60,6 +62,125 @@ def cleanup_temp_files():
                 pass
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BSE DOWNLOAD — singleton `bse` pip package client
+# Replaces ALL direct-URL BSE harvester calls.
+# One client opened at pipeline start, reused for bhav + delivery + sme,
+# then closed in the finally block.  pip install bse
+# ─────────────────────────────────────────────────────────────────────────────
+
+_bse_client  = None
+_bse_tmp_dir = None
+
+BSE_COL_MAP = {
+    'SC_CODE': 'bse_code',   'SC_NAME': 'symbol',    'SC_GROUP': 'sc_group',
+    'OPEN':    'open',        'HIGH':    'high',       'LOW':      'low',
+    'CLOSE':   'close',       'PREVCLOSE':'prev_close','NO_OF_SHRS':'volume',
+    'NET_TURNOV':'turnover',  'ISIN_CODE':'isin',
+}
+
+
+def _get_bse_client():
+    global _bse_client, _bse_tmp_dir
+    if _bse_client is not None:
+        return _bse_client
+    try:
+        from bse import BSE
+        _bse_tmp_dir = tempfile.mkdtemp(prefix="bse_live_")
+        _bse_client  = BSE(download_folder=_bse_tmp_dir)
+        print("✅ BSE client initialised (bse package)")
+    except ImportError:
+        print("❌ `bse` package not found — run: pip install bse")
+        _bse_client = None
+    except Exception as e:
+        print(f"❌ BSE client init error: {e}")
+        _bse_client = None
+    return _bse_client
+
+
+def _close_bse_client():
+    global _bse_client, _bse_tmp_dir
+    if _bse_client is not None:
+        try:
+            _bse_client.exit()
+        except Exception:
+            pass
+        _bse_client = None
+    if _bse_tmp_dir:
+        try:
+            import shutil
+            shutil.rmtree(_bse_tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        _bse_tmp_dir = None
+
+
+def _bse_bhav(target_date):
+    """BSE equity bhav copy — via bse package (always attempted)."""
+    client = _get_bse_client()
+    if client is None:
+        return None
+    try:
+        fp = client.bhavcopyReport(
+            date=datetime.datetime.combine(target_date, datetime.datetime.min.time()),
+            folder=_bse_tmp_dir,
+        )
+        if fp is None or not Path(fp).exists():
+            print(f"⚠️  BSE bhav: not published yet for {target_date}")
+            return None
+        df = pd.read_csv(fp)
+        try: os.remove(fp)
+        except Exception: pass
+        df = df.rename(columns=BSE_COL_MAP)
+        df.columns = [c.lower().strip() for c in df.columns]
+        if 'symbol' not in df.columns and 'sc_name' in df.columns:
+            df['symbol'] = df['sc_name']
+        for col in ['open','high','low','close','prev_close','volume','turnover']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        df = df[df['close'] > 0].reset_index(drop=True)
+        print(f"✅ BSE Bhav downloaded: {len(df)} records for {target_date}")
+        return df
+    except RuntimeError:
+        print(f"⚠️  BSE bhav: report unavailable for {target_date} (holiday?)")
+        return None
+    except Exception as e:
+        print(f"❌ BSE bhav error: {e}")
+        return None
+
+
+def _bse_delivery(target_date):
+    """BSE delivery report — via bse package."""
+    client = _get_bse_client()
+    if client is None:
+        return None
+    try:
+        fp = client.deliveryReport(
+            date=datetime.datetime.combine(target_date, datetime.datetime.min.time()),
+            folder=_bse_tmp_dir,
+        )
+        if fp is None or not Path(fp).exists():
+            return None
+        df = pd.read_csv(fp)
+        try: os.remove(fp)
+        except Exception: pass
+        df.columns = [c.lower().strip() for c in df.columns]
+        print(f"✅ BSE Delivery downloaded: {len(df)} records for {target_date}")
+        return df
+    except Exception as e:
+        print(f"⚠️  BSE delivery unavailable for {target_date}: {e}")
+        return None
+
+
+def _bse_sme(target_date):
+    """BSE SME bhav — best-effort via harvester (non-critical)."""
+    try:
+        from harvester import download_bse_sme_bhavcopy
+        return download_bse_sme_bhavcopy(target_date)
+    except Exception:
+        return None
+
+
 def run_master_pipeline():
     cleanup_temp_files()
 
@@ -84,9 +205,11 @@ def run_master_pipeline():
             print(f"⚠️  Skip notification failed: {e}")
         return
 
-    # Gate passed — extract the target trading date
-    target_date   = gate_result["target_date"]          # datetime.date (yesterday)
-    bse_available = gate_result.get("bse_available", True)
+    # Gate passed — extract the target trading date.
+    # NOTE: gate_result["bse_available"] is IGNORED — gate C4 tests a direct
+    # URL that cloud/GitHub-Actions IPs cannot reach. BSE always runs via
+    # the `bse` pip package which handles Akamai auth internally.
+    target_date = gate_result["target_date"]   # datetime.date (yesterday)
     print(f"✅ Gate passed. Processing trading day: {target_date}")
 
     try:
@@ -94,13 +217,21 @@ def run_master_pipeline():
         # SECTION 1: MULTI-STREAM HARVESTING
         # ─────────────────────────────────────────────────────────────────────
         print("🚀 [Section 1] Harvesting Market Streams...")
+        # Open BSE client once — reused for bhav, delivery, sme
+        _get_bse_client()
         raw_nse   = download_nse_bhavcopy(target_date)
-        raw_bse   = download_bse_bhavcopy(target_date) if bse_available else None
+        raw_bse   = _bse_bhav(target_date)        # bse package — always attempted
         nse_deliv = download_nse_delivery(target_date)
-        bse_deliv = download_bse_delivery(target_date) if bse_available else None
+        bse_deliv = _bse_delivery(target_date)    # bse package — always attempted
         sme_nse   = download_nse_sme_bhavcopy(target_date)
-        sme_bse   = download_bse_sme_bhavcopy(target_date) if bse_available else None
+        sme_bse   = _bse_sme(target_date)         # best-effort
         fo_data   = download_nse_fo_participant_data(target_date)
+        # Determine actual BSE availability for run_stats logging
+        bse_available = isinstance(raw_bse, pd.DataFrame) and not raw_bse.empty
+        print(f"   NSE: {'✅' if raw_nse is not None else '❌'}  "
+              f"BSE: {'✅' if bse_available else '⚠️ NSE-only'}  "
+              f"NSE-Deliv: {'✅' if nse_deliv is not None else '⚠️'}  "
+              f"BSE-Deliv: {'✅' if bse_deliv is not None else '⚠️'}")
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 12B C5 — DATA INTEGRITY CHECK (post-download)
@@ -142,58 +273,10 @@ def run_master_pipeline():
             participant_data=fo_data,
         )
 
-        # Save bulk deals and insider trades directly — do NOT pass through
-        # save_to_database which calls standardize_to_v7_schema and corrupts them
-        _today_str = target_date.strftime("%Y-%m-%d") if hasattr(target_date,"strftime") else str(target_date)
-
-        def _map_and_save_deals(raw_df, table_name, col_map, today):
-            """Map raw API columns → table schema and save idempotently."""
-            if raw_df is None or raw_df.empty:
-                return
-            try:
-                import sqlite3 as _sq3
-                df = raw_df.copy()
-                df.columns = [str(c).lower().strip().replace(" ","_") for c in df.columns]
-                df = df.rename(columns={k:v for k,v in col_map.items() if k in df.columns})
-                df["date"] = today
-                # Keep only columns that exist in our table
-                _conn = _sq3.connect("market_data.db")
-                _cur = _conn.execute(f"PRAGMA table_info({table_name})")
-                tbl_cols = [r[1] for r in _cur.fetchall()]
-                keep = [c for c in tbl_cols if c in df.columns]
-                if not keep:
-                    print(f"⚠️  No matching columns for {table_name}. Skipping.")
-                    _conn.close(); return
-                df = df[keep].copy()
-                _conn.execute(f"DELETE FROM {table_name} WHERE date = ?", (today,))
-                _conn.commit()
-                df.to_sql(f"_tmp_{table_name}", _conn, if_exists="replace", index=False)
-                _conn.execute(f"INSERT OR IGNORE INTO {table_name} SELECT * FROM _tmp_{table_name}")
-                _conn.execute(f"DROP TABLE IF EXISTS _tmp_{table_name}")
-                _conn.commit(); _conn.close()
-                print(f"✅ {table_name} saved: {len(df)} records.")
-            except Exception as _e:
-                print(f"⚠️  {table_name} save warning: {_e}")
-
-        # NSE Bulk Deals API columns → our bulk_deals table (symbol, date, client, type, quantity, price)
-        _bulk_map = {
-            "symbol": "symbol", "scrip_nm": "symbol", "security": "symbol",
-            "client_nm": "client", "clientname": "client", "client": "client",
-            "buy_sell": "type", "buysell": "type", "deal_type": "type",
-            "quantity_traded": "quantity", "quantity": "quantity", "qty": "quantity",
-            "trade_price": "price", "tradeprice": "price", "price": "price",
-        }
-        _map_and_save_deals(bulk_deals_df, "bulk_deals", _bulk_map, _today_str)
-
-        # NSE Insider Trades API columns → our insider_trades table (symbol, date, name, mode, qty, value)
-        _insider_map = {
-            "symbol": "symbol", "scrip_nm": "symbol", "security": "symbol",
-            "acq_name": "name", "acquirer_name": "name", "name": "name",
-            "acq_mode": "mode", "mode": "mode", "transaction_type": "mode",
-            "no_securities": "qty", "quantity": "qty", "qty": "qty",
-            "value": "value", "transaction_value": "value",
-        }
-        _map_and_save_deals(insider_trades_df, "insider_trades", _insider_map, _today_str)
+        if not bulk_deals_df.empty:
+            save_to_database(df=bulk_deals_df, table="bulk_deals")
+        if not insider_trades_df.empty:
+            save_to_database(df=insider_trades_df, table="insider_trades")
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 0: PRE-SCREENING FUNNEL (STAGES 1–3)
@@ -233,9 +316,9 @@ def run_master_pipeline():
             sym = stock.get("symbol", "")
 
             # Section 2: Latest Intelligence
-            # Store as a joined string — Excel cannot store Python lists
-            queries = fetch_latest_intelligence(sym, stock.get("sector", ""))
-            stock["intel_queries"] = " | ".join(queries) if isinstance(queries, list) else str(queries or "")
+            stock["intel_queries"] = fetch_latest_intelligence(
+                sym, stock.get("sector", "")
+            )
 
             # Section 3J: Bulk Deal Sentiment
             if not bulk_deals_df.empty and "symbol" in bulk_deals_df.columns:
@@ -327,75 +410,17 @@ def run_master_pipeline():
         # SECTION 5B: FAIR VALUE ENGINE
         # ─────────────────────────────────────────────────────────────────────
         from fair_value_engine import FairValueEngine
-        from scoring_engine import ScoringEngine
         fv_engine = FairValueEngine()
-        scoring   = ScoringEngine()
-
         for stock in final_100_list:
-            # ── Ensure fields that come from Bhav Copy are accessible ────────
-            # 'sector' and 'exchange_tag' come from consolidated data already
-            # but guard them with defaults in case columns differ
-            if not stock.get("sector"):
-                stock["sector"] = "General"
-            if not stock.get("exchange_tag"):
-                stock["exchange_tag"] = stock.get("exchange", "NSE")
-
-            # ── Fair Value (Section 5B) ───────────────────────────────────────
-            beta       = float(stock.get("beta", 1.0) or 1.0)
-            growth_3yr = float(stock.get("pat_cagr_3y",
-                               stock.get("rev_cagr_3y", 10)) or 10)
-            models     = fv_engine.calculate_all_models(stock, beta, growth_3yr)
-            fv_result  = fv_engine.get_composite_fair_value(
-                models, stock.get("sector", "IT"),
-                float(stock.get("close", 1) or 1)
+            beta        = float(stock.get("beta", 1.0) or 1.0)
+            growth_3yr  = float(stock.get("pat_cagr_3y",
+                                stock.get("rev_cagr_3y", 10)) or 10)
+            models      = fv_engine.calculate_all_models(stock, beta, growth_3yr)
+            fv_result   = fv_engine.get_composite_fair_value(
+                models, stock.get("sector", "IT"), float(stock.get("close", 1) or 1)
             )
             stock.update(models)
-            stock.update(fv_result)  # sets: cfv, mos_pct, upside, score_adjustment
-
-            # ── Composite Score + Verdict (Section 6) ────────────────────────
-            score_result = scoring.calculate_composite_score(stock)
-            stock.update(score_result)  # sets: composite_score, verdict, label
-
-            # ── Storm Score (Section 7) ───────────────────────────────────────
-            storm = scoring.calculate_storm_score(stock, market_vix=12.0,
-                                                   market_off_peak=3.0)
-            if storm:
-                stock.update(storm)
-            else:
-                stock.setdefault("storm_score", 0)
-                stock.setdefault("storm_label", "N/A")
-                stock.setdefault("storm_comment", "VIX stable — storm filter not active")
-
-            # ── Spike fields (used by report/excel) ──────────────────────────
-            stock.setdefault("spike_count", 0)
-            stock.setdefault("spike_triggers", [])
-            stock.setdefault("spike_score", 0)
-
-            # ── Vol ratio (used by report/excel) ──────────────────────────────
-            curr_vol = float(stock.get("volume", 0) or 0)
-            from data_bridge import get_20d_avg_vol
-            avg_vol  = get_20d_avg_vol(str(stock.get("symbol", "") or ""))
-            stock["vol_ratio"] = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
-
-            # ── Smart money signals (string for Excel/report) ─────────────────
-            if "smart_money_signals" not in stock:
-                sentiment = stock.get("smart_money_sentiment", "NEUTRAL")
-                insider   = stock.get("insider_buy_alert", "NO")
-                signals   = []
-                if sentiment == "ACCUMULATION":
-                    signals.append("INST ACCUMULATION")
-                if insider == "YES":
-                    signals.append("INSIDER BUYING")
-                stock["smart_money_signals"] = ", ".join(signals) if signals else "NEUTRAL"
-
-            # ── MoS label ─────────────────────────────────────────────────────
-            mos = float(stock.get("mos_pct", 0) or 0)
-            if   mos > 40:  stock["mos_label"] = "EXCEPTIONAL"
-            elif mos > 25:  stock["mos_label"] = "STRONG"
-            elif mos > 10:  stock["mos_label"] = "ADEQUATE"
-            elif mos > 0:   stock["mos_label"] = "THIN"
-            elif mos > -15: stock["mos_label"] = "SLIGHT PREMIUM"
-            else:           stock["mos_label"] = "SIGNIFICANT PREMIUM"
+            stock.update(fv_result)
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 7 & 8: AI INVESTOR CARDS
@@ -499,6 +524,10 @@ def run_master_pipeline():
             send_analysis_email(is_error=True, error_msg=str(e))
         except Exception:
             pass
+
+    finally:
+        # Always close BSE session and clean up temp files
+        _close_bse_client()
 
 
 if __name__ == "__main__":
