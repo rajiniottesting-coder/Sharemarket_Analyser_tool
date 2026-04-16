@@ -176,27 +176,9 @@ def gate_check() -> dict:
         log.append({"condition": "C4 BSE File", "status": "PASS", "detail": bse_url})
         print("✅ C4 PASS: BSE Bhav Copy confirmed available.")
 
-    # ── C5: Watchlist Populated ───────────────────────────────────────────────
-    # (Data integrity check C5 runs after download in master_funnel.py)
-    try:
-        conn = sqlite3.connect("market_data.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM watchlist WHERE active = 1")
-        wl_count = cursor.fetchone()[0]
-        conn.close()
-    except Exception:
-        wl_count = 1  # DB not built yet; allow first run to proceed
-
-    if wl_count == 0:
-        reason = "SKIP: Watchlist is empty. Add at least 1 active stock to the watchlist table."
-        log.append({"condition": "C5 Watchlist", "status": "FAIL", "detail": reason})
-        print(f"🛑 C5 FAIL: {reason}")
-        return {"run": False, "reason": reason, "target_date": target_date,
-                "bse_available": bse_ok, "log": log}
-    log.append({"condition": "C5 Watchlist", "status": "PASS",
-                "detail": f"{wl_count} active stocks in watchlist."})
-    print(f"✅ C5 PASS: {wl_count} stocks in watchlist.")
-
+    # REPLACE with just this one line:
+    print("✅ C5 SKIP: No watchlist required. Screener runs on full NSE+BSE universe.")
+    
     # ── ALL CONDITIONS PASSED ─────────────────────────────────────────────────
     log.append({"condition": "GATE RESULT", "status": "RUN_APPROVED",
                 "detail": f"Processing {target_str}. BSE mode: {'NSE+BSE' if bse_ok else 'NSE-only'}."})
