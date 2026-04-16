@@ -73,10 +73,17 @@ _bse_client  = None
 _bse_tmp_dir = None
 
 BSE_COL_MAP = {
-    'SC_CODE': 'bse_code',   'SC_NAME': 'symbol',    'SC_GROUP': 'sc_group',
-    'OPEN':    'open',        'HIGH':    'high',       'LOW':      'low',
-    'CLOSE':   'close',       'PREVCLOSE':'prev_close','NO_OF_SHRS':'volume',
-    'NET_TURNOV':'turnover',  'ISIN_CODE':'isin',
+    # Classic BSE equity bhav copy columns
+    'SC_CODE':    'bse_code',  'SC_NAME':     'symbol',    'SC_GROUP':  'sc_group',
+    'OPEN':       'open',      'HIGH':        'high',       'LOW':       'low',
+    'CLOSE':      'close',     'PREVCLOSE':   'prev_close', 'NO_OF_SHRS':'volume',
+    'NET_TURNOV': 'turnover',  'ISIN_CODE':   'isin',       'LAST':      'last',
+    'NO_TRADES':  'num_trades','SC_TYPE':     'sc_type',
+    # UDiFF new-format BSE columns (post-2024)
+    'FinInstrmId':'bse_code',  'TckrSymb':    'symbol',     'ClsPric':   'close',
+    'OpnPric':    'open',      'HghPric':     'high',       'LwPric':    'low',
+    'PrvsClsgPric':'prev_close','TtlTradgVol':'volume',     'TtlTrfVal': 'turnover',
+    'ISIN':       'isin',
 }
 
 
@@ -115,6 +122,32 @@ def _close_bse_client():
         _bse_tmp_dir = None
 
 
+def _parse_bse_df(df):
+    """Rename + coerce + filter BSE DataFrame. Returns clean df or None."""
+    if df is None or df.empty:
+        return None
+    df = df.copy()
+    df = df.rename(columns=BSE_COL_MAP)
+    df.columns = [c.lower().strip() for c in df.columns]
+    if 'symbol' not in df.columns and 'sc_name' in df.columns:
+        df['symbol'] = df['sc_name']
+    for col in ['open', 'high', 'low', 'close', 'volume', 'prev_close', 'turnover']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    for col in ['isin', 'bse_code']:
+        if col not in df.columns:
+            df[col] = ''
+        else:
+            df[col] = df[col].fillna('').astype(str).str.strip()
+    if 'close' not in df.columns:
+        return None
+    df = df[df['close'] > 0]
+    if 'symbol' in df.columns:
+        df['symbol'] = df['symbol'].fillna('').astype(str).str.strip()
+        df = df[df['symbol'].str.len() > 0]
+    return df.reset_index(drop=True) if not df.empty else None
+
+
 def _bse_bhav(target_date):
     """BSE equity bhav copy — via bse package (always attempted)."""
     client = _get_bse_client()
@@ -129,23 +162,18 @@ def _bse_bhav(target_date):
             print(f"⚠️  BSE bhav: not published yet for {target_date}")
             return None
         df = pd.read_csv(fp)
-        try: os.remove(fp)
-        except Exception: pass
-        df = df.rename(columns=BSE_COL_MAP)
-        df.columns = [c.lower().strip() for c in df.columns]
-        if 'symbol' not in df.columns and 'sc_name' in df.columns:
-            df['symbol'] = df['sc_name']
-        for col in ['open','high','low','close','prev_close','volume','turnover']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        df = df[df['close'] > 0].reset_index(drop=True)
-        print(f"✅ BSE Bhav downloaded: {len(df)} records for {target_date}")
-        return df
-    except RuntimeError:
-        print(f"⚠️  BSE bhav: report unavailable for {target_date} (holiday?)")
-        return None
+        try:
+            os.remove(fp)
+        except Exception:
+            pass
+        parsed = _parse_bse_df(df)
+        if parsed is not None:
+            print(f"✅ BSE Bhav downloaded: {len(parsed)} records for {target_date}")
+        return parsed
+    except (RuntimeError, FileNotFoundError):
+        return None   # holiday / not yet published — silent
     except Exception as e:
-        print(f"❌ BSE bhav error: {e}")
+        print(f"⚠️  BSE bhav error {target_date}: {type(e).__name__}: {e}")
         return None
 
 
@@ -167,8 +195,10 @@ def _bse_delivery(target_date):
         df.columns = [c.lower().strip() for c in df.columns]
         print(f"✅ BSE Delivery downloaded: {len(df)} records for {target_date}")
         return df
+    except (RuntimeError, FileNotFoundError):
+        return None   # holiday / not yet published — silent
     except Exception as e:
-        print(f"⚠️  BSE delivery unavailable for {target_date}: {e}")
+        print(f"⚠️  BSE delivery error {target_date}: {type(e).__name__}: {e}")
         return None
 
 

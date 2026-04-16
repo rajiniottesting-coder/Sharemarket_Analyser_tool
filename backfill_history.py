@@ -39,9 +39,12 @@ except ImportError:
     BSE_PKG = False
     print("⚠️  pip install bse  — BSE data will be skipped")
 
-IST              = pytz.timezone('Asia/Kolkata')
-DB_NAME          = "market_data.db"
-DAYS_TO_BACKFILL = 365
+import sys
+
+IST     = pytz.timezone('Asia/Kolkata')
+DB_NAME = "market_data.db"
+# Accept days as command-line arg: python backfill_history.py 365
+DAYS_TO_BACKFILL = int(sys.argv[1]) if len(sys.argv) > 1 else 365
 
 NSE_HEADERS = {
     'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -334,6 +337,20 @@ def init_all_tables(conn):
         )
     """)
 
+    # ── Migrate existing daily_prices: add new columns if they don't exist ──────
+    # This handles the case where daily_prices already exists with the old
+    # 14-column schema from data_bridge.py and needs the 4 new columns added.
+    existing_dp_cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_prices)").fetchall()}
+    new_dp_cols = {
+        'day_chg_pct':  'REAL DEFAULT 0',
+        'week_high_52': 'REAL DEFAULT 0',
+        'week_low_52':  'REAL DEFAULT 0',
+        'vol_50d_avg':  'REAL DEFAULT 0',
+    }
+    for col, col_def in new_dp_cols.items():
+        if col not in existing_dp_cols:
+            conn.execute(f"ALTER TABLE daily_prices ADD COLUMN {col} {col_def}")
+
     # ── Indexes ───────────────────────────────────────────────────────────────
     for idx_sql in [
         "CREATE INDEX IF NOT EXISTS idx_dp_sym_date  ON daily_prices(symbol, date)",
@@ -431,23 +448,71 @@ def _safe_float(s):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 3 — BSE DOWNLOADER
+#
+# DIAGNOSTIC FINDINGS (confirmed by bse_diagnose.py):
+#   - All archive ZIP URLs (EQddmmyy_CSV.ZIP) return HTTP 404 — those URLs
+#     are dead / never existed for this date range.
+#   - The `bse` pip package returns 5015 rows for yesterday ✅
+#   - The bse package uses BSE's internal reports API (not archive ZIPs)
+#     and handles auth correctly for ALL dates, not just recent ones.
+#
+# SOLUTION: Use `bse` package exclusively for ALL 365 days.
 # ══════════════════════════════════════════════════════════════════════════════
 
 BSE_COL_MAP = {
-    'SC_CODE': 'bse_code', 'SC_NAME': 'symbol', 'SC_GROUP': 'sc_group',
-    'OPEN': 'open', 'HIGH': 'high', 'LOW': 'low', 'CLOSE': 'close',
-    'LAST': 'last', 'PREVCLOSE': 'prev_close', 'NO_TRADES': 'num_trades',
-    'NO_OF_SHRS': 'volume', 'NET_TURNOV': 'turnover',
-    'ISIN_CODE': 'isin', 'SC_TYPE': 'sc_type',
+    # Classic BSE equity bhav copy columns
+    'SC_CODE':    'bse_code',  'SC_NAME':     'symbol',    'SC_GROUP':  'sc_group',
+    'OPEN':       'open',      'HIGH':        'high',       'LOW':       'low',
+    'CLOSE':      'close',     'PREVCLOSE':   'prev_close', 'NO_OF_SHRS':'volume',
+    'NET_TURNOV': 'turnover',  'ISIN_CODE':   'isin',       'LAST':      'last',
+    'NO_TRADES':  'num_trades','SC_TYPE':     'sc_type',
+    # UDiFF new-format BSE columns (post-2024)
+    'FinInstrmId':'bse_code',  'TckrSymb':    'symbol',     'ClsPric':   'close',
+    'OpnPric':    'open',      'HghPric':     'high',       'LwPric':    'low',
+    'PrvsClsgPric':'prev_close','TtlTradgVol':'volume',     'TtlTrfVal': 'turnover',
+    'ISIN':       'isin',
 }
 
 
+def _parse_bse_df(df):
+    """Rename + coerce + filter. Always returns clean DataFrame or None."""
+    if df is None or df.empty:
+        return None
+    df = df.copy()
+    df = df.rename(columns=BSE_COL_MAP)
+    df.columns = [c.lower().strip() for c in df.columns]
+    if 'symbol' not in df.columns and 'sc_name' in df.columns:
+        df['symbol'] = df['sc_name']
+    for col in ['open', 'high', 'low', 'close', 'volume', 'prev_close', 'turnover']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    for col in ['isin', 'bse_code']:
+        if col not in df.columns:
+            df[col] = ''
+        else:
+            df[col] = df[col].fillna('').astype(str).str.strip()
+    if 'close' not in df.columns:
+        return None
+    df = df[df['close'] > 0]
+    if 'symbol' in df.columns:
+        df['symbol'] = df['symbol'].fillna('').astype(str).str.strip()
+        df = df[df['symbol'].str.len() > 0]
+    return df.reset_index(drop=True) if not df.empty else None
+
+
 def download_bse_bhav(date_obj, bse_client, tmp_dir):
+    """
+    Download BSE bhav copy using the `bse` pip package.
+    Works for ALL dates — the package handles BSE auth internally.
+    Returns parsed DataFrame or None (holiday / not yet published).
+    """
     if not BSE_PKG or bse_client is None:
         return None
     try:
         fp = bse_client.bhavcopyReport(
-            date=datetime.datetime.combine(date_obj, datetime.datetime.min.time()),
+            date=datetime.datetime.combine(
+                date_obj, datetime.datetime.min.time()
+            ),
             folder=tmp_dir,
         )
         if fp is None or not Path(fp).exists():
@@ -457,17 +522,13 @@ def download_bse_bhav(date_obj, bse_client, tmp_dir):
             os.remove(fp)
         except Exception:
             pass
-        df = df.rename(columns=BSE_COL_MAP)
-        df.columns = [c.lower().strip() for c in df.columns]
-        if 'symbol' not in df.columns and 'sc_name' in df.columns:
-            df['symbol'] = df['sc_name']
-        for col in ['open', 'high', 'low', 'close', 'volume', 'prev_close']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna(subset=['close'])
-        df = df[df['close'] > 0]
-        return df.reset_index(drop=True)
-    except Exception:
+        return _parse_bse_df(df)
+    except (RuntimeError, FileNotFoundError):
+        # RuntimeError  = report not available (holiday / future date)
+        # FileNotFoundError = download failed / corrupt file
+        return None
+    except Exception as e:
+        print(f"    ⚠️  BSE error {date_obj}: {type(e).__name__}: {e}")
         return None
 
 
@@ -475,37 +536,88 @@ def download_bse_bhav(date_obj, bse_client, tmp_dir):
 # SECTION 4 — COLUMN NORMALISER
 # ══════════════════════════════════════════════════════════════════════════════
 
-NSE_COL_MAP = {
-    'tckrsymb': 'symbol', 'fininstrmid': 'symbol', 'symbol': 'symbol',
-    'isin': 'isin',
-    'clspric': 'close', 'close_price': 'close', 'close': 'close',
-    'prvsclsgpric': 'prev_close', 'prevclose': 'prev_close', 'prev_close': 'prev_close',
-    'opnpric': 'open', 'open_price': 'open', 'open': 'open',
-    'hghpric': 'high', 'high_price': 'high', 'high': 'high',
-    'lwpric': 'low', 'low_price': 'low', 'low': 'low',
-    'ttltradgvol': 'volume', 'tottrdqty': 'volume', 'total_trd_qty': 'volume',
-    'ttltrfval': 'turnover', 'tottrdval': 'turnover',
-}
+# Priority-ordered column map: first match wins for each target column.
+# Using a list of (raw, canonical) pairs so we can apply in priority order
+# and avoid duplicate column names when the raw CSV has both TckrSymb and
+# FinInstrmId (both would rename to 'symbol', creating two 'symbol' columns).
+NSE_COL_PRIORITY = [
+    # Symbol — TckrSymb takes priority over FinInstrmId
+    ('tckrsymb',      'symbol'),
+    ('fininstrmid',   'symbol'),
+    ('symbol',        'symbol'),
+    # Close
+    ('clspric',       'close'),
+    ('close_price',   'close'),
+    ('close',         'close'),
+    # Prev close
+    ('prvsclsgpric',  'prev_close'),
+    ('prevclose',     'prev_close'),
+    ('prev_close',    'prev_close'),
+    # Open
+    ('opnpric',       'open'),
+    ('open_price',    'open'),
+    ('open',          'open'),
+    # High
+    ('hghpric',       'high'),
+    ('high_price',    'high'),
+    ('high',          'high'),
+    # Low
+    ('lwpric',        'low'),
+    ('low_price',     'low'),
+    ('low',           'low'),
+    # Volume
+    ('ttltradgvol',   'volume'),
+    ('tottrdqty',     'volume'),
+    ('total_trd_qty', 'volume'),
+    # Turnover
+    ('ttltrfval',     'turnover'),
+    ('tottrdval',     'turnover'),
+    # Others
+    ('isin',          'isin'),
+]
 
 
 def normalise(df, exchange):
     if df is None or df.empty:
         return None
     df = df.copy()
-    df.columns = [str(c).lower().strip().replace(' ', '_') for c in df.columns]
-    df = df.rename(columns={k: v for k, v in NSE_COL_MAP.items() if k in df.columns})
 
+    # Step 1: lowercase all column names
+    df.columns = [str(c).lower().strip().replace(' ', '_') for c in df.columns]
+
+    # Step 2: rename using priority order — first match per target wins.
+    # This prevents duplicate columns when raw CSV has e.g. both tckrsymb
+    # AND fininstrmid (both map to 'symbol' → would create two 'symbol' cols).
+    assigned_targets = set()
+    rename_map = {}
+    for raw, target in NSE_COL_PRIORITY:
+        if raw in df.columns and target not in assigned_targets:
+            rename_map[raw] = target
+            assigned_targets.add(target)
+    df = df.rename(columns=rename_map)
+
+    # Step 3: drop any residual duplicate-named columns (keeps first occurrence)
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    # Step 4: check required columns exist
     required = ['symbol', 'open', 'high', 'low', 'close']
     if any(c not in df.columns for c in required):
         return None
 
+    # Step 5: coerce numerics
     for col in ['open', 'high', 'low', 'close', 'prev_close', 'volume', 'turnover']:
-        df[col] = pd.to_numeric(df.get(col, 0), errors='coerce').fillna(0)
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        else:
+            df[col] = 0.0
 
+    # Step 6: ensure identity columns exist
     for col in ['isin', 'bse_code']:
         if col not in df.columns:
             df[col] = ''
 
+    # Step 7: clean symbol — guaranteed to be a Series now
+    df = df.reset_index(drop=True)
     df['symbol'] = df['symbol'].fillna('').astype(str).str.strip()
     df = df[df['symbol'].str.len() > 0].reset_index(drop=True)
     df = df[df['close'] > 0].reset_index(drop=True)
@@ -668,6 +780,11 @@ def compute_weekly_momentum(hist):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def upsert(df, table, conn):
+    """
+    Insert df rows into table, matching only columns that exist in both.
+    Uses explicit column list (not SELECT *) so partial-column inserts
+    work correctly when df has fewer columns than the table.
+    """
     if df is None or df.empty:
         return
     try:
@@ -681,7 +798,13 @@ def upsert(df, table, conn):
         df = df[keep].reset_index(drop=True)
         tmp = f"_tmp_{table}"
         df.to_sql(tmp, conn, if_exists='replace', index=False)
-        conn.execute(f"INSERT OR REPLACE INTO {table} SELECT * FROM {tmp}")
+        # Use explicit column list — prevents "N columns but M values" error
+        # when df has fewer columns than the destination table
+        col_list = ", ".join(keep)
+        conn.execute(
+            f"INSERT OR REPLACE INTO {table} ({col_list}) "
+            f"SELECT {col_list} FROM {tmp}"
+        )
         conn.execute(f"DROP TABLE IF EXISTS {tmp}")
         conn.commit()
     except Exception as e:
@@ -766,8 +889,9 @@ def run_backfill():
                 conn.executemany(
                     "INSERT OR IGNORE INTO symbol_master "
                     "(symbol, isin, exchange, updated_on) VALUES (?,?,?,?)",
-                    [(r.symbol, r.isin, r.exchange, date_iso)
-                     for _, r in sm_rows.iterrows()]
+                    [(str(row['symbol']), str(row['isin']),
+                      str(row['exchange']), date_iso)
+                     for _, row in sm_rows.iterrows()]
                 )
                 conn.commit()
                 print(f"NSE✅({len(nse_df)}) ", end="", flush=True)

@@ -87,7 +87,8 @@ def initialize_v7_tables(conn):
             future_stock_short REAL DEFAULT 0,
             total_long         REAL DEFAULT 0,
             total_short        REAL DEFAULT 0,
-            net_value          REAL DEFAULT 0
+            net_value          REAL DEFAULT 0,
+            PRIMARY KEY (date, client_type)
         )
     """)
 
@@ -132,7 +133,8 @@ def initialize_v7_tables(conn):
             client   TEXT,
             type     TEXT,
             quantity REAL DEFAULT 0,
-            price    REAL DEFAULT 0
+            price    REAL DEFAULT 0,
+            PRIMARY KEY (symbol, date, client, type)
         )
     """)
 
@@ -143,7 +145,8 @@ def initialize_v7_tables(conn):
             name   TEXT,
             mode   TEXT,
             qty    REAL DEFAULT 0,
-            value  REAL DEFAULT 0
+            value  REAL DEFAULT 0,
+            PRIMARY KEY (symbol, date, name, mode)
         )
     """)
 
@@ -168,7 +171,10 @@ COLUMN_MAP = {
     "ttltradgvol":     "volume",
     "ttltrfval":       "turnover",
     "sctysrs":         "series",
-    "fininstrmid":     "symbol",      # alternate NSE new format
+    # "fininstrmid" intentionally NOT mapped to symbol —
+    # FinInstrmId is NSE's internal numeric instrument ID, NOT the ticker.
+    # TckrSymb is the correct ticker symbol (e.g. "RELIANCE").
+    # Mapping both to "symbol" creates duplicate columns → KeyError: 0.
     # NSE old bhav (pre-July 2024)
     "symbol":          "symbol",
     "series":          "series",
@@ -242,6 +248,14 @@ def standardize_to_v7_schema(df, exchange: str = "NSE") -> pd.DataFrame:
     df = df.rename(columns={k: v for k, v in COLUMN_MAP.items()
                              if k in df.columns})
 
+    # Remove duplicate column names — if two source cols mapped to the same
+    # target (e.g. both TckrSymb and FinInstrmId → "symbol") the DataFrame
+    # ends up with two cols both named "symbol". df["symbol"] then returns
+    # a 2-column DataFrame instead of a Series → KeyError: 0.
+    df = df.loc[:, ~df.columns.duplicated(keep="first")]
+    # Reset index — prevents index-alignment errors on subsequent assignments
+    df = df.reset_index(drop=True)
+
     # ── Step 3: BSE guard — SC_CODE (numeric) must NOT become symbol ─────────
     # After rename, if 'symbol' column is all-numeric it means SC_CODE was
     # mapped (SC_NAME was missing or came after).  Move it to bse_code and
@@ -272,11 +286,6 @@ def standardize_to_v7_schema(df, exchange: str = "NSE") -> pd.DataFrame:
             else:
                 df[col] = 0.0
 
-    # ── Step 4b: Reset index NOW — prevents KeyError: 0 when the DataFrame
-    #            has a non-contiguous index (e.g. after a merge or filter).
-    #            Must happen before any column assignment that uses .apply().
-    df = df.reset_index(drop=True)
-
     # ── Step 5: Coerce numeric columns ───────────────────────────────────────
     for col in ["open", "high", "low", "close", "prev_close",
                 "volume", "turnover", "delivery_pct"]:
@@ -288,14 +297,24 @@ def standardize_to_v7_schema(df, exchange: str = "NSE") -> pd.DataFrame:
     # ── Step 7: Drop garbage rows ─────────────────────────────────────────────
     df = df[~df["symbol"].isin(["", "0", "nan", "none", "NaN"])]
     df = df[df["close"] > 0]
+    df = df.reset_index(drop=True)
 
     # ── Step 8: Tag exchange ──────────────────────────────────────────────────
     df["exchange"] = exchange
 
-    return df.reset_index(drop=True)
+    # ── Step 9: Trim to only DB storage columns ─────────────────────────────────
+    # Drops series, num_trades, sc_group etc. — not needed in DB.
+    # Does NOT affect get_today_consolidated_data() which runs after this
+    # and adds date, final_symbol etc. for screening.
+    _STORE_COLS = ["symbol", "bse_code", "isin", "open", "high", "low", "close",
+                   "prev_close", "volume", "turnover", "delivery_pct",
+                   "exchange", "exchange_tag"]
+    df = df[[c for c in _STORE_COLS if c in df.columns]]
+
+    return df
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 # SECTION 4 — DELIVERY DATA MERGE
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -457,6 +476,8 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
     conn = sqlite3.connect("market_data.db")
     try:
         initialize_v7_tables(conn)
+        from datetime import date as _date
+        today_str = _date.today().strftime("%Y-%m-%d")
 
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             _safe_insert(df, table, conn)
@@ -467,23 +488,48 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
                 (sme_nse,  "NSE_SME"), (sme_bse,   "BSE_SME"),
             ]
             frames = []
-            for src, exch in streams:
-                if src is not None and isinstance(src, pd.DataFrame) \
-                        and not src.empty:
-                    std = standardize_to_v7_schema(src, exchange=exch)
+            for stream_src, exch in streams:
+                if stream_src is not None and isinstance(stream_src, pd.DataFrame) \
+                        and not stream_src.empty:
+                    std = standardize_to_v7_schema(stream_src, exchange=exch)
                     if not std.empty:
+                        if "date" not in std.columns:
+                            std["date"] = today_str
                         frames.append(std)
             if frames:
                 combined = pd.concat(frames, ignore_index=True)
+                if "date" not in combined.columns:
+                    combined["date"] = today_str
+                try:
+                    conn.execute("DELETE FROM daily_prices WHERE date = ?", (today_str,))
+                    conn.commit()
+                except Exception:
+                    pass
                 _safe_insert(combined, "daily_prices", conn)
 
         if (participant_data is not None
                 and isinstance(participant_data, pd.DataFrame)
                 and not participant_data.empty):
-            participant_data.to_sql("fo_participant_data", conn,
-                                    if_exists="append", index=False)
-            conn.commit()
-            print(f"✅ F&O data saved: {len(participant_data)} records.")
+            fo = participant_data.copy()
+            fo.columns = [str(c).lower().strip().replace(" ", "_") for c in fo.columns]
+            fo_col_map = {
+                "client_type": "client_type", "clienttype": "client_type",
+                "future_index_long": "future_index_long",
+                "future_index_short": "future_index_short",
+                "future_stock_long": "future_stock_long",
+                "future_stock_short": "future_stock_short",
+                "total_long_contracts": "total_long",
+                "total_short_contracts": "total_short",
+                "net": "net_value", "net_oi": "net_value",
+            }
+            fo = fo.rename(columns={k: v for k, v in fo_col_map.items() if k in fo.columns})
+            fo["date"] = today_str
+            try:
+                conn.execute("DELETE FROM fo_participant_data WHERE date = ?", (today_str,))
+                conn.commit()
+            except Exception:
+                pass
+            _safe_insert(fo, "fo_participant_data", conn)
 
     except Exception as e:
         print(f"❌ Database Bridge Error: {e}")
@@ -517,7 +563,17 @@ def _safe_insert(df: pd.DataFrame, table: str, conn) -> None:
     conn.execute(f"INSERT OR IGNORE INTO {table} SELECT * FROM {tmp}")
     conn.execute(f"DROP TABLE IF EXISTS {tmp}")
     conn.commit()
-    print(f"✅ Saved {len(df)} records → {table}.")
+    try:
+        import os as _os
+        db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+        if db_path and _os.path.exists(db_path):
+            size_mb = _os.path.getsize(db_path) / 1_048_576
+            row_count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            print(f"✅ Saved {len(df)} records → {table} | DB total: {row_count:,} rows | Size: {size_mb:.2f} MB")
+        else:
+            print(f"✅ Saved {len(df)} records → {table}.")
+    except Exception:
+        print(f"✅ Saved {len(df)} records → {table}.")
 
 
 def save_fo_data(df: pd.DataFrame, target_date) -> None:
@@ -641,7 +697,7 @@ def get_symbol_history(symbol: str, limit: int = 250) -> pd.DataFrame:
             conn, params=(symbol, limit),
         )
         if not df.empty:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         return df
