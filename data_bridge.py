@@ -260,9 +260,13 @@ def standardize_to_v7_schema(df, exchange: str = "NSE") -> pd.DataFrame:
                 "turnover", "delivery_pct"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    # 6. Drop rows with no symbol or no close price
-    df = df[df["symbol"].astype(str).str.strip() != ""]
-    df = df[df["symbol"].astype(str).str.strip() != "0"]
+    # 6. Force symbol to plain Python string Series BEFORE any .str accessor
+    df["symbol"] = df["symbol"].fillna("").apply(lambda x: str(x).strip())
+
+    # 7. Drop rows with no symbol or no close price
+    df = df[df["symbol"] != ""]
+    df = df[df["symbol"] != "0"]
+    df = df[df["symbol"] != "nan"]
     df = df[df["close"] > 0]
 
     # 7. Tag exchange
@@ -352,33 +356,41 @@ def get_today_consolidated_data(target_date, nse_main=None, nse_sme=None,
 
 # ── SECTION 4: DATA INTEGRITY CHECK (C5) ─────────────────────────────────────
 
-def check_data_integrity(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> dict:
+def check_data_integrity(nse_df, bse_df) -> dict:
     """
     SECTION 12B C5: Validate downloaded data before pipeline proceeds.
     Returns {"pass": bool, "message": str}
+    Handles None inputs and any pandas type errors defensively.
     """
-    required_nse = ["symbol", "close", "volume"]
-    required_bse = ["symbol", "close"]
-
-    def _check(df, required, name, min_rows):
-        if df is None or df.empty:
+    def _check(df, name, min_rows):
+        if df is None:
+            return False, f"{name}: not downloaded (None)."
+        if not isinstance(df, pd.DataFrame):
+            return False, f"{name}: unexpected type {type(df)}."
+        if df.empty:
             return False, f"{name}: DataFrame is empty."
-        df_std = standardize_to_v7_schema(df)
-        missing = [c for c in required if c not in df_std.columns or df_std[c].isna().all()]
-        if missing:
-            return False, f"{name}: Missing columns after normalisation: {missing}"
+        try:
+            df_std = standardize_to_v7_schema(df)
+        except Exception as e:
+            return False, f"{name}: standardisation error - {e}"
+
+        if "symbol" not in df_std.columns or len(df_std) == 0:
+            return False, f"{name}: no symbol column after normalisation."
+        if "close" not in df_std.columns:
+            return False, f"{name}: no close column after normalisation."
         if len(df_std) < min_rows:
-            return False, f"{name}: Only {len(df_std)} rows (minimum {min_rows} required)."
+            return False, f"{name}: only {len(df_std)} rows (minimum {min_rows} required)."
+
         return True, f"{name}: OK ({len(df_std)} rows)."
 
-    nse_pass, nse_msg = _check(nse_df, required_nse, "NSE", 500)
-    bse_pass, bse_msg = _check(bse_df, required_bse, "BSE", 100)
+    nse_pass, nse_msg = _check(nse_df, "NSE", 500)
+    bse_pass, bse_msg = _check(bse_df, "BSE", 100)
 
     if not nse_pass:
         return {"pass": False, "message": f"C5 FAIL: {nse_msg}"}
 
     # BSE failure alone is a warning, not a blocker
-    message = f"C5 PASS: {nse_msg} | {bse_msg}"
+    message = f"C5 PASS: {nse_msg} | BSE: {bse_msg}"
     return {"pass": True, "message": message, "bse_ok": bse_pass}
 
 
