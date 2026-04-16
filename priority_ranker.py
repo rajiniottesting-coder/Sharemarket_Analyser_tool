@@ -126,21 +126,7 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
     non_override  = df[~override_mask].copy()
 
     # ── Assemble top 100 ──────────────────────────────────────────────────────
-    # Overrides first (sorted by priority: O1 > O2 > O3 > O4 > O5)
-    override_priority = []
-    for mask, label in [(o1_mask, 1), (o2_mask, 2), (o3_mask, 3),
-                        (o4_mask, 4), (o5_mask, 5)]:
-        sub = df[mask & ~pd.Series(
-            [idx in [r for r in (
-                df.iloc[[i]].index[0] for i in range(len(df)) if override_priority
-                and df.iloc[i].name in [r[0] for r in override_priority]
-            )]], index=df.index
-        )].copy() if override_priority else df[mask].copy()
-        for idx in sub.index:
-            if idx not in [r[0] for r in override_priority]:
-                override_priority.append((idx, label))
-
-    # Simpler: just take all overrides, deduplicated
+    # Collect overrides deduplicated in priority order: O1 > O2 > O3 > O4 > O5
     seen = set()
     ordered_overrides = []
     for mask in [o1_mask, o2_mask, o3_mask, o4_mask, o5_mask]:
