@@ -6,7 +6,8 @@ on:
   workflow_dispatch:           # Manual trigger for testing
 
 permissions:
-  contents: read               # DB stored as artifact, not in repo
+  contents: read               # read repo code
+  actions: read                # needed to download artifacts from previous runs
 
 jobs:
   run-analyser:
