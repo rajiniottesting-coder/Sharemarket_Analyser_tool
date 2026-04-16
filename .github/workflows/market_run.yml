@@ -2,8 +2,8 @@ name: NSE_BSE_Daily_Pipeline
 
 on:
   schedule:
-    # 14:00 UTC = 19:30 IST (Mon-Fri)
-    - cron: '0 14 * * 1-5'
+    # 18:25 UTC is 23:55 IST (Indian Standard Time)
+    - cron: '25 18 * * 1-5'
   workflow_dispatch: # Allows manual trigger for testing..
 
 permissions:
@@ -17,7 +17,7 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v4
         with:

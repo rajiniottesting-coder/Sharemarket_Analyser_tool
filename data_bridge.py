@@ -89,10 +89,22 @@ def save_fo_data(df, target_date):
 
 # --- SECTION 3: CONSOLIDATION & RECONCILIATION ---
 
+
 def standardize_to_v7_schema(df):
-    """Helper to ensure NSE/BSE use identical keys before reconciliation."""
-    if df is None or df.empty: return pd.DataFrame()
-    df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
+    """
+    SECTION 1A & 1B: Defensive Schema Enforcement.
+    Guarantees 'isin' and other critical keys exist even if source is empty.
+    """
+    critical_cols = ['isin', 'symbol', 'close', 'prev_close', 'volume', 'open', 'high', 'low']
+    
+    # If df is None or not a DataFrame, create an empty one with correct columns
+    if df is None or not isinstance(df, pd.DataFrame):
+        return pd.DataFrame(columns=critical_cols)
+    
+    # 1. Clean headers: lowercase, strip, and replace spaces
+    df.columns = [str(c).lower().strip().replace(" ", "_") for c in df.columns]
+    
+    # 2. Comprehensive Master Mapping
     mapping = {
         'sc_name': 'symbol', 'security_id': 'symbol', 'scrip_id': 'symbol', 'syml': 'symbol',
         'isin_code': 'isin', 'isin': 'isin',
@@ -101,12 +113,51 @@ def standardize_to_v7_schema(df):
         'open_price': 'open', 'high_price': 'high', 'low_price': 'low',
         'tottrdqty': 'volume', 'no_of_shrs': 'volume', 'total_trd_qty': 'volume'
     }
+    
+    # Rename existing columns
     df = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
-    critical_cols = ['isin', 'symbol', 'close', 'prev_close', 'volume', 'open', 'high', 'low']
+    
+    # 3. Force Column Existence (The "Once and For All" Fix)
     for col in critical_cols:
         if col not in df.columns:
+            # Initialize missing columns with safe defaults
             df[col] = 0 if col not in ['symbol', 'isin'] else "UNKNOWN"
+            
     return df[critical_cols]
+
+def get_today_consolidated_data(target_date, nse_main, nse_sme, bse_main, bse_sme):
+    """
+    V7 Consolidation Hub with defensive checks for empty exchange streams.
+    """
+    from reconciler import reconcile_exchanges
+    
+    print(f"🔄 [V7] Consolidating market data for {target_date.date()}...")
+
+    # Standardize all 4 streams - they will now ALWAYS have 'isin'
+    n_m = standardize_to_v7_schema(nse_main)
+    n_s = standardize_to_v7_schema(nse_sme)
+    b_m = standardize_to_v7_schema(bse_main)
+    b_s = standardize_to_v7_schema(bse_sme)
+
+    # Stack NSE and BSE separately
+    all_nse = pd.concat([n_m, n_s], ignore_index=True)
+    all_bse = pd.concat([b_m, b_s], ignore_index=True)
+
+    # Safety Guard: If both are still effectively empty, return empty DF early
+    if all_nse.empty and all_bse.empty:
+        print("⚠️ Warning: Both NSE and BSE streams are empty. Skipping consolidation.")
+        return pd.DataFrame()
+
+    # Call the reconciler - guaranteed to have 'isin' now
+    consolidated_df = reconcile_exchanges(all_nse, all_bse)
+
+    if consolidated_df is not None and not consolidated_df.empty:
+        consolidated_df['date'] = pd.to_datetime(target_date).date()
+        print(f"✅ V7 Consolidation Complete: {len(consolidated_df)} records.")
+    else:
+        consolidated_df = pd.DataFrame()
+        
+    return consolidated_df
 
 def reconcile_exchanges(nse_df, bse_df):
     """Cross-Exchange Reconciliation via ISIN (Section 1B)."""
@@ -118,20 +169,6 @@ def reconcile_exchanges(nse_df, bse_df):
     merged['exchange_tag'] = merged.apply(tag_exchange, axis=1)
     return merged
 
-def get_today_consolidated_data(target_date, nse_main, nse_sme, bse_main, bse_sme):
-    """V7 Consolidation Hub."""
-    print(f"🔄 [V7] Consolidating market data for {target_date.date()}...")
-    n_m = standardize_to_v7_schema(nse_main)
-    n_s = standardize_to_v7_schema(nse_sme)
-    b_m = standardize_to_v7_schema(bse_main)
-    b_s = standardize_to_v7_schema(bse_sme)
-    all_nse = pd.concat([n_m, n_s], ignore_index=True) if not n_m.empty or not n_s.empty else pd.DataFrame()
-    all_bse = pd.concat([b_m, b_s], ignore_index=True) if not b_m.empty or not b_s.empty else pd.DataFrame()
-    consolidated_df = reconcile_exchanges(all_nse, all_bse)
-    if consolidated_df is not None and not consolidated_df.empty:
-        consolidated_df['date'] = pd.to_datetime(target_date).date()
-        print(f"✅ V7 Consolidation Complete: {len(consolidated_df)} records.")
-    return consolidated_df if consolidated_df is not None else pd.DataFrame()
 
 # --- SECTION 4: HISTORICAL & ANALYTICAL RETRIEVAL ---
 
