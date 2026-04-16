@@ -36,7 +36,10 @@ def reconcile_exchanges(nse_df, bse_df):
     # 3. Arbitrage Signal Logic (Section 1B)
     # Compute NSE/BSE price differential: (NSE_close − BSE_close) / BSE_close × 100
     merged['diff_pct'] = 0.0
-    dual_mask = merged['exchange_tag'] == 'DUAL_LISTED'
+    
+    # --- SAFETY FIX: Added (merged['close_BSE'] > 0) to prevent ZeroDivisionError ---
+    dual_mask = (merged['exchange_tag'] == 'DUAL_LISTED') & (merged['close_BSE'] > 0)
+    
     merged.loc[dual_mask, 'diff_pct'] = (
         (merged['close_NSE'] - merged['close_BSE']) / merged['close_BSE'] * 100
     )
