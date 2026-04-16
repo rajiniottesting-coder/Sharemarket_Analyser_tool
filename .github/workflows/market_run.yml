@@ -33,8 +33,7 @@ jobs:
 
       - name: Execute Master Pipeline
         env:
-          # ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY:        ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
           SENDER_EMAIL:          ${{ secrets.SENDER_EMAIL }}
           SENDER_APP_PASSWORD:   ${{ secrets.SENDER_APP_PASSWORD }}
           USER_EMAIL_ID:         ${{ secrets.USER_EMAIL_ID }}
