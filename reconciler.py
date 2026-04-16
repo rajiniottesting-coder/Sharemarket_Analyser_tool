@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 
 def reconcile_exchanges(nse_df, bse_df):
     """
@@ -35,14 +36,26 @@ def reconcile_exchanges(nse_df, bse_df):
 
     # 3. Arbitrage Signal Logic (Section 1B)
     # Compute NSE/BSE price differential: (NSE_close − BSE_close) / BSE_close × 100
+    # INITIALIZE with 0.0 to prevent NaN issues
     merged['diff_pct'] = 0.0
     
-    # --- SAFETY FIX: Added (merged['close_BSE'] > 0) to prevent ZeroDivisionError ---
-    dual_mask = (merged['exchange_tag'] == 'DUAL_LISTED') & (merged['close_BSE'] > 0)
-    
-    merged.loc[dual_mask, 'diff_pct'] = (
-        (merged['close_NSE'] - merged['close_BSE']) / merged['close_BSE'] * 100
+    # --- CRITICAL SAFETY FIX: ZERO DIVISION PROTECTION ---
+    # Create a condition that MUST be true for the calculation to run:
+    # 1. Stock must be DUAL_LISTED
+    # 2. NSE price must be a valid number and > 0
+    # 3. BSE price must be a valid number and > 0 (The Denominator)
+    safe_calc_mask = (
+        (merged['exchange_tag'] == 'DUAL_LISTED') & 
+        (merged['close_NSE'] > 0) & 
+        (merged['close_BSE'] > 0)
     )
+    
+    # Only perform the calculation on the safe rows
+    if safe_calc_mask.any():
+        merged.loc[safe_calc_mask, 'diff_pct'] = (
+            (merged.loc[safe_calc_mask, 'close_NSE'] - merged.loc[safe_calc_mask, 'close_BSE']) / 
+            merged.loc[safe_calc_mask, 'close_BSE'] * 100
+        )
 
     # 4. Primary Price Selection (Section 1B Rule)
     # Use NSE as primary for liquid, BSE for others
