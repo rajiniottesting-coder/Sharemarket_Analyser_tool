@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   run-analyser:
@@ -29,6 +30,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Restore market_data.db from artifact
+        continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
           name: market-data-db
