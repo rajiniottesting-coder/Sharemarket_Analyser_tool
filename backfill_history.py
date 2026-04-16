@@ -1168,25 +1168,102 @@ def _nse_shareholding(symbol: str, session) -> dict:
         return {}
 
 
+def _fetch_nse_index_sectors() -> dict:
+    """
+    Download NSE index constituent CSVs to get sector/industry for ~1000 stocks.
+    These are static files on NSE archives — no bot protection, works on GitHub Actions.
+    Returns {symbol: industry}
+    """
+    urls = [
+        "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
+        "https://archives.nseindia.com/content/indices/ind_niftymidcap150list.csv",
+        "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv",
+        "https://archives.nseindia.com/content/indices/ind_niftymicrocap250_list.csv",
+    ]
+    result = {}
+    for url in urls:
+        try:
+            r = requests.get(url, headers=NSE_HEADERS, timeout=15)
+            if r.status_code == 200 and len(r.content) > 100:
+                import io
+                df = pd.read_csv(io.StringIO(r.text))
+                sym_col = next((c for c in df.columns if 'symbol' in c.lower()), None)
+                ind_col = next((c for c in df.columns if 'industry' in c.lower() or 'sector' in c.lower()), None)
+                if sym_col and ind_col:
+                    for _, row in df.iterrows():
+                        s = str(row[sym_col]).strip()
+                        ind = str(row[ind_col]).strip()
+                        if s and ind and s not in result:
+                            result[s] = ind
+        except Exception:
+            pass
+    return result
+
+
+def _fetch_yfinance_data(symbols: list) -> dict:
+    """
+    Fetch PE, EPS, PB, Beta, MCap, Sector via yfinance (Yahoo Finance).
+    Works on GitHub Actions — Yahoo Finance has no bot detection for data APIs.
+    Returns {symbol: {pe, eps, pb, beta, mcap_cr, sector, company_name, div_yield}}
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        return {}
+
+    result = {}
+    # Process in batches of 10 to avoid rate limits
+    batch_size = 10
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i:i+batch_size]
+        # Yahoo Finance uses .NS suffix for NSE stocks
+        tickers_str = " ".join(s + ".NS" for s in batch)
+        try:
+            tickers = yf.Tickers(tickers_str)
+            for sym in batch:
+                try:
+                    info = tickers.tickers.get(sym + ".NS", yf.Ticker(sym + ".NS")).info
+                    if not info or info.get("regularMarketPrice", 0) == 0:
+                        continue
+                    mcap_inr = float(info.get("marketCap", 0) or 0)
+                    result[sym] = {
+                        "pe":           float(info.get("trailingPE") or 0),
+                        "eps":          float(info.get("trailingEps") or 0),
+                        "pb":           float(info.get("priceToBook") or 0),
+                        "beta":         float(info.get("beta") or 1.0),
+                        "mcap_cr":      round(mcap_inr / 1e7, 2),
+                        "sector":       str(info.get("sector") or ""),
+                        "company_name": str(info.get("longName") or ""),
+                        "div_yield":    round(float(info.get("dividendYield") or 0) * 100, 2),
+                    }
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        time.sleep(0.5)  # polite delay between batches
+    return result
+
+
 def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
     """
-    Fetch fundamental data for up to max_symbols symbols via NSE free API.
-    Skips symbols already updated within 7 days.
-    Stores in: symbol_master, fundamental_metrics, shareholding tables.
+    Populate fundamental data for symbols using multiple free sources.
+    Source priority (all work on GitHub Actions without bot detection):
+      1. EQUITY_L.csv         → company names (NSE static file)
+      2. NSE index CSVs       → sector/industry (NSE static files)
+      3. yfinance             → PE, EPS, PB, Beta, MCap, Div Yield (Yahoo Finance)
+      4. NSE JSON API         → fallback (blocked on GH Actions, kept for local runs)
+    Skips symbols with pe_ttm>0 AND company_name already populated (within 7 days).
     """
     today_str = datetime.datetime.now(IST).strftime("%Y-%m-%d")
     cutoff    = (datetime.datetime.now(IST) - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    # Find symbols that need updating
-    # A symbol is "already updated" only if fundamental_metrics has a recent row
-    # AND symbol_master has a non-empty company_name (guards against blocked API runs)
+    # Skip symbols already fully populated within 7 days
     already_fm = {r[0] for r in conn.execute(
         "SELECT symbol FROM fundamental_metrics WHERE date >= ? AND pe_ttm > 0", (cutoff,)
     ).fetchall()}
     already_cn = {r[0] for r in conn.execute(
         "SELECT symbol FROM symbol_master WHERE company_name != '' AND company_name IS NOT NULL"
     ).fetchall()}
-    # Only skip if BOTH conditions met: recent fundamentals AND company name exists
     already = already_fm & already_cn
     to_fetch = [s for s in symbols if s not in already][:max_symbols]
 
@@ -1196,131 +1273,122 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
 
     print(f"   Fetching fundamentals for {len(to_fetch)} symbols via NSE API...")
 
-    # Step 1: Fetch company names from EQUITY_L.csv (no bot protection, always works)
+    # ── SOURCE 1: EQUITY_L.csv → company names ────────────────────────────────
     equity_master = _fetch_equity_master()
     if equity_master:
         print(f"   ✅ EQUITY_L.csv: {len(equity_master)} company names loaded")
-        # Immediately update symbol_master with company names — reliable source
         for sym in to_fetch:
             cname = equity_master.get(sym, "")
             if cname:
                 conn.execute(
-                    "UPDATE symbol_master SET company_name=? WHERE symbol=? AND (company_name='' OR company_name IS NULL)",
+                    "UPDATE symbol_master SET company_name=? WHERE symbol=? "
+                    "AND (company_name='' OR company_name IS NULL)",
                     (cname, sym)
                 )
         conn.commit()
     else:
-        print("   ⚠️  EQUITY_L.csv unavailable — will rely on NSE API for company names")
+        print("   ⚠️  EQUITY_L.csv unavailable")
 
-    # Step 2: Use cloudscraper session for PE/shareholding (handles Akamai bot detection)
-    session, session_type = _make_nse_session()
-    print(f"   Using {session_type} session for NSE API calls")
-    time.sleep(2)  # Let session cookies settle
+    # ── SOURCE 2: NSE index CSVs → sector/industry ───────────────────────────
+    sector_map = _fetch_nse_index_sectors()
+    if sector_map:
+        print(f"   ✅ NSE index CSVs: {len(sector_map)} sectors loaded")
+        for sym in to_fetch:
+            sec = sector_map.get(sym, "")
+            if sec:
+                conn.execute(
+                    "UPDATE symbol_master SET sector=? WHERE symbol=? "
+                    "AND (sector='' OR sector IS NULL OR sector='General')",
+                    (sec, sym)
+                )
+        conn.commit()
+    else:
+        print("   ⚠️  NSE index CSVs unavailable")
 
-    ok = fail = 0
+    # ── SOURCE 3: yfinance → PE, EPS, PB, Beta, MCap ─────────────────────────
+    yf_data = _fetch_yfinance_data(to_fetch)
+    print(f"   ✅ yfinance: {len(yf_data)}/{len(to_fetch)} symbols fetched")
+
+    today_str2 = datetime.datetime.now(IST).strftime("%Y-%m-%d")
     fm_rows = []
     sh_rows = []
-    first_fail_reason = None
+    ok = len(yf_data)
+    fail = len(to_fetch) - ok
 
-    for i, sym in enumerate(to_fetch, 1):
-        try:
-            quote = _nse_quote(sym, session)
-            shold = _nse_shareholding(sym, session)
+    for sym, d in yf_data.items():
+        # Update symbol_master with yfinance data (overrides EQUITY_L where available)
+        cn = d.get("company_name","")
+        sec = d.get("sector","")
+        eps = d.get("eps", 0)
+        pe  = d.get("pe",  0)
+        mcap = d.get("mcap_cr", 0)
+        if cn:
+            conn.execute("UPDATE symbol_master SET company_name=? WHERE symbol=?", (cn, sym))
+        if sec:
+            conn.execute("UPDATE symbol_master SET sector=? WHERE symbol=?", (sec, sym))
+        conn.execute(
+            "UPDATE symbol_master SET updated_on=? WHERE symbol=?",
+            (today_str2 + f"|eps={eps}|mcap={mcap}|pe={pe}", sym)
+        )
 
-            # If using equity_master, fill company_name from it even if API fails
-            if not quote and equity_master.get(sym):
-                quote = {"company_name": equity_master[sym], "sector": "", "pe": 0,
-                         "eps": 0, "pb": 0, "face_value": 10, "isin": "", "mcap_cr": 0}
+        cmp = float((conn.execute(
+            "SELECT close FROM daily_prices WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
+        ).fetchone() or (0,))[0])
 
-            if quote:
-                # Update symbol_master with all available fields
-                _mcap_v = quote.get("mcap_cr", 0)
-                _eps_v  = quote.get("eps", 0)
-                _pe_v   = quote.get("pe", 0)
-                conn.execute("""
-                    UPDATE symbol_master
-                    SET company_name=?, sector=?, face_value=?, isin=?, updated_on=?
-                    WHERE symbol=?
-                """, (
-                    quote.get("company_name", ""),
-                    quote.get("sector", ""),
-                    quote.get("face_value", 10),
-                    quote.get("isin", ""),
-                    today_str + f"|eps={_eps_v}|mcap={_mcap_v}|pe={_pe_v}",
-                    sym
-                ))
+        pb  = d.get("pb", 0)
+        ey  = round((eps / cmp * 100), 2) if cmp > 0 and eps > 0 else 0
+        roe = round(eps * pe / (pb * cmp), 2) if pb > 0 and cmp > 0 and pe > 0 else 0
 
-                # fundamental_metrics row (price-derived ratios)
-                cmp = float(conn.execute(
-                    "SELECT close FROM daily_prices WHERE symbol=? ORDER BY date DESC LIMIT 1",
-                    (sym,)
-                ).fetchone() or (0,))[0]
-
-                eps = quote.get("eps", 0)
-                pe  = quote.get("pe", 0)
-                pb  = quote.get("pb", 0)
-                earn_yield = round((eps / cmp * 100), 2) if cmp > 0 and eps > 0 else 0
-
-                # Also compute M3_PE model input directly here
-                mcap  = quote.get("mcap_cr", 0)
-                fm_rows.append({
-                    "symbol":      sym,
-                    "date":        today_str,
-                    "pe_ttm":      pe,
-                    "pb":          pb,
-                    "earn_yield":  earn_yield,
-                    "div_yield":   0,
-                    "roe":         round(eps * pe / (pb * cmp), 2) if pb > 0 and cmp > 0 and pe > 0 else 0,
-                    # Store eps as earn_yield denominator for FV models
-                    # pe_ttm * earn_yield/100 * cmp ≈ EPS
-                    "rev_yoy":     0,   # not in quote API
-                    "pat_yoy":     0,
-                })
-                # Store EPS in stock for FV engine via symbol_master extended
-                conn.execute(
-                    "UPDATE symbol_master SET updated_on=? WHERE symbol=?",
-                    (today_str + f"|eps={eps}|mcap={mcap}|pe={pe}", sym)
-                )
-
-                ok += 1
-            else:
-                fail += 1
-
-            if shold:
-                sh_rows.append({
-                    "symbol":       sym,
-                    "date":         today_str,
-                    "promoter_pct": shold.get("promoter_pct", 0),
-                    "fii_pct":      shold.get("fii_pct", 0),
-                    "dii_pct":      shold.get("dii_pct", 0),
-                    "public_float": shold.get("public_float", 0),
-                    "pledge_pct":   0,  # requires separate API call
-                })
-
-        except Exception as e:
-            fail += 1
-
-        # Batch commit every 50 symbols
-        if i % 50 == 0:
-            conn.commit()
-            print(f"   ... {i}/{len(to_fetch)} ({ok} ok, {fail} failed)", flush=True)
-            if ok == 0 and i == 50:
-                # All failing — NSE API still blocked, but company names from EQUITY_L.csv are saved
-                print(f"   ⚠️  NSE JSON API blocked (0 ok after 50 tries). "
-                      f"Company names saved via EQUITY_L.csv. PE/shareholding unavailable.")
-                break  # Don't waste time on remaining symbols..
-            time.sleep(1.5)  # slightly longer delay between batches
-        else:
-            time.sleep(0.4)
+        fm_rows.append({
+            "symbol":    sym, "date": today_str2,
+            "pe_ttm":    pe,  "pb": pb, "earn_yield": ey,
+            "div_yield": d.get("div_yield", 0), "roe": roe,
+            "rev_yoy": 0, "pat_yoy": 0,
+        })
 
     conn.commit()
+
+    # ── SOURCE 4: NSE JSON API fallback (works locally, often blocked on GH Actions) ─
+    nse_ok = 0
+    if len(yf_data) < len(to_fetch) * 0.5:
+        # yfinance got less than 50% → try NSE JSON API
+        still_needed = [s for s in to_fetch if s not in yf_data][:50]
+        session, session_type = _make_nse_session()
+        print(f"   Trying NSE API ({session_type}) for {len(still_needed)} remaining symbols...")
+        time.sleep(2)
+        for sym in still_needed:
+            try:
+                quote = _nse_quote(sym, session)
+                if quote and quote.get("pe", 0) > 0:
+                    nse_ok += 1
+                    # merge into fm_rows (same logic as yf_data above)
+                    eps = quote.get("eps", 0); pe = quote.get("pe", 0)
+                    pb  = quote.get("pb", 0)
+                    cmp = float((conn.execute(
+                        "SELECT close FROM daily_prices WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
+                    ).fetchone() or (0,))[0])
+                    ey  = round((eps / cmp * 100), 2) if cmp > 0 and eps > 0 else 0
+                    fm_rows.append({
+                        "symbol": sym, "date": today_str2,
+                        "pe_ttm": pe, "pb": pb, "earn_yield": ey,
+                        "div_yield": 0, "roe": 0, "rev_yoy": 0, "pat_yoy": 0,
+                    })
+                    if quote.get("company_name"):
+                        conn.execute(
+                            "UPDATE symbol_master SET company_name=? WHERE symbol=?",
+                            (quote["company_name"], sym)
+                        )
+            except Exception:
+                pass
+            time.sleep(0.3)
+        print(f"   NSE API: {nse_ok} additional symbols fetched")
 
     if fm_rows:
         upsert(pd.DataFrame(fm_rows), "fundamental_metrics", conn)
     if sh_rows:
         upsert(pd.DataFrame(sh_rows), "shareholding", conn)
 
-    print(f"   Fundamentals: {ok} fetched, {fail} failed → "
+    print(f"   Fundamentals: {ok + nse_ok} fetched, {fail - nse_ok} failed → "
           f"fundamental_metrics: {len(fm_rows)} rows, shareholding: {len(sh_rows)} rows")
 
 if __name__ == "__main__":
