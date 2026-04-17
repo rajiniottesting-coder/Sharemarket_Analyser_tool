@@ -64,9 +64,10 @@ class ScoringEngine:
         final_score = max(0, min(100, final_score)) # Clamp 0-100
         
         cap_cat = str(data.get("cap_category", "") or "")
+        mos     = data.get("mos_pct", None)
         return {
             "composite_score": round(final_score, 2),
-            "verdict": self._get_verdict(final_score, cap_cat),
+            "verdict": self._get_verdict(final_score, cap_cat, mos),
             "label": self._assign_quick_pick(data, final_score)
         }
 
@@ -92,28 +93,42 @@ class ScoringEngine:
         
         return {"storm_score": score, "storm_label": label}
 
-    def _get_verdict(self, score, cap_category=""):
+    def _get_verdict(self, score, cap_category="", mos_pct=None):
         """
         Returns one of: BUY, WATCHLIST, NEUTRAL, AVOID.
-        Thresholds vary by cap category — large caps qualify with lower scores
-        because they carry lower inherent risk.
+
+        BUY requires:
+          1. Score above cap-adjusted BUY threshold
+          2. MoS >= -10% (CMP should not be more than 10% above fair value)
+             — slight overvaluation allowed for strong momentum stocks
+
+        WATCHLIST:
+          Score qualifies for BUY but stock is significantly overvalued (MoS < -10%)
+          OR score is in the WATCHLIST band regardless of MoS
+
+        NEUTRAL / AVOID: as before
         """
-        # Universal floor — any stock below this is AVOID regardless of cap
+        # Universal floor
         if score < self.AVOID_BELOW:
             return "AVOID"
 
-        # Determine cap tier from cap_category string
+        # Cap tier
         cap_up = str(cap_category).upper()
         if   "LARGE" in cap_up: tier = "LARGE"
         elif "MID"   in cap_up: tier = "MID"
         elif "SMALL" in cap_up: tier = "SMALL"
-        else:                    tier = "MICRO"  # MICRO CAP or unknown
+        else:                    tier = "MICRO"
 
         buy_min, watch_min = self.CAP_THRESHOLDS[tier]
 
-        if   score >= buy_min:   return "BUY"
-        elif score >= watch_min: return "WATCHLIST"
-        else:                    return "NEUTRAL"
+        # MoS gate: if stock is significantly overvalued, cap at WATCHLIST
+        mos = mos_pct if mos_pct is not None else 0
+        mos_blocks_buy = (mos < -10)   # CMP more than 10% above fair value
+
+        if   score >= buy_min and not mos_blocks_buy:  return "BUY"
+        elif score >= buy_min and mos_blocks_buy:       return "WATCHLIST"
+        elif score >= watch_min:                        return "WATCHLIST"
+        else:                                           return "NEUTRAL"
 
     def _assign_quick_pick(self, data, score):
         """Implements Section 6 Quick-Pick Labels"""

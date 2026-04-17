@@ -765,13 +765,21 @@ def run_master_pipeline():
                     if f == 0: return "—"
                     return round(f / 100, 3) if abs(f) > 2.0 else round(f, 3)
 
-                # Profitability — fraction→% conversion
+                # Profitability — fraction→% conversion (display)
                 stock.setdefault("roe",          _pct(roe))
                 stock.setdefault("roce",         _fv(roce))
                 stock.setdefault("roa",          _pct(roa))
                 stock.setdefault("gross_margin", _pct(gm))
                 stock.setdefault("ebitda_margin",_pct(em))
                 stock.setdefault("npm",          _pct(nm))
+                # Numeric versions for scoring (never "—", always float)
+                _roe_raw = _fvn(roe)
+                _gm_raw  = _fvn(gm)
+                _nm_raw  = _fvn(nm)
+                # Convert fractions to % if needed
+                stock["roe_num"] = round(_roe_raw * 100, 2) if 0 < abs(_roe_raw) < 2.0 else round(_roe_raw, 2)
+                stock["gm_num"]  = round(_gm_raw  * 100, 2) if 0 < abs(_gm_raw)  < 2.0 else round(_gm_raw,  2)
+                stock["nm_num"]  = round(_nm_raw  * 100, 2) if 0 < abs(_nm_raw)  < 2.0 else round(_nm_raw,  2)
                 # Forensics — no free source
                 stock.setdefault("piotroski_f",  _fv(pf))
                 stock.setdefault("altman_z",     _fv(az))
@@ -785,6 +793,11 @@ def run_master_pipeline():
                 stock.setdefault("pat_yoy",      _fv(0))
                 # Financial Health — with unit fixes
                 stock.setdefault("debt_equity",  _ratio(de))  # yfinance ×100 → ratio
+                # Numeric D/E for scoring (never "—")
+                _de_raw = _fvn(de)
+                stock["de_ratio_num"] = round(_de_raw / 100, 3) if abs(_de_raw) > 2.0 else round(_de_raw, 3)
+                stock["cr_num"]       = round(_fvn(cr), 3)      # current ratio numeric
+                stock["pe_num"]       = round(_fvn(pe), 2)      # PE numeric
                 stock.setdefault("current_ratio",_fv(cr) if _fvn(cr) > 0 else "—")
                 stock.setdefault("quick_ratio",  _fv(qr_v) if _fvn(qr_v) > 0 else "—")
                 stock.setdefault("total_debt",   _fv(td) if _fvn(td) > 0 else "—")
@@ -922,14 +935,14 @@ def run_master_pipeline():
 
             # ── Pre-compute fundamental_score from available data ─────────────
             if not stock.get("fundamental_score"):
-                # Real fundamental score from yfinance data (0-100)
+                # Use numeric keys (never "—" strings) for accurate scoring
                 _s2_f  = _sf(stock.get("stage2_score", 0), 0)
-                _pe_f  = _sf(stock.get("pe", 0), 0)
-                _roe_f = _sf(stock.get("roe",  0), 0)    # % after _pct()
-                _de_f  = _sf(stock.get("debt_equity", 99), 99)
-                _cr_f  = _sf(stock.get("current_ratio", 0), 0)
-                _gm_f  = _sf(stock.get("gross_margin", 0), 0)  # % after _pct()
-                _nm_f  = _sf(stock.get("npm", 0), 0)
+                _pe_f  = stock.get("pe_num",  _sf(stock.get("pe",  0), 0))
+                _roe_f = stock.get("roe_num", _sf(stock.get("roe", 0), 0))
+                _de_f  = stock.get("de_ratio_num", _sf(stock.get("debt_equity", 99), 99))
+                _cr_f  = stock.get("cr_num",  _sf(stock.get("current_ratio", 0), 0))
+                _gm_f  = stock.get("gm_num",  _sf(stock.get("gross_margin", 0), 0))
+                _nm_f  = stock.get("nm_num",  _sf(stock.get("npm", 0), 0))
                 _ey_f  = _sf(stock.get("earnings_yield", 0), 0)
                 _pro_f = _sf(stock.get("promoter_pct", 0), 0)
 
@@ -981,12 +994,13 @@ def run_master_pipeline():
                 _ss = 50.0
                 _pled = _sf(stock.get("pledge_pct", 0), 0)
                 _bet  = _sf(stock.get("beta", 1.0), 1.0)
-                _de2  = stock.get("debt_equity", "—")
+                _de2  = stock.get("de_ratio_num", _sf(stock.get("debt_equity", 0), 0))
                 if _pled > 20: _ss -= 15
                 elif _pled > 10: _ss -= 7
                 if _bet > 1.5: _ss -= 5
                 elif _bet < 0.8: _ss += 5
-                if isinstance(_de2, (int, float)) and float(_de2) > 2.0: _ss -= 10
+                if _de2 > 2.0: _ss -= 10
+                elif _de2 < 0.3 and _de2 > 0: _ss += 5   # very low debt = safer
                 stock["safety_score"] = max(0, min(100, round(_ss, 1)))
 
             # ── Sentiment score from smart money / FII trend ─────────────────

@@ -137,22 +137,38 @@ class FairValueEngine:
         cfv = round(cfv, 2)
 
         # Step 3: Margin of Safety (MoS %)
-        mos = round(((cfv - cmp) / cfv * 100), 2) if cfv > 0 else 0
+        # MoS = how much cheaper CMP is vs fair value (as % of CMP)
+        # Positive = stock is below fair value (good), Negative = above (overvalued)
+        mos = round(((cfv - cmp) / cmp * 100), 2) if cmp > 0 else 0
 
-        # Step 4: CFV Score Adjustment
+        # Step 4: CFV Score Adjustment (based on corrected MoS %)
+        # MoS > 30% = meaningful undervaluation → strong BUY signal bonus
+        # MoS < -20% = overvalued → penalise score
         score_adj = 0
-        if mos > 40: score_adj = 10
-        elif 25 <= mos <= 40: score_adj = 6
-        elif mos < -15: score_adj = -8
+        if   mos > 40:         score_adj = 12   # deeply undervalued
+        elif mos > 25:         score_adj = 8    # significantly undervalued
+        elif mos > 10:         score_adj = 4    # mildly undervalued
+        elif mos < -30:        score_adj = -10  # significantly overvalued
+        elif mos < -15:        score_adj = -5   # mildly overvalued
 
         # Upside — floor at -100% to prevent absurd display values
         upside = round(((cfv - cmp) / cmp * 100), 2) if cmp > 0 else -100
         upside = max(upside, -100)
 
+        # MoS label
+        if   mos > 40:  mos_lbl = "EXCEPTIONAL VALUE"
+        elif mos > 25:  mos_lbl = "STRONG VALUE"
+        elif mos > 10:  mos_lbl = "GOOD VALUE"
+        elif mos > 0:   mos_lbl = "FAIR VALUE"
+        elif mos > -15: mos_lbl = "SLIGHT PREMIUM"
+        elif mos > -30: mos_lbl = "OVERVALUED"
+        else:           mos_lbl = "SIGNIFICANTLY OVERVALUED"
+
         return {
             "cfv":              cfv,
             "cfv_low":          round(cfv * 0.85, 2) if cfv > 0 else 0,
             "cfv_high":         round(cfv * 1.15, 2) if cfv > 0 else 0,
+            "mos_label":        mos_lbl,
             "mos_pct":          mos,
             "score_adjustment": score_adj,
             "upside":           upside,

@@ -148,7 +148,7 @@ GLOSSARY_DATA = [
     ("WEEKLY CHANGE %","Chg% [6-Weekly]","Price change % over past 6 weeks (30 trading days)","All sheets"),
     ("WEEKLY CHANGE %","Chg% [8-Weekly]","+25% on a quality stock over 8W = institutional accumulation","All sheets"),
     ("FAIR VALUE","CFV","Composite Fair Value — sector-weighted blend of 7 models (M1–M7)","All sheets"),
-    ("FAIR VALUE","MoS %","Margin of Safety = (CFV−CMP)/CFV×100. >40% = EXCEPTIONAL, >25% = STRONG","All sheets"),
+    ("FAIR VALUE","MoS %","Margin of Safety = (CFV−CMP)/CMP×100. >40% = EXCEPTIONAL, >25% = STRONG","All sheets"),
     ("FAIR VALUE","M1: DCF FV","3-Stage DCF. WACC = 10Y GSec + Beta×ERP. Terminal growth 4.5%","Full Dashboard"),
     ("FAIR VALUE","M2: Graham FV","Graham Number = √(22.5×EPS×BVPS). Skip if EPS negative","Full Dashboard"),
     ("FAIR VALUE","M3: PE FV","EPS × Sector 5yr median P/E (mean reversion)","Full Dashboard"),

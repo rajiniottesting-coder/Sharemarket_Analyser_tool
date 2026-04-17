@@ -242,8 +242,32 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
     top_100["selection_reason"] = top_100.apply(
         lambda r: _reason(r.to_dict()), axis=1)
 
+    # ── Verdict-priority sort ─────────────────────────────────────────────────
+    # Sort so Excel shows: BUY first → WATCHLIST → NEUTRAL → AVOID
+    # Within each verdict tier: highest priority_score first
+    # This ensures the user sees the best BUY stocks at the top
+    VERDICT_ORDER = {"BUY": 0, "WATCHLIST": 1, "NEUTRAL": 2, "AVOID": 3}
+    if "verdict" in top_100.columns:
+        top_100 = top_100.copy()
+        top_100["_vord"] = top_100["verdict"].apply(
+            lambda v: VERDICT_ORDER.get(str(v), 2))
+        top_100 = top_100.sort_values(
+            ["_vord", "priority_score"], ascending=[True, False]
+        ).reset_index(drop=True)
+        top_100.drop(columns=["_vord"], inplace=True, errors="ignore")
+        # Re-assign rank after sort
+        top_100["stage3_rank"] = range(1, len(top_100) + 1)
+
+    # Summary log
+    v_counts  = dict(top_100["verdict"].value_counts()) if "verdict" in top_100.columns else {}
+    cap_short = {}
+    if "cap_category" in top_100.columns:
+        for c in top_100["cap_category"].fillna("?"):
+            k = str(c).split()[0]; cap_short[k] = cap_short.get(k, 0) + 1
+
     print(
         f"✅ Stage 3 Complete: {len(top_100)} stocks selected "
-        f"(overrides: {len(override_final)}, ranked: {remaining_slots})."
+        f"(overrides={len(override_final)}, ranked={remaining_slots}) | "
+        f"Verdicts: {v_counts} | Caps: {cap_short}"
     )
     return top_100
