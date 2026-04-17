@@ -90,16 +90,21 @@ def stage_1_filter(all_stocks: list) -> list:
 
 def stage_2_fundamental_scorer(df: pd.DataFrame) -> pd.DataFrame:
     """
-    SECTION 0B: Lightweight Fundamental Scorer.
-    6 binary criteria × 5 pts each = 0–30.
-    Drops score < 10 (too many weak dimensions).
-    Applies hard drop rules regardless of score.
-
-    Column names MUST match what the consolidated DataFrame provides.
-    Keys used: net_profit, rev_growth_yoy, debt_equity,
-               promoter_holding, pe, sebi_flag,
-               promoter_pct (alias for promoter_holding),
-               pledge_pct, consecutive_losses
+    SECTION 0B: Market Quality Scorer.
+    Uses only bhav-copy data available at Stage 2 time.
+    Scores each stock on delivery%, turnover, price zone, exchange listing.
+    
+    Criteria (5 pts each):
+      B1: Delivery % >= 50%  (basic institutional interest)
+      B2: Delivery % >= 65%  (strong institutional conviction)
+      B3: Turnover  >= ₹10L  (minimum liquidity)
+      B4: Turnover  >= ₹50L  (good liquidity)
+      B5: Price     >= ₹50   (avoids micro/nano caps)
+      B6: Price     >= ₹200  (mid-to-large territory)
+      B7: DUAL_LISTED        (broader institutional access)
+    
+    Max = 35 pts. Threshold = 15 pts (must pass at least 3 criteria).
+    Hard drops: turnover < ₹2L (illiquid), delivery < 30% (speculative only).
     """
     if df is None or df.empty:
         print("⚠️  Stage 2: empty input DataFrame.")
@@ -108,76 +113,52 @@ def stage_2_fundamental_scorer(df: pd.DataFrame) -> pd.DataFrame:
     qualified = []
 
     for _, row in df.iterrows():
-        # ── HARD DROP RULES (Section 0B) — check before scoring ─────────────
+        close     = float(row.get("close",       0) or 0)
+        volume    = float(row.get("volume",       0) or 0)
+        turnover  = float(row.get("turnover",     0) or 0)
+        deliv_pct = float(row.get("delivery_pct", 0) or 0)
+        exch_tag  = str(row.get("exchange_tag",   "") or "").upper()
 
-        # HD1: Zero promoter holding AND no institutional holding
-        # Only apply this hard drop when we have actual shareholding data loaded.
-        # If fundamentals DB is empty (first run), all values default to 0 —
-        # in that case skip HD1 to avoid dropping everything.
-        promoter = float(row.get("promoter_holding",
-                          row.get("promoter_pct", -1)) or -1)
-        fii = float(row.get("fii_holding", row.get("fii", -1)) or -1)
-        dii = float(row.get("dii_holding", row.get("dii", -1)) or -1)
-        # -1 means data absent — only hard-drop if data was present and explicitly 0
-        has_shareholding_data = (promoter >= 0 or fii >= 0 or dii >= 0)
-        if has_shareholding_data and promoter == 0.0 and max(fii, 0) + max(dii, 0) < 1.0:
-            continue  # HD1: governance black hole — hard drop
-        # Use 0 as default for scoring when data absent
-        if promoter < 0: promoter = 0
-        if fii < 0: fii = 0
-        if dii < 0: dii = 0
+        # ── HARD DROPS ───────────────────────────────────────────────────────
+        # HD1: Turnover < ₹2 Lakh — too illiquid to trade meaningfully
+        if turnover > 0 and turnover < 200_000:
+            continue
+        # HD2: Delivery < 30% — purely speculative, no institutional interest
+        if deliv_pct > 0 and deliv_pct < 30:
+            continue
+        # HD3: Price < ₹20 — excludes penny/nano caps from quality selection
+        if 0 < close < 20:
+            continue
 
-        # HD2: 3+ consecutive quarterly losses
-        if int(row.get("consecutive_losses", 0) or 0) >= 3:
-            continue  # HD2
-
-        # HD3: Promoter pledge > 40%
-        pledge = float(row.get("pledge_pct", 0) or 0)
-        if pledge > 40.0:
-            continue  # HD3
-
-        # HD4: Insufficient history (< 2 years in DB)
-        history_days = int(row.get("history_days", 730) or 730)
-        if history_days < 365:
-            continue  # HD4
-
-        # ── SCORING (5 pts each, total 0–30) ────────────────────────────────
+        # ── SCORING ──────────────────────────────────────────────────────────
         score = 0
 
-        # F1: PAT positive in at least 2 of last 4 quarters
-        net_profit = float(row.get("net_profit",
-                           row.get("pat", row.get("profit_after_tax", 0))) or 0)
-        if net_profit > 0:
+        # B1: Delivery >= 50% (basic institutional interest)
+        if deliv_pct >= 50:
+            score += 5
+        # B2: Delivery >= 65% (strong institutional conviction)
+        if deliv_pct >= 65:
             score += 5
 
-        # F2: Revenue YoY growth > 0%
-        rev_growth = float(row.get("rev_growth_yoy",
-                           row.get("revenue_growth", row.get("rev_growth", 0))) or 0)
-        if rev_growth > 0:
+        # B3: Turnover >= ₹10 Lakh (minimum meaningful liquidity)
+        if turnover >= 1_000_000:
+            score += 5
+        # B4: Turnover >= ₹50 Lakh (good trading liquidity)
+        if turnover >= 5_000_000:
             score += 5
 
-        # F3: Debt/Equity < 1.5
-        de = float(row.get("debt_equity",
-                   row.get("de_ratio", row.get("de", 99))) or 99)
-        if de < 1.5:
+        # B5: Price >= ₹50 (avoids nano/micro speculative stocks)
+        if close >= 50:
+            score += 5
+        # B6: Price >= ₹200 (mid-to-large quality zone)
+        if close >= 200:
             score += 5
 
-        # F4: Promoter holding > 25%
-        if promoter > 25.0:
+        # B7: Dual-listed (NSE+BSE = broader institutional coverage)
+        if "DUAL" in exch_tag:
             score += 5
 
-        # F5: P/E < 80x (only score if PE data exists; absent PE = 0 pts)
-        pe = float(row.get("pe", row.get("pe_ttm", 0)) or 0)
-        if 0 < pe < 80:
-            score += 5
-
-        # F6: No active SEBI alert / fraud flag
-        sebi_flag = str(row.get("sebi_flag", row.get("sebi_alert", "")) or "").strip().upper()
-        if sebi_flag in ["", "NONE", "N/A", "0", "NO"]:
-            score += 5
-
-        # ── REJECTION THRESHOLD ──────────────────────────────────────────────
-        # Need at least 3 criteria (15 pts) to qualify
+        # ── THRESHOLD ────────────────────────────────────────────────────────
         if score < 15:
             continue
 
@@ -189,8 +170,6 @@ def stage_2_fundamental_scorer(df: pd.DataFrame) -> pd.DataFrame:
     print(f"✅ Stage 2 Complete: {len(result)} stocks qualified (from {len(df)} input).")
     return result
 
-
-# ─── SECTION 3H: ANTI-TRIGGER GUARD ─────────────────────────────────────────
 
 def apply_anti_trigger_guard(stock: dict) -> dict:
     """
