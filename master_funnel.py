@@ -418,58 +418,11 @@ def run_master_pipeline():
             stock["spike_suppressed"] = guard["suppressed"]
             stock["guard_reasons"]    = ", ".join(guard["reasons"])
 
-            # Section 3I: Early Entry Score — augmented with price-action signals
-            try:
-                from early_detection_engine import EarlyDetectionEngine
-                _ede   = EarlyDetectionEngine()
-                _early = _ede.calculate_early_score(stock, {})
-                _escore = _early.get("total_score", 0)
-                _esigs  = list(_early.get("active_signals", []))
-
-                # Augment with signals derivable from available data
-                _vol_r  = _sf(stock.get("vol_ratio", 1.0), 1.0)
-                _rsi_e  = _sf(stock.get("rsi", 50), 50)
-                _4w_e   = _sf(stock.get("4w_chg", 0), 0)
-                _2w_e   = _sf(stock.get("2w_chg", 0), 0)
-                _st_e   = str(stock.get("supertrend", "NEUTRAL"))
-                _macd_e = str(stock.get("macd_signal", "NEUTRAL"))
-                _etag   = str(stock.get("exchange_tag", ""))
-
-                # Signal: Volume surge + RSI in accumulation zone (not overbought)
-                if _vol_r >= 1.8 and 50 < _rsi_e <= 72:
-                    _escore += 15
-                    _esigs.append("VOL SURGE + RSI ACCUMULATION")
-                # Signal: 2w momentum turning positive after flat/down period
-                if _2w_e > 1.5 and _4w_e < _2w_e:
-                    _escore += 10
-                    _esigs.append("MOMENTUM BUILDING")
-                # Signal: Supertrend BUY + MACD BUY confluence
-                if _st_e == "BUY" and _macd_e == "BUY":
-                    _escore += 12
-                    _esigs.append("TREND CONFLUENCE")
-                # Signal: Delivery > 70% with vol spike (institutional footprint)
-                _del_e = _sf(stock.get("delivery_pct", 0), 0)
-                if _del_e >= 70 and _vol_r >= 2.0:
-                    _escore += 10
-                    _esigs.append("INSTITUTIONAL FOOTPRINT")
-                # Signal: DUAL_LISTED cross-exchange
-                if _etag == "DUAL_LISTED":
-                    _escore += 8
-                    _esigs.append("DUAL-LISTED DISCOVERY")
-
-                _escore = min(100, _escore)
-                stock["early_entry_score"] = _escore
-                stock["early_mover_badge"] = "EARLY MOVER" if _escore >= 70 else ""
-                stock["early_label"] = (
-                    "EARLY MOVER — Act before the crowd" if _escore >= 80 else
-                    "AHEAD OF CONSENSUS" if _escore >= 60 else "EMERGING"
-                )
-                if _esigs:
-                    stock["early_signals"] = " | ".join(_esigs)
-            except Exception as _ee:
-                stock.setdefault("early_entry_score", 0)
-                stock.setdefault("early_mover_badge", "")
-                stock.setdefault("early_label", "EMERGING")
+            # Section 3I: Early Entry Score deferred to Section 6 scoring loop
+            # (vol_ratio, rsi, supertrend, 2w_chg are not available yet in this pass)
+            stock.setdefault("early_entry_score", 0)
+            stock.setdefault("early_mover_badge", "")
+            stock.setdefault("early_label", "EMERGING")
 
             # Section 3L: Sector Rotation Stage — use 4w_chg + FII trend
             _sec_ret   = _sf(stock.get("4w_chg", 0), 0)
@@ -924,7 +877,7 @@ def run_master_pipeline():
 
             models    = fv_engine.calculate_all_models(stock, beta, growth_3yr)
             fv_result = fv_engine.get_composite_fair_value(
-                models, stock.get("sector", "IT"), _sf(stock.get("close", 1), 1)
+                models, _sf(stock.get("close", 1), 1)
             )
             stock.update(models)
             stock.update(fv_result)
@@ -1047,6 +1000,53 @@ def run_master_pipeline():
                 if _ins == "YES":               _sent += 8
                 if _fii_t == "DOWN":            _sent -= 10
                 stock["sentiment_score"] = max(0, min(100, round(_sent, 1)))
+
+            # Section 3I: Early Entry Score — computed here after vol_ratio + technicals are populated
+            try:
+                from early_detection_engine import EarlyDetectionEngine
+                _ede   = EarlyDetectionEngine()
+                _early = _ede.calculate_early_score(stock, {})
+                _escore = _early.get("total_score", 0)
+                _esigs  = list(_early.get("active_signals", []))
+
+                _vol_r  = _sf(stock.get("vol_ratio", 1.0), 1.0)
+                _rsi_e  = _sf(stock.get("rsi", 50), 50)
+                _4w_e   = _sf(stock.get("4w_chg", 0), 0)
+                _2w_e   = _sf(stock.get("2w_chg", 0), 0)
+                _st_e   = str(stock.get("supertrend", "NEUTRAL"))
+                _macd_e = str(stock.get("macd_signal", "NEUTRAL"))
+                _etag   = str(stock.get("exchange_tag", ""))
+
+                if _vol_r >= 1.8 and 50 < _rsi_e <= 72:
+                    _escore += 15
+                    _esigs.append("VOL SURGE + RSI ACCUMULATION")
+                if _2w_e > 1.5 and _4w_e < _2w_e:
+                    _escore += 10
+                    _esigs.append("MOMENTUM BUILDING")
+                if _st_e == "BUY" and _macd_e == "BUY":
+                    _escore += 12
+                    _esigs.append("TREND CONFLUENCE")
+                _del_e = _sf(stock.get("delivery_pct", 0), 0)
+                if _del_e >= 70 and _vol_r >= 2.0:
+                    _escore += 10
+                    _esigs.append("INSTITUTIONAL FOOTPRINT")
+                if _etag == "DUAL_LISTED" and _vol_r >= 1.5:
+                    _escore += 8
+                    _esigs.append("DUAL-LISTED DISCOVERY")
+
+                _escore = min(100, _escore)
+                stock["early_entry_score"] = _escore
+                stock["early_mover_badge"] = "EARLY MOVER" if _escore >= 70 else ""
+                stock["early_label"] = (
+                    "EARLY MOVER — Act before the crowd" if _escore >= 80 else
+                    "AHEAD OF CONSENSUS" if _escore >= 60 else "EMERGING"
+                )
+                if _esigs:
+                    stock["early_signals"] = " | ".join(_esigs)
+            except Exception as _ee:
+                stock.setdefault("early_entry_score", 0)
+                stock.setdefault("early_mover_badge", "")
+                stock.setdefault("early_label", "EMERGING")
 
             # Composite score + verdict
             score_result = scoring.calculate_composite_score(stock)

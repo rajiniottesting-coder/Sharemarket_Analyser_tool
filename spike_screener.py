@@ -29,6 +29,17 @@ class SpikeScreener:
         if data.get('vol_spike_50d', 0) > 3.0 and data.get('delivery_pct', 0) > 60:
             triggers.append("INSTITUTIONAL ACCUMULATION")
 
+        # TRIGGER 2: Technical Breakout (MACD BUY + Supertrend BUY + above-avg vol)
+        _macd_sp = str(data.get('macd_signal', '')).upper()
+        _st_sp   = str(data.get('supertrend', '')).upper()
+        if 'BUY' in _macd_sp and 'BUY' in _st_sp and data.get('vol_spike_50d', 0) > 1.5:
+            triggers.append("TECHNICAL BREAKOUT")
+
+        # TRIGGER 4: RSI Accumulation Zone with volume surge
+        _rsi_sp = float(data.get('rsi', data.get('rsi_14', 50)) or 50)
+        if 45 < _rsi_sp <= 65 and data.get('vol_spike_50d', 0) > 2.0:
+            triggers.append("RSI ACCUMULATION")
+
         return {
             "score": len(triggers),
             "tags": triggers,

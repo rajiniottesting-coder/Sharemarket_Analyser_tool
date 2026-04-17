@@ -22,15 +22,12 @@ class FairValueEngine:
         eps = data.get('eps', 0)
         bv = data.get('bvps', 0)
         
-        # M1: DCF (3-Stage) - Stage 1 capped at 25% (Section 5B)
-        wacc = self.gsec + (beta * 5.5)
-        # Simplified for Python logic; Full stage-3 logic in master_funnel integration
-        # M1: Simplified 3-stage DCF
-        # Stage 1 (yrs 1-5): growth_3yr, Stage 2 (6-10): half, Terminal: 4.5%
-        if eps > 0 and wacc > 0.04:
+        # M1: DCF (3-Stage) — Stage 1 capped at 25%
+        wacc = (self.gsec + beta * 5.5) / 100  # convert % to decimal (e.g. 11.5% → 0.115)
+        gt = 0.045
+        if eps > 0 and wacc > gt:               # WACC must exceed terminal growth rate
             g1 = min(growth_3yr / 100, 0.25)
             g2 = g1 / 2
-            gt = 0.045
             dcf = sum(eps * (1+g1)**y / (1+wacc)**y for y in range(1,6))
             dcf += sum(eps * (1+g1)**5 * (1+g2)**(y-5) / (1+wacc)**y for y in range(6,11))
             terminal = (eps * (1+g1)**5 * (1+g2)**5 * (1+gt)) / (wacc - gt) / (1+wacc)**10
@@ -59,8 +56,21 @@ class FairValueEngine:
             str(data.get('sector','')).split()[0] if data.get('sector') else '', 3.0)
         models['M4_PB'] = round(_bvps4 * _sec_pb, 2) if _bvps4 > 0 else 0
 
-        # M3: PE Mean Reversion (Section 5B)
-        models['M3_PE'] = eps * data.get('sector_pe_5yr', 20)
+        # M3: PE Mean Reversion — sector-appropriate benchmark PE
+        _sec_word = str(data.get('sector', '') or '').split()[0]
+        _sec_pe_map = {
+            "IT": 30, "Technology": 30, "Software": 28,
+            "Banks": 18, "Banking": 18, "NBFC": 20, "Financial": 20,
+            "Pharma": 30, "Healthcare": 28,
+            "FMCG": 45, "Consumer": 40,
+            "Auto": 25, "Automobiles": 25,
+            "Metals": 12, "Steel": 10,
+            "Energy": 15, "Oil": 12, "Power": 20,
+            "Infra": 22, "Defence": 40,
+            "Chemical": 28,
+        }
+        _fair_pe = _sec_pe_map.get(_sec_word, _sf(data.get('sector_pe_5yr', 0), 0) or 25)
+        models['M3_PE'] = round(eps * _fair_pe, 2)
         
         # M7: PEG-Adjusted (Growth capped at 30%)
         adj_growth = min(growth_3yr, 30)
@@ -96,34 +106,53 @@ class FairValueEngine:
 
         return models
 
-    def get_composite_fair_value(self, models, sector, cmp):
+    def get_composite_fair_value(self, models, cmp):
         """
-        Step 2 & 3: Composite weighting and Margin of Safety (MoS)
+        Step 2 & 3: Composite weighting and Margin of Safety (MoS).
+        Uses all available (non-zero) models with normalized base weights.
         """
-        # Section 5B Weighting Table
-        weights = {
-            "IT": {"M1_DCF": 0.35, "M3_PE": 0.30, "M7_PEG": 0.20},
-            "Banks": {"M4_PB": 0.35, "M3_PE": 0.25, "M6_DDM": 0.20},
-            "BSE_SME": {"M3_PE": 0.35, "M7_PEG": 0.30, "M1_DCF": 0.25}
+        base_weights = {
+            "M1_DCF":    0.30,
+            "M2_Graham": 0.15,
+            "M3_PE":     0.20,
+            "M4_PB":     0.15,
+            "M5_EV":     0.10,
+            "M6_DDM":    0.05,
+            "M7_PEG":    0.05,
         }
-        
-        sw = weights.get(sector, weights["IT"])
-        cfv = sum(models.get(m, 0) * w for m, w in sw.items())
-        
+
+        # Include only non-zero models; normalize weights so they sum to 1
+        available = {k: v for k, v in models.items()
+                     if isinstance(v, (int, float)) and v > 0}
+        total_w = sum(base_weights.get(k, 0.10) for k in available)
+
+        if total_w > 0 and available:
+            cfv = sum(v * base_weights.get(k, 0.10) for k, v in available.items()) / total_w
+        elif available:
+            cfv = sum(available.values()) / len(available)  # equal-weight fallback
+        else:
+            cfv = 0
+
+        cfv = round(cfv, 2)
+
         # Step 3: Margin of Safety (MoS %)
-        mos = ((cfv - cmp) / cfv * 100) if cfv > 0 else 0
-        
-        # Step 4: CFV Score Adjustment (Section 5B)
+        mos = round(((cfv - cmp) / cfv * 100), 2) if cfv > 0 else 0
+
+        # Step 4: CFV Score Adjustment
         score_adj = 0
         if mos > 40: score_adj = 10
         elif 25 <= mos <= 40: score_adj = 6
         elif mos < -15: score_adj = -8
-        
+
+        # Upside — floor at -100% to prevent absurd display values
+        upside = round(((cfv - cmp) / cmp * 100), 2) if cmp > 0 else -100
+        upside = max(upside, -100)
+
         return {
-            "cfv":              round(cfv, 2),
-            "cfv_low":          round(cfv * 0.85, 2) if cfv > 0 else 0,  # bear case -15%
-            "cfv_high":         round(cfv * 1.15, 2) if cfv > 0 else 0,  # bull case +15%
-            "mos_pct":          round(mos, 2),
+            "cfv":              cfv,
+            "cfv_low":          round(cfv * 0.85, 2) if cfv > 0 else 0,
+            "cfv_high":         round(cfv * 1.15, 2) if cfv > 0 else 0,
+            "mos_pct":          mos,
             "score_adjustment": score_adj,
-            "upside":           round(((cfv - cmp) / cmp * 100), 2) if cmp > 0 else -100,
+            "upside":           upside,
         }

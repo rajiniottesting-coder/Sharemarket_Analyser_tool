@@ -72,15 +72,13 @@ class ScoringEngine:
 
     def calculate_storm_score(self, data, market_vix, market_off_peak):
         """
-        Implements Section 7: Volatile Market Filter (MANDATORY if VIX > 18).
+        Section 7: Defensive quality score. Always calculated; critical above VIX 18.
         """
-        if market_vix <= 18 and market_off_peak <= 5:
-            return None # Not mandatory in stable markets 
-            
         score = 0
         # Scoring Logic (Section 7)
-        if data.get('beta', 1.0) < 0.8: score += 2 
-        if data.get('debt_equity', 1.0) < 0.3: score += 2 
+        if data.get('beta', 1.0) < 0.8: score += 2
+        _de_val = float(data.get('de_ratio', 1.0) or 1.0)
+        if _de_val < 0.3: score += 2
         if data.get('fcf_positive_4q', False): score += 2 
         if data.get('promoter_q_increase', False): score += 1
         if data.get('div_yield', 0) > 2.0: score += 1 
