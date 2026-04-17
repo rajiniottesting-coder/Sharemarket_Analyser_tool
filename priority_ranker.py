@@ -14,43 +14,53 @@ from data_bridge import get_20d_avg_vol
 
 def calculate_priority_score(row: dict) -> float:
     """
-    SECTION 0C: Priority Score Formula.
-    P = (vol_spike × 40) + (stage2_score/30 × 25) + (delivery_pct/100 × 20) + (recency × 15)
+    SECTION 0C: Priority Score Formula (v2).
+    P = (vol_spike×25) + (stage2_score/35×30) + (delivery_pct/100×20)
+      + (cap_bonus×15) + (turnover_bonus×10)
+
+    Changes from v1:
+    - vol_spike weight reduced 40→25 (prevents ETF arb from dominating)
+    - cap_bonus added: LARGE_CAP=15, MID_CAP=10, SMALL_CAP=5, MICRO=0
+    - turnover_bonus: rewards real liquidity (not just vol spike)
+    - recency removed: always 0 so it added nothing
     """
-    # 1. Volume Spike Ratio (capped at 10×)
+    # 1. Volume Spike Ratio (capped at 5× — was 10×)
     current_vol = float(row.get("volume", 0) or 0)
     symbol      = str(row.get("symbol", row.get("final_symbol", "")) or "")
     avg_vol     = get_20d_avg_vol(symbol) if symbol else 0
 
     if avg_vol > 0 and current_vol > 0:
-        vol_spike_ratio = min(current_vol / avg_vol, 10)
+        vol_spike_ratio = min(current_vol / avg_vol, 5)  # cap at 5× not 10×
     else:
-        vol_spike_ratio = 1.0  # Default for new stocks with no history
+        vol_spike_ratio = 1.0
 
-    vol_component = (vol_spike_ratio / 10) * 40
+    vol_component = (vol_spike_ratio / 5) * 25
 
-    # 2. Stage 2 Fundamental Score (0–30)
-    s2_score    = float(row.get("stage2_score", 0) or 0)
-    fund_component = (s2_score / 30) * 25
+    # 2. Stage 2 Quality Score (0–35)
+    s2_score       = float(row.get("stage2_score", 0) or 0)
+    fund_component = (s2_score / 35) * 30
 
     # 3. Delivery Percentage
-    delivery = float(row.get("delivery_pct", 0) or 0)
+    delivery        = float(row.get("delivery_pct", 0) or 0)
     deliv_component = (min(delivery, 100) / 100) * 20
 
-    # 4. Recency Bonus (days since last full Claude analysis)
-    days_since = int(row.get("days_since_analysis", 99) or 99)
-    if days_since >= 7:
-        recency = 1.0
-    elif days_since >= 4:
-        recency = 0.7
-    elif days_since >= 2:
-        recency = 0.3
-    else:
-        recency = 0.0  # Analysed within 48 hours — low priority
+    # 4. Cap Category Bonus — ensures large/mid caps are not crowded out
+    cap = str(row.get("cap_category", "") or "").upper()
+    if   "LARGE" in cap: cap_bonus = 1.0
+    elif "MID"   in cap: cap_bonus = 0.67
+    elif "SMALL" in cap: cap_bonus = 0.33
+    else:                cap_bonus = 0.0   # MICRO or unknown
+    cap_component = cap_bonus * 15
 
-    recency_component = recency * 15
+    # 5. Turnover Bonus — rewards real liquidity depth
+    turnover = float(row.get("turnover", 0) or 0)
+    if   turnover >= 50_000_000:  t_bonus = 1.0   # ≥₹5 Cr
+    elif turnover >= 10_000_000:  t_bonus = 0.6   # ≥₹1 Cr
+    elif turnover >=  1_000_000:  t_bonus = 0.3   # ≥₹10L
+    else:                         t_bonus = 0.0
+    turnover_component = t_bonus * 10
 
-    total = vol_component + fund_component + deliv_component + recency_component
+    total = vol_component + fund_component + deliv_component + cap_component + turnover_component
     return round(total, 2)
 
 
@@ -135,28 +145,73 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
 
     override_final = df.loc[ordered_overrides].copy()
 
-    # Cap overrides at 20 (20%) to ensure 80 slots go to genuinely ranked stocks
+    # Cap overrides at 20
     MAX_OVERRIDES = 20
     if len(override_final) > MAX_OVERRIDES:
         override_final = override_final.head(MAX_OVERRIDES)
 
-    # Fill remaining slots with ranked non-override stocks
-    # Include override stocks in the pool so ranking decides among all
+    # Build full ranked pool (all non-override stocks by priority score)
     remaining_slots = max(0, 100 - len(override_final))
-    ranked_rest = pd.concat(
+    all_ranked = pd.concat(
         [non_override, df[override_mask & ~df.index.isin(override_final.index)]]
     ).sort_values("priority_score", ascending=False) if not non_override.empty else         df.sort_values("priority_score", ascending=False)
 
-    top_100 = pd.concat(
-        [override_final, ranked_rest.head(remaining_slots)],
-        ignore_index=True,
-    ).head(100)
+    # ── Cap-tier diversification ─────────────────────────────────────────────
+    # Guarantee: LARGE≥20, MID≥15, SMALL+MICRO≤65
+    # Prevents ETFs (sc_group=EF already filtered) and micro junk flooding list
+    MIN_LARGE, MIN_MID, MAX_SMALL_MICRO = 20, 15, 65
+
+    def _cap_tier(row_dict):
+        c = str(row_dict.get("cap_category","") or "").upper()
+        if "LARGE" in c: return "LARGE"
+        if "MID"   in c: return "MID"
+        if "SMALL" in c: return "SMALL"
+        return "MICRO"
+
+    if "cap_category" in all_ranked.columns:
+        all_ranked = all_ranked.copy()
+        all_ranked["_tier"] = all_ranked.apply(
+            lambda r: _cap_tier(r.to_dict()), axis=1)
+
+        large_pool = all_ranked[all_ranked["_tier"] == "LARGE"]
+        mid_pool   = all_ranked[all_ranked["_tier"] == "MID"]
+        sm_pool    = all_ranked[all_ranked["_tier"].isin(["SMALL","MICRO"])]
+
+        large_picks = large_pool.head(MIN_LARGE)
+        mid_picks   = mid_pool.head(MIN_MID)
+        guaranteed  = pd.concat([large_picks, mid_picks])
+        used_idx    = set(guaranteed.index) | set(override_final.index)
+
+        # Fill remaining from ranked pool, capping small+micro
+        sm_count = len(guaranteed[guaranteed["_tier"].isin(["SMALL","MICRO"])])
+        filler_rows = []
+        for _, row in all_ranked[~all_ranked.index.isin(used_idx)].iterrows():
+            needed = remaining_slots - len(guaranteed)
+            if len(filler_rows) >= needed: break
+            if row["_tier"] in ("SMALL","MICRO"):
+                if sm_count >= MAX_SMALL_MICRO: continue
+                sm_count += 1
+            filler_rows.append(row)
+
+        filler_df = pd.DataFrame(filler_rows)
+        top_100 = pd.concat(
+            [override_final, guaranteed, filler_df], ignore_index=True
+        ).drop_duplicates(subset=["symbol"]).head(100)
+        n_large = len([r for _,r in top_100.iterrows() if "LARGE" in str(r.get("cap_category",""))])
+        n_mid   = len([r for _,r in top_100.iterrows() if "MID"   in str(r.get("cap_category",""))])
+        print(f"   Cap mix: LARGE={n_large}, MID={n_mid}, SMALL/MICRO={100-n_large-n_mid}")
+    else:
+        # Fallback if no cap_category yet (pre-enrichment)
+        top_100 = pd.concat(
+            [override_final, all_ranked.head(remaining_slots)],
+            ignore_index=True,
+        ).head(100)
 
     # Add stage 3 rank column
     top_100["stage3_rank"] = range(1, len(top_100) + 1)
 
     print(
         f"✅ Stage 3 Complete: {len(top_100)} stocks selected "
-        f"(overrides: {len(override_final)}, ranked: {min(remaining_slots, len(ranked_rest))})."
+        f"(overrides: {len(override_final)}, ranked: {remaining_slots})."
     )
     return top_100

@@ -35,6 +35,41 @@ def stage_1_filter(all_stocks: list) -> list:
         if not sym or sym == "0":
             continue
 
+        # V0: Exclude ETFs, Mutual Funds, InvITs, REITs — these are not stocks
+        sc_group = str(stock.get("sc_group", "") or "").upper().strip()
+        if sc_group in ("EF", "MF", "IF", "IR", "BE"):
+            # EF=ETF, MF=MutualFund, IF=InvIT, IR=REIT, BE=Bond ETF
+            dropped.setdefault("etf_mf", 0)
+            dropped["etf_mf"] += 1
+            continue
+
+        # Symbol-based ETF/MF detection (catches NSE-listed funds)
+        sym_up = sym.upper()
+        _etf_kw = ("LIQUID","BEES","GOLDETF","GOLDBEES","SILVERETF","SILVERBEES",
+                   "NIFTYBEES","JUNIORBEES","ICICIB22","SBILIQ","ABSLLIQ",
+                   "HDFCLIQ","KOTAKLIQ","EDELWEISS","IVZIN","AONELIQ",
+                   "LIQUIDETF","LIQUIDPLUS","LIQUIDSHRI","MAKEINDIA",
+                   "EQUAL50","CPSE","SHARIAH","MAFANG","BBETF","SMALLADD",
+                   "MIDADD","CPSEETF","MONQ50","MOGSEC","MOPHJINDAL",
+                   "LOWVOLIETF","QUALITIETF","MOVALUE","MOMOMENTUM",
+                   "NETFGSC10I","NETFLOWVOL","NETFMID","HDFCNIFETF",
+                   "SETFNIF50","SETFNN50","MOM100ETF","PSUBNKBEES")
+        if any(sym_up.startswith(k) or sym_up.endswith("ETF") or
+               sym_up.endswith("BEES") or sym_up.endswith("LIQUID") or
+               sym_up.endswith("ADD") for k in _etf_kw):
+            dropped.setdefault("etf_mf", 0)
+            dropped["etf_mf"] += 1
+            continue
+
+        # Liquid fund NAV pattern: CMP ≈ ₹1000 exactly (liquid fund NAV)
+        close_pre = float(stock.get("close", 0) or 0)
+        if 995 <= close_pre <= 1005 and str(stock.get("company_name","")).upper() in (
+            "","NONE") or (995 <= close_pre <= 1005 and
+            any(k in sym_up for k in ("LIQUID","LIQ","CASH"))):
+            dropped.setdefault("etf_mf", 0)
+            dropped["etf_mf"] += 1
+            continue
+
         # V1: Must have traded today
         volume = float(stock.get("volume", 0) or 0)
         if volume <= 0:
@@ -164,6 +199,16 @@ def stage_2_fundamental_scorer(df: pd.DataFrame) -> pd.DataFrame:
 
         row_dict = row.to_dict()
         row_dict["stage2_score"] = score
+
+        # Estimate cap category from daily turnover (proxy for market cap)
+        # Used by priority_ranker for cap-tier diversification BEFORE yfinance enrichment
+        # Large cap companies typically have turnover >₹50Cr/day
+        _to = turnover
+        if   _to >= 500_000_000: row_dict.setdefault("cap_category", "LARGE CAP")   # >₹50Cr
+        elif _to >= 100_000_000: row_dict.setdefault("cap_category", "MID CAP")     # >₹10Cr
+        elif _to >=  10_000_000: row_dict.setdefault("cap_category", "SMALL CAP")   # >₹1Cr
+        else:                    row_dict.setdefault("cap_category", "MICRO CAP")
+
         qualified.append(row_dict)
 
     result = pd.DataFrame(qualified)

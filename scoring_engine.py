@@ -1,12 +1,36 @@
 import pandas as pd
 
 class ScoringEngine:
+    """
+    Three-verdict system with cap-category-adjusted thresholds.
+
+    Only three verdicts are shown in the main Excel verdict column:
+        BUY       — strong signal, worth acting on
+        WATCHLIST — emerging signal, monitor closely
+        NEUTRAL   — no clear signal (+ AVOID for very weak stocks)
+
+    Thresholds differ by cap category because:
+        LARGE CAP  → lower score needed (steadier, less volatile, lower risk)
+        MID CAP    → moderate threshold
+        SMALL CAP  → higher threshold (more volatile, needs stronger signal)
+        MICRO CAP  → highest threshold (maximum risk, must be convincing)
+
+    The supplementary 'label' field (from _assign_quick_pick) still carries
+    DEEP VALUE, EARLY MOVER, etc. for the Gold sheet and quick-pick logic.
+    """
+
+    # Cap-tier thresholds: {cap_tier: (BUY_min, WATCHLIST_min)}
+    # Any score below WATCHLIST_min → NEUTRAL  (< lowest 15% → AVOID)
+    CAP_THRESHOLDS = {
+        "LARGE": (60, 50),   # Lower bar — large caps are inherently safer
+        "MID":   (63, 53),   # Moderate bar
+        "SMALL": (66, 56),   # Higher bar — more volatility, needs conviction
+        "MICRO": (70, 60),   # Highest bar — only the clearest signals qualify
+    }
+    AVOID_BELOW = 38         # Universal floor — below this = AVOID regardless of cap
+
     def __init__(self):
-        # Verdict Scale (Section 6)
-        self.verdict_scale = [
-            (90, "STRONG BUY"), (75, "BUY"), (60, "MILD BUY"),
-            (45, "NEUTRAL"), (30, "MILD SELL"), (15, "SELL"), (0, "STRONG SELL")
-        ]
+        pass  # Thresholds defined as class constants above
 
     def calculate_composite_score(self, data):
         """
@@ -39,9 +63,10 @@ class ScoringEngine:
             
         final_score = max(0, min(100, final_score)) # Clamp 0-100
         
+        cap_cat = str(data.get("cap_category", "") or "")
         return {
             "composite_score": round(final_score, 2),
-            "verdict": self._get_verdict(final_score),
+            "verdict": self._get_verdict(final_score, cap_cat),
             "label": self._assign_quick_pick(data, final_score)
         }
 
@@ -69,10 +94,28 @@ class ScoringEngine:
         
         return {"storm_score": score, "storm_label": label}
 
-    def _get_verdict(self, score):
-        for threshold, label in self.verdict_scale:
-            if score >= threshold: return label
-        return "STRONG SELL" 
+    def _get_verdict(self, score, cap_category=""):
+        """
+        Returns one of: BUY, WATCHLIST, NEUTRAL, AVOID.
+        Thresholds vary by cap category — large caps qualify with lower scores
+        because they carry lower inherent risk.
+        """
+        # Universal floor — any stock below this is AVOID regardless of cap
+        if score < self.AVOID_BELOW:
+            return "AVOID"
+
+        # Determine cap tier from cap_category string
+        cap_up = str(cap_category).upper()
+        if   "LARGE" in cap_up: tier = "LARGE"
+        elif "MID"   in cap_up: tier = "MID"
+        elif "SMALL" in cap_up: tier = "SMALL"
+        else:                    tier = "MICRO"  # MICRO CAP or unknown
+
+        buy_min, watch_min = self.CAP_THRESHOLDS[tier]
+
+        if   score >= buy_min:   return "BUY"
+        elif score >= watch_min: return "WATCHLIST"
+        else:                    return "NEUTRAL"
 
     def _assign_quick_pick(self, data, score):
         """Implements Section 6 Quick-Pick Labels"""
@@ -85,6 +128,6 @@ class ScoringEngine:
             return "DEEP VALUE" 
         if early >= 70 and score > 55:
             return "EARLY MOVER"
-        if score < 50 and mos < 0:
+        if score < 38 or (score < 45 and mos < -30):
             return "AVOID / EXIT"
         return "WATCHLIST"
