@@ -193,6 +193,9 @@ def init_all_tables(conn):
             quick_ratio      REAL    DEFAULT 0,
             cash_cr          REAL    DEFAULT 0,
             total_debt_cr    REAL    DEFAULT 0,
+            operating_cf_cr  REAL    DEFAULT 0,
+            curr_assets_cr   REAL    DEFAULT 0,
+            curr_liab_cr     REAL    DEFAULT 0,
             fcf_cr           REAL    DEFAULT 0,
             fcf_yield        REAL    DEFAULT 0,
             ccc_days         REAL    DEFAULT 0,
@@ -1254,6 +1257,9 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                         "total_cash":    round(float(info.get("totalCash") or 0)/1e7, 2),
                         "total_debt":    round(float(info.get("totalDebt") or 0)/1e7, 2),
                         "fcf":           round(float(info.get("freeCashflow") or 0)/1e7, 2),
+                        "operating_cf":  round(float(info.get("operatingCashflow") or 0)/1e7, 2),
+                        "total_current_assets": round(float(info.get("totalCurrentAssets") or 0)/1e7, 2),
+                        "total_current_liab":   round(float(info.get("totalCurrentLiabilities") or 0)/1e7, 2),
                         "payout_ratio":  _yf("payoutRatio", m=100),
                         "ps":            _yf("priceToSalesTrailing12Months"),
                         "ev_ebitda":     _yf("enterpriseToEbitda"),
@@ -1388,6 +1394,10 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             "ps":           d.get("ps", 0),
             "ev_ebitda":    d.get("ev_ebitda", 0),
             "peg":          d.get("peg", 0),
+            # Extra balance sheet fields for P/CF and derived ratios
+            "operating_cf_cr":    d.get("operating_cf", 0),
+            "curr_assets_cr":     d.get("total_current_assets", 0),
+            "curr_liab_cr":       d.get("total_current_liab", 0),
             # ── FIX: keys fetched by yfinance but were missing from INSERT ──
             "div_yield":    d.get("div_yield", 0),      # dividendYield ×100
             "payout_ratio": d.get("payout_ratio", 0),   # payoutRatio ×100

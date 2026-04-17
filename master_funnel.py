@@ -559,7 +559,10 @@ def run_master_pipeline():
                         fm.quick_ratio, fm.cash_cr, fm.fcf_yield,
                         COALESCE(fm.rev_yoy, 0)        as rev_yoy,
                         COALESCE(fm.pat_yoy, 0)        as pat_yoy,
-                        COALESCE(fm.payout_ratio, 0)   as payout_ratio
+                        COALESCE(fm.payout_ratio, 0)   as payout_ratio,
+                        COALESCE(fm.operating_cf_cr, 0) as operating_cf_cr,
+                        COALESCE(fm.curr_assets_cr, 0)  as curr_assets_cr,
+                        COALESCE(fm.curr_liab_cr, 0)    as curr_liab_cr
                         FROM fundamental_metrics fm
                         INNER JOIN (
                             SELECT symbol, MAX(date) as md FROM fundamental_metrics
@@ -750,6 +753,9 @@ def run_master_pipeline():
                 rev_yoy_v    = _fmv[29] if len(_fmv) > 29 else 0
                 pat_yoy_v    = _fmv[30] if len(_fmv) > 30 else 0
                 payout_v     = _fmv[31] if len(_fmv) > 31 else 0
+                op_cf_v      = _fmv[32] if len(_fmv) > 32 else 0   # operating cash flow ₹Cr
+                curr_ass_v   = _fmv[33] if len(_fmv) > 33 else 0   # current assets ₹Cr
+                curr_liab_v  = _fmv[34] if len(_fmv) > 34 else 0   # current liabilities ₹Cr
                 def _fv(v):
                     try:
                         f = float(v) if v is not None else 0.0
@@ -810,7 +816,33 @@ def run_master_pipeline():
                 # ROCE ≈ ROE × equity / (equity + net_debt)
                 # Simplified: ROCE ≈ ROE / (1 + nd_ebitda × ebitda_margin/100) — too complex
                 # Just show "—" if no direct data
-                stock.setdefault("roce", _fv(roce))
+                # ROCE: not in yfinance — derive from available metrics
+                # ROCE = EBIT / Capital_Employed
+                # Approximation: ROCE ≈ EBITDA_margin × (Revenue/Capital_Employed)
+                # Revenue ≈ MCap / P_S_ratio; Capital_Employed ≈ MCap/PB + Total_Debt
+                _roce_direct = _fvn(roce)
+                if _roce_direct != 0:
+                    stock.setdefault("roce", _fv(roce))
+                else:
+                    # Method 1: if ebitda_margin and P/S available → compute Revenue, then EBIT
+                    _em_v   = _fvn(em)   # ebitda margin fraction
+                    _ps_v   = _fvn(ps_v) # P/S ratio
+                    _mcap_r = _fvn(stock.get("mcap_cr", 0))
+                    _pb_r   = _fvn(pb)
+                    _td_r   = _fvn(stock.get("total_debt", 0)) if stock.get("total_debt") not in ("—", None) else 0
+                    _em_pct = (_em_v * 100 if 0 < _em_v < 2.0 else _em_v)  # convert fraction→%
+                    if _em_pct > 0 and _ps_v > 0 and _mcap_r > 0 and _pb_r > 0:
+                        _rev_cr   = _mcap_r / _ps_v                     # Revenue ₹Cr
+                        _ebit_cr  = _rev_cr * (_em_pct * 0.85) / 100    # EBIT ≈ EBITDA × 0.85
+                        _equity_cr = _mcap_r / _pb_r                    # Book equity ₹Cr
+                        _cap_emp  = _equity_cr + max(_td_r, 0)          # Capital Employed
+                        if _cap_emp > 0:
+                            _roce_calc = round(_ebit_cr / _cap_emp * 100, 2)
+                            stock.setdefault("roce", _roce_calc if 0 < _roce_calc < 200 else "—")
+                        else:
+                            stock.setdefault("roce", "—")
+                    else:
+                        stock.setdefault("roce", "—")
                 stock.setdefault("gross_margin", _pct(gm))
                 stock.setdefault("ebitda_margin",_pct(em))
                 stock.setdefault("npm",          _pct(nm))
@@ -840,20 +872,72 @@ def run_master_pipeline():
                 stock["de_ratio_num"] = round(_de_raw / 100, 3) if abs(_de_raw) > 2.0 else round(_de_raw, 3)
                 stock["cr_num"]       = round(_fvn(cr), 3)      # current ratio numeric
                 stock["pe_num"]       = round(_fvn(pe), 2)      # PE numeric
-                stock.setdefault("current_ratio",_fv(cr) if _fvn(cr) > 0 else "—")
-                stock.setdefault("quick_ratio",  _fv(qr_v) if _fvn(qr_v) > 0 else "—")
-                # total_debt: 0 is valid (zero-debt company) — show it, don't hide as "—"
-                _td_val = _fvn(td)
+                # Current Ratio: direct from yfinance, or derive from assets/liabilities
+                _cr_direct = _fvn(cr)
+                _qr_direct = _fvn(qr_v)
+                _ca = _fvn(curr_ass_v)
+                _cl = _fvn(curr_liab_v)
+                if _cr_direct > 0:
+                    _cr_display = _fv(cr)
+                elif _ca > 0 and _cl > 0:
+                    _cr_display = round(_ca / _cl, 3)
+                else:
+                    _cr_display = "—"
+                stock.setdefault("current_ratio", _cr_display)
+                stock["cr_num"] = float(_cr_display) if isinstance(_cr_display, (int,float)) and _cr_display else                                   (_cr_direct if _cr_direct > 0 else 0)
+
+                # Quick Ratio: direct or approximate as current_ratio × 0.7 (rough)
+                if _qr_direct > 0:
+                    stock.setdefault("quick_ratio", _fv(qr_v))
+                elif _cr_display != "—" and float(str(_cr_display)) > 0:
+                    # QR ≈ CR - inventory/current_liab; rough estimate = CR × 0.85
+                    _qr_approx = round(float(str(_cr_display)) * 0.85, 3)
+                    stock.setdefault("quick_ratio", _qr_approx)
+                else:
+                    stock.setdefault("quick_ratio", "—")
+                # Total Debt: direct from yfinance, or derive from D/E × book equity
+                # Book Equity = MCap / PB (₹Cr)
+                _td_val  = _fvn(td)
+                _de_raw2 = _fvn(de)
+                _de_r2   = _de_raw2 / 100 if _de_raw2 > 2.0 else _de_raw2
+                _pb_v2   = _fvn(pb)
+                _mcap_v2 = _fvn(stock.get("mcap_cr", 0))
                 if _td_val > 0:
                     stock.setdefault("total_debt", round(_td_val, 2))
-                elif _td_val == 0 and _fvn(pe) > 0:
-                    # Stock data exists but debt=0 → confirmed zero-debt company
+                elif _de_r2 == 0:
+                    # D/E = 0 → confirmed zero-debt company
                     stock.setdefault("total_debt", 0)
+                elif _de_r2 > 0 and _pb_v2 > 0 and _mcap_v2 > 0:
+                    # Derived: D/E × (MCap/PB) = Debt
+                    _td_derived = round(_de_r2 * (_mcap_v2 / _pb_v2), 2)
+                    stock.setdefault("total_debt", _td_derived)
                 else:
                     stock.setdefault("total_debt", "—")
                 stock.setdefault("cash",         _fv(cash_v) if _fvn(cash_v) > 0 else "—")
-                stock.setdefault("fcf",          _fv(fcf) if _fvn(fcf) != 0 else "—")
-                stock.setdefault("fcf_yield",    _fv(fcfy_v))
+                # FCF: direct freeCashflow, or use operatingCashflow as proxy
+                _fcf_direct  = _fvn(fcf)
+                _op_cf       = _fvn(op_cf_v)
+                _mcap_for_fcf = _fvn(stock.get("mcap_cr", 0))
+                if _fcf_direct != 0:
+                    stock.setdefault("fcf", round(_fcf_direct, 2))
+                    _fcf_use = _fcf_direct
+                elif _op_cf != 0:
+                    # Proxy: operating CF shown with note — reasonable approximation
+                    stock.setdefault("fcf", round(_op_cf, 2))
+                    _fcf_use = _op_cf
+                else:
+                    stock.setdefault("fcf", "—")
+                    _fcf_use = 0
+
+                # FCF Yield = FCF / MCap × 100
+                _fcfy_direct = _fvn(fcfy_v)
+                if _fcfy_direct > 0:
+                    stock.setdefault("fcf_yield", round(_fcfy_direct, 4))
+                elif _fcf_use != 0 and _mcap_for_fcf > 0:
+                    _fcfy_calc = round(_fcf_use / _mcap_for_fcf * 100, 4)
+                    stock.setdefault("fcf_yield", _fcfy_calc)
+                else:
+                    stock.setdefault("fcf_yield", "—")
                 stock.setdefault("nd_ebitda",    _fv(nde))
                 stock.setdefault("int_coverage", _fv(ic))
                 # Valuation ratios — only show if yfinance returned a value
@@ -876,16 +960,18 @@ def run_master_pipeline():
                         stock.setdefault("peg", round(_pe_val / _g_val, 2))
                     else:
                         stock.setdefault("peg", "—")
-                # P/CF: compute from FCF yield if available, or FCF/mcap
-                _fy_pcf  = _fvn(fcfy_v)
-                _fcf_raw = _fvn(fcf)   # FCF in ₹Cr
-                _mcap_v  = _fvn(stock.get("mcap_cr", 0))
+                # P/CF: MCap / Cash Flow (operating CF preferred over FCF)
+                _fy_pcf   = _fvn(fcfy_v)
+                _fcf_raw  = _fvn(fcf)
+                _opcf_raw = _fvn(op_cf_v)
+                _mcap_v   = _fvn(stock.get("mcap_cr", 0))
                 if _fy_pcf > 0:
                     stock.setdefault("p_cf", round(100.0 / _fy_pcf, 1))
-                elif _fcf_raw != 0 and _mcap_v > 0:
-                    # P/CF = mcap / FCF
-                    _pcf_calc = round(_mcap_v / _fcf_raw, 1) if _fcf_raw > 0 else "—"
-                    stock.setdefault("p_cf", _pcf_calc)
+                elif _opcf_raw > 0 and _mcap_v > 0:
+                    # P/CF = MCap / Operating CF (standard definition)
+                    stock.setdefault("p_cf", round(_mcap_v / _opcf_raw, 1))
+                elif _fcf_raw > 0 and _mcap_v > 0:
+                    stock.setdefault("p_cf", round(_mcap_v / _fcf_raw, 1))
                 else:
                     stock.setdefault("p_cf", "—")
                 # Numeric fields — 0 safe for arithmetic
