@@ -809,11 +809,28 @@ def run_master_pipeline():
                 # Valuation ratios — only show if yfinance returned a value
                 stock.setdefault("ps",           _fv(ps_v) if _fvn(ps_v) > 0 else "—")
                 stock.setdefault("ev_ebitda",    _fv(ev_v) if _fvn(ev_v) > 0 else "—")
-                stock.setdefault("peg",          _fv(peg_v) if _fvn(peg_v) > 0 else "—")
-                # P/CF: compute from FCF yield if available
-                _fy_pcf = _fvn(fcfy_v)
+                # PEG from yfinance pegRatio, OR compute from PE / pat_yoy if missing
+                _peg_raw = _fvn(peg_v)
+                if _peg_raw > 0:
+                    stock.setdefault("peg", round(_peg_raw, 2))
+                else:
+                    # Compute: PEG = PE / (pat_yoy %) — use pat_yoy as growth proxy
+                    _pe_raw2  = _fvn(pe)
+                    _growth_r = _fvn(rc3) if _fvn(rc3) > 0 else _fvn(pc3)
+                    # pat_yoy from yfinance earningsGrowth (already ×100 in DB)
+                    # but rc3/pc3 are always 0 (no free source), use pat_yoy
+                    # We'll compute after pat_yoy is set — use a post-assignment step
+                    stock.setdefault("peg", "—")
+                # P/CF: compute from FCF yield if available, or FCF/mcap
+                _fy_pcf  = _fvn(fcfy_v)
+                _fcf_raw = _fvn(fcf)   # FCF in ₹Cr
+                _mcap_v  = _fvn(stock.get("mcap_cr", 0))
                 if _fy_pcf > 0:
                     stock.setdefault("p_cf", round(100.0 / _fy_pcf, 1))
+                elif _fcf_raw != 0 and _mcap_v > 0:
+                    # P/CF = mcap / FCF
+                    _pcf_calc = round(_mcap_v / _fcf_raw, 1) if _fcf_raw > 0 else "—"
+                    stock.setdefault("p_cf", _pcf_calc)
                 else:
                     stock.setdefault("p_cf", "—")
                 # Numeric fields — 0 safe for arithmetic

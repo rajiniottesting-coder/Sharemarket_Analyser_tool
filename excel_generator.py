@@ -128,11 +128,25 @@ GOLD_COLS = [
 ]
 
 GLOSSARY_DATA = [
-    ("IDENTITY","Symbol","NSE/BSE ticker symbol used to identify the stock on the exchange","All sheets"),
-    ("IDENTITY","BSE Code","6-digit BSE scrip code — unique identifier on BSE","Full Dashboard"),
-    ("IDENTITY","Cap Category","Large Cap / Mid Cap / Small Cap / BSE SME","All sheets"),
-    ("IDENTITY","Verdict","AI-assigned: DEEP VALUE EARLY MOVER / DEEP VALUE / EARLY MOVER / BUY / WATCHLIST / AVOID","All sheets"),
-    ("IDENTITY","Exchange","NSE / BSE / NSE+BSE (dual listed) / BSE SME","All sheets"),
+    ("IDENTITY","Symbol","NSE/BSE ticker symbol. Format: up to 20 chars, no spaces (e.g. TATAMOTORS, HDFCBANK)","All sheets"),
+    ("IDENTITY","BSE Code","6-digit BSE scrip code (e.g. 500325 = Reliance). Use on BSE for orders.","Full Dashboard"),
+    ("IDENTITY","Cap Category",
+     "LARGE CAP = mcap > ₹20,000 Cr (top 100 stocks, lowest risk) | "
+     "MID CAP = ₹5,000–20,000 Cr (101–250 stocks, moderate risk) | "
+     "SMALL CAP = ₹500–5,000 Cr (251+ stocks, higher risk) | "
+     "MICRO CAP = < ₹500 Cr (highest risk, highest potential)","All sheets"),
+    ("IDENTITY","Verdict",
+     "BUY = score above cap threshold AND MoS ≥ −10% (CMP at/below fair value, act now) | "
+     "WATCHLIST = signal building, almost BUY or score qualifies but overvalued (monitor) | "
+     "NEUTRAL = no clear signal yet, hold off | "
+     "AVOID = weak fundamentals + bad technicals + overvalued (stay out) | "
+     "DEEP VALUE = significantly undervalued (MoS>25%) with high score | "
+     "EARLY MOVER = early signal detected before consensus (act ahead of crowd)","All sheets"),
+    ("IDENTITY","Exchange",
+     "NSE_ONLY = only on National Stock Exchange | "
+     "BSE_ONLY = only on Bombay Stock Exchange | "
+     "DUAL_LISTED = on both NSE and BSE (broader institutional access, preferred) | "
+     "BSE_SME = BSE Small & Medium Enterprise platform (use limit orders, low liquidity)","All sheets"),
     ("SCORES","Score /100","Composite: Fundamental 35% + Technical 30% + Early 15% + News 10% + Risk 10%","All sheets"),
     ("SCORES","Early Entry /100","12-signal system measuring how early vs consensus. ≥70 = EARLY MOVER badge","All sheets"),
     ("SCORES","Spike Score /6","Count of active triggers from 6 IF-THEN spike conditions (Section 3H)","All sheets"),
@@ -148,20 +162,75 @@ GLOSSARY_DATA = [
     ("WEEKLY CHANGE %","Chg% [6-Weekly]","Price change % over past 6 weeks (30 trading days)","All sheets"),
     ("WEEKLY CHANGE %","Chg% [8-Weekly]","+25% on a quality stock over 8W = institutional accumulation","All sheets"),
     ("FAIR VALUE","CFV","Composite Fair Value — sector-weighted blend of 7 models (M1–M7)","All sheets"),
-    ("FAIR VALUE","MoS %","Margin of Safety = (CFV−CMP)/CMP×100. >40% = EXCEPTIONAL, >25% = STRONG","All sheets"),
+    ("FAIR VALUE","MoS %",
+     "Margin of Safety = (CFV−CMP)/CMP×100. How much cheaper CMP is vs fair value. "
+     "EXCEPTIONAL VALUE = MoS > 40% (deeply undervalued, strong BUY signal) | "
+     "STRONG VALUE = MoS 25–40% (significantly undervalued) | "
+     "GOOD VALUE = MoS 10–25% (moderately undervalued) | "
+     "FAIR VALUE = MoS 0–10% (priced fairly) | "
+     "SLIGHT PREMIUM = MoS −15–0% (slightly overvalued, ok for quality stocks) | "
+     "OVERVALUED = MoS −30–−15% (CMP exceeds FV, caution) | "
+     "SIGNIFICANTLY OVERVALUED = MoS < −30% (avoid, major downside risk)","All sheets"),
     ("FAIR VALUE","M1: DCF FV","3-Stage DCF. WACC = 10Y GSec + Beta×ERP. Terminal growth 4.5%","Full Dashboard"),
     ("FAIR VALUE","M2: Graham FV","Graham Number = √(22.5×EPS×BVPS). Skip if EPS negative","Full Dashboard"),
     ("FAIR VALUE","M3: PE FV","EPS × Sector 5yr median P/E (mean reversion)","Full Dashboard"),
+    ("FAIR VALUE","M4: PB FV","BVPS × Sector median Price/Book. Good for asset-heavy sectors (banks, metals)","Full Dashboard"),
+    ("FAIR VALUE","M5: EV FV","CMP × (Sector median EV/EBITDA ÷ Stock EV/EBITDA). Good for capital-intensive businesses","Full Dashboard"),
+    ("FAIR VALUE","M6: DDM FV","Dividend Discount Model = DPS×(1+g)/(r−g). Only shown for dividend-paying stocks","Full Dashboard"),
     ("FAIR VALUE","M7: PEG FV","EPS × EPS Growth Rate. PEG=1 baseline","Full Dashboard"),
     ("VALUATION","P/E TTM","Price-to-Earnings trailing 12 months","All sheets"),
     ("VALUATION","Earn Yield %","EPS/CMP×100. >6% = beats 10Y GSec risk-free rate","All sheets"),
-    ("VALUATION","PEG Ratio","P/E ÷ Growth Rate. <1.0 = undervalued. <0.5 = deeply undervalued","All sheets"),
+    ("VALUATION","P/E TTM",
+     "Price ÷ EPS (trailing 12 months). How much you pay per ₹1 of earnings. "
+     "< 10 = Very cheap (PSUs, cyclicals) | "
+     "10–20 = Fair value for slow-growth / value stocks | "
+     "20–35 = Growth premium (acceptable if ROE>20% and growth>15%) | "
+     "35–60 = Expensive (only justified by very high growth) | "
+     "> 60 = Very expensive (speculative, future growth already priced in)","All sheets"),
+    ("VALUATION","PEG Ratio",
+     "P/E ÷ EPS Growth Rate. Adjusts PE for growth. "
+     "< 0.5 = Deeply undervalued vs growth (excellent BUY) | "
+     "0.5–1.0 = Undervalued vs growth (good value) | "
+     "1.0 = Fairly valued (Peter Lynch's neutral benchmark) | "
+     "1.0–2.0 = Slight premium (acceptable for quality compounder) | "
+     "> 2.0 = Expensive relative to growth (avoid unless market leader)","All sheets"),
+    ("VALUATION","P/B",
+     "Price ÷ Book Value per Share. "
+     "< 1.0 = Trading below book (potential deep value or value trap) | "
+     "1.0–2.0 = Reasonable (good for banks, metals, asset-heavy) | "
+     "2.0–5.0 = Premium (justified if ROE>15%) | "
+     "> 5.0 = High premium (only for asset-light compounders with high ROE)","All sheets"),
+    ("VALUATION","EV/EBITDA",
+     "Enterprise Value ÷ EBITDA. Better than PE as it ignores capital structure. "
+     "< 8 = Cheap (cyclicals, turnarounds) | "
+     "8–15 = Fair value range | "
+     "15–25 = Premium (growth sectors like IT, pharma) | "
+     "> 25 = Expensive (only for market leaders or high-growth)","Full Dashboard"),
+    ("VALUATION","Earn Yield %",
+     "EPS ÷ CMP × 100. Inverse of PE — shows what % return you earn per ₹ invested. "
+     "< 4% = Very expensive (below risk-free rate) | "
+     "4–6% = Below risk-free (10Y G-Sec ~7%) | "
+     "> 6% = Beats G-Sec (attractive for value investors) | "
+     "> 8% = High yield (deep value territory)","All sheets"),
     ("PROFITABILITY","ROE %","Return on Equity. >15% = efficient. 5yr avg preferred","All sheets"),
     ("PROFITABILITY","NPM Q1/Q2/Q3","Net Profit Margin last 3 quarters. 3 rising = Margin Expansion flag","Full Dashboard"),
     ("GROWTH","Rev CAGR 1Y %","Revenue CAGR over 1 year","Full Dashboard"),
     ("GROWTH","PAT CAGR 1Y %","Profit After Tax CAGR over 1 year","Full Dashboard"),
     ("GROWTH","PAT YoY %","PAT growth year-over-year","All sheets"),
-    ("FIN HEALTH","D/E Ratio","Debt-to-Equity. <0.3 = fortress. >1.5 = highly leveraged","All sheets"),
+    ("FIN HEALTH","D/E Ratio",
+     "Debt ÷ Equity. "
+     "0 = Zero debt (fortress balance sheet) | "
+     "0–0.3 = Very low debt (conservative, safe) | "
+     "0.3–1.0 = Moderate (acceptable for most sectors) | "
+     "1.0–2.0 = High (acceptable only for banking/NBFC/infra sectors) | "
+     "> 2.0 = Very high (risk of default, avoid unless sector-specific justification) | "
+     "Note: Banks naturally run higher D/E (deposits = debt)","All sheets"),
+    ("FIN HEALTH","Current Ratio",
+     "Current Assets ÷ Current Liabilities — short-term liquidity. "
+     "< 1.0 = Danger (cannot cover near-term obligations) | "
+     "1.0–1.5 = Tight (manage carefully) | "
+     "1.5–2.0 = Healthy (comfortable) | "
+     "> 2.0 = Strong (ample short-term liquidity)","Full Dashboard"),
     ("FIN HEALTH","FCF (₹Cr)","Free Cash Flow = Operating CF − Capex","Full Dashboard"),
     ("SHAREHOLDING","Promoter %","Promoter holding. <25% = low conviction. 0% = hard drop","All sheets"),
     ("SHAREHOLDING","Pledge %","Pledged shares. >20% = anti-trigger fires. >40% = hard drop","All sheets"),
@@ -171,11 +240,68 @@ GLOSSARY_DATA = [
     ("QUALITY SCORES","Beneish M","Manipulation score. >-2.22 = risk. Anti-trigger fires","Full Dashboard"),
     ("PIPELINE / OB","OB/Bill Ratio","Order Book ÷ Revenue. >1.5× = strong pipeline","All sheets"),
     ("EARLY DETECTION","Early Entry /100","12 signals: quiet accum, SME migration, analyst imminent, sector Stage 1","All sheets"),
-    ("EARLY DETECTION","Sector Stage","Stage 1=early accum / 2=confirmed trend / 3=peak / 4=distribution","All sheets"),
-    ("TECHNICAL","SMA 200","200-Day SMA. ABOVE = long-term uptrend","Full Dashboard"),
-    ("TECHNICAL","OBV Signal","ACCUMULATION = OBV rising with price. DISTRIBUTION = exit","Full Dashboard"),
-    ("BALANCE SHEET","BS Health Flag","HEALTHY / WATCH / ALERT","All sheets"),
-    ("TRADE PLAN","R:R Ratio","(T1−Entry)/(Entry−SL). >2:1 = acceptable. >3:1 = excellent","Trade Summary"),
+    ("EARLY DETECTION","Sector Stage",
+     "Stage 1 = Early Accumulation (sector just starting to move, best entry point, low risk/reward) | "
+     "Stage 2 = Confirmed Uptrend (momentum building, institutional buying, good entry) | "
+     "Stage 3 = Peak / Euphoria (sector fully priced, risk of reversal, tighten stops) | "
+     "Stage 4 = Distribution / Decline (smart money exiting, avoid fresh entry)","All sheets"),
+    ("TECHNICAL","SMA 200",
+     "200-Day Simple Moving Average — long-term trend indicator. "
+     "ABOVE = CMP above 200 SMA, stock in long-term uptrend (bullish) | "
+     "BELOW = CMP below 200 SMA, stock in long-term downtrend (bearish) | "
+     "Golden rule: only buy stocks ABOVE their 200 SMA","Full Dashboard"),
+    ("TECHNICAL","Supertrend",
+     "ATR-based trend-following indicator. "
+     "BUY = price above supertrend line (uptrend confirmed, go long) | "
+     "SELL = price below supertrend line (downtrend, exit or avoid) | "
+     "NEUTRAL = indeterminate / sideways market","Full Dashboard"),
+    ("TECHNICAL","MACD Signal",
+     "Moving Average Convergence Divergence. "
+     "BUY = MACD line crossed above signal line (bullish momentum) | "
+     "SELL = MACD line crossed below signal line (bearish momentum) | "
+     "NEUTRAL = no recent crossover","Full Dashboard"),
+    ("TECHNICAL","RSI (14)",
+     "Relative Strength Index, 0–100. "
+     "< 30 = Oversold (potential reversal up, look for buy signal) | "
+     "30–50 = Bearish zone (weak, avoid fresh entry) | "
+     "50–60 = Neutral (no strong signal) | "
+     "60–70 = Bullish zone (momentum building, good entry on dips) | "
+     "> 70 = Overbought (potential reversal down, wait for pullback) | "
+     "Best entry: RSI 50–65 with MACD BUY and Supertrend BUY","Full Dashboard"),
+    ("TECHNICAL","ADX",
+     "Average Directional Index — measures trend strength (0–100), not direction. "
+     "< 20 = Weak/no trend (sideways, avoid trend strategies) | "
+     "20–25 = Emerging trend (watch closely) | "
+     "25–40 = Strong trend (good for momentum entry) | "
+     "> 40 = Very strong trend (ride with trailing stop)","Full Dashboard"),
+    ("TECHNICAL","OBV Signal",
+     "On-Balance Volume — tracks smart money flow. "
+     "ACCUMULATION = OBV rising even when price flat (institutions buying quietly, bullish) | "
+     "DISTRIBUTION = OBV falling while price holds up (institutions selling, bearish) | "
+     "NEUTRAL = no clear pattern","Full Dashboard"),
+    ("TECHNICAL","Above VWAP",
+     "Volume Weighted Average Price — intraday fair value benchmark. "
+     "YES = CMP above VWAP (buyers in control, bullish intraday) | "
+     "NO = CMP below VWAP (sellers in control, wait for VWAP reclaim)","Full Dashboard"),
+    ("BALANCE SHEET","BS Health Flag",
+     "HEALTHY = cash > debt, D/E < 1.0, no pledge risk, FCF positive (safe to invest) | "
+     "WATCH = moderate debt or pledge 10–20%, monitor quarterly results | "
+     "ALERT = high debt (D/E>2), pledge>20%, negative FCF, or interest coverage<1.5 (extra caution)","All sheets"),
+    ("TRADE PLAN","R:R Ratio",
+     "Risk:Reward = (Target1 − Entry) ÷ (Entry − Stop Loss). "
+     "< 1:1 = Poor (risk more than you can gain, avoid) | "
+     "1:1 to 2:1 = Acceptable (only for high-conviction BUY with strong MoS) | "
+     "2:1 to 3:1 = Good (standard for positional trades) | "
+     "> 3:1 = Excellent (ideal setup, asymmetric payoff) | "
+     "Rule: never enter a trade with R:R below 1.5:1","Trade Summary"),
+    ("TRADE PLAN","Time Horizon",
+     "SWING = 5–15 trading days (short-term momentum play) | "
+     "POSITIONAL = 1–3 months (medium-term trend follow) | "
+     "INVESTMENT = 6–18 months (fundamental re-rating play)","Trade Summary"),
+    ("TRADE PLAN","Risk Level",
+     "LOW = large cap, low beta, positive MoS, strong balance sheet | "
+     "MEDIUM = mid cap or slight premium or moderate debt | "
+     "HIGH = small/micro cap or negative MoS or high D/E or high beta","Trade Summary"),
     ("ANALYSIS SUMMARY","View Analysis Summary","150–250 word AI note with exact ₹ figures, catalysts, risks","All sheets"),
 ]
 
@@ -245,6 +371,27 @@ class ExcelGeneratorV6:
         except: self.dlbl=date_str
         for col,dflt in self.REQUIRED_COLS.items():
             if col not in self.df.columns: self.df[col]=dflt
+
+        # ── Filter NEUTRAL stocks: only keep if exceptionally good ──────────
+        # NEUTRAL = score doesn't qualify for BUY/WATCHLIST
+        # Keep NEUTRAL only if: ROE>20% AND PE<30 AND MoS>10% AND ts>65
+        # i.e. strong fundamentals + undervalued + decent technicals
+        if not self.df.empty and "verdict" in self.df.columns:
+            def _is_exceptional_neutral(row):
+                if str(row.get("verdict","")) != "NEUTRAL":
+                    return True  # keep all non-neutral
+                roe = float(row.get("roe_num", row.get("roe", 0)) or 0)
+                pe  = float(row.get("pe_num",  row.get("pe",  99)) or 99)
+                mos = float(row.get("mos_pct", 0) or 0)
+                ts  = float(row.get("technical_score", 50) or 50)
+                sc  = float(row.get("composite_score", 0) or 0)
+                # Exceptional NEUTRAL: strong fundamentals AND undervalued AND good technicals
+                exceptional = (roe > 20 and pe < 30 and mos > 10 and ts > 62)
+                if exceptional:
+                    return True
+                return False
+
+            self.df = self.df[self.df.apply(_is_exceptional_neutral, axis=1)].reset_index(drop=True)
 
     @staticmethod
     def _safe_val(v): return _sv(v)
@@ -440,9 +587,35 @@ class ExcelGeneratorV6:
                 cell=ws.cell(rn,ci,val); cell.fill=_f(bg); cell.font=_ft(False,tx,9)
                 cell.alignment=_al("center","center")
                 if ci==11: cell.fill=_f("FEE2E2"); cell.font=_ft(False,"7F1D1D",9)
-            rr=ws.cell(rn,15); rr.value=f"=(L{rn}-J{rn})/(J{rn}-K{rn})"
-            rr.number_format="0.00"; rr.fill=_f(bg); rr.font=_ft(True,"065F46",9)
+            # Compute R:R numerically — entry_range is text "353.8–364.7",
+            # parse midpoint so Excel formula doesn't fail on text input
+            try:
+                _er = str(stk.get("entry_range","") or "")
+                # Parse "low–high" or "low-high" range text
+                for _sep in ["–","-","—","to"]:
+                    if _sep in _er:
+                        _parts = _er.split(_sep)
+                        _entry_mid = (float(_parts[0].replace("₹","").strip()) +
+                                      float(_parts[-1].replace("₹","").strip())) / 2
+                        break
+                else:
+                    _entry_mid = float(_er.replace("₹","").strip() or 0)
+                _sl_v  = float(str(stk.get("stop_loss","0") or 0).replace("₹","").replace(",",""))
+                _t1_v  = float(str(stk.get("t1","0") or 0))
+                if _entry_mid > 0 and _sl_v > 0 and _entry_mid > _sl_v and _t1_v > _entry_mid:
+                    _rr_val = round((_t1_v - _entry_mid) / (_entry_mid - _sl_v), 2)
+                else:
+                    _rr_val = "—"
+            except Exception:
+                _rr_val = "—"
+            rr=ws.cell(rn,15,_rr_val); rr.fill=_f(bg); rr.font=_ft(True,"065F46",9)
             rr.alignment=_al()
+            if isinstance(_rr_val,(int,float)):
+                rr.number_format="0.00"
+                # Colour code R:R: green>2, amber 1-2, red<1
+                if _rr_val >= 3:   rr.fill=_f("D1FAE5"); rr.font=_ft(True,"065F46",9)
+                elif _rr_val >= 2: rr.fill=_f("FEF3C7"); rr.font=_ft(True,"92400E",9)
+                else:              rr.fill=_f("FEE2E2"); rr.font=_ft(True,"7F1D1D",9)
 
     def _alert_log(self,wb):
         ws=wb.create_sheet("🔔 Alert Log"); ws.sheet_properties.tabColor="7C3AED"
