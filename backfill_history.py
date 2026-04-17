@@ -1370,7 +1370,7 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             "gross_margin": d.get("gross_margin", 0),
             "ebitda_margin":d.get("ebitda_margin", 0),
             "net_margin":   d.get("net_margin", 0),
-            "de_ratio":     d.get("debt_equity", 0),   # DB col = de_ratio
+            "de_ratio":     d.get("debt_equity", 0),    # DB col = de_ratio
             "current_ratio":d.get("current_ratio", 0),
             "quick_ratio":  d.get("quick_ratio", 0),
             "total_debt_cr":d.get("total_debt", 0),
@@ -1380,7 +1380,31 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             "ps":           d.get("ps", 0),
             "ev_ebitda":    d.get("ev_ebitda", 0),
             "peg":          d.get("peg", 0),
+            # ── FIX: keys fetched by yfinance but were missing from INSERT ──
+            "div_yield":    d.get("div_yield", 0),      # dividendYield ×100
+            "payout_ratio": d.get("payout_ratio", 0),   # payoutRatio ×100
+            "rev_yoy":      d.get("rev_yoy", 0),        # revenueGrowth ×100
+            "pat_yoy":      d.get("pat_yoy", 0),        # earningsGrowth ×100
         })
+
+        # ── FIX: populate shareholding table from yfinance holding data ──────
+        # sh_rows was declared but never populated — promoter% and FII% always blank
+        _promo = d.get("promoter_pct", 0)
+        _inst  = d.get("inst_pct", 0)    # heldPercentInstitutions = FII+DII combined
+        if _promo > 0 or _inst > 0:
+            sh_rows.append({
+                "symbol":      sym,
+                "date":        today_str2,
+                "promoter_pct":round(_promo, 2),
+                "promoter_qoq":0.0,          # QoQ change not available from yfinance
+                "pledge_pct":  0.0,           # BSE filings only — not in yfinance
+                "pledge_dir":  "",
+                "fii_pct":     round(_inst, 2),  # inst_pct = FII+DII combined (best proxy)
+                "fii_qoq":     0.0,
+                "dii_pct":     0.0,              # Cannot separate DII from yfinance
+                "dii_qoq":     0.0,
+                "public_float":round(max(0, 100 - _promo - _inst), 2),
+            })
 
     conn.commit()
 

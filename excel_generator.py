@@ -430,7 +430,7 @@ class ExcelGeneratorV6:
         ws.row_dimensions[1].height=34
         # R2
         ws.merge_cells(start_row=2,start_column=1,end_row=2,end_column=N)
-        c2=ws.cell(2,1,"AutoFilter (row 4): Exchange · Cap Category · Sector · Verdict · MoS Label · BS Flag · Risk · Storm · Sector Stage · Weekly Change   |  Last column = 'View Analysis Summary' — scroll right to see full AI reasoning with recent company facts   |  GOLD=Early Mover · GREEN=Deep Value · BLUE=Buy · AMBER=Watch · RED=Avoid")
+        c2=ws.cell(2,1,"AutoFilter (row 4): Exchange · Cap Category · Sector · Verdict · MoS Label · BS Flag · Risk · Storm · Sector Stage · Weekly Change   |  Last column = 'View Analysis Summary' — scroll right to see full AI reasoning with recent company facts   |  GOLD=Early Mover · GREEN=Deep Value · BLUE=Buy · AMBER=Watch · RED=Avoid   |  RED column header = No free data source available (requires paid API / BSE filings). AMBER header = Needs Anthropic API credits.")
         c2.fill=_f(LG); c2.font=_ft(False,"475569",8,True); c2.alignment=_al("left","center")
         ws.row_dimensions[2].height=16
         # R3 groups
@@ -448,13 +448,38 @@ class ExcelGeneratorV6:
                 _col_color[_ci] = _col
 
         ws.row_dimensions[4].height=40
+        # Columns permanently blank — no free data source available
+        # These are highlighted with red background so user knows at a glance
+        NO_FREE_SOURCE_COLS = {
+            "Rev CAGR 1Y %","Rev CAGR 3Y %","PAT CAGR 1Y %","PAT CAGR 3Y %",
+            "EBITDA CAGR 1Y %","Q3 Rev (₹Cr)","Q3 PAT (₹Cr)","Q3 EBITDA (₹Cr)",
+            "ND/EBITDA","Int Coverage","CCC Days","Capex / Rev %",
+            "Pro QoQ Δ","Pledge %","Pledge Direction","DII %","DII QoQ Δ",
+            "FII QoQ Δ","Public Float %",
+            "Piotroski F /9","Altman Z","Beneish M","Earn Quality",
+            "OB/Bill Ratio","Pipeline Vis","L1 Wins 90D","L1 Est (₹Cr)","New Mkt Entry",
+            "Key Catalyst","News Sentiment","Primary Risk","SEBI Flags",
+            "NPM Q1 %","NPM Q2 %","NPM Q3 %","Margin Expansion",
+        }
+        # Needs Anthropic API credits — amber highlight
+        NEEDS_AI_CREDITS = {
+            "View Analysis Summary",
+        }
+
         for i,(h,w,_) in enumerate(FULL_COLS,1):
             ws.column_dimensions[get_column_letter(i)].width=w
             hdr_bg = _col_color.get(i, NAVY)
-            # Slightly lighter shade for header vs group bar — use 15% lighter
-            c=ws.cell(4,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
-            c.alignment=_al("center","center",True)
-            c.border=_border()
+            if h in NO_FREE_SOURCE_COLS:
+                # Bold red — permanently blank, no free data source
+                c=ws.cell(4,i,h); c.fill=_f("991B1B"); c.font=_ft(True,"FEE2E2",8)
+                c.alignment=_al("center","center",True); c.border=_border()
+            elif h in NEEDS_AI_CREDITS:
+                # Amber — populated only when Anthropic API credits are loaded
+                c=ws.cell(4,i,h); c.fill=_f("92400E"); c.font=_ft(True,"FEF3C7",8)
+                c.alignment=_al("center","center",True); c.border=_border()
+            else:
+                c=ws.cell(4,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
+                c.alignment=_al("center","center",True); c.border=_border()
         ws.freeze_panes="A5"
         ws.auto_filter.ref=f"A4:{get_column_letter(N)}4"
         # Data
@@ -530,7 +555,10 @@ class ExcelGeneratorV6:
         for i,(h,w,_) in enumerate(GOLD_COLS,1):
             ws.column_dimensions[get_column_letter(i)].width=w
             hdr_bg = _gcol_color.get(i, "92400E")
-            c=ws.cell(5,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
+            if h in NO_FREE_SOURCE_COLS:
+                c=ws.cell(5,i,h); c.fill=_f("991B1B"); c.font=_ft(True,"FEE2E2",8)
+            else:
+                c=ws.cell(5,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
             c.border=_border()
             c.alignment=_al("center","center",True)
         ws.freeze_panes="A6"
