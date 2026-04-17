@@ -484,6 +484,19 @@ def run_master_pipeline():
                 _sec_ret, _nft_ret, _fii_flow
             )
 
+            # Ensure selection_reason is present for all stocks
+            if not stock.get("selection_reason"):
+                cap = str(stock.get("cap_category","") or "")
+                d   = float(stock.get("delivery_pct", 0) or 0)
+                v   = float(stock.get("vol_ratio", 1.0) or 1.0)
+                parts = []
+                if "LARGE" in cap.upper(): parts.append("Large-cap institutional quality")
+                elif "MID" in cap.upper(): parts.append("Mid-cap growth candidate")
+                else: parts.append("Small/micro-cap high-growth candidate")
+                if d >= 65: parts.append(f"strong institutional delivery {d:.0f}%")
+                if v >= 2.0: parts.append(f"volume surge {v:.1f}× avg")
+                stock["selection_reason"] = "; ".join(parts) or "Passed quality filters"
+
             # Section 4: Balance Sheet Health — fed with yfinance data
             from bs_engine import BalanceSheetEngine
             _debt_bs  = _sf(stock.get("total_debt", stock.get("total_debt_cr", 0)), 0)

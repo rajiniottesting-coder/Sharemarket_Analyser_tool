@@ -74,17 +74,13 @@ def get_ai_analysis(stock_list_df) -> str:
         stock_list_df = pd.DataFrame(stock_list_df)
 
     for index, row in stock_list_df.iterrows():
-        # Graham Number (Section 3A)
         stock_list_df.at[index, "Graham_No"] = engine.calculate_graham_number(
-            _sf(row.get("eps", 0)),
-            _sf(row.get("bvps", 0)),
+            _sf(row.get("eps", 0)), _sf(row.get("bvps", 0)),
         )
-        # PEG Ratio (Section 3A)
         stock_list_df.at[index, "PEG_Ratio"] = engine.calculate_peg_ratio(
             _sf(row.get("pe", 0)),
             _sf(row.get("pat_cagr_3y", row.get("growth_rate", 0))),
         )
-        # Composite Fair Value (Section 5B) — uses pre-calculated model values
         models_data = {
             "DCF": _sf(row.get("M1_DCF", row.get("dcf_val", 0))),
             "PE":  _sf(row.get("M3_PE",  row.get("pe_val",  0))),
@@ -96,6 +92,100 @@ def get_ai_analysis(stock_list_df) -> str:
             models_data,
         )
 
+    def _fmt_stock_card(row):
+        """
+        Build a rich, structured per-stock context card for the AI.
+        This replaces the raw DataFrame.to_string() dump with clearly
+        labelled, human-readable data that guides quality Block H rationale.
+        """
+        def v(k, d="—"): return row.get(k, d) or d
+
+        sym   = v("symbol")
+        co    = v("company_name")
+        sec   = v("sector")
+        cap   = v("cap_category")
+        exch  = v("exchange_tag")
+        cmp   = v("close")
+        h52   = v("high_52w"); l52 = v("low_52w")
+        chg   = v("day_change", v("day_chg", "—"))
+        vol_r = v("vol_ratio")
+        deliv = v("delivery_pct")
+        chg2w = v("2w_chg"); chg4w = v("4w_chg")
+        cfv   = v("cfv"); fvl = v("cfv_low"); fvh = v("cfv_high")
+        mos   = v("mos_pct"); up = v("upside"); mos_lbl = v("mos_label")
+        pe    = v("pe"); pb = v("pb"); peg = v("peg")
+        ey    = v("earnings_yield"); roe = v("roe"); npm = v("npm")
+        de    = v("debt_equity"); cr  = v("current_ratio")
+        cash  = v("cash"); fcf = v("fcf"); div = v("div_yield")
+        score = v("composite_score"); verdict = v("verdict")
+        fs    = v("fundamental_score"); ts = v("technical_score")
+        es    = v("early_entry_score"); e_lbl = v("early_label")
+        rsi   = v("rsi"); macd = v("macd_signal"); st = v("supertrend"); adx = v("adx")
+        entry = v("entry_range"); sl = v("stop_loss")
+        t1    = v("t1"); t2 = v("t2"); t3 = v("t3")
+        hor   = v("horizon"); risk = v("risk_level")
+        bs    = v("bs_status"); bs_note = v("bs_flags")
+        sigs  = v("early_signals"); sm = v("smart_money_signals")
+        rot   = v("rotation_stage"); sel_rsn = v("selection_reason")
+        m1    = v("M1_DCF"); m2 = v("M2_Graham"); m3 = v("M3_PE")
+        m4    = v("M4_PB"); m5 = v("M5_EV"); cfv_calc = v("Calculated_CFV")
+        graham = v("Graham_No"); peg_calc = v("PEG_Ratio")
+        intel = v("intel_queries")
+        gm    = v("gross_margin"); em = v("ebitda_margin")
+        promo = v("promoter_pct"); fii = v("fii_pct")
+        ps    = v("ps"); ev = v("ev_ebitda")
+
+        return f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STOCK: {sym} | {co}
+Sector: {sec} | Cap: {cap} | Exchange: {exch}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHY SELECTED (pipeline reason): {sel_rsn}
+
+PRICE & MOMENTUM
+  CMP: ₹{cmp} ({chg}% today) | 52W: ₹{l52}–₹{h52}
+  Vol spike: {vol_r}× avg | Delivery: {deliv}%
+  2W: {chg2w}% | 4W: {chg4w}%
+
+FAIR VALUE
+  CFV (composite): ₹{cfv} | Range: ₹{fvl}–₹{fvh}
+  Calc CFV (engine): ₹{cfv_calc} | Graham Number: ₹{graham}
+  MoS: {mos}% [{mos_lbl}] | Upside to FV: {up}%
+  Models: DCF ₹{m1} | Graham ₹{m2} | PE-FV ₹{m3} | PB-FV ₹{m4} | EV-FV ₹{m5}
+
+VALUATION
+  PE: {pe}x | PB: {pb}x | PS: {ps}x | EV/EBITDA: {ev}x
+  PEG: {peg} (calc: {peg_calc}) | Earnings Yield: {ey}% | Div Yield: {div}%
+
+PROFITABILITY
+  ROE: {roe}% | Gross Margin: {gm}% | EBITDA Margin: {em}% | Net Margin: {npm}%
+
+FINANCIAL HEALTH
+  D/E: {de} | Current Ratio: {cr} | Cash: ₹{cash}Cr | FCF: ₹{fcf}Cr
+  Promoter: {promo}% | FII: {fii}%
+
+SCORES
+  Overall: {score}/100 [{verdict}] | Fundamental: {fs} | Technical: {ts}
+  Early Entry: {es}/100 [{e_lbl}]
+
+TECHNICALS
+  RSI: {rsi} | MACD: {macd} | Supertrend: {st} | ADX: {adx}
+  Early signals: {sigs}
+
+SECTOR & SMART MONEY
+  Rotation stage: {rot} | Smart money: {sm}
+
+BALANCE SHEET
+  Status: {bs} | {bs_note}
+
+TRADE PLAN
+  Entry: ₹{entry} | SL: ₹{sl} | T1: ₹{t1} | T2: ₹{t2} | T3: ₹{t3}
+  Horizon: {hor} | Risk: {risk}
+
+CATALYST SEARCH QUERIES (use for Block H grounding):
+  {intel}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+
     # ── Batch execution ───────────────────────────────────────────────────────
     batches = [
         stock_list_df.iloc[i: i + batch_size]
@@ -104,13 +194,20 @@ def get_ai_analysis(stock_list_df) -> str:
     total_batches = len(batches)
 
     grounding_instruction = (
-        "\n\nCRITICAL INSTRUCTION: Do NOT calculate valuations yourself. "
-        "USE the provided 'Calculated_CFV' column as the Composite Fair Value "
-        "and 'Graham_No' as the Graham Number. "
-        "These values were computed by the Python Fundamental Engine — trust them. "
-        "For each stock, output: "
-        "(1) Investor Card (Section 8 Blocks A–G), "
-        "(2) Analysis Summary (Block H: 150–250 words, absolute facts, recent events)."
+        "You are a senior Indian equity research analyst. "
+        "For EACH stock card below, produce a crisp institutional-grade analysis "
+        "following the Section 8 format from your system prompt.\n\n"
+        "CRITICAL RULES:\n"
+        "1. USE the provided Calculated_CFV and Graham_No — do not recalculate.\n"
+        "2. For Block H Analysis Summary (150-250 words): write like the research widget "
+        "   in our conversation — cite the WHY SELECTED reason, the strongest "
+        "   fundamental/technical signal, the key sector tailwind, and the primary risk. "
+        "   Use absolute facts and ₹ figures where available. No vague statements.\n"
+        "3. Cap-adjusted verdict: LARGE CAP needs score ≥60 for BUY, MICRO CAP needs ≥70.\n"
+        "4. If a stock has NO compelling reason (low score, no signals), say so honestly — "
+        "   WATCHLIST or NEUTRAL is fine. Quality over hype.\n"
+        "5. The Analysis_Summary_Block_H field in your output becomes the last Excel column "
+        "   'View Analysis Summary' — make it worth reading."
     )
 
     credit_exhausted = False   # flag to abort all batches on credit error
@@ -127,10 +224,16 @@ def get_ai_analysis(stock_list_df) -> str:
         print(f"🤖 Processing batch {idx + 1}/{total_batches} "
               f"({len(batch)} stocks)...")
 
-        stock_data_text = batch.to_string(max_colwidth=120)
-        user_message    = (
+        # Build rich per-stock cards instead of raw DataFrame dump
+        cards = []
+        for _, row in batch.iterrows():
+            cards.append(_fmt_stock_card(row.to_dict()))
+        stock_data_text = "\n".join(cards)
+
+        user_message = (
             f"{grounding_instruction}\n\n"
-            f"DATA BATCH {idx + 1}/{total_batches}:\n{stock_data_text}"
+            f"BATCH {idx + 1}/{total_batches} — {len(batch)} stocks:\n"
+            f"{stock_data_text}"
         )
 
         # Try once; NO retry on credit errors (pointless — credits won't refill mid-run)

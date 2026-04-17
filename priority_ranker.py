@@ -210,6 +210,38 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
     # Add stage 3 rank column
     top_100["stage3_rank"] = range(1, len(top_100) + 1)
 
+    # Generate a human-readable selection reason for each stock
+    # This feeds directly into the AI analyst prompt for Block H rationale
+    def _reason(row):
+        parts = []
+        cap   = str(row.get("cap_category", "") or "")
+        deliv = float(row.get("delivery_pct", 0) or 0)
+        vol   = float(row.get("vol_ratio",   1.0) or 1.0)
+        to    = float(row.get("turnover",      0) or 0)
+        s2    = float(row.get("stage2_score",   0) or 0)
+        sym   = str(row.get("symbol", ""))
+
+        if "LARGE" in cap.upper(): parts.append("Large-cap institutional quality")
+        elif "MID" in cap.upper(): parts.append("Mid-cap growth potential")
+        else:                      parts.append("Small/micro-cap high-growth candidate")
+
+        if deliv >= 75: parts.append(f"very high institutional delivery {deliv:.0f}%")
+        elif deliv >= 60: parts.append(f"strong institutional delivery {deliv:.0f}%")
+
+        if vol >= 3.0: parts.append(f"significant volume surge {vol:.1f}× avg")
+        elif vol >= 2.0: parts.append(f"elevated volume {vol:.1f}× avg")
+
+        if to >= 500_000_000: parts.append("top-tier market liquidity (>₹50Cr turnover)")
+        elif to >= 100_000_000: parts.append("strong market liquidity (>₹10Cr turnover)")
+
+        if s2 >= 30: parts.append("highest quality score in Stage 2")
+        elif s2 >= 25: parts.append("solid Stage 2 quality score")
+
+        return "; ".join(parts) if parts else "Passed all quality filters"
+
+    top_100["selection_reason"] = top_100.apply(
+        lambda r: _reason(r.to_dict()), axis=1)
+
     print(
         f"✅ Stage 3 Complete: {len(top_100)} stocks selected "
         f"(overrides: {len(override_final)}, ranked: {remaining_slots})."
