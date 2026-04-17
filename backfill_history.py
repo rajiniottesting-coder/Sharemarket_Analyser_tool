@@ -1281,7 +1281,12 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
 
     # Skip symbols already fully populated within 7 days
     already_fm = {r[0] for r in conn.execute(
-        "SELECT symbol FROM fundamental_metrics WHERE date >= ? AND pe_ttm > 0", (cutoff,)
+        """SELECT symbol FROM fundamental_metrics
+           WHERE date >= ? AND pe_ttm > 0
+           AND (div_yield IS NOT NULL AND div_yield != 0
+                OR rev_yoy IS NOT NULL AND rev_yoy != 0
+                OR current_ratio IS NOT NULL AND current_ratio != 0)""",
+        (cutoff,)
     ).fetchall()}
     already_cn = {r[0] for r in conn.execute(
         "SELECT symbol FROM symbol_master WHERE company_name != '' AND company_name IS NOT NULL"

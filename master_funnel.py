@@ -544,17 +544,22 @@ def run_master_pipeline():
                 _fm_rows = _conn.execute(
                     f"""SELECT fm.symbol,
                         fm.pe_ttm, fm.pb, fm.earn_yield,
-                        0 as div_yield,
+                        COALESCE(fm.div_yield, 0)      as div_yield,
                         0 as piotroski_f, 0 as altman_z, 0 as beneish_m,
                         fm.roe, fm.roce, fm.roa,
                         fm.gross_margin, fm.ebitda_margin, fm.net_margin,
                         fm.de_ratio, fm.current_ratio,
-                        0 as rev_cagr_1y, 0 as rev_cagr_3y,
-                        0 as pat_cagr_1y, 0 as pat_cagr_3y,
+                        COALESCE(fm.rev_cagr_1y, 0)   as rev_cagr_1y,
+                        COALESCE(fm.rev_cagr_3y, 0)   as rev_cagr_3y,
+                        COALESCE(fm.pat_cagr_1y, 0)   as pat_cagr_1y,
+                        COALESCE(fm.pat_cagr_3y, 0)   as pat_cagr_3y,
                         fm.total_debt_cr, fm.fcf_cr,
                         fm.nd_ebitda, fm.int_coverage,
                         fm.ps, fm.ev_ebitda, fm.peg,
-                        fm.quick_ratio, fm.cash_cr, fm.fcf_yield
+                        fm.quick_ratio, fm.cash_cr, fm.fcf_yield,
+                        COALESCE(fm.rev_yoy, 0)        as rev_yoy,
+                        COALESCE(fm.pat_yoy, 0)        as pat_yoy,
+                        COALESCE(fm.payout_ratio, 0)   as payout_ratio
                         FROM fundamental_metrics fm
                         INNER JOIN (
                             SELECT symbol, MAX(date) as md FROM fundamental_metrics
@@ -738,9 +743,13 @@ def run_master_pipeline():
             # Enrich from fundamental_metrics
             if sym in _fm_map:
                 _fmv = list(_fm_map[sym]) + [0]*35
-                # Cols: pe,pb,ey,dy(0),pf(0),az(0),bm(0),roe,roce,roa,gm,em,nm,
-                #       de,cr,rc1(0),rc3(0),pc1(0),pc3(0),td,fcf,nde,ic,ps,ev,peg,qr,cash,fcfy
+                # Cols 0-28 (original): pe,pb,ey,dy,pf,az,bm,roe,roce,roa,gm,em,nm,
+                #       de,cr,rc1,rc3,pc1,pc3,td,fcf,nde,ic,ps,ev,peg,qr,cash,fcfy
+                # Cols 29-31 (new): rev_yoy, pat_yoy, payout_ratio
                 pe,pb,ey,dy,pf,az,bm,roe,roce,roa,gm,em,nm,de,cr,rc1,rc3,pc1,pc3,td,fcf,nde,ic,ps_v,ev_v,peg_v,qr_v,cash_v,fcfy_v = _fmv[:29] + [0]*(29-min(len(_fmv),29))
+                rev_yoy_v    = _fmv[29] if len(_fmv) > 29 else 0
+                pat_yoy_v    = _fmv[30] if len(_fmv) > 30 else 0
+                payout_v     = _fmv[31] if len(_fmv) > 31 else 0
                 def _fv(v):
                     try:
                         f = float(v) if v is not None else 0.0
@@ -789,8 +798,8 @@ def run_master_pipeline():
                 stock.setdefault("rev_cagr_3y",  _fv(rc3))
                 stock.setdefault("pat_cagr_1y",  _fv(pc1))
                 stock.setdefault("pat_cagr_3y",  _fv(pc3))
-                stock.setdefault("rev_yoy",      _fv(0))
-                stock.setdefault("pat_yoy",      _fv(0))
+                stock.setdefault("rev_yoy",      _fv(rev_yoy_v))
+                stock.setdefault("pat_yoy",      _fv(pat_yoy_v))
                 # Financial Health — with unit fixes
                 stock.setdefault("debt_equity",  _ratio(de))  # yfinance ×100 → ratio
                 # Numeric D/E for scoring (never "—")
@@ -819,8 +828,13 @@ def run_master_pipeline():
                     _growth_r = _fvn(rc3) if _fvn(rc3) > 0 else _fvn(pc3)
                     # pat_yoy from yfinance earningsGrowth (already ×100 in DB)
                     # but rc3/pc3 are always 0 (no free source), use pat_yoy
-                    # We'll compute after pat_yoy is set — use a post-assignment step
-                    stock.setdefault("peg", "—")
+                    # pat_yoy_v now available — compute PEG directly
+                    _pe_val = _fvn(pe)
+                    _g_val  = _fvn(pat_yoy_v)  # earningsGrowth ×100 from DB
+                    if _pe_val > 0 and _g_val > 0:
+                        stock.setdefault("peg", round(_pe_val / _g_val, 2))
+                    else:
+                        stock.setdefault("peg", "—")
                 # P/CF: compute from FCF yield if available, or FCF/mcap
                 _fy_pcf  = _fvn(fcfy_v)
                 _fcf_raw = _fvn(fcf)   # FCF in ₹Cr
@@ -839,6 +853,7 @@ def run_master_pipeline():
                 stock.setdefault("earnings_yield",_fvn(ey))
                 stock.setdefault("earn_yield",    _fvn(ey))
                 stock.setdefault("div_yield",     _fvn(dy))
+                stock.setdefault("payout_ratio",  _fv(payout_v) if _fvn(payout_v) > 0 else "—")
 
             # Enrich from shareholding
             if sym in _sh_map:
