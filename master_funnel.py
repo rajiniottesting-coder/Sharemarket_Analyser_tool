@@ -226,6 +226,16 @@ def _bse_sme(target_date):
         return None
 
 
+def _sf(val, default=0.0):
+    """Safe float — handles '—', None, '', and non-numeric strings."""
+    if val is None or val == "" or val == "—" or val == "--":
+        return float(default)
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return float(default)
+
+
 def run_master_pipeline():
     cleanup_temp_files()
 
@@ -417,10 +427,10 @@ def run_master_pipeline():
                 _esigs  = list(_early.get("active_signals", []))
 
                 # Augment with signals derivable from available data
-                _vol_r  = float(stock.get("vol_ratio", 1.0) or 1.0)
-                _rsi_e  = float(stock.get("rsi", 50) or 50)
-                _4w_e   = float(stock.get("4w_chg", 0) or 0)
-                _2w_e   = float(stock.get("2w_chg", 0) or 0)
+                _vol_r  = _sf(stock.get("vol_ratio", 1.0), 1.0)
+                _rsi_e  = _sf(stock.get("rsi", 50), 50)
+                _4w_e   = _sf(stock.get("4w_chg", 0), 0)
+                _2w_e   = _sf(stock.get("2w_chg", 0), 0)
                 _st_e   = str(stock.get("supertrend", "NEUTRAL"))
                 _macd_e = str(stock.get("macd_signal", "NEUTRAL"))
                 _etag   = str(stock.get("exchange_tag", ""))
@@ -438,7 +448,7 @@ def run_master_pipeline():
                     _escore += 12
                     _esigs.append("TREND CONFLUENCE")
                 # Signal: Delivery > 70% with vol spike (institutional footprint)
-                _del_e = float(stock.get("delivery_pct", 0) or 0)
+                _del_e = _sf(stock.get("delivery_pct", 0), 0)
                 if _del_e >= 70 and _vol_r >= 2.0:
                     _escore += 10
                     _esigs.append("INSTITUTIONAL FOOTPRINT")
@@ -462,9 +472,9 @@ def run_master_pipeline():
                 stock.setdefault("early_label", "EMERGING")
 
             # Section 3L: Sector Rotation Stage — use 4w_chg + FII trend
-            _sec_ret   = float(stock.get("4w_chg", 0) or 0)
+            _sec_ret   = _sf(stock.get("4w_chg", 0), 0)
             _nft_ret   = 0.0
-            _rsi_val   = float(stock.get("rsi", 50) or 50)
+            _rsi_val   = _sf(stock.get("rsi", 50), 50)
             _fii_trend = str(stock.get("fii_3q_trend", "NEUTRAL"))
             if   _fii_trend == "UP"   and _rsi_val > 55: _fii_flow = "turning_positive"
             elif _fii_trend == "UP":                      _fii_flow = "positive"
@@ -691,7 +701,7 @@ def run_master_pipeline():
                 _mcap = float(stock.get("mcap_cr", stock.get("mcap", 0)) or 0)
                 if _mcap <= 0:
                     # Estimate mcap from close × approx shares (not perfect but better than blank)
-                    _mcap = float(stock.get("close", 0) or 0) * float(stock.get("volume", 0) or 0) / 1e7
+                    _mcap = _sf(stock.get("close", 0), 0) * _sf(stock.get("volume", 0), 0) / 1e7
                 if   _mcap >= 20000: stock["cap_category"] = "LARGE CAP"
                 elif _mcap >=  5000: stock["cap_category"] = "MID CAP"
                 elif _mcap >=   500: stock["cap_category"] = "SMALL CAP"
@@ -699,8 +709,8 @@ def run_master_pipeline():
                 else:                stock["cap_category"] = "—"
 
             # day_change directly from close/prev_close in stock dict (always available)
-            _cv  = float(stock.get("close", 0) or 0)
-            _pcv = float(stock.get("prev_close", 0) or 0)
+            _cv  = _sf(stock.get("close", 0), 0)
+            _pcv = _sf(stock.get("prev_close", 0), 0)
             if _cv > 0 and _pcv > 0:
                 stock["day_change"] = round((_cv - _pcv) / _pcv * 100, 2)
 
@@ -710,18 +720,24 @@ def run_master_pipeline():
                 if h52 and float(h52) > 0: stock["high_52w"] = round(float(h52), 2)
                 if l52 and float(l52) > 0: stock["low_52w"]  = round(float(l52), 2)
                 if vol50 and float(vol50) > 0:
-                    _curr_vol = float(stock.get("volume", 0) or 0)
+                    _curr_vol = _sf(stock.get("volume", 0), 0)
                     stock["vol_ratio"] = round(_curr_vol / float(vol50), 2)
 
             # Enrich from fundamental_metrics
             if sym in _fm_map:
                 pe, pb, ey, dy, pf, az, bm, roe, roce, roa, gm, em, nm,                 de, cr, rc1, rc3, pc1, pc3, ry, py, td, fcf, nde, ic = _fm_map[sym]
-                def _fv(v): return float(v) if v and float(v) != 0 else "—"
-                stock.setdefault("pe",           _fv(pe))
-                stock.setdefault("pb",           _fv(pb))
-                stock.setdefault("earnings_yield", _fv(ey))
-                stock.setdefault("earn_yield",   _fv(ey))
-                stock.setdefault("div_yield",    _fv(dy))
+                def _fv(v):
+                    try:
+                        f = float(v) if v is not None else 0.0
+                        return round(f, 4) if f != 0 else "—"
+                    except (ValueError, TypeError):
+                        return "—"
+                def _fvn(v):  # numeric version — returns 0 not "—" for safe float ops
+                    try:
+                        return float(v) if v is not None else 0.0
+                    except (ValueError, TypeError):
+                        return 0.0
+                # Display fields: use _fv (shows "—" for zero)
                 stock.setdefault("piotroski_f",  _fv(pf))
                 stock.setdefault("altman_z",     _fv(az))
                 stock.setdefault("beneish_m",    _fv(bm))
@@ -731,8 +747,6 @@ def run_master_pipeline():
                 stock.setdefault("gross_margin", _fv(gm))
                 stock.setdefault("ebitda_margin",_fv(em))
                 stock.setdefault("npm",          _fv(nm))
-                stock.setdefault("debt_equity",  _fv(de))
-                stock.setdefault("current_ratio",_fv(cr))
                 stock.setdefault("rev_cagr_1y",  _fv(rc1))
                 stock.setdefault("rev_cagr_3y",  _fv(rc3))
                 stock.setdefault("pat_cagr_1y",  _fv(pc1))
@@ -743,37 +757,55 @@ def run_master_pipeline():
                 stock.setdefault("fcf",          _fv(fcf))
                 stock.setdefault("nd_ebitda",    _fv(nde))
                 stock.setdefault("int_coverage", _fv(ic))
+                # Numeric fields used in float() calcs — store 0 not "—"
+                stock.setdefault("pe",            _fvn(pe))
+                stock.setdefault("pb",            _fvn(pb))
+                stock.setdefault("earnings_yield",_fvn(ey))
+                stock.setdefault("earn_yield",    _fvn(ey))
+                stock.setdefault("div_yield",     _fvn(dy))
+                stock.setdefault("debt_equity",   _fvn(de))
+                stock.setdefault("current_ratio", _fvn(cr))
 
             # Enrich from shareholding
             if sym in _sh_map:
                 pro, proq, pled, pledd, fii, fiiq, dii, diiq, pub = _sh_map[sym]
-                def _fv2(v): return float(v) if v and float(v) != 0 else "—"
-                stock.setdefault("promoter_pct",    _fv2(pro))
+                def _fv2(v):  # display: "—" for zero/None
+                    try:
+                        f = float(v) if v is not None else 0.0
+                        return round(f, 2) if f != 0 else "—"
+                    except (ValueError, TypeError):
+                        return "—"
+                def _fv2n(v):  # numeric: 0 for zero/None (safe for float())
+                    try:
+                        return float(v) if v is not None else 0.0
+                    except (ValueError, TypeError):
+                        return 0.0
+                stock.setdefault("promoter_pct",    _fv2n(pro))   # used in float() calcs
                 stock.setdefault("promoter_qoq",    _fv2(proq))
-                stock.setdefault("pledge_pct",      _fv2(pled))
+                stock.setdefault("pledge_pct",      _fv2n(pled))  # used in float() calcs
                 stock.setdefault("pledge_direction",pledd or "—")
-                stock.setdefault("fii_pct",         _fv2(fii))
+                stock.setdefault("fii_pct",         _fv2n(fii))   # used in float() calcs
                 stock.setdefault("fii_qoq",         _fv2(fiiq))
-                stock.setdefault("dii_pct",         _fv2(dii))
+                stock.setdefault("dii_pct",         _fv2n(dii))
                 stock.setdefault("dii_qoq",         _fv2(diiq))
                 stock.setdefault("public_float",    _fv2(pub))
 
             # Enrich from technical_indicators
             if sym in _ti_map:
                 sma200, st, adx, rsi, macd_s, stk, mfi, obv_s, vwap_s, s1, s2, r1, r2 = _ti_map[sym]
-                stock["sma_200"]    = round(float(sma200), 2) if sma200 else "—"
+                stock["sma_200"]    = round(float(sma200), 2) if sma200 else 0
                 stock["supertrend"] = st or "NEUTRAL"
-                stock["adx"]        = round(float(adx), 2) if adx else "—"
-                stock["rsi"]        = round(float(rsi), 2) if rsi else "—"
+                stock["adx"]        = round(float(adx), 2) if adx else 0
+                stock["rsi"]        = round(float(rsi), 2) if rsi else 0
                 stock["macd_signal"]= macd_s or "NEUTRAL"
-                stock["stoch_k"]    = round(float(stk), 2) if stk else "—"
-                stock["mfi"]        = round(float(mfi), 2) if mfi else "—"
+                stock["stoch_k"]    = round(float(stk), 2) if stk else 0
+                stock["mfi"]        = round(float(mfi), 2) if mfi else 0
                 stock["obv_signal"] = obv_s or "—"
                 stock["above_vwap"] = vwap_s or "—"
-                stock["support_1"]  = round(float(s1), 2) if s1 else "—"
-                stock["support_2"]  = round(float(s2), 2) if s2 else "—"
-                stock["resist_1"]   = round(float(r1), 2) if r1 else "—"
-                stock["resist_2"]   = round(float(r2), 2) if r2 else "—"
+                stock["support_1"]  = round(float(s1), 2) if s1 else 0
+                stock["support_2"]  = round(float(s2), 2) if s2 else 0
+                stock["resist_1"]   = round(float(r1), 2) if r1 else 0
+                stock["resist_2"]   = round(float(r2), 2) if r2 else 0
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 5B: FAIR VALUE ENGINE
@@ -781,27 +813,27 @@ def run_master_pipeline():
         from fair_value_engine import FairValueEngine
         fv_engine = FairValueEngine()
         for stock in final_100_list:
-            beta       = float(stock.get("beta", 1.0) or 1.0)
-            growth_3yr = float(stock.get("pat_cagr_3y",
-                               stock.get("rev_cagr_3y", 10)) or 10)
+            beta       = _sf(stock.get("beta", 1.0), 1.0)
+            growth_3yr = _sf(stock.get("pat_cagr_3y",
+                               stock.get("rev_cagr_3y", 10)), 10)
 
             # Derive BVPS from PB and CMP if not available
             if not stock.get("bvps"):
-                pb  = float(stock.get("pb", 0) or 0)
-                cmp = float(stock.get("close", 0) or 0)
+                pb  = _sf(stock.get("pb", 0), 0)
+                cmp = _sf(stock.get("close", 0), 0)
                 if pb > 0 and cmp > 0:
                     stock["bvps"] = round(cmp / pb, 2)
 
             # Derive EPS from PE and CMP if not already set
             if not stock.get("eps"):
-                pe  = float(stock.get("pe", 0) or 0)
-                cmp = float(stock.get("close", 0) or 0)
+                pe  = _sf(stock.get("pe", 0), 0)
+                cmp = _sf(stock.get("close", 0), 0)
                 if pe > 0 and cmp > 0:
                     stock["eps"] = round(cmp / pe, 2)
 
             models    = fv_engine.calculate_all_models(stock, beta, growth_3yr)
             fv_result = fv_engine.get_composite_fair_value(
-                models, stock.get("sector", "IT"), float(stock.get("close", 1) or 1)
+                models, stock.get("sector", "IT"), _sf(stock.get("close", 1), 1)
             )
             stock.update(models)
             stock.update(fv_result)
@@ -816,8 +848,8 @@ def run_master_pipeline():
             # ── Pre-compute technical_score from real technical indicators ───
             if not stock.get("technical_score"):
                 _ts = 50.0  # base
-                _rsi_s  = float(stock.get("rsi", 50) or 50)
-                _adx_s  = float(stock.get("adx", 0) or 0)
+                _rsi_s  = _sf(stock.get("rsi", 50), 50)
+                _adx_s  = _sf(stock.get("adx", 0), 0)
                 _macd_s = str(stock.get("macd_signal", "NEUTRAL"))
                 _st_s   = str(stock.get("supertrend", "NEUTRAL"))
                 _vwap_s = str(stock.get("above_vwap", "NO"))
@@ -849,11 +881,11 @@ def run_master_pipeline():
                 _fs = 50.0  # base
                 _pe_f  = stock.get("pe", 0)
                 _pb_f  = stock.get("pb", 0)
-                _ey_f  = float(stock.get("earnings_yield", 0) or 0)
+                _ey_f  = _sf(stock.get("earnings_yield", 0), 0)
                 _de_f  = stock.get("debt_equity", "—")
-                _pro_f = float(stock.get("promoter_pct", 0) or 0)
-                _mos_f = float(stock.get("mos_pct", 0) or 0)
-                _s2_f  = float(stock.get("stage2_score", 15) or 15)
+                _pro_f = _sf(stock.get("promoter_pct", 0), 0)
+                _mos_f = _sf(stock.get("mos_pct", 0), 0)
+                _s2_f  = _sf(stock.get("stage2_score", 15), 15)
                 # Stage 2 score (0-30) maps to base fundamental score
                 _fs = 30.0 + (_s2_f / 30.0) * 40.0  # 30-70 range
                 # PE contribution
@@ -876,8 +908,8 @@ def run_master_pipeline():
             # ── Safety score from pledge/debt ────────────────────────────────
             if not stock.get("safety_score"):
                 _ss = 50.0
-                _pled = float(stock.get("pledge_pct", 0) or 0)
-                _bet  = float(stock.get("beta", 1.0) or 1.0)
+                _pled = _sf(stock.get("pledge_pct", 0), 0)
+                _bet  = _sf(stock.get("beta", 1.0), 1.0)
                 _de2  = stock.get("debt_equity", "—")
                 if _pled > 20: _ss -= 15
                 elif _pled > 10: _ss -= 7
@@ -932,7 +964,7 @@ def run_master_pipeline():
             if not stock.get("vol_ratio"):
                 from data_bridge import get_20d_avg_vol
                 avg_vol = get_20d_avg_vol(str(stock.get("symbol", "") or ""))
-                curr_vol = float(stock.get("volume", 0) or 0)
+                curr_vol = _sf(stock.get("volume", 0), 0)
                 stock["vol_ratio"] = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
 
             # Smart money signals
@@ -945,7 +977,7 @@ def run_master_pipeline():
                 stock["smart_money_signals"] = ", ".join(signals) if signals else "NEUTRAL"
 
             # MoS label
-            mos = float(stock.get("mos_pct", 0) or 0)
+            mos = _sf(stock.get("mos_pct", 0), 0)
             if   mos > 40:  stock["mos_label"] = "EXCEPTIONAL"
             elif mos > 25:  stock["mos_label"] = "STRONG"
             elif mos > 10:  stock["mos_label"] = "ADEQUATE"
@@ -955,11 +987,11 @@ def run_master_pipeline():
 
             # Chart Pattern — simple candle pattern from OHLC (no external data needed)
             if not stock.get("chart_pattern") or stock.get("chart_pattern") == "—":
-                _o = float(stock.get("open", 0) or 0)
-                _h = float(stock.get("high", 0) or 0)
-                _l = float(stock.get("low", 0) or 0)
-                _c = float(stock.get("close", 0) or 0)
-                _pc = float(stock.get("prev_close", 0) or 0)
+                _o = _sf(stock.get("open", 0), 0)
+                _h = _sf(stock.get("high", 0), 0)
+                _l = _sf(stock.get("low", 0), 0)
+                _c = _sf(stock.get("close", 0), 0)
+                _pc = _sf(stock.get("prev_close", 0), 0)
                 if _o > 0 and _h > 0 and _l > 0 and _c > 0:
                     _body  = abs(_c - _o)
                     _range = _h - _l
@@ -989,16 +1021,16 @@ def run_master_pipeline():
 
             # Earnings yield from EPS/CMP if not already set from DB
             if not stock.get("earnings_yield") or stock.get("earnings_yield") == "—":
-                _eps2 = float(stock.get("eps", 0) or 0)
-                _cmp2 = float(stock.get("close", 0) or 0)
+                _eps2 = _sf(stock.get("eps", 0), 0)
+                _cmp2 = _sf(stock.get("close", 0), 0)
                 if _eps2 > 0 and _cmp2 > 0:
                     stock["earnings_yield"] = round(_eps2 / _cmp2 * 100, 2)
                     stock["earn_yield"]     = stock["earnings_yield"]
 
             # P/E cross-check: if pe is from DB use it, else derive from EPS/CMP
             if not stock.get("pe") or stock.get("pe") == "—":
-                _eps3 = float(stock.get("eps", 0) or 0)
-                _cmp3 = float(stock.get("close", 0) or 0)
+                _eps3 = _sf(stock.get("eps", 0), 0)
+                _cmp3 = _sf(stock.get("close", 0), 0)
                 if _eps3 > 0 and _cmp3 > 0:
                     stock["pe"] = round(_cmp3 / _eps3, 2)
 
@@ -1015,7 +1047,7 @@ def run_master_pipeline():
                 stock["bs_output"] = f"BS: {stock.get('bs_status','HEALTHY')} — No red flags detected"
 
             # Price targets from CMP and CFV
-            cmp = float(stock.get("close", 0) or 0)
+            cmp = _sf(stock.get("close", 0), 0)
             cfv = float(stock.get("cfv", 0) or 0)
             if cmp > 0:
                 stock.setdefault("stop_loss",   round(cmp * 0.93, 2))
