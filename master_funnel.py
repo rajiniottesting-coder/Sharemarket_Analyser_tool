@@ -744,7 +744,7 @@ def run_master_pipeline():
 
             # cap_category from mcap (always computable from market cap thresholds)
             if not stock.get("cap_category") or stock.get("cap_category") == "—":
-                _mcap = float(stock.get("mcap_cr", stock.get("mcap", 0)) or 0)
+                _mcap = _sf(stock.get("mcap_cr", stock.get("mcap", 0)))
                 if _mcap <= 0:
                     # Estimate mcap from close × approx shares (not perfect but better than blank)
                     _mcap = _sf(stock.get("close", 0), 0) * _sf(stock.get("volume", 0), 0) / 1e7
@@ -1007,7 +1007,7 @@ def run_master_pipeline():
                 _spiker = SpikeScreener()
                 # SpikeScreener uses 'vol_spike_50d' — map from our 'vol_ratio'
                 _spike_input = dict(stock)
-                _spike_input['vol_spike_50d'] = float(stock.get('vol_ratio', 1.0) or 1.0)
+                _spike_input['vol_spike_50d'] = _sf(stock.get('vol_ratio', 1.0), 1.0)
                 _spike_result = _spiker.calculate_spike_score(_spike_input, {})
                 stock["spike_count"] = _spike_result.get("score", 0)
                 stock["spike_score"] = _spike_result.get("score", 0)
@@ -1106,7 +1106,7 @@ def run_master_pipeline():
 
             # Price targets from CMP and CFV
             cmp = _sf(stock.get("close", 0), 0)
-            cfv = float(stock.get("cfv", 0) or 0)
+            cfv = _sf(stock.get("cfv", 0))
             if cmp > 0:
                 stock.setdefault("stop_loss",   round(cmp * 0.93, 2))
                 stock.setdefault("entry_range", f"{round(cmp*0.98,1)}–{round(cmp*1.01,1)}")

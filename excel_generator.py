@@ -189,6 +189,15 @@ GRP_COLORS = {
     "ANALYSIS SUMMARY":"0F172A",
 }
 
+def _sf(val, default=0.0):
+    if val is None or val == "" or str(val) in ("—", "--", "N/A"):
+        return float(default)
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return float(default)
+
+
 def _f(h): return PatternFill("solid", fgColor=h)
 
 # Thin border on all 4 sides — used for header rows and data cells
@@ -456,8 +465,8 @@ class ExcelGeneratorV6:
         ri=3
         for stk in self.df.to_dict("records"):
             spk=int(stk.get("spike_count",0) or 0)
-            early=float(stk.get("early_entry_score",0) or 0)
-            comp=float(stk.get("composite_score",0) or 0)
+            early=_sf(stk.get("early_entry_score",0))
+            comp=_sf(stk.get("composite_score",0))
             verd=str(stk.get("verdict","WATCHLIST"))
             if spk>=1 or early>=70 or comp<30:
                 if comp<30:

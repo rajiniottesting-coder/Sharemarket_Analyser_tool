@@ -1,5 +1,15 @@
 import math
 
+
+def _sf(val, default=0.0):
+    if val is None or val == "" or str(val) in ("—", "--", "N/A"):
+        return float(default)
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return float(default)
+
+
 class FairValueEngine:
     def __init__(self, gsec_yield=6.0):
         self.gsec = gsec_yield # Section 5B: 10Y Gsec benchmark
@@ -31,15 +41,15 @@ class FairValueEngine:
         # M2: Graham Number (Skip if negative EPS)
         # M2: Graham Number — derive bvps from pb × close if not in data
         _bvps = bv
-        if (not _bvps or _bvps == 0) and data.get('pb') and float(data.get('pb') or 0) > 0:
-            _close = float(data.get('close', 0) or 0)
-            _pb    = float(data.get('pb', 0) or 0)
+        if (not _bvps or _bvps == 0) and data.get('pb') and _sf(data.get('pb')) > 0:
+            _close = _sf(data.get('close', 0))
+            _pb    = _sf(data.get('pb', 0))
             if _close > 0 and _pb > 0:
                 _bvps = round(_close / _pb, 2)
         models['M2_Graham'] = round(math.sqrt(22.5 * eps * _bvps), 2) if eps > 0 and _bvps > 0 else 0
         
         # M4: Price-to-Book Fair Value = BVPS × sector_median_PB
-        _pb_v = float(data.get('pb') or 0)
+        _pb_v = _sf(data.get('pb'))
         _bvps4 = _bvps if '_bvps' in dir() and _bvps else (
             round(float(data.get('close',0) or 0) / _pb_v, 2) if _pb_v > 0 else 0
         )

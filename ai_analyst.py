@@ -13,6 +13,16 @@ import anthropic
 from dotenv import load_dotenv
 from fundamental_engine import FundamentalEngine
 
+
+def _sf(val, default=0.0):
+    """Safe float — handles '—', None, '', non-numeric strings."""
+    if val is None or val == "" or str(val) in ("—", "--", "N/A"):
+        return float(default)
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return float(default)
+
 load_dotenv()
 
 _anthropic_key = os.getenv("ANTHROPIC_API_KEY")
@@ -66,19 +76,19 @@ def get_ai_analysis(stock_list_df) -> str:
     for index, row in stock_list_df.iterrows():
         # Graham Number (Section 3A)
         stock_list_df.at[index, "Graham_No"] = engine.calculate_graham_number(
-            float(row.get("eps", 0) or 0),
-            float(row.get("bvps", 0) or 0),
+            _sf(row.get("eps", 0)),
+            _sf(row.get("bvps", 0)),
         )
         # PEG Ratio (Section 3A)
         stock_list_df.at[index, "PEG_Ratio"] = engine.calculate_peg_ratio(
-            float(row.get("pe", 0) or 0),
-            float(row.get("pat_cagr_3y", row.get("growth_rate", 0)) or 0),
+            _sf(row.get("pe", 0)),
+            _sf(row.get("pat_cagr_3y", row.get("growth_rate", 0))),
         )
         # Composite Fair Value (Section 5B) — uses pre-calculated model values
         models_data = {
-            "DCF": float(row.get("M1_DCF", row.get("dcf_val", 0)) or 0),
-            "PE":  float(row.get("M3_PE",  row.get("pe_val",  0)) or 0),
-            "PEG": float(row.get("M7_PEG", row.get("peg_val", 0)) or 0),
+            "DCF": _sf(row.get("M1_DCF", row.get("dcf_val", 0))),
+            "PE":  _sf(row.get("M3_PE",  row.get("pe_val",  0))),
+            "PEG": _sf(row.get("M7_PEG", row.get("peg_val", 0))),
         }
         stock_list_df.at[index, "Calculated_CFV"] = engine.calculate_composite_fair_value(
             str(row.get("symbol", "")),
