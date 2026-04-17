@@ -559,10 +559,7 @@ def run_master_pipeline():
                         fm.quick_ratio, fm.cash_cr, fm.fcf_yield,
                         COALESCE(fm.rev_yoy, 0)        as rev_yoy,
                         COALESCE(fm.pat_yoy, 0)        as pat_yoy,
-                        COALESCE(fm.payout_ratio, 0)   as payout_ratio,
-                        COALESCE(fm.operating_cf_cr, 0) as operating_cf_cr,
-                        COALESCE(fm.curr_assets_cr, 0)  as curr_assets_cr,
-                        COALESCE(fm.curr_liab_cr, 0)    as curr_liab_cr
+                        COALESCE(fm.payout_ratio, 0)   as payout_ratio
                         FROM fundamental_metrics fm
                         INNER JOIN (
                             SELECT symbol, MAX(date) as md FROM fundamental_metrics
@@ -574,6 +571,27 @@ def run_master_pipeline():
                     _fm_map[r[0]] = r[1:]
             except Exception:
                 pass
+
+            # Optional extended columns — separate query so a missing DB column
+            # never breaks the main SELECT above (safe, degrades gracefully)
+            _fm_ext = {}   # symbol → (op_cf_cr, curr_assets_cr, curr_liab_cr)
+            try:
+                _ext_rows = _conn.execute(
+                    f"""SELECT fm.symbol,
+                        COALESCE(fm.operating_cf_cr, 0),
+                        COALESCE(fm.curr_assets_cr,  0),
+                        COALESCE(fm.curr_liab_cr,    0)
+                        FROM fundamental_metrics fm
+                        INNER JOIN (
+                            SELECT symbol, MAX(date) as md FROM fundamental_metrics
+                            WHERE symbol IN ({_sym_placeholders}) GROUP BY symbol
+                        ) lt ON fm.symbol=lt.symbol AND fm.date=lt.md""",
+                    _syms
+                ).fetchall()
+                for r in _ext_rows:
+                    _fm_ext[r[0]] = r[1:]
+            except Exception:
+                pass   # DB columns don't exist yet — will populate after next backfill
 
             # Shareholding (latest per symbol)
             _sh_map = {}
@@ -753,9 +771,11 @@ def run_master_pipeline():
                 rev_yoy_v    = _fmv[29] if len(_fmv) > 29 else 0
                 pat_yoy_v    = _fmv[30] if len(_fmv) > 30 else 0
                 payout_v     = _fmv[31] if len(_fmv) > 31 else 0
-                op_cf_v      = _fmv[32] if len(_fmv) > 32 else 0   # operating cash flow ₹Cr
-                curr_ass_v   = _fmv[33] if len(_fmv) > 33 else 0   # current assets ₹Cr
-                curr_liab_v  = _fmv[34] if len(_fmv) > 34 else 0   # current liabilities ₹Cr
+                # Extended fields from secondary safe query (0 if DB column missing)
+                _ext = _fm_ext.get(sym, (0, 0, 0))
+                op_cf_v     = float(_ext[0]) if _ext[0] else 0   # operating cash flow ₹Cr
+                curr_ass_v  = float(_ext[1]) if _ext[1] else 0   # current assets ₹Cr
+                curr_liab_v = float(_ext[2]) if _ext[2] else 0   # current liabilities ₹Cr
                 def _fv(v):
                     try:
                         f = float(v) if v is not None else 0.0
