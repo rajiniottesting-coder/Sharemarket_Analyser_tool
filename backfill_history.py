@@ -1226,15 +1226,37 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                     if not info or info.get("regularMarketPrice", 0) == 0:
                         continue
                     mcap_inr = float(info.get("marketCap", 0) or 0)
+                    def _yf(k, m=1.0, d=0.0):
+                        try: return round(float(info.get(k) or 0) * m, 4)
+                        except: return d
                     result[sym] = {
-                        "pe":           float(info.get("trailingPE") or 0),
-                        "eps":          float(info.get("trailingEps") or 0),
-                        "pb":           float(info.get("priceToBook") or 0),
-                        "beta":         float(info.get("beta") or 1.0),
-                        "mcap_cr":      round(mcap_inr / 1e7, 2),
-                        "sector":       str(info.get("sector") or ""),
-                        "company_name": str(info.get("longName") or ""),
-                        "div_yield":    round(float(info.get("dividendYield") or 0) * 100, 2),
+                        "pe":            _yf("trailingPE"),
+                        "eps":           _yf("trailingEps"),
+                        "pb":            _yf("priceToBook"),
+                        "beta":          _yf("beta", d=1.0) or 1.0,
+                        "mcap_cr":       round(mcap_inr / 1e7, 2),
+                        "sector":        str(info.get("sector") or ""),
+                        "company_name":  str(info.get("longName") or ""),
+                        "div_yield":     _yf("dividendYield", m=100),
+                        "roe":           _yf("returnOnEquity", m=100),
+                        "roa":           _yf("returnOnAssets", m=100),
+                        "debt_equity":   _yf("debtToEquity"),
+                        "current_ratio": _yf("currentRatio"),
+                        "quick_ratio":   _yf("quickRatio"),
+                        "gross_margin":  _yf("grossMargins", m=100),
+                        "ebitda_margin": _yf("ebitdaMargins", m=100),
+                        "net_margin":    _yf("profitMargins", m=100),
+                        "rev_yoy":       _yf("revenueGrowth", m=100),
+                        "pat_yoy":       _yf("earningsGrowth", m=100),
+                        "total_cash":    round(float(info.get("totalCash") or 0)/1e7, 2),
+                        "total_debt":    round(float(info.get("totalDebt") or 0)/1e7, 2),
+                        "fcf":           round(float(info.get("freeCashflow") or 0)/1e7, 2),
+                        "payout_ratio":  _yf("payoutRatio", m=100),
+                        "ps":            _yf("priceToSalesTrailing12Months"),
+                        "ev_ebitda":     _yf("enterpriseToEbitda"),
+                        "peg":           _yf("pegRatio"),
+                        "promoter_pct":  _yf("heldPercentInsiders", m=100),
+                        "inst_pct":      _yf("heldPercentInstitutions", m=100),
                     }
                 except Exception:
                     pass
@@ -1340,10 +1362,26 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
         roe = round(eps * pe / (pb * cmp), 2) if pb > 0 and cmp > 0 and pe > 0 else 0
 
         fm_rows.append({
-            "symbol":    sym, "date": today_str2,
-            "pe_ttm":    pe,  "pb": pb, "earn_yield": ey,
-            "div_yield": d.get("div_yield", 0), "roe": roe,
-            "rev_yoy": 0, "pat_yoy": 0,
+            "symbol":       sym, "date": today_str2,
+            "pe_ttm":       pe,  "pb":   pb,
+            "earn_yield":   ey,  "div_yield": d.get("div_yield", 0),
+            "roe":          d.get("roe", 0),
+            "roa":          d.get("roa", 0),
+            "gross_margin": d.get("gross_margin", 0),
+            "ebitda_margin":d.get("ebitda_margin", 0),
+            "net_margin":   d.get("net_margin", 0),
+            "debt_equity":  d.get("debt_equity", 0),
+            "current_ratio":d.get("current_ratio", 0),
+            "quick_ratio":  d.get("quick_ratio", 0),
+            "rev_yoy":      d.get("rev_yoy", 0),
+            "pat_yoy":      d.get("pat_yoy", 0),
+            "total_debt_cr":d.get("total_debt", 0),
+            "cash_cr":      d.get("total_cash", 0),
+            "fcf_cr":       d.get("fcf", 0),
+            "payout_ratio": d.get("payout_ratio", 0),
+            "ps":           d.get("ps", 0),
+            "ev_ebitda":    d.get("ev_ebitda", 0),
+            "peg":          d.get("peg", 0),
         })
 
     conn.commit()

@@ -436,7 +436,7 @@ def run_master_pipeline():
                 _etag   = str(stock.get("exchange_tag", ""))
 
                 # Signal: Volume surge + RSI in accumulation zone (not overbought)
-                if _vol_r >= 2.5 and 50 < _rsi_e <= 68:
+                if _vol_r >= 1.8 and 50 < _rsi_e <= 72:
                     _escore += 15
                     _esigs.append("VOL SURGE + RSI ACCUMULATION")
                 # Signal: 2w momentum turning positive after flat/down period
@@ -725,7 +725,8 @@ def run_master_pipeline():
 
             # Enrich from fundamental_metrics
             if sym in _fm_map:
-                pe, pb, ey, dy, pf, az, bm, roe, roce, roa, gm, em, nm,                 de, cr, rc1, rc3, pc1, pc3, ry, py, td, fcf, nde, ic = _fm_map[sym]
+                _fmv = list(_fm_map[sym]) + [0]*26
+                pe,pb,ey,dy,pf,az,bm,roe,roce,roa,gm,em,nm,de,cr,rc1,rc3,pc1,pc3,ry,py,td,fcf,nde,ic = _fmv[:25]
                 def _fv(v):
                     try:
                         f = float(v) if v is not None else 0.0
@@ -737,7 +738,7 @@ def run_master_pipeline():
                         return float(v) if v is not None else 0.0
                     except (ValueError, TypeError):
                         return 0.0
-                # Display fields: use _fv (shows "—" for zero)
+                # Display fields: _fv shows "—" for zero
                 stock.setdefault("piotroski_f",  _fv(pf))
                 stock.setdefault("altman_z",     _fv(az))
                 stock.setdefault("beneish_m",    _fv(bm))
@@ -757,7 +758,7 @@ def run_master_pipeline():
                 stock.setdefault("fcf",          _fv(fcf))
                 stock.setdefault("nd_ebitda",    _fv(nde))
                 stock.setdefault("int_coverage", _fv(ic))
-                # Numeric fields used in float() calcs — store 0 not "—"
+                # Numeric fields: _fvn returns 0 for safe arithmetic
                 stock.setdefault("pe",            _fvn(pe))
                 stock.setdefault("pb",            _fvn(pb))
                 stock.setdefault("earnings_yield",_fvn(ey))
@@ -765,6 +766,29 @@ def run_master_pipeline():
                 stock.setdefault("div_yield",     _fvn(dy))
                 stock.setdefault("debt_equity",   _fvn(de))
                 stock.setdefault("current_ratio", _fvn(cr))
+                # Extra yfinance fields from fundamental_metrics
+                try:
+                    _conn_e = _sq.connect(_db)
+                    _efm = _conn_e.execute(
+                        "SELECT quick_ratio,gross_margin,ebitda_margin,net_margin,"
+                        "rev_yoy,pat_yoy,total_debt_cr,cash_cr,fcf_cr,"
+                        "payout_ratio,ps,ev_ebitda,peg "
+                        "FROM fundamental_metrics WHERE symbol=? ORDER BY date DESC LIMIT 1",
+                        (sym,)
+                    ).fetchone()
+                    _conn_e.close()
+                    if _efm:
+                        _qr,_gm2,_em2,_nm2,_ry2,_py2,_td2,_cash,_fcf2,_pr,_ps,_ev,_peg = _efm
+                        for _k,_v in [("quick_ratio",_qr),("gross_margin",_gm2),
+                                      ("ebitda_margin",_em2),("npm",_nm2),
+                                      ("rev_yoy",_ry2),("pat_yoy",_py2),
+                                      ("total_debt",_td2),("cash",_cash),
+                                      ("fcf",_fcf2),("payout_ratio",_pr),
+                                      ("ps",_ps),("ev_ebitda",_ev),("peg",_peg)]:
+                            if not stock.get(_k) or stock[_k]=="—":
+                                stock[_k] = _fv(_v)
+                except Exception:
+                    pass
 
             # Enrich from shareholding
             if sym in _sh_map:
