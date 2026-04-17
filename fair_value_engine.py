@@ -90,16 +90,20 @@ class FairValueEngine:
         else:
             models['M5_EV'] = 0
 
-        # M6: DDM (Dividend Discount Model)
-        # FV = DPS / (required_return - dividend_growth)
-        # For non-dividend stocks → use earnings yield as proxy
+        # M6: DDM (Dividend Discount Model) — Gordon Growth Model
+        # FV = D1 / (r - g)  where D1 = DPS × (1+g)
+        # Only valid for genuine dividend-paying stocks (0.1% < yield < 15%)
+        # Yields > 15% indicate bad data (unit mismatch) — skip DDM
         div_yield_pct = _sf(data.get('div_yield', 0))
-        if div_yield_pct > 0 and cmp_m5 > 0:
-            dps = cmp_m5 * div_yield_pct / 100
-            div_growth = min(growth_3yr / 200, 0.04)  # conservative: half of growth capped at 4%
-            req_return = (self.gsec + 4.0) / 100      # risk-free + equity premium
-            if req_return > div_growth:
-                models['M6_DDM'] = round(dps * (1 + div_growth) / (req_return - div_growth), 2)
+        if 0.1 < div_yield_pct < 15.0 and cmp_m5 > 0:
+            dps        = cmp_m5 * div_yield_pct / 100   # annual DPS in ₹
+            # Conservative growth: min(pat_yoy/2, GDP_nominal=10%) capped at 6%
+            _pat_g = _sf(data.get('pat_yoy', 0), 0)
+            div_growth = min(max(_pat_g / 200, 0.02), 0.06)
+            req_return = (self.gsec + 4.5) / 100         # risk-free + equity premium
+            if req_return > div_growth and dps > 0:
+                d1 = dps * (1 + div_growth)
+                models['M6_DDM'] = round(d1 / (req_return - div_growth), 2)
             else:
                 models['M6_DDM'] = 0
         else:

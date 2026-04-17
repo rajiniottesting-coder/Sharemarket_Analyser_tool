@@ -775,9 +775,42 @@ def run_master_pipeline():
                     return round(f / 100, 3) if abs(f) > 2.0 else round(f, 3)
 
                 # Profitability — fraction→% conversion (display)
-                stock.setdefault("roe",          _pct(roe))
-                stock.setdefault("roce",         _fv(roce))
-                stock.setdefault("roa",          _pct(roa))
+                # When yfinance has no direct data (roe=0), derive from available ratios:
+                # ROE = earnings_yield × PB  (EPS/CMP × CMP/BVPS = EPS/BVPS)
+                _roe_direct = _fvn(roe)
+                _roa_direct = _fvn(roa)
+                _ey_v = _fvn(ey)   # earnings yield %
+                _pb_v = _fvn(pb)   # price/book
+                _de_v = _fvn(de)   # D/E (×100 from yfinance, but already divided)
+                _de_ratio = _de_v / 100 if _de_v > 2.0 else _de_v
+
+                if _roe_direct != 0:
+                    _roe_display = _pct(roe)
+                elif _ey_v > 0 and _pb_v > 0:
+                    # Derived: ROE ≈ earnings_yield × PB (reasonable approximation)
+                    _roe_derived = round(_ey_v * _pb_v, 2)
+                    _roe_display = f"{_roe_derived}" if 0 < _roe_derived < 100 else "—"
+                else:
+                    _roe_display = "—"
+                stock.setdefault("roe", _roe_display)
+                # Store numeric ROE for scoring
+                _roe_num_val = (_roe_direct*100 if 0<_roe_direct<2 else _roe_direct) if _roe_direct != 0 else                                (_ey_v * _pb_v if _ey_v > 0 and _pb_v > 0 else 0)
+                stock["roe_num"] = round(_roe_num_val, 2)
+
+                if _roa_direct != 0:
+                    stock.setdefault("roa", _pct(roa))
+                elif _roe_num_val > 0 and _de_ratio >= 0:
+                    # Derived: ROA ≈ ROE / (1 + D/E)
+                    _roa_derived = round(_roe_num_val / (1 + _de_ratio), 2)
+                    stock.setdefault("roa", f"{_roa_derived}" if 0 < _roa_derived < 100 else "—")
+                else:
+                    stock.setdefault("roa", "—")
+
+                # ROCE: not available from yfinance — derive if possible
+                # ROCE ≈ ROE × equity / (equity + net_debt)
+                # Simplified: ROCE ≈ ROE / (1 + nd_ebitda × ebitda_margin/100) — too complex
+                # Just show "—" if no direct data
+                stock.setdefault("roce", _fv(roce))
                 stock.setdefault("gross_margin", _pct(gm))
                 stock.setdefault("ebitda_margin",_pct(em))
                 stock.setdefault("npm",          _pct(nm))
@@ -809,7 +842,15 @@ def run_master_pipeline():
                 stock["pe_num"]       = round(_fvn(pe), 2)      # PE numeric
                 stock.setdefault("current_ratio",_fv(cr) if _fvn(cr) > 0 else "—")
                 stock.setdefault("quick_ratio",  _fv(qr_v) if _fvn(qr_v) > 0 else "—")
-                stock.setdefault("total_debt",   _fv(td) if _fvn(td) > 0 else "—")
+                # total_debt: 0 is valid (zero-debt company) — show it, don't hide as "—"
+                _td_val = _fvn(td)
+                if _td_val > 0:
+                    stock.setdefault("total_debt", round(_td_val, 2))
+                elif _td_val == 0 and _fvn(pe) > 0:
+                    # Stock data exists but debt=0 → confirmed zero-debt company
+                    stock.setdefault("total_debt", 0)
+                else:
+                    stock.setdefault("total_debt", "—")
                 stock.setdefault("cash",         _fv(cash_v) if _fvn(cash_v) > 0 else "—")
                 stock.setdefault("fcf",          _fv(fcf) if _fvn(fcf) != 0 else "—")
                 stock.setdefault("fcf_yield",    _fv(fcfy_v))
@@ -852,7 +893,18 @@ def run_master_pipeline():
                 stock.setdefault("pb",            _fvn(pb))
                 stock.setdefault("earnings_yield",_fvn(ey))
                 stock.setdefault("earn_yield",    _fvn(ey))
-                stock.setdefault("div_yield",     _fvn(dy))
+                # Normalise div_yield to % regardless of how it was stored:
+                # DB stores fraction (0.0224), old rows may store % (2.24) or bad (224)
+                _dy_raw = _fvn(dy)
+                if _dy_raw <= 0:
+                    _dy_pct = 0.0
+                elif _dy_raw > 25:
+                    _dy_pct = round(_dy_raw / 100, 4)   # 224 → 2.24%
+                elif _dy_raw < 1.0:
+                    _dy_pct = round(_dy_raw * 100, 4)   # 0.0224 → 2.24%
+                else:
+                    _dy_pct = round(_dy_raw, 4)          # 2.24 already %
+                stock.setdefault("div_yield", _dy_pct)
                 stock.setdefault("payout_ratio",  _fv(payout_v) if _fvn(payout_v) > 0 else "—")
 
             # Enrich from shareholding
