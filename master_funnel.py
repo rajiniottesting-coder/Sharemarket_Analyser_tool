@@ -892,72 +892,75 @@ def run_master_pipeline():
                 stock["de_ratio_num"] = round(_de_raw / 100, 3) if abs(_de_raw) > 2.0 else round(_de_raw, 3)
                 stock["cr_num"]       = round(_fvn(cr), 3)      # current ratio numeric
                 stock["pe_num"]       = round(_fvn(pe), 2)      # PE numeric
-                # Current Ratio: direct from yfinance, or derive from assets/liabilities
+                # Current Ratio: direct assignment so it always gets best value
                 _cr_direct = _fvn(cr)
                 _qr_direct = _fvn(qr_v)
                 _ca = _fvn(curr_ass_v)
                 _cl = _fvn(curr_liab_v)
                 if _cr_direct > 0:
-                    _cr_display = _fv(cr)
+                    _cr_display = round(_cr_direct, 3)
                 elif _ca > 0 and _cl > 0:
                     _cr_display = round(_ca / _cl, 3)
                 else:
                     _cr_display = "—"
-                stock.setdefault("current_ratio", _cr_display)
-                stock["cr_num"] = float(_cr_display) if isinstance(_cr_display, (int,float)) and _cr_display else                                   (_cr_direct if _cr_direct > 0 else 0)
+                stock["current_ratio"] = _cr_display   # direct assignment
+                stock["cr_num"] = _cr_display if isinstance(_cr_display, (int,float)) else                                   (_cr_direct if _cr_direct > 0 else 0)
 
-                # Quick Ratio: direct or approximate as current_ratio × 0.7 (rough)
+                # Quick Ratio: direct assignment
                 if _qr_direct > 0:
-                    stock.setdefault("quick_ratio", _fv(qr_v))
+                    stock["quick_ratio"] = round(_qr_direct, 3)
                 elif _cr_display != "—" and float(str(_cr_display)) > 0:
-                    # QR ≈ CR - inventory/current_liab; rough estimate = CR × 0.85
-                    _qr_approx = round(float(str(_cr_display)) * 0.85, 3)
-                    stock.setdefault("quick_ratio", _qr_approx)
+                    stock["quick_ratio"] = round(float(str(_cr_display)) * 0.85, 3)
                 else:
-                    stock.setdefault("quick_ratio", "—")
-                # Total Debt: direct from yfinance, or derive from D/E × book equity
-                # Book Equity = MCap / PB (₹Cr)
+                    stock["quick_ratio"] = "—"
+                # Total Debt: direct assignment (not setdefault) so it always overwrites
+                # even if a previous 0 was set from BS engine or prior iteration
                 _td_val  = _fvn(td)
                 _de_raw2 = _fvn(de)
                 _de_r2   = _de_raw2 / 100 if _de_raw2 > 2.0 else _de_raw2
                 _pb_v2   = _fvn(pb)
                 _mcap_v2 = _fvn(stock.get("mcap_cr", 0))
                 if _td_val > 0:
-                    stock.setdefault("total_debt", round(_td_val, 2))
-                elif _de_r2 == 0:
-                    # D/E = 0 → confirmed zero-debt company
-                    stock.setdefault("total_debt", 0)
+                    stock["total_debt"] = round(_td_val, 2)
+                elif _de_r2 == 0 and _fvn(pe) > 0:
+                    stock["total_debt"] = 0          # confirmed zero-debt
                 elif _de_r2 > 0 and _pb_v2 > 0 and _mcap_v2 > 0:
-                    # Derived: D/E × (MCap/PB) = Debt
-                    _td_derived = round(_de_r2 * (_mcap_v2 / _pb_v2), 2)
-                    stock.setdefault("total_debt", _td_derived)
+                    stock["total_debt"] = round(_de_r2 * (_mcap_v2 / _pb_v2), 2)
                 else:
                     stock.setdefault("total_debt", "—")
                 stock.setdefault("cash",         _fv(cash_v) if _fvn(cash_v) > 0 else "—")
-                # FCF: direct freeCashflow, or use operatingCashflow as proxy
-                _fcf_direct  = _fvn(fcf)
-                _op_cf       = _fvn(op_cf_v)
+                # FCF: direct assignment, 3-tier fallback
+                _fcf_direct   = _fvn(fcf)
+                _op_cf        = _fvn(op_cf_v)
                 _mcap_for_fcf = _fvn(stock.get("mcap_cr", 0))
+                _ps_for_fcf   = _fvn(ps_v)
+                _em_for_fcf   = _fvn(em)
+                _em_pct_fcf   = _em_for_fcf * 100 if 0 < _em_for_fcf < 2 else _em_for_fcf
+
                 if _fcf_direct != 0:
-                    stock.setdefault("fcf", round(_fcf_direct, 2))
+                    stock["fcf"]  = round(_fcf_direct, 2)
                     _fcf_use = _fcf_direct
                 elif _op_cf != 0:
-                    # Proxy: operating CF shown with note — reasonable approximation
-                    stock.setdefault("fcf", round(_op_cf, 2))
+                    stock["fcf"]  = round(_op_cf, 2)
                     _fcf_use = _op_cf
+                elif _ps_for_fcf > 0 and _em_pct_fcf > 3 and _mcap_for_fcf > 0:
+                    # Derive: FCF ≈ Revenue × EBITDA_margin; Revenue = MCap/P_S
+                    _rev_est = _mcap_for_fcf / _ps_for_fcf
+                    _fcf_est = round(_rev_est * (_em_pct_fcf / 100) * 0.7, 2)  # 70% of EBITDA
+                    stock["fcf"]  = _fcf_est
+                    _fcf_use = _fcf_est
                 else:
-                    stock.setdefault("fcf", "—")
+                    stock["fcf"] = "—"
                     _fcf_use = 0
 
                 # FCF Yield = FCF / MCap × 100
                 _fcfy_direct = _fvn(fcfy_v)
                 if _fcfy_direct > 0:
-                    stock.setdefault("fcf_yield", round(_fcfy_direct, 4))
+                    stock["fcf_yield"] = round(_fcfy_direct, 4)
                 elif _fcf_use != 0 and _mcap_for_fcf > 0:
-                    _fcfy_calc = round(_fcf_use / _mcap_for_fcf * 100, 4)
-                    stock.setdefault("fcf_yield", _fcfy_calc)
+                    stock["fcf_yield"] = round(_fcf_use / _mcap_for_fcf * 100, 4)
                 else:
-                    stock.setdefault("fcf_yield", "—")
+                    stock["fcf_yield"] = "—"
                 stock.setdefault("nd_ebitda",    _fv(nde))
                 stock.setdefault("int_coverage", _fv(ic))
                 # Valuation ratios — only show if yfinance returned a value
