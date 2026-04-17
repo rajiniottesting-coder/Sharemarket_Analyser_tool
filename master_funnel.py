@@ -956,31 +956,58 @@ def run_master_pipeline():
 
             # ── Pre-compute fundamental_score from available data ─────────────
             if not stock.get("fundamental_score"):
-                _fs = 50.0  # base
-                _pe_f  = stock.get("pe", 0)
-                _pb_f  = stock.get("pb", 0)
+                # Real fundamental score from yfinance data (0-100)
+                _s2_f  = _sf(stock.get("stage2_score", 0), 0)
+                _pe_f  = _sf(stock.get("pe", 0), 0)
+                _roe_f = _sf(stock.get("roe",  0), 0)    # % after _pct()
+                _de_f  = _sf(stock.get("debt_equity", 99), 99)
+                _cr_f  = _sf(stock.get("current_ratio", 0), 0)
+                _gm_f  = _sf(stock.get("gross_margin", 0), 0)  # % after _pct()
+                _nm_f  = _sf(stock.get("npm", 0), 0)
                 _ey_f  = _sf(stock.get("earnings_yield", 0), 0)
-                _de_f  = stock.get("debt_equity", "—")
                 _pro_f = _sf(stock.get("promoter_pct", 0), 0)
-                _mos_f = _sf(stock.get("mos_pct", 0), 0)
-                _s2_f  = _sf(stock.get("stage2_score", 15), 15)
-                # Stage 2 score (0-30) maps to base fundamental score
-                _fs = 30.0 + (_s2_f / 30.0) * 40.0  # 30-70 range
-                # PE contribution
-                if isinstance(_pe_f, (int, float)) and float(_pe_f) > 0:
-                    if   float(_pe_f) < 15: _fs += 8
-                    elif float(_pe_f) < 25: _fs += 4
-                    elif float(_pe_f) > 60: _fs -= 6
-                # Earnings yield
-                if _ey_f > 6:  _fs += 5
-                elif _ey_f > 4: _fs += 2
+
+                # Stage 2 score (0-30) → base 30-70
+                _fs = 30.0 + (_s2_f / 30.0) * 40.0
+
+                # PE: 5-20 excellent, 20-40 good, >60 stretched
+                if   0 < _pe_f <= 20:  _fs += 12
+                elif 0 < _pe_f <= 40:  _fs += 7
+                elif _pe_f > 60:       _fs -= 8
+
+                # ROE: >20% excellent, 10-20% good, <5% poor
+                if   _roe_f > 20:      _fs += 12
+                elif _roe_f > 10:      _fs += 6
+                elif 0 < _roe_f < 5:   _fs -= 5
+
+                # D/E ratio: <0.3 excellent, 0.3-1 ok, >2 risky
+                if   0 < _de_f < 0.3:  _fs += 8
+                elif 0 < _de_f <= 1.0: _fs += 4
+                elif _de_f > 2.0:      _fs -= 10
+
+                # Current ratio: >2 healthy, <1 risky
+                if   _cr_f > 2.0:      _fs += 6
+                elif _cr_f > 1.5:      _fs += 3
+                elif 0 < _cr_f < 1.0:  _fs -= 7
+
+                # Gross margin: >40% excellent, >20% decent
+                if   _gm_f > 40:       _fs += 8
+                elif _gm_f > 20:       _fs += 4
+
+                # Net margin: >15% excellent, >5% decent, negative = penalise
+                if   _nm_f > 15:       _fs += 8
+                elif _nm_f > 5:        _fs += 4
+                elif _nm_f < 0:        _fs -= 8
+
+                # Earnings yield (>6% = undervalued)
+                if   _ey_f > 6:        _fs += 5
+                elif _ey_f > 4:        _fs += 2
+
                 # Promoter holding
-                if _pro_f > 50: _fs += 5
-                elif _pro_f > 35: _fs += 2
-                elif _pro_f > 0 and _pro_f < 20: _fs -= 3
-                # Debt/equity
-                if isinstance(_de_f, (int, float)) and float(_de_f) < 0.5: _fs += 4
-                elif isinstance(_de_f, (int, float)) and float(_de_f) > 2.0: _fs -= 6
+                if   _pro_f > 50:      _fs += 5
+                elif _pro_f > 35:      _fs += 2
+                elif 0 < _pro_f < 20:  _fs -= 3
+
                 stock["fundamental_score"] = max(0, min(100, round(_fs, 1)))
 
             # ── Safety score from pledge/debt ────────────────────────────────
@@ -1044,6 +1071,7 @@ def run_master_pipeline():
                 avg_vol = get_20d_avg_vol(str(stock.get("symbol", "") or ""))
                 curr_vol = _sf(stock.get("volume", 0), 0)
                 stock["vol_ratio"] = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
+                stock["days_since_analysis"] = 0  # prevent O5 firing for all stocks
 
             # Smart money signals
             if not stock.get("smart_money_signals"):

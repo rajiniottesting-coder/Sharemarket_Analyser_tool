@@ -114,12 +114,10 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
     else:
         o4_mask = pd.Series([False] * len(df), index=df.index)
 
-    # O5: Expiry — not analysed in 7+ days
-    days_col = "days_since_analysis"
-    if days_col in df.columns:
-        o5_mask = df[days_col].fillna(99).astype(int) >= 7
-    else:
-        o5_mask = pd.Series([False] * len(df), index=df.index)
+    # O5: Expiry — disabled: days_since_analysis is never populated
+    # so it would default to 99 for ALL stocks → 1914 overrides → alphabetical
+    # The real priority ranking below handles freshness via recency component
+    o5_mask = pd.Series([False] * len(df), index=df.index)
 
     override_mask = o1_mask | o2_mask | o3_mask | o4_mask | o5_mask
     override_df   = df[override_mask].copy()
@@ -137,9 +135,17 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
 
     override_final = df.loc[ordered_overrides].copy()
 
+    # Cap overrides at 20 (20%) to ensure 80 slots go to genuinely ranked stocks
+    MAX_OVERRIDES = 20
+    if len(override_final) > MAX_OVERRIDES:
+        override_final = override_final.head(MAX_OVERRIDES)
+
     # Fill remaining slots with ranked non-override stocks
+    # Include override stocks in the pool so ranking decides among all
     remaining_slots = max(0, 100 - len(override_final))
-    ranked_rest     = non_override.sort_values("priority_score", ascending=False)
+    ranked_rest = pd.concat(
+        [non_override, df[override_mask & ~df.index.isin(override_final.index)]]
+    ).sort_values("priority_score", ascending=False) if not non_override.empty else         df.sort_values("priority_score", ascending=False)
 
     top_100 = pd.concat(
         [override_final, ranked_rest.head(remaining_slots)],

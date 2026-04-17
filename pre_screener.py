@@ -50,8 +50,8 @@ def stage_1_filter(all_stocks: list) -> list:
                 dropped["circuit"] += 1
                 continue
 
-        # V4: Minimum price ≥ ₹2
-        if close_price < 2:
+        # V4: Minimum price ≥ ₹10
+        if close_price < 10:
             dropped["penny"] += 1
             continue
 
@@ -166,9 +166,9 @@ def stage_2_fundamental_scorer(df: pd.DataFrame) -> pd.DataFrame:
         if promoter > 25.0:
             score += 5
 
-        # F5: P/E < 80x OR P/E not applicable (0 = N/A for loss-making)
+        # F5: P/E < 80x (only score if PE data exists; absent PE = 0 pts)
         pe = float(row.get("pe", row.get("pe_ttm", 0)) or 0)
-        if pe == 0 or pe < 80:
+        if 0 < pe < 80:
             score += 5
 
         # F6: No active SEBI alert / fraud flag
@@ -177,7 +177,8 @@ def stage_2_fundamental_scorer(df: pd.DataFrame) -> pd.DataFrame:
             score += 5
 
         # ── REJECTION THRESHOLD ──────────────────────────────────────────────
-        if score < 10:
+        # Need at least 3 criteria (15 pts) to qualify
+        if score < 15:
             continue
 
         row_dict = row.to_dict()
