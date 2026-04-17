@@ -57,7 +57,8 @@ class FairValueEngine:
         models['M4_PB'] = round(_bvps4 * _sec_pb, 2) if _bvps4 > 0 else 0
 
         # M3: PE Mean Reversion — sector-appropriate benchmark PE
-        _sec_word = str(data.get('sector', '') or '').split()[0]
+        _sec_parts = str(data.get('sector', '') or '').split()
+        _sec_word = _sec_parts[0] if _sec_parts else ''
         _sec_pe_map = {
             "IT": 30, "Technology": 30, "Software": 28,
             "Banks": 18, "Banking": 18, "NBFC": 20, "Financial": 20,
