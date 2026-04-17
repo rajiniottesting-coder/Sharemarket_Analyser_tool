@@ -786,43 +786,63 @@ def run_master_pipeline():
                         return float(v) if v is not None else 0.0
                     except (ValueError, TypeError):
                         return 0.0
-                # Display fields (show "—" for zero — makes blanks obvious)
+                # ── Unit conversion helpers ──────────────────────────────────
+                # yfinance returns fractions for %, debtToEquity as ×100
+                def _pct(v):
+                    """Convert yfinance fraction to % (0.16 → 16.0)"""
+                    f = _fvn(v)
+                    if f == 0: return "—"
+                    return round(f * 100, 2) if abs(f) < 2.0 else round(f, 2)
+                def _ratio(v):
+                    """Convert yfinance debtToEquity (×100) to real ratio"""
+                    f = _fvn(v)
+                    if f == 0: return "—"
+                    return round(f / 100, 3) if abs(f) > 2.0 else round(f, 3)
+
+                # Profitability — fraction→% conversion
+                stock.setdefault("roe",          _pct(roe))
+                stock.setdefault("roce",         _fv(roce))
+                stock.setdefault("roa",          _pct(roa))
+                stock.setdefault("gross_margin", _pct(gm))
+                stock.setdefault("ebitda_margin",_pct(em))
+                stock.setdefault("npm",          _pct(nm))
+                # Forensics — no free source
                 stock.setdefault("piotroski_f",  _fv(pf))
                 stock.setdefault("altman_z",     _fv(az))
                 stock.setdefault("beneish_m",    _fv(bm))
-                stock.setdefault("roe",          _fv(roe))
-                stock.setdefault("roce",         _fv(roce))
-                stock.setdefault("roa",          _fv(roa))
-                stock.setdefault("gross_margin", _fv(gm))
-                stock.setdefault("ebitda_margin",_fv(em))
-                stock.setdefault("npm",          _fv(nm))
+                # Growth CAGRs — not available from yfinance
                 stock.setdefault("rev_cagr_1y",  _fv(rc1))
                 stock.setdefault("rev_cagr_3y",  _fv(rc3))
                 stock.setdefault("pat_cagr_1y",  _fv(pc1))
                 stock.setdefault("pat_cagr_3y",  _fv(pc3))
-                stock.setdefault("total_debt",   _fv(td))
-                stock.setdefault("fcf",          _fv(fcf))
+                stock.setdefault("rev_yoy",      _fv(0))
+                stock.setdefault("pat_yoy",      _fv(0))
+                # Financial Health — with unit fixes
+                stock.setdefault("debt_equity",  _ratio(de))  # yfinance ×100 → ratio
+                stock.setdefault("current_ratio",_fv(cr) if _fvn(cr) > 0 else "—")
+                stock.setdefault("quick_ratio",  _fv(qr_v) if _fvn(qr_v) > 0 else "—")
+                stock.setdefault("total_debt",   _fv(td) if _fvn(td) > 0 else "—")
+                stock.setdefault("cash",         _fv(cash_v) if _fvn(cash_v) > 0 else "—")
+                stock.setdefault("fcf",          _fv(fcf) if _fvn(fcf) != 0 else "—")
                 stock.setdefault("fcf_yield",    _fv(fcfy_v))
                 stock.setdefault("nd_ebitda",    _fv(nde))
                 stock.setdefault("int_coverage", _fv(ic))
-                stock.setdefault("ps",           _fv(ps_v))
-                stock.setdefault("ev_ebitda",    _fv(ev_v))
-                stock.setdefault("peg",          _fv(peg_v))
-                stock.setdefault("quick_ratio",  _fv(qr_v))
-                stock.setdefault("cash",         _fv(cash_v))
-                # Numeric fields (0 not "—" — safe for arithmetic)
+                # Valuation ratios — only show if yfinance returned a value
+                stock.setdefault("ps",           _fv(ps_v) if _fvn(ps_v) > 0 else "—")
+                stock.setdefault("ev_ebitda",    _fv(ev_v) if _fvn(ev_v) > 0 else "—")
+                stock.setdefault("peg",          _fv(peg_v) if _fvn(peg_v) > 0 else "—")
+                # P/CF: compute from FCF yield if available
+                _fy_pcf = _fvn(fcfy_v)
+                if _fy_pcf > 0:
+                    stock.setdefault("p_cf", round(100.0 / _fy_pcf, 1))
+                else:
+                    stock.setdefault("p_cf", "—")
+                # Numeric fields — 0 safe for arithmetic
                 stock.setdefault("pe",            _fvn(pe))
                 stock.setdefault("pb",            _fvn(pb))
                 stock.setdefault("earnings_yield",_fvn(ey))
                 stock.setdefault("earn_yield",    _fvn(ey))
                 stock.setdefault("div_yield",     _fvn(dy))
-                stock.setdefault("debt_equity",   _fvn(de))
-                stock.setdefault("current_ratio", _fvn(cr))
-                # Rev/PAT YoY from extra query (set after below)
-                # Extra yfinance fields from fundamental_metrics
-                # Rev/PAT YoY — from main SELECT values ry/py (0 if not in DB)
-                stock.setdefault("rev_yoy", _fv(0))
-                stock.setdefault("pat_yoy", _fv(0))
 
             # Enrich from shareholding
             if sym in _sh_map:

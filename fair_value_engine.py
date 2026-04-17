@@ -65,7 +65,35 @@ class FairValueEngine:
         # M7: PEG-Adjusted (Growth capped at 30%)
         adj_growth = min(growth_3yr, 30)
         models['M7_PEG'] = eps * adj_growth
-        
+
+        # M5: EV/EBITDA-based Fair Value
+        # EV FV = EBITDA × sector_median_EV_multiple / shares_proxy
+        # Use ps (P/S) and margins to derive: EV FV ≈ CMP × (sector_ev_mult / current_ev_ebitda)
+        ev_ebitda_curr = _sf(data.get('ev_ebitda', 0))
+        sector_ev_mult = {"IT": 20, "Banks": 12, "Pharma": 18, "FMCG": 30,
+                          "Auto": 10, "Metals": 6, "Energy": 8}.get(
+            str(data.get('sector','')).split()[0] if data.get('sector') else '', 15)
+        cmp_m5 = _sf(data.get('close', 0))
+        if ev_ebitda_curr > 0 and cmp_m5 > 0:
+            models['M5_EV'] = round(cmp_m5 * sector_ev_mult / ev_ebitda_curr, 2)
+        else:
+            models['M5_EV'] = 0
+
+        # M6: DDM (Dividend Discount Model)
+        # FV = DPS / (required_return - dividend_growth)
+        # For non-dividend stocks → use earnings yield as proxy
+        div_yield_pct = _sf(data.get('div_yield', 0))
+        if div_yield_pct > 0 and cmp_m5 > 0:
+            dps = cmp_m5 * div_yield_pct / 100
+            div_growth = min(growth_3yr / 200, 0.04)  # conservative: half of growth capped at 4%
+            req_return = (self.gsec + 4.0) / 100      # risk-free + equity premium
+            if req_return > div_growth:
+                models['M6_DDM'] = round(dps * (1 + div_growth) / (req_return - div_growth), 2)
+            else:
+                models['M6_DDM'] = 0
+        else:
+            models['M6_DDM'] = 0
+
         return models
 
     def get_composite_fair_value(self, models, sector, cmp):
@@ -92,8 +120,10 @@ class FairValueEngine:
         elif mos < -15: score_adj = -8
         
         return {
-            "cfv": round(cfv, 2),
-            "mos_pct": round(mos, 2),
+            "cfv":              round(cfv, 2),
+            "cfv_low":          round(cfv * 0.85, 2) if cfv > 0 else 0,  # bear case -15%
+            "cfv_high":         round(cfv * 1.15, 2) if cfv > 0 else 0,  # bull case +15%
+            "mos_pct":          round(mos, 2),
             "score_adjustment": score_adj,
-            "upside": round(((cfv - cmp) / cmp * 100), 2)
+            "upside":           round(((cfv - cmp) / cmp * 100), 2) if cmp > 0 else -100,
         }
