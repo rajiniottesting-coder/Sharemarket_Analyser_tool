@@ -315,6 +315,22 @@ GRP_COLORS = {
     "ANALYSIS SUMMARY":"0F172A",
 }
 
+# Columns permanently blank — no free data source available
+# These are highlighted with bold red headers so user knows at a glance
+NO_FREE_SOURCE_COLS = {
+    "Rev CAGR 1Y %","Rev CAGR 3Y %","PAT CAGR 1Y %","PAT CAGR 3Y %",
+    "EBITDA CAGR 1Y %","Q3 Rev (₹Cr)","Q3 PAT (₹Cr)","Q3 EBITDA (₹Cr)",
+    "ND/EBITDA","Int Coverage","CCC Days","Capex / Rev %",
+    "Pro QoQ Δ","Pledge %","Pledge Direction","DII %","DII QoQ Δ",
+    "FII QoQ Δ","Public Float %",
+    "Piotroski F /9","Altman Z","Beneish M","Earn Quality",
+    "OB/Bill Ratio","Pipeline Vis","L1 Wins 90D","L1 Est (₹Cr)","New Mkt Entry",
+    "Key Catalyst","News Sentiment","Primary Risk","SEBI Flags",
+    "NPM Q1 %","NPM Q2 %","NPM Q3 %","Margin Expansion",
+}
+# Needs Anthropic API credits — amber highlight
+NEEDS_AI_CREDITS = {"View Analysis Summary"}
+
 def _sf(val, default=0.0):
     if val is None or val == "" or str(val) in ("—", "--", "N/A"):
         return float(default)
@@ -448,24 +464,6 @@ class ExcelGeneratorV6:
                 _col_color[_ci] = _col
 
         ws.row_dimensions[4].height=40
-        # Columns permanently blank — no free data source available
-        # These are highlighted with red background so user knows at a glance
-        NO_FREE_SOURCE_COLS = {
-            "Rev CAGR 1Y %","Rev CAGR 3Y %","PAT CAGR 1Y %","PAT CAGR 3Y %",
-            "EBITDA CAGR 1Y %","Q3 Rev (₹Cr)","Q3 PAT (₹Cr)","Q3 EBITDA (₹Cr)",
-            "ND/EBITDA","Int Coverage","CCC Days","Capex / Rev %",
-            "Pro QoQ Δ","Pledge %","Pledge Direction","DII %","DII QoQ Δ",
-            "FII QoQ Δ","Public Float %",
-            "Piotroski F /9","Altman Z","Beneish M","Earn Quality",
-            "OB/Bill Ratio","Pipeline Vis","L1 Wins 90D","L1 Est (₹Cr)","New Mkt Entry",
-            "Key Catalyst","News Sentiment","Primary Risk","SEBI Flags",
-            "NPM Q1 %","NPM Q2 %","NPM Q3 %","Margin Expansion",
-        }
-        # Needs Anthropic API credits — amber highlight
-        NEEDS_AI_CREDITS = {
-            "View Analysis Summary",
-        }
-
         for i,(h,w,_) in enumerate(FULL_COLS,1):
             ws.column_dimensions[get_column_letter(i)].width=w
             hdr_bg = _col_color.get(i, NAVY)
