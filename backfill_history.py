@@ -1362,23 +1362,21 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
         roe = round(eps * pe / (pb * cmp), 2) if pb > 0 and cmp > 0 and pe > 0 else 0
 
         fm_rows.append({
-            "symbol":       sym, "date": today_str2,
-            "pe_ttm":       pe,  "pb":   pb,
-            "earn_yield":   ey,  "div_yield": d.get("div_yield", 0),
+            "symbol":       sym,   "date":         today_str2,
+            "pe_ttm":       pe,    "pb":            pb,
+            "earn_yield":   ey,
             "roe":          d.get("roe", 0),
             "roa":          d.get("roa", 0),
             "gross_margin": d.get("gross_margin", 0),
             "ebitda_margin":d.get("ebitda_margin", 0),
             "net_margin":   d.get("net_margin", 0),
-            "debt_equity":  d.get("debt_equity", 0),
+            "de_ratio":     d.get("debt_equity", 0),   # DB col = de_ratio
             "current_ratio":d.get("current_ratio", 0),
             "quick_ratio":  d.get("quick_ratio", 0),
-            "rev_yoy":      d.get("rev_yoy", 0),
-            "pat_yoy":      d.get("pat_yoy", 0),
             "total_debt_cr":d.get("total_debt", 0),
             "cash_cr":      d.get("total_cash", 0),
             "fcf_cr":       d.get("fcf", 0),
-            "payout_ratio": d.get("payout_ratio", 0),
+            "fcf_yield":    round(d.get("fcf",0)/d.get("mcap_cr",1)*100,2) if d.get("mcap_cr",0)>0 else 0,
             "ps":           d.get("ps", 0),
             "ev_ebitda":    d.get("ev_ebitda", 0),
             "peg":          d.get("peg", 0),

@@ -484,15 +484,55 @@ def run_master_pipeline():
                 _sec_ret, _nft_ret, _fii_flow
             )
 
-            # Section 4: Balance Sheet Health
+            # Section 4: Balance Sheet Health — fed with yfinance data
             from bs_engine import BalanceSheetEngine
+            _debt_bs  = _sf(stock.get("total_debt", stock.get("total_debt_cr", 0)), 0)
+            _cash_bs  = _sf(stock.get("cash", stock.get("cash_cr", 0)), 0)
+            _de_bs    = _sf(stock.get("debt_equity", 0), 0)
+            _cr_bs    = _sf(stock.get("current_ratio", 0), 0)
+            _fcf_bs   = _sf(stock.get("fcf", stock.get("fcf_cr", 0)), 0)
+            _roe_bs   = _sf(stock.get("roe", 0), 0)
+            _pb_bs    = _sf(stock.get("pb", 0), 0)
+            _cmp_bs   = _sf(stock.get("close", 0), 0)
+            _nw_bs    = round(_cmp_bs / _pb_bs, 2) if _pb_bs > 0 and _cmp_bs > 0 else 1
+
+            current_bs_dict = {
+                "total_debt":             _debt_bs,
+                "cash_equivalents":       _cash_bs,
+                "networth":               max(_nw_bs, 1),
+                "roe":                    _roe_bs,
+                "dio": 0, "dso": 0, "cwip": 0, "net_block": 1,
+                "goodwill": 0, "contingent_liabilities": 0,
+                "st_borrowings":  _debt_bs * 0.4 if _de_bs > 1.5 else 0,
+                "lt_borrowings":  _debt_bs * 0.6 if _debt_bs > 0 else 0,
+                "cfo_pat_2q_low": _fcf_bs < 0,
+            }
             hist_q = historical_map.get(sym) or {}
-            bs_report = BalanceSheetEngine().analyze_bs_health(stock, hist_q)
-            stock["bs_status"] = bs_report.get("status", "HEALTHY")
-            _flags = bs_report.get("flags", [])
-            stock["bs_flags"]  = ", ".join(_flags) if _flags else "No red flags detected"
-            stock["bs_output"] = bs_report.get("output_line", "") or                                  (f"BS: {stock['bs_status']} — " +
-                                  (", ".join(_flags) if _flags else "No concerns"))
+            bs_report = BalanceSheetEngine().analyze_bs_health(current_bs_dict, hist_q)
+
+            # Add quick yfinance-driven flags
+            _extra_flags = []
+            if _de_bs > 2.0:       _extra_flags.append(f"HIGH D/E {round(_de_bs,1)}x")
+            if 0 < _cr_bs < 1.0:   _extra_flags.append(f"LOW LIQUIDITY {round(_cr_bs,2)}")
+            if _fcf_bs < 0:        _extra_flags.append("NEGATIVE FCF")
+            if _debt_bs > 0 and _cash_bs > 0:
+                _cov = _cash_bs / _debt_bs
+                if _cov < 0.1:     _extra_flags.append(f"LOW CASH COVER {round(_cov,2)}x")
+
+            _all_flags = bs_report.get("flags", []) + _extra_flags
+            _status    = bs_report.get("status", "HEALTHY")
+            if _extra_flags and _status == "HEALTHY": _status = "WATCH"
+
+            _cover_s = f"{round(_cash_bs/_debt_bs,2)}x" if _debt_bs > 0 else "N/A"
+            _de_s    = f"D/E {round(_de_bs,1)}x" if _de_bs > 0 else ""
+            stock["bs_status"] = _status
+            stock["bs_flags"]  = ", ".join(_all_flags) if _all_flags else "No red flags detected"
+            stock["bs_output"] = (
+                f"BS:{_status} | Cash ₹{int(_cash_bs)}Cr vs Debt ₹{int(_debt_bs)}Cr"
+                f" | Cover {_cover_s} | FCF:{'↓' if _fcf_bs < 0 else '↑'}"
+                + (f" | {_de_s}" if _de_s else "")
+                + (f" | {', '.join(_all_flags)}" if _all_flags else " | No flags")
+            )
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 4B: NSE FUNDAMENTALS REFRESH (before DB enrichment reads)
@@ -536,13 +576,19 @@ def run_master_pipeline():
             _fm_map = {}
             try:
                 _fm_rows = _conn.execute(
-                    f"""SELECT fm.symbol, fm.pe_ttm, fm.pb, fm.earn_yield,
-                        fm.div_yield, fm.piotroski_f, fm.altman_z, fm.beneish_m,
-                        fm.roe, fm.roce, fm.roa, fm.gross_margin, fm.ebitda_margin,
-                        fm.net_margin, fm.debt_equity, fm.current_ratio,
-                        fm.rev_cagr_1y, fm.rev_cagr_3y, fm.pat_cagr_1y, fm.pat_cagr_3y,
-                        fm.rev_yoy, fm.pat_yoy, fm.total_debt_cr, fm.fcf_cr,
-                        fm.nd_ebitda, fm.int_coverage
+                    f"""SELECT fm.symbol,
+                        fm.pe_ttm, fm.pb, fm.earn_yield,
+                        0 as div_yield,
+                        0 as piotroski_f, 0 as altman_z, 0 as beneish_m,
+                        fm.roe, fm.roce, fm.roa,
+                        fm.gross_margin, fm.ebitda_margin, fm.net_margin,
+                        fm.de_ratio, fm.current_ratio,
+                        0 as rev_cagr_1y, 0 as rev_cagr_3y,
+                        0 as pat_cagr_1y, 0 as pat_cagr_3y,
+                        fm.total_debt_cr, fm.fcf_cr,
+                        fm.nd_ebitda, fm.int_coverage,
+                        fm.ps, fm.ev_ebitda, fm.peg,
+                        fm.quick_ratio, fm.cash_cr, fm.fcf_yield
                         FROM fundamental_metrics fm
                         INNER JOIN (
                             SELECT symbol, MAX(date) as md FROM fundamental_metrics
@@ -725,8 +771,10 @@ def run_master_pipeline():
 
             # Enrich from fundamental_metrics
             if sym in _fm_map:
-                _fmv = list(_fm_map[sym]) + [0]*26
-                pe,pb,ey,dy,pf,az,bm,roe,roce,roa,gm,em,nm,de,cr,rc1,rc3,pc1,pc3,ry,py,td,fcf,nde,ic = _fmv[:25]
+                _fmv = list(_fm_map[sym]) + [0]*35
+                # Cols: pe,pb,ey,dy(0),pf(0),az(0),bm(0),roe,roce,roa,gm,em,nm,
+                #       de,cr,rc1(0),rc3(0),pc1(0),pc3(0),td,fcf,nde,ic,ps,ev,peg,qr,cash,fcfy
+                pe,pb,ey,dy,pf,az,bm,roe,roce,roa,gm,em,nm,de,cr,rc1,rc3,pc1,pc3,td,fcf,nde,ic,ps_v,ev_v,peg_v,qr_v,cash_v,fcfy_v = _fmv[:29] + [0]*(29-min(len(_fmv),29))
                 def _fv(v):
                     try:
                         f = float(v) if v is not None else 0.0
@@ -738,7 +786,7 @@ def run_master_pipeline():
                         return float(v) if v is not None else 0.0
                     except (ValueError, TypeError):
                         return 0.0
-                # Display fields: _fv shows "—" for zero
+                # Display fields (show "—" for zero — makes blanks obvious)
                 stock.setdefault("piotroski_f",  _fv(pf))
                 stock.setdefault("altman_z",     _fv(az))
                 stock.setdefault("beneish_m",    _fv(bm))
@@ -752,13 +800,17 @@ def run_master_pipeline():
                 stock.setdefault("rev_cagr_3y",  _fv(rc3))
                 stock.setdefault("pat_cagr_1y",  _fv(pc1))
                 stock.setdefault("pat_cagr_3y",  _fv(pc3))
-                stock.setdefault("rev_yoy",      _fv(ry))
-                stock.setdefault("pat_yoy",      _fv(py))
                 stock.setdefault("total_debt",   _fv(td))
                 stock.setdefault("fcf",          _fv(fcf))
+                stock.setdefault("fcf_yield",    _fv(fcfy_v))
                 stock.setdefault("nd_ebitda",    _fv(nde))
                 stock.setdefault("int_coverage", _fv(ic))
-                # Numeric fields: _fvn returns 0 for safe arithmetic
+                stock.setdefault("ps",           _fv(ps_v))
+                stock.setdefault("ev_ebitda",    _fv(ev_v))
+                stock.setdefault("peg",          _fv(peg_v))
+                stock.setdefault("quick_ratio",  _fv(qr_v))
+                stock.setdefault("cash",         _fv(cash_v))
+                # Numeric fields (0 not "—" — safe for arithmetic)
                 stock.setdefault("pe",            _fvn(pe))
                 stock.setdefault("pb",            _fvn(pb))
                 stock.setdefault("earnings_yield",_fvn(ey))
@@ -766,29 +818,11 @@ def run_master_pipeline():
                 stock.setdefault("div_yield",     _fvn(dy))
                 stock.setdefault("debt_equity",   _fvn(de))
                 stock.setdefault("current_ratio", _fvn(cr))
+                # Rev/PAT YoY from extra query (set after below)
                 # Extra yfinance fields from fundamental_metrics
-                try:
-                    _conn_e = _sq.connect(_db)
-                    _efm = _conn_e.execute(
-                        "SELECT quick_ratio,gross_margin,ebitda_margin,net_margin,"
-                        "rev_yoy,pat_yoy,total_debt_cr,cash_cr,fcf_cr,"
-                        "payout_ratio,ps,ev_ebitda,peg "
-                        "FROM fundamental_metrics WHERE symbol=? ORDER BY date DESC LIMIT 1",
-                        (sym,)
-                    ).fetchone()
-                    _conn_e.close()
-                    if _efm:
-                        _qr,_gm2,_em2,_nm2,_ry2,_py2,_td2,_cash,_fcf2,_pr,_ps,_ev,_peg = _efm
-                        for _k,_v in [("quick_ratio",_qr),("gross_margin",_gm2),
-                                      ("ebitda_margin",_em2),("npm",_nm2),
-                                      ("rev_yoy",_ry2),("pat_yoy",_py2),
-                                      ("total_debt",_td2),("cash",_cash),
-                                      ("fcf",_fcf2),("payout_ratio",_pr),
-                                      ("ps",_ps),("ev_ebitda",_ev),("peg",_peg)]:
-                            if not stock.get(_k) or stock[_k]=="—":
-                                stock[_k] = _fv(_v)
-                except Exception:
-                    pass
+                # Rev/PAT YoY — from main SELECT values ry/py (0 if not in DB)
+                stock.setdefault("rev_yoy", _fv(0))
+                stock.setdefault("pat_yoy", _fv(0))
 
             # Enrich from shareholding
             if sym in _sh_map:
