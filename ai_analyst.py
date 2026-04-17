@@ -113,7 +113,17 @@ def get_ai_analysis(stock_list_df) -> str:
         "(2) Analysis Summary (Block H: 150–250 words, absolute facts, recent events)."
     )
 
+    credit_exhausted = False   # flag to abort all batches on credit error
+
     for idx, batch in enumerate(batches):
+        # Skip remaining batches if credits exhausted
+        if credit_exhausted:
+            all_investor_cards.append(
+                f"[Batch {idx + 1} skipped — Anthropic credits exhausted. "
+                f"Top up at console.anthropic.com/settings/billing]"
+            )
+            continue
+
         print(f"🤖 Processing batch {idx + 1}/{total_batches} "
               f"({len(batch)} stocks)...")
 
@@ -123,31 +133,52 @@ def get_ai_analysis(stock_list_df) -> str:
             f"DATA BATCH {idx + 1}/{total_batches}:\n{stock_data_text}"
         )
 
-        # Try once, retry once on failure
-        for attempt in range(2):
-            try:
-                response = client.messages.create(
-                    model="claude-sonnet-4-5",
-                    max_tokens=4096,
-                    system=master_prompt,
-                    messages=[{"role": "user", "content": user_message}],
+        # Try once; NO retry on credit errors (pointless — credits won't refill mid-run)
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=4096,
+                system=master_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            card_text = response.content[0].text
+            all_investor_cards.append(card_text)
+            print(f"   ✅ Batch {idx + 1} complete.")
+            # Section 0D: Rate limiting — 2s between successful batches
+            if idx < total_batches - 1:
+                time.sleep(2)
+        except Exception as e:
+            err_str = str(e)
+            # Detect credit exhaustion — no point retrying
+            if "credit balance is too low" in err_str or "insufficient_balance" in err_str:
+                credit_exhausted = True
+                print(f"   ⚠️  Anthropic credits exhausted — skipping all remaining batches.")
+                print(f"      Top up at: https://console.anthropic.com/settings/billing")
+                all_investor_cards.append(
+                    f"[AI analysis unavailable — Anthropic credit balance too low. "
+                    f"Please top up at console.anthropic.com/settings/billing. "
+                    f"All other Excel data is complete and accurate.]"
                 )
-                card_text = response.content[0].text
-                all_investor_cards.append(card_text)
-                print(f"   ✅ Batch {idx + 1} complete.")
-                break
-            except Exception as e:
-                if attempt == 0:
-                    print(f"   ⚠️  Batch {idx + 1} attempt 1 failed: {e}. Retrying in 10s...")
-                    time.sleep(10)
-                else:
-                    print(f"   ❌ Batch {idx + 1} failed after retry: {e}")
-                    all_investor_cards.append(
-                        f"[Batch {idx + 1} analysis unavailable due to API error: {e}]"
+            else:
+                # Non-credit error — retry once
+                print(f"   ⚠️  Batch {idx + 1} attempt 1 failed: {e}. Retrying in 5s...")
+                time.sleep(5)
+                try:
+                    response = client.messages.create(
+                        model="claude-sonnet-4-5",
+                        max_tokens=4096,
+                        system=master_prompt,
+                        messages=[{"role": "user", "content": user_message}],
                     )
-
-        # Section 0D: Rate limiting — 2s between batches
-        if idx < total_batches - 1:
-            time.sleep(2)
+                    card_text = response.content[0].text
+                    all_investor_cards.append(card_text)
+                    print(f"   ✅ Batch {idx + 1} complete (retry).")
+                    if idx < total_batches - 1:
+                        time.sleep(2)
+                except Exception as e2:
+                    print(f"   ❌ Batch {idx + 1} failed after retry: {e2}")
+                    all_investor_cards.append(
+                        f"[Batch {idx + 1} analysis unavailable: {e2}]"
+                    )
 
     return "\n\n".join(all_investor_cards)

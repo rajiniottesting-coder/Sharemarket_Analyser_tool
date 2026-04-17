@@ -1228,8 +1228,13 @@ def run_master_pipeline():
         }
 
         # Section 10: Excel Dashboard
+        if not final_100_list:
+            print("❌ CRITICAL: final_100_list is empty — cannot generate Excel.")
+            raise ValueError("final_100_list empty at Excel generation — check Stage 2/3 logs.")
+        print(f"   📊 Generating Excel for {len(final_100_list)} stocks...")
         excel_gen = ExcelGeneratorV6(final_100_list, date_str)
         master_file, gold_file = excel_gen.generate_excel_reports()
+        print(f"   ✅ Excel saved: {master_file}")
 
         # Section 9: Daily Research Report (text)
         report_txt = DailyReportGenerator(
