@@ -190,6 +190,15 @@ GRP_COLORS = {
 }
 
 def _f(h): return PatternFill("solid", fgColor=h)
+
+# Thin border on all 4 sides — used for header rows and data cells
+_THIN = Side(style="thin", color="FFFFFF")       # white border between same-section cols
+_SECT = Side(style="medium", color="FFFFFF")      # medium white border between sections
+_BDR  = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
+_BDR_SECT = Border(left=_SECT, right=_SECT, top=_THIN, bottom=_THIN)
+
+def _border(is_section_edge=False):
+    return _BDR_SECT if is_section_edge else _BDR
 def _ft(bold=False,color=NAVY,size=9,italic=False):
     return Font(bold=bold,color=color,size=size,italic=italic,name="Calibri")
 def _al(h="center",v="center",wrap=False):
@@ -235,10 +244,11 @@ class ExcelGeneratorV6:
         """Generates a single Excel file with all 6 sheets.
         Sheet 2 (Gold – Early Movers) is embedded inside the Full Dashboard file.
         No separate Gold file is produced — avoids duplication.
-        Returns (master_file, master_file) so callers get the same path twice.
+        Returns (master_file, None) — None is filtered out by master_funnel
+        so the xlsx appears only once in the email attachment list.
         """
         master = self._full()
-        return master, master
+        return master, None
 
     def _full(self):
         wb=Workbook(); wb.active.title="📊 Full Dashboard"
@@ -273,6 +283,7 @@ class ExcelGeneratorV6:
             ec=sc+sp-1
             if sp>1: ws.merge_cells(start_row=3,start_column=sc,end_row=3,end_column=ec)
             c=ws.cell(3,sc,nm); c.fill=_f(col); c.font=_ft(True,WHITE,8); c.alignment=_al()
+            c.border=_border(is_section_edge=True)
         # R4 headers
         # Build col→group_color map so each header cell matches its section
         _col_color = {}
@@ -287,6 +298,7 @@ class ExcelGeneratorV6:
             # Slightly lighter shade for header vs group bar — use 15% lighter
             c=ws.cell(4,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
             c.alignment=_al("center","center",True)
+            c.border=_border()
         ws.freeze_panes="A5"
         ws.auto_filter.ref=f"A4:{get_column_letter(N)}4"
         # Data
@@ -302,6 +314,12 @@ class ExcelGeneratorV6:
                 cell=ws.cell(rn,ci,val); cell.fill=_f(ubg); cell.font=_ft(False,tx,9)
                 wrap_cols={2,3,7,28,94,96,112,120,122,124}
                 cell.alignment=_al("left" if ci in wrap_cols else "center","center",wrap=(ci==N))
+                cell.border=Border(
+                    left=Side(style="thin",color="E2E8F0"),
+                    right=Side(style="thin",color="E2E8F0"),
+                    top=Side(style="thin",color="E2E8F0"),
+                    bottom=Side(style="thin",color="E2E8F0")
+                )
         # Cond format weekly changes
         lr=4+len(stks)
         if lr>4:
@@ -357,6 +375,7 @@ class ExcelGeneratorV6:
             ws.column_dimensions[get_column_letter(i)].width=w
             hdr_bg = _gcol_color.get(i, "92400E")
             c=ws.cell(5,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
+            c.border=_border()
             c.alignment=_al("center","center",True)
         ws.freeze_panes="A6"
         ws.auto_filter.ref=f"A5:{get_column_letter(N)}5"
@@ -369,6 +388,12 @@ class ExcelGeneratorV6:
                 val=_g(stk,key); cell=ws.cell(rn,ci,val)
                 cell.fill=_f(bg); cell.font=_ft(False,tx,9)
                 cell.alignment=_al("left" if ci in {2,3,N} else "center","center",wrap=(ci==N))
+                cell.border=Border(
+                    left=Side(style="thin",color="E2E8F0"),
+                    right=Side(style="thin",color="E2E8F0"),
+                    top=Side(style="thin",color="E2E8F0"),
+                    bottom=Side(style="thin",color="E2E8F0")
+                )
 
     def _trade_summary(self,wb):
         ws=wb.create_sheet("📊 Trade Summary"); ws.sheet_properties.tabColor="059669"
