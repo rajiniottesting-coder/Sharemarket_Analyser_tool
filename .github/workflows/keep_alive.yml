@@ -1,0 +1,89 @@
+name: Keep Workflows Active
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PURPOSE: Prevents GitHub's 60-day inactivity auto-disable from ever killing
+#          the NSE_BSE_Daily_Pipeline schedule.
+#
+# HOW:  1. Runs TWICE a week (Wednesday + Sunday) — double redundancy.
+#          Even if one run fails, the other fires within 4 days, keeping
+#          the repo "active" and well inside the 60-day window.
+#       2. Makes a real git commit every run so GitHub sees activity.
+#       3. Uses the GitHub API to explicitly RE-ENABLE the market pipeline
+#          workflow if it somehow got disabled.
+#       4. Fails loudly — no silent error swallowing.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '0 10 * * 3'   # Wednesday 10:00 UTC
+    - cron: '0 10 * * 0'   # Sunday    10:00 UTC
+  workflow_dispatch:         # Manual trigger always available
+
+permissions:
+  contents: write   # needed to push the keep-alive commit
+  actions:  write   # needed to re-enable disabled workflows via API
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Use the default GITHUB_TOKEN — has push access to the repo
+          token: ${{ github.token }}
+
+      - name: Commit keep-alive timestamp
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          TIMESTAMP="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          echo "Last keep-alive: $TIMESTAMP" > .github/last_active.txt
+
+          git add .github/last_active.txt
+          git diff --staged --quiet && echo "No changes to commit" && exit 0
+
+          git commit -m "chore: keep-alive ping [$TIMESTAMP]"
+          git push
+          echo "✅ Keep-alive commit pushed successfully"
+
+      - name: Re-enable NSE_BSE_Daily_Pipeline if disabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+        run: |
+          WORKFLOW="market_run.yml"
+
+          # Get current workflow state via GitHub API
+          STATE=$(gh api \
+            "repos/${REPO}/actions/workflows/${WORKFLOW}" \
+            --jq '.state' 2>/dev/null || echo "unknown")
+
+          echo "market_run.yml current state: $STATE"
+
+          if [ "$STATE" = "disabled_inactivity" ] || [ "$STATE" = "disabled_manually" ]; then
+            echo "⚠️  Pipeline is DISABLED — re-enabling now..."
+            gh api \
+              --method PUT \
+              "repos/${REPO}/actions/workflows/${WORKFLOW}/enable"
+            echo "✅ market_run.yml re-enabled successfully"
+          else
+            echo "✅ market_run.yml is active (state: $STATE) — no action needed"
+          fi
+
+      - name: Verify pipeline is scheduled correctly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+        run: |
+          STATE=$(gh api \
+            "repos/${REPO}/actions/workflows/market_run.yml" \
+            --jq '.state' 2>/dev/null || echo "unknown")
+
+          if [ "$STATE" != "active" ]; then
+            echo "❌ ALERT: market_run.yml state is '$STATE' after re-enable attempt"
+            exit 1
+          fi
+          echo "✅ Confirmed: market_run.yml is ACTIVE and will run on schedule"
