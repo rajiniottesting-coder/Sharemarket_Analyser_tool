@@ -1249,6 +1249,13 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                         "debt_equity":   _yf("debtToEquity"),
                         "current_ratio": _yf("currentRatio"),
                         "quick_ratio":   _yf("quickRatio"),
+                        # Compute CR/QR from balance sheet items when direct values missing
+                        "_cr_computed":  round(
+                            float(info.get("totalCurrentAssets") or 0) /
+                            max(float(info.get("totalCurrentLiabilities") or 1), 1), 3
+                        ) if (info.get("totalCurrentAssets") and
+                              info.get("totalCurrentLiabilities") and
+                              float(info.get("totalCurrentLiabilities") or 0) > 0) else 0,
                         "gross_margin":  _yf("grossMargins", m=100),
                         "ebitda_margin": _yf("ebitdaMargins", m=100),
                         "net_margin":    _yf("profitMargins", m=100),
@@ -1385,7 +1392,8 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             "ebitda_margin":d.get("ebitda_margin", 0),
             "net_margin":   d.get("net_margin", 0),
             "de_ratio":     d.get("debt_equity", 0),    # DB col = de_ratio
-            "current_ratio":d.get("current_ratio", 0),
+            # Use direct currentRatio if available, else compute from assets/liabilities
+            "current_ratio":d.get("current_ratio", 0) or d.get("_cr_computed", 0),
             "quick_ratio":  d.get("quick_ratio", 0),
             "total_debt_cr":d.get("total_debt", 0),
             "cash_cr":      d.get("total_cash", 0),

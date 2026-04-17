@@ -1037,7 +1037,7 @@ def run_master_pipeline():
                     _dy_pct = round(_dy_raw * 100, 4)   # 0.0224 → 2.24%
                 else:
                     _dy_pct = round(_dy_raw, 4)          # 2.24 already %
-                stock.setdefault("div_yield", _dy_pct)
+                stock["div_yield"] = _dy_pct   # direct assignment: always normalise
                 stock.setdefault("payout_ratio",  _fv(payout_v) if _fvn(payout_v) > 0 else "—")
 
             # Enrich from shareholding

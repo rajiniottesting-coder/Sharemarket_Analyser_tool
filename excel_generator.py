@@ -335,7 +335,7 @@ GLOSSARY_DATA = [
      "Bull-case fair value = CFV × 1.15. "
      "If CMP > FV High, stock is overvalued even optimistically.","Full Dashboard"),
     ("FAIR VALUE","Upside to FV %",
-     "= (CFV − CMP) / CMP × 100. % gain if CMP reaches fair value. "
+     "(CFV − CMP) / CMP × 100. % gain if CMP reaches fair value. "
      "Positive = upside potential | Negative = downside risk. Same formula as MoS%.","All sheets"),
     ("FAIR VALUE","MoS Label",
      "Text label for MoS %: "
@@ -746,6 +746,10 @@ class ExcelGeneratorV6:
         ws.freeze_panes="A5"
         ws.auto_filter.ref=f"A4:{get_column_letter(N)}4"
         # Data
+        # FV model keys that show "—" when value is 0 (model not applicable)
+        FV_MODEL_KEYS = {"M1_DCF","M2_Graham","M3_PE","M4_PB","M5_EV","M6_DDM","M7_PEG",
+                         "cfv","cfv_low","cfv_high"}
+
         stks=self.df.to_dict("records")
         for ri,stk in enumerate(stks):
             rn=ri+5; ws.row_dimensions[rn].height=20
@@ -755,6 +759,9 @@ class ExcelGeneratorV6:
             ubg=bg if ri%2==0 else _alt(bg)
             for ci,(_,_,key) in enumerate(FULL_COLS,1):
                 val=_g(stk,key)
+                # FV models: 0 means "not applicable" → show "—" not 0
+                if key in FV_MODEL_KEYS and (val == 0 or val == 0.0):
+                    val = "—"
                 cell=ws.cell(rn,ci,val); cell.fill=_f(ubg); cell.font=_ft(False,tx,9)
                 wrap_cols={2,3,7,28,94,96,112,120,122,124}
                 cell.alignment=_al("left" if ci in wrap_cols else "center","center",wrap=(ci==N))
@@ -1013,8 +1020,8 @@ class ExcelGeneratorV6:
             bg=LG if ri%2==0 else WHITE
             gc=GRP_COLORS.get(grp,"475569")
             c=ws.cell(ri,2,grp); c.fill=_f(gc); c.font=_ft(True,WHITE,9); c.alignment=_al()
-            c=ws.cell(ri,3,short); c.fill=_f(bg); c.font=_ft(True,NAVY,9); c.alignment=_al("left","center")
-            c=ws.cell(ri,4,desc);  c.fill=_f(bg); c.font=_ft(False,"475569",9); c.alignment=_al("left","center",True)
+            c=ws.cell(ri,3,str(short) if short else ""); c.fill=_f(bg); c.font=_ft(True,NAVY,9); c.alignment=_al("left","center"); c.data_type="s"
+            c=ws.cell(ri,4,str(desc) if desc else "");  c.fill=_f(bg); c.font=_ft(False,"475569",9); c.alignment=_al("left","center",True); c.data_type="s"
             c=ws.cell(ri,5,where); c.fill=_f(bg); c.font=_ft(False,NAVY,9);    c.alignment=_al()
 
     def _get_gold(self):
