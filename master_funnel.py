@@ -963,35 +963,59 @@ def run_master_pipeline():
                 # Valuation ratios — only show if yfinance returned a value
                 stock.setdefault("ps",           _fv(ps_v) if _fvn(ps_v) > 0 else "—")
                 stock.setdefault("ev_ebitda",    _fv(ev_v) if _fvn(ev_v) > 0 else "—")
-                # PEG from yfinance pegRatio, OR compute from PE / pat_yoy if missing
-                _peg_raw = _fvn(peg_v)
-                if _peg_raw > 0:
+                # PEG Ratio — 4-tier fallback for maximum coverage
+                _peg_raw  = _fvn(peg_v)
+                _pe_v     = _fvn(pe)
+                _pat_g    = _fvn(pat_yoy_v)   # PAT YoY % from earningsGrowth
+                _rev_g    = _fvn(rev_yoy_v)   # Rev YoY % from revenueGrowth
+                # Tier 1: direct yfinance pegRatio
+                if _peg_raw > 0 and _peg_raw < 100:
                     stock.setdefault("peg", round(_peg_raw, 2))
-                else:
-                    # Compute: PEG = PE / (pat_yoy %) — use pat_yoy as growth proxy
-                    _pe_raw2  = _fvn(pe)
-                    _growth_r = _fvn(rc3) if _fvn(rc3) > 0 else _fvn(pc3)
-                    # pat_yoy from yfinance earningsGrowth (already ×100 in DB)
-                    # but rc3/pc3 are always 0 (no free source), use pat_yoy
-                    # pat_yoy_v now available — compute PEG directly
-                    _pe_val = _fvn(pe)
-                    _g_val  = _fvn(pat_yoy_v)  # earningsGrowth ×100 from DB
-                    if _pe_val > 0 and _g_val > 0:
-                        stock.setdefault("peg", round(_pe_val / _g_val, 2))
+                # Tier 2: PE / PAT growth
+                elif _pe_v > 0 and _pat_g > 0:
+                    stock.setdefault("peg", round(_pe_v / _pat_g, 2))
+                # Tier 3: PE / Rev growth (proxy when PAT growth unavailable)
+                elif _pe_v > 0 and _rev_g > 0:
+                    stock.setdefault("peg", round(_pe_v / _rev_g, 2))
+                # Tier 4: PE / sustainable growth rate (ROE × retention ratio)
+                # g = ROE × (1 - payout_ratio/100) — standard Gordon growth
+                elif _pe_v > 0:
+                    _roe_for_peg = _fvn(stock.get("roe_num", 0)) or                                    (_fvn(ey) * _fvn(pb) if _fvn(ey)>0 and _fvn(pb)>0 else 0)
+                    _pay_for_peg = _fvn(payout_v)
+                    if _roe_for_peg > 0:
+                        _ret  = 1 - min(_pay_for_peg / 100, 0.9)  # retention ratio
+                        _g_sg = _roe_for_peg * _ret               # sustainable growth %
+                        if _g_sg > 0:
+                            stock.setdefault("peg", round(_pe_v / _g_sg, 2))
+                        else:
+                            stock.setdefault("peg", "—")
                     else:
                         stock.setdefault("peg", "—")
-                # P/CF: MCap / Cash Flow (operating CF preferred over FCF)
+                else:
+                    stock.setdefault("peg", "—")
+                # P/CF: 4-tier fallback for maximum coverage
                 _fy_pcf   = _fvn(fcfy_v)
                 _fcf_raw  = _fvn(fcf)
                 _opcf_raw = _fvn(op_cf_v)
                 _mcap_v   = _fvn(stock.get("mcap_cr", 0))
+                _ps_pcf   = _fvn(ps_v)
+                _em_pcf   = _fvn(em)                        # EBITDA margin (fraction)
+                _em_pct_pcf = _em_pcf*100 if 0<_em_pcf<2 else _em_pcf
+                # Tier 1: FCF yield (most precise)
                 if _fy_pcf > 0:
                     stock.setdefault("p_cf", round(100.0 / _fy_pcf, 1))
+                # Tier 2: MCap / Operating CF (standard)
                 elif _opcf_raw > 0 and _mcap_v > 0:
-                    # P/CF = MCap / Operating CF (standard definition)
                     stock.setdefault("p_cf", round(_mcap_v / _opcf_raw, 1))
+                # Tier 3: MCap / FCF
                 elif _fcf_raw > 0 and _mcap_v > 0:
                     stock.setdefault("p_cf", round(_mcap_v / _fcf_raw, 1))
+                # Tier 4: P/S ÷ EBITDA_margin (derived proxy)
+                # P/CF ≈ (MCap/Revenue) / EBITDA_margin = P/S / em
+                # Valid because Operating CF ≈ Revenue × EBITDA_margin for most businesses
+                elif _ps_pcf > 0 and _em_pct_pcf > 3:
+                    _pcf_derived = round(_ps_pcf / (_em_pct_pcf / 100), 1)
+                    stock.setdefault("p_cf", _pcf_derived if 1 < _pcf_derived < 500 else "—")
                 else:
                     stock.setdefault("p_cf", "—")
                 # Numeric fields — 0 safe for arithmetic

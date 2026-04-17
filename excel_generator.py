@@ -303,6 +303,271 @@ GLOSSARY_DATA = [
      "MEDIUM = mid cap or slight premium or moderate debt | "
      "HIGH = small/micro cap or negative MoS or high D/E or high beta","Trade Summary"),
     ("ANALYSIS SUMMARY","View Analysis Summary","150–250 word AI note with exact ₹ figures, catalysts, risks","All sheets"),
+
+    # ── IDENTITY ──────────────────────────────────────────────────────────────
+    ("IDENTITY","Company Name","Full registered company name on NSE/BSE","All sheets"),
+    ("IDENTITY","Sector",
+     "Sector classified by NSE/BSE/yfinance. Used for sector-median PE and sector rotation stage. "
+     "Examples: Information Technology, Financial Services, Automobiles, Pharmaceuticals, Energy","All sheets"),
+
+    # ── PRICE & MARKET ────────────────────────────────────────────────────────
+    ("PRICE & MARKET","CMP",
+     "Current Market Price — closing price from today's bhav copy (NSE/BSE). "
+     "All valuations and ratios are computed using this price.","All sheets"),
+    ("PRICE & MARKET","Day Chg %",
+     "Price change % today vs yesterday's close. "
+     ">2% with high delivery = strong buying signal | <-2% = watch for panic or news","All sheets"),
+    ("PRICE & MARKET","52W High",
+     "Highest closing price in the past 52 weeks. "
+     "CMP within 10% of 52W High = stock near peak, caution. CMP near 52W Low = potential value opportunity.","Full Dashboard"),
+    ("PRICE & MARKET","52W Low",
+     "Lowest closing price in the past 52 weeks. "
+     "CMP at 52W Low with good fundamentals = potential deep value entry.","Full Dashboard"),
+
+    # ── FAIR VALUE ────────────────────────────────────────────────────────────
+    ("FAIR VALUE","CFV (₹)",
+     "Composite Fair Value — sector-weighted average of all 7 models (M1–M7) that return a valid value. "
+     "CFV > CMP = undervalued. CFV < CMP = overvalued.","All sheets"),
+    ("FAIR VALUE","FV Low (₹)",
+     "Bear-case fair value = CFV × 0.85 (15% margin of safety buffer). "
+     "If CMP < FV Low, stock is deeply undervalued even in a pessimistic scenario.","Full Dashboard"),
+    ("FAIR VALUE","FV High (₹)",
+     "Bull-case fair value = CFV × 1.15. "
+     "If CMP > FV High, stock is overvalued even optimistically.","Full Dashboard"),
+    ("FAIR VALUE","Upside to FV %",
+     "= (CFV − CMP) / CMP × 100. % gain if CMP reaches fair value. "
+     "Positive = upside potential | Negative = downside risk. Same formula as MoS%.","All sheets"),
+    ("FAIR VALUE","MoS Label",
+     "Text label for MoS %: "
+     "EXCEPTIONAL VALUE (>40%) | STRONG VALUE (>25%) | GOOD VALUE (>10%) | "
+     "FAIR VALUE (0–10%) | SLIGHT PREMIUM (0 to -15%) | OVERVALUED (-15% to -30%) | "
+     "SIGNIFICANTLY OVERVALUED (<-30%)","All sheets"),
+    ("FAIR VALUE","M1: DCF FV (₹)","3-Stage Discounted Cash Flow. WACC = 10Y GSec + Beta×5.5%. Terminal growth 4.5%. Best for steady compounders.","Full Dashboard"),
+    ("FAIR VALUE","M2: Graham FV (₹)","Graham Number = √(22.5 × EPS × BVPS). Benjamin Graham's intrinsic value formula. Best for value stocks with positive EPS.","Full Dashboard"),
+    ("FAIR VALUE","M3: PE FV (₹)","EPS × Sector 5yr median P/E. Mean-reversion model — assumes P/E reverts to sector norm.","Full Dashboard"),
+    ("FAIR VALUE","M4: PB FV (₹)","BVPS × Sector median Price/Book. Best for asset-heavy sectors: banks, metals, real estate.","Full Dashboard"),
+    ("FAIR VALUE","M5: EV FV (₹)","CMP × (Sector median EV/EBITDA ÷ Stock EV/EBITDA). Best for capital-intensive businesses.","Full Dashboard"),
+    ("FAIR VALUE","M6: DDM FV (₹)",
+     "Gordon Growth Model = DPS×(1+g)/(r−g). "
+     "Only shown for dividend-paying stocks (yield 0.1%–15%). "
+     "DPS = CMP × Div Yield. r = GSec + 4.5%. g = min(PAT growth/2, 6%).","Full Dashboard"),
+    ("FAIR VALUE","M7: PEG FV (₹)","EPS × EPS Growth Rate. PEG=1 baseline. Best for high-growth stocks where PE alone overstates expensiveness.","Full Dashboard"),
+
+    # ── VALUATION ─────────────────────────────────────────────────────────────
+    ("VALUATION","P/B",
+     "Price ÷ Book Value per Share. "
+     "<1 = trading below book (possible deep value or value trap) | "
+     "1–2 = reasonable (banks, metals) | 2–5 = premium (justified if ROE>15%) | "
+     ">5 = high (asset-light compounders only)","All sheets"),
+    ("VALUATION","P/S",
+     "Price-to-Sales = MCap ÷ Annual Revenue. "
+     "<1 = very cheap (cyclicals, PSUs) | 1–3 = reasonable | 3–8 = premium | "
+     ">8 = expensive (only for high-margin businesses)","Full Dashboard"),
+    ("VALUATION","P/CF",
+     "Price-to-Cash Flow = MCap ÷ Operating Cash Flow. "
+     "Better than P/E as cash flow is harder to manipulate. "
+     "<10 = cheap | 10–20 = fair | 20–35 = premium | >35 = expensive. "
+     "Derived as P/S ÷ EBITDA margin when direct cash flow data unavailable.","Full Dashboard"),
+    ("VALUATION","EV/EBITDA",
+     "Enterprise Value ÷ EBITDA. Ignores capital structure — better for comparing levered vs unlevered firms. "
+     "<8 = cheap | 8–15 = fair | 15–25 = premium | >25 = expensive","Full Dashboard"),
+
+    # ── PROFITABILITY ─────────────────────────────────────────────────────────
+    ("PROFITABILITY","ROCE %",
+     "Return on Capital Employed = EBIT ÷ Capital Employed × 100. "
+     "Measures how efficiently the company uses ALL capital (debt + equity). "
+     ">20% = excellent | 15–20% = good | 10–15% = average | <10% = poor. "
+     "Derived from EBITDA margin × Revenue / Capital Employed when direct data unavailable.","Full Dashboard"),
+    ("PROFITABILITY","ROA %",
+     "Return on Assets = Net Income ÷ Total Assets × 100. "
+     ">10% = excellent | 5–10% = good | <5% = poor. "
+     "Derived as ROE ÷ (1 + D/E) when direct data unavailable.","Full Dashboard"),
+    ("PROFITABILITY","Gross Mgn %",
+     "Gross Profit ÷ Revenue × 100. Revenue minus direct costs (raw materials, COGS). "
+     ">50% = high-margin business (software, pharma) | >30% = good | <15% = commodity/trading","Full Dashboard"),
+    ("PROFITABILITY","EBITDA Mgn %",
+     "EBITDA ÷ Revenue × 100. Operating profitability before interest, tax, depreciation. "
+     ">25% = excellent | 15–25% = good | 8–15% = average | <8% = tight","Full Dashboard"),
+    ("PROFITABILITY","NPM %",
+     "Net Profit Margin = Net Income ÷ Revenue × 100. Bottom-line profitability after everything. "
+     ">15% = excellent | 8–15% = good | 3–8% = average | <3% = thin (watch for debt servicing risk)","Full Dashboard"),
+    ("PROFITABILITY","NPM Q1 %","Net Profit Margin in Q1 (Apr–Jun). Compare 3 quarters for Margin Expansion trend.","Full Dashboard"),
+    ("PROFITABILITY","NPM Q2 %","Net Profit Margin in Q2 (Jul–Sep). Rising NPM Q1→Q2→Q3 = Margin Expansion flag.","Full Dashboard"),
+    ("PROFITABILITY","NPM Q3 %","Net Profit Margin in Q3 (Oct–Dec). No free data source — requires BSE quarterly filings.","Full Dashboard"),
+    ("PROFITABILITY","Margin Expansion",
+     "YES = NPM has risen for 3 consecutive quarters (Q1→Q2→Q3). "
+     "Strong signal of operational leverage or pricing power. No free data source.","Full Dashboard"),
+
+    # ── GROWTH ────────────────────────────────────────────────────────────────
+    ("GROWTH","Rev CAGR 3Y %","Revenue Compound Annual Growth Rate over 3 years. >15% = fast growing. No free source — requires multi-year financials.","Full Dashboard"),
+    ("GROWTH","PAT CAGR 3Y %","Profit After Tax CAGR over 3 years. >15% = quality compounder. No free source.","Full Dashboard"),
+    ("GROWTH","EBITDA CAGR 1Y %","EBITDA growth year-over-year. No free source — requires quarterly filings.","Full Dashboard"),
+    ("GROWTH","Rev YoY %",
+     "Revenue growth year-over-year (%) from yfinance revenueGrowth. "
+     ">20% = fast growth | 10–20% = good | 0–10% = stable | <0% = shrinking","Full Dashboard"),
+    ("GROWTH","Q3 Rev (₹Cr)","Revenue in Q3 (Oct–Dec) in ₹ Crore. No free data source.","Full Dashboard"),
+    ("GROWTH","Q3 PAT (₹Cr)","Net Profit in Q3 in ₹ Crore. No free data source.","Full Dashboard"),
+    ("GROWTH","Q3 EBITDA (₹Cr)","EBITDA in Q3 in ₹ Crore. No free data source.","Full Dashboard"),
+
+    # ── FIN HEALTH ────────────────────────────────────────────────────────────
+    ("FIN HEALTH","ND/EBITDA",
+     "Net Debt ÷ EBITDA. How many years of earnings needed to repay net debt. "
+     "<1× = very safe | 1–2× = manageable | 2–3× = stretched | >3× = high leverage. "
+     "No free source — requires balance sheet detail.","Full Dashboard"),
+    ("FIN HEALTH","Int Coverage",
+     "EBIT ÷ Interest Expense. How many times earnings cover interest payments. "
+     ">5× = safe | 3–5× = adequate | 1.5–3× = risky | <1.5× = danger. "
+     "No free source — requires income statement detail.","Full Dashboard"),
+    ("FIN HEALTH","Cash (₹Cr)",
+     "Total cash and equivalents in ₹ Crore. "
+     "High cash vs debt = fortress balance sheet. "
+     "Cash > Total Debt = net cash company (very safe, often undervalued).","Full Dashboard"),
+    ("FIN HEALTH","Total Debt (₹Cr)",
+     "Total financial debt (short + long term) in ₹ Crore. "
+     "0 = zero-debt company. Derived as D/E × Book Equity when direct data unavailable. "
+     "Compare with Cash to get Net Debt.","Full Dashboard"),
+    ("FIN HEALTH","FCF Yield %",
+     "Free Cash Flow ÷ MCap × 100. How much FCF you get per ₹ invested. "
+     ">5% = very good | 3–5% = good | 1–3% = modest | <1% = poor. "
+     "Often proxy-computed from Operating Cash Flow when FCF not available.","Full Dashboard"),
+    ("FIN HEALTH","CCC Days",
+     "Cash Conversion Cycle = DIO + DSO − DPO. Days to convert inventory investment into cash. "
+     "Lower = better. <30 days = excellent. No free source — requires AR/AP/inventory data.","Full Dashboard"),
+
+    # ── CAP ALLOC ─────────────────────────────────────────────────────────────
+    ("CAP ALLOC","Div Yield %",
+     "Annual dividend ÷ CMP × 100. Income return on investment. "
+     ">4% = high yield (income stock) | 1–4% = moderate | 0–1% = growth-focused | "
+     "0% = no dividend (all profits reinvested). Normalised from yfinance fractions.","All sheets"),
+    ("CAP ALLOC","Payout Ratio %",
+     "Dividends ÷ Net Profit × 100. Percentage of earnings paid as dividends. "
+     "<30% = growth company (retains earnings) | 30–60% = balanced | "
+     ">70% = high payout (mature/PSU/FMCG). >100% = paying from reserves (unsustainable).","Full Dashboard"),
+    ("CAP ALLOC","Capex / Rev %",
+     "Capital Expenditure ÷ Revenue × 100. Reinvestment intensity. "
+     ">15% = capital-heavy (infra, steel, telecom) | 3–15% = moderate | "
+     "<3% = asset-light (IT, FMCG). No free source — requires cash flow statement.","Full Dashboard"),
+
+    # ── SHAREHOLDING ──────────────────────────────────────────────────────────
+    ("SHAREHOLDING","Pro QoQ Δ",
+     "Promoter holding change quarter-over-quarter (%). "
+     "Increasing = promoters buying → bullish signal. "
+     "Decreasing = promoters selling → investigate reason. No free source (BSE filings only).","Full Dashboard"),
+    ("SHAREHOLDING","Pledge Direction",
+     "Direction of pledge change: INCREASING / DECREASING / STABLE. "
+     "INCREASING pledge is a red flag — promoters may be under financial stress.","Full Dashboard"),
+    ("SHAREHOLDING","DII %",
+     "Domestic Institutional Investor holding %. "
+     "DII (mutual funds, insurance) rising = domestic smart money accumulating. "
+     "Cannot be separated from FII in yfinance — shown as combined institutional %.","Full Dashboard"),
+    ("SHAREHOLDING","DII QoQ Δ","DII holding change quarter-over-quarter. No free source.","Full Dashboard"),
+    ("SHAREHOLDING","FII QoQ Δ","FII holding change quarter-over-quarter. No free source.","Full Dashboard"),
+    ("SHAREHOLDING","Public Float %",
+     "% of shares held by retail/public (100% − Promoter% − Institutional%). "
+     "Higher float = more liquid, lower impact cost for large orders.","Full Dashboard"),
+
+    # ── QUALITY SCORES ────────────────────────────────────────────────────────
+    ("QUALITY SCORES","Earn Quality",
+     "Qualitative assessment: HIGH / MEDIUM / LOW. "
+     "Checks if earnings are backed by cash flow (FCF/PAT ratio). "
+     "LOW = earnings not converting to cash (red flag for manipulation).","Full Dashboard"),
+
+    # ── PIPELINE / OB ─────────────────────────────────────────────────────────
+    ("PIPELINE / OB","Pipeline Vis",
+     "Pipeline Visibility: HIGH / MEDIUM / LOW / NONE. "
+     "For defence, infra, capital goods stocks — is the revenue pipeline visible for next 12–24 months?","Full Dashboard"),
+    ("PIPELINE / OB","L1 Wins 90D",
+     "Number of L1 (lowest bid) wins in government tenders in the last 90 days. "
+     "Only relevant for defence, EPC, infra companies. Source: CPP portal / BSE announcements.","Full Dashboard"),
+    ("PIPELINE / OB","L1 Est (₹Cr)",
+     "Estimated value of L1 wins in ₹ Crore over last 90 days. "
+     "Compare with annual revenue for order-book visibility.","Full Dashboard"),
+    ("PIPELINE / OB","New Mkt Entry",
+     "Has the company announced entry into a new market/geography/product in the last quarter? "
+     "YES = potential re-rating catalyst.","Full Dashboard"),
+
+    # ── EARLY DETECTION ───────────────────────────────────────────────────────
+    ("EARLY DETECTION","Early Signals",
+     "Pipe-separated list of active early-mover triggers detected. "
+     "Examples: INSTITUTIONAL FOOTPRINT | VOL SURGE + RSI ACCUMULATION | TREND CONFLUENCE | "
+     "MOMENTUM BUILDING | DUAL-LISTED DISCOVERY","Full Dashboard"),
+    ("EARLY DETECTION","Smart Money",
+     "ACCUMULATION = FII+DII buying trend detected (3Q rising) | "
+     "DISTRIBUTION = Institutional selling | NEUTRAL = no clear trend. "
+     "Signals smart money positioning ahead of price move.","Full Dashboard"),
+
+    # ── TECHNICAL ─────────────────────────────────────────────────────────────
+    ("TECHNICAL","Stoch %K",
+     "Stochastic Oscillator %K — momentum indicator comparing closing price to price range. "
+     "<20 = Oversold (potential reversal up) | 20–40 = Bearish zone | "
+     "40–60 = Neutral | 60–80 = Bullish zone | >80 = Overbought (potential reversal down). "
+     "Best signal: %K crossing above 20 from below = buy; crossing below 80 from above = sell.","Full Dashboard"),
+    ("TECHNICAL","MFI",
+     "Money Flow Index — volume-weighted RSI. Uses both price AND volume. "
+     "<20 = Oversold (strong reversal signal, especially with rising volume) | "
+     ">80 = Overbought | 40–60 = Neutral. "
+     "MFI divergence from price = early warning of trend reversal.","Full Dashboard"),
+    ("TECHNICAL","Chart Pattern",
+     "Most recent chart pattern detected: "
+     "BULLISH CANDLE / BEARISH CANDLE / DOJI (indecision) / "
+     "HAMMER (bullish reversal) / SHOOTING STAR (bearish reversal) / "
+     "ENGULFING BULLISH / ENGULFING BEARISH. "
+     "Candlestick patterns are more reliable when they occur near key support/resistance levels.","Full Dashboard"),
+    ("TECHNICAL","Support 1 (₹)",
+     "Nearest support level below CMP — price where buying is historically strong. "
+     "Stop loss should be placed slightly below Support 1.","Full Dashboard"),
+    ("TECHNICAL","Support 2 (₹)",
+     "Second support level — deeper pullback zone. "
+     "If price breaks Support 1 with volume, next target is Support 2.","Full Dashboard"),
+    ("TECHNICAL","Resist 1 (₹)",
+     "Nearest resistance level above CMP — price where selling pressure is historically strong. "
+     "Target 1 is typically set at Resist 1.","Full Dashboard"),
+    ("TECHNICAL","Resist 2 (₹)",
+     "Second resistance level. Target 2 / Target 3 set at Resist 2.","Full Dashboard"),
+
+    # ── BALANCE SHEET ─────────────────────────────────────────────────────────
+    ("BALANCE SHEET","BS Health Note",
+     "Detailed note explaining BS Health Flag. "
+     "Examples: 'No red flags detected' | 'High D/E 2.1x — monitor debt serviceability' | "
+     "'Pledge 23% — elevated risk'","Full Dashboard"),
+
+    # ── TRADE PLAN ────────────────────────────────────────────────────────────
+    ("TRADE PLAN","Entry Range (₹)",
+     "Suggested entry price band: Low–High in ₹. "
+     "Based on CMP ± 1.5% to account for intraday spread. "
+     "Use limit orders within this range for best execution.","All sheets"),
+    ("TRADE PLAN","Stop Loss (₹)",
+     "Mandatory stop loss price. Exit the trade if CMP closes below this on a daily basis. "
+     "Set at ~3–5% below entry, or just below key support level. "
+     "ALWAYS place stop loss before entering any trade.","All sheets"),
+    ("TRADE PLAN","Target 1 (₹)",
+     "First price target = nearest resistance level. "
+     "Book 40–50% of position at T1. Let rest run with trailing stop.","All sheets"),
+    ("TRADE PLAN","Target 2 (₹)",
+     "Second price target = next resistance zone. "
+     "Book another 30% at T2. Trail stop to entry cost.","All sheets"),
+    ("TRADE PLAN","Target 3 (₹)",
+     "Final price target = CFV (Composite Fair Value). "
+     "Hold remaining 20–30% position for full re-rating. "
+     "Only applicable for BUY stocks with positive MoS.","All sheets"),
+
+    # ── NEWS & RISK ───────────────────────────────────────────────────────────
+    ("NEWS & RISK","Key Catalyst",
+     "Primary upcoming event that could trigger price re-rating. "
+     "Examples: order win, product launch, QIP, promoter buyback, index inclusion. "
+     "Requires Anthropic API credits — populated by AI analyst.","Full Dashboard"),
+    ("NEWS & RISK","News Sentiment",
+     "AI-assessed recent news tone: BULLISH / NEUTRAL / BEARISH. "
+     "Based on last 30 days of BSE announcements and news. "
+     "Requires Anthropic API credits.","Full Dashboard"),
+    ("NEWS & RISK","Primary Risk",
+     "The single most important risk factor for this stock right now. "
+     "Examples: regulatory overhang, promoter pledge, client concentration, commodity exposure. "
+     "Requires Anthropic API credits.","Full Dashboard"),
+    ("NEWS & RISK","SEBI Flags",
+     "Any active SEBI actions, adjudication orders, or exchange surveillance flags. "
+     "NONE = clean | Any other value = investigate before investing. "
+     "Requires Anthropic API credits.","Full Dashboard"),
 ]
 
 GRP_COLORS = {
