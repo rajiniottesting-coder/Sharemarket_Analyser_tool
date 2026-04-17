@@ -1105,6 +1105,16 @@ def run_master_pipeline():
                 if pe > 0 and cmp > 0:
                     stock["eps"] = round(cmp / pe, 2)
 
+            # ── Failsafe: normalise div_yield right before FV engine call ──
+            # Ensures correct % regardless of which path set stock["div_yield"]
+            # Handles all DB formats: fraction (0.022), % (2.2), bad unit (220)
+            _dy_pre = float(stock.get("div_yield", 0) or 0)
+            if _dy_pre > 25:
+                stock["div_yield"] = round(_dy_pre / 100, 4)   # 220 → 2.2%
+            elif 0 < _dy_pre < 1.0:
+                stock["div_yield"] = round(_dy_pre * 100, 4)   # 0.022 → 2.2%
+            # else: already correct (0 = no dividend, 1-25 = valid %)
+
             models    = fv_engine.calculate_all_models(stock, beta, growth_3yr)
             fv_result = fv_engine.get_composite_fair_value(
                 models, _sf(stock.get("close", 1), 1)
