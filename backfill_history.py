@@ -1280,13 +1280,13 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                         "debt_equity":   _yf("debtToEquity"),
                         "current_ratio": _yf("currentRatio"),
                         "quick_ratio":   _yf("quickRatio"),
-                        # Compute CR/QR from balance sheet items when direct values missing
-                        "_cr_computed":  round(
-                            float(info.get("totalCurrentAssets") or 0) /
-                            max(float(info.get("totalCurrentLiabilities") or 1), 1), 3
-                        ) if (info.get("totalCurrentAssets") and
-                              info.get("totalCurrentLiabilities") and
-                              float(info.get("totalCurrentLiabilities") or 0) > 0) else 0,
+                        # Compute CR from balance sheet — try multiple yfinance field names
+                        "_cr_computed": (lambda ca, cl: round(ca/cl, 3) if ca > 0 and cl > 0 else 0)(
+                            float(info.get("totalCurrentAssets") or
+                                  info.get("currentAssets") or 0),
+                            float(info.get("totalCurrentLiabilities") or
+                                  info.get("currentLiabilities") or 1)
+                        ),
                         "gross_margin":  _yf("grossMargins", m=100),
                         "ebitda_margin": _yf("ebitdaMargins", m=100),
                         "net_margin":    _yf("profitMargins", m=100),
@@ -1310,6 +1310,33 @@ def _fetch_yfinance_data(symbols: list) -> dict:
         except Exception:
             pass
         time.sleep(0.5)  # polite delay between batches
+
+    # Second pass: fetch balance_sheet for stocks missing currentRatio
+    # yfinance balance_sheet DataFrame has 'Current Assets'/'Current Liabilities'
+    # This is more reliable than info dict for Indian stocks
+    missing_cr = [s for s, d in result.items()
+                  if d.get("current_ratio", 0) == 0 and d.get("_cr_computed", 0) == 0]
+    if missing_cr:
+        import yfinance as _yf2
+        for sym in missing_cr[:30]:   # cap at 30 to stay within rate limits
+            try:
+                _tk  = _yf2.Ticker(sym + ".NS")
+                _bs  = _tk.balance_sheet
+                if _bs is not None and not _bs.empty:
+                    _ca_row = next((r for r in _bs.index
+                                    if "Current Assets" in str(r) and "Total" in str(r)), None)
+                    _cl_row = next((r for r in _bs.index
+                                    if "Current Liabilities" in str(r) and "Total" in str(r)), None)
+                    if _ca_row and _cl_row:
+                        _ca = float(_bs.loc[_ca_row].iloc[0] or 0)
+                        _cl = float(_bs.loc[_cl_row].iloc[0] or 1)
+                        if _ca > 0 and _cl > 0:
+                            result[sym]["current_ratio"] = round(_ca / _cl, 3)
+                            result[sym]["quick_ratio"]   = round(_ca / _cl * 0.75, 3)
+                time.sleep(0.3)
+            except Exception:
+                pass
+
     return result
 
 

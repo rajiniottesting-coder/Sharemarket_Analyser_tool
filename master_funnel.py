@@ -1052,8 +1052,8 @@ def run_master_pipeline():
                 _dy_raw = _fvn(dy)
                 if _dy_raw <= 0:
                     _dy_pct = 0.0
-                elif _dy_raw > 25:
-                    _dy_pct = round(_dy_raw / 100, 4)   # 224 → 2.24%
+                elif _dy_raw > 12:
+                    _dy_pct = round(_dy_raw / 100, 4)   # 22→0.22%, 224→2.24%
                 elif _dy_raw < 1.0:
                     _dy_pct = round(_dy_raw * 100, 4)   # 0.0224 → 2.24%
                 else:
@@ -1130,7 +1130,7 @@ def run_master_pipeline():
             # Ensures correct % regardless of which path set stock["div_yield"]
             # Handles all DB formats: fraction (0.022), % (2.2), bad unit (220)
             _dy_pre = float(stock.get("div_yield", 0) or 0)
-            if _dy_pre > 25:
+            if _dy_pre > 12:
                 stock["div_yield"] = round(_dy_pre / 100, 4)   # 220 → 2.2%
             elif 0 < _dy_pre < 1.0:
                 stock["div_yield"] = round(_dy_pre * 100, 4)   # 0.022 → 2.2%
