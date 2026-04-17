@@ -529,6 +529,27 @@ def run_master_pipeline():
         import sqlite3 as _sq
         _db = "market_data.db"
         _date_str = target_date.strftime("%Y-%m-%d")
+        # Ensure new DB columns exist (idempotent — safe to run every time)
+        try:
+            import sqlite3 as _sq_mig
+            _mc = _sq_mig.connect(_db)
+            _existing_cols = {r[1] for r in _mc.execute(
+                "PRAGMA table_info(fundamental_metrics)").fetchall()}
+            for _col, _typedef in [
+                ("operating_cf_cr","REAL DEFAULT 0"),
+                ("curr_assets_cr", "REAL DEFAULT 0"),
+                ("curr_liab_cr",   "REAL DEFAULT 0"),
+                ("div_yield",      "REAL DEFAULT 0"),
+                ("payout_ratio",   "REAL DEFAULT 0"),
+                ("rev_yoy",        "REAL DEFAULT 0"),
+                ("pat_yoy",        "REAL DEFAULT 0"),
+            ]:
+                if _col not in _existing_cols:
+                    _mc.execute(
+                        f"ALTER TABLE fundamental_metrics ADD COLUMN {_col} {_typedef}")
+            _mc.commit(); _mc.close()
+        except Exception:
+            pass
 
         # Bulk-load technical indicators for all 100 symbols in one query
         _syms = [s.get("symbol","") for s in final_100_list]

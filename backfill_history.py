@@ -374,6 +374,36 @@ def init_all_tables(conn):
 # SECTION 2 — NSE DOWNLOADERS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+def migrate_db(conn):
+    """
+    Add any missing columns to existing DB tables.
+    Safe to run on every startup — skips columns that already exist.
+    SQLite CREATE TABLE only runs once when DB is first created, so new
+    columns added to the schema definition never reach old DBs without this.
+    """
+    # New columns added to fundamental_metrics that old DBs may not have
+    new_cols = [
+        ("operating_cf_cr",  "REAL DEFAULT 0"),
+        ("curr_assets_cr",   "REAL DEFAULT 0"),
+        ("curr_liab_cr",     "REAL DEFAULT 0"),
+        ("div_yield",        "REAL DEFAULT 0"),
+        ("payout_ratio",     "REAL DEFAULT 0"),
+        ("rev_yoy",          "REAL DEFAULT 0"),
+        ("pat_yoy",          "REAL DEFAULT 0"),
+    ]
+    existing = {r[1] for r in conn.execute(
+        "PRAGMA table_info(fundamental_metrics)").fetchall()}
+    for col, typedef in new_cols:
+        if col not in existing:
+            try:
+                conn.execute(
+                    f"ALTER TABLE fundamental_metrics ADD COLUMN {col} {typedef}")
+                print(f"   ✅ DB migration: added fundamental_metrics.{col}")
+            except Exception as e:
+                print(f"   ⚠️  Migration {col}: {e}")
+    conn.commit()
+
 def _nse_session():
     s = requests.Session()
     try:
@@ -865,6 +895,7 @@ def run_backfill():
 
     conn = sqlite3.connect(DB_NAME)
     init_all_tables(conn)
+    migrate_db(conn)   # add any new columns to existing DB
 
     today  = datetime.datetime.now(IST).date()
     stats  = dict(nse_ok=0, nse_fail=0, bse_ok=0, bse_fail=0,
