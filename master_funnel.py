@@ -1114,6 +1114,29 @@ def run_master_pipeline():
                 stock["resist_1"]   = round(float(r1), 2) if r1 else 0
                 stock["resist_2"]   = round(float(r2), 2) if r2 else 0
 
+            # ── Sector Stage: recomputed HERE after RSI/MACD/Supertrend loaded ──
+            _rsi_rs2  = _sf(stock.get("rsi",   50), 50)
+            _macd_rs2 = str(stock.get("macd_signal", "NEUTRAL")).upper()
+            _st_rs2   = str(stock.get("supertrend",  "NEUTRAL")).upper()
+            _sec_ret2 = _sf(stock.get("4w_chg", 0), 0)
+            _2w_ret2  = _sf(stock.get("2w_chg", 0), 0)
+            _del_rs2  = _sf(stock.get("delivery_pct", 0), 0)
+            _vol_rs2  = _sf(stock.get("vol_ratio", 1.0), 1.0)
+            if _rsi_rs2 > 70 and _sec_ret2 > 5:
+                stock["rotation_stage"] = "STAGE 3 — MOMENTUM PEAK"
+            elif _rsi_rs2 > 70 and "SELL" in _macd_rs2:
+                stock["rotation_stage"] = "STAGE 4 — DISTRIBUTION"
+            elif _sec_ret2 < -3 and _rsi_rs2 < 45:
+                stock["rotation_stage"] = "STAGE 4 — DISTRIBUTION"
+            elif "BUY" in _st_rs2 and "BUY" in _macd_rs2 and _sec_ret2 > 2:
+                stock["rotation_stage"] = "STAGE 2 — CONFIRMED UPTREND"
+            elif 40 < _rsi_rs2 <= 58 and "BUY" in _macd_rs2 and _2w_ret2 > _sec_ret2:
+                stock["rotation_stage"] = "STAGE 1 — EARLY ACCUMULATION"
+            elif _del_rs2 >= 65 and _vol_rs2 >= 1.8 and _rsi_rs2 < 60:
+                stock["rotation_stage"] = "STAGE 1 — EARLY ACCUMULATION"
+            else:
+                stock["rotation_stage"] = "NEUTRAL"
+
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 5B: FAIR VALUE ENGINE
         # ─────────────────────────────────────────────────────────────────────
@@ -1404,6 +1427,44 @@ def run_master_pipeline():
                     stock["bs_flags"]  = " | ".join(_note) if _note else "No red flags detected"
             except Exception:
                 pass   # keep existing bs_status/bs_flags from first pass
+
+            # ── Time Horizon: based on verdict + technicals + spike ────────────
+            _verd_tr  = str(stock.get("verdict", "WATCHLIST"))
+            _spike_tr = int(stock.get("spike_count", 0) or 0)
+            _st_tr    = str(stock.get("supertrend",  "NEUTRAL")).upper()
+            _macd_tr  = str(stock.get("macd_signal", "NEUTRAL")).upper()
+            _score_tr = _sf(stock.get("composite_score", 0), 0)
+            if _verd_tr == "BUY" and _spike_tr >= 2:
+                stock["horizon"] = "SHORT TERM"
+            elif _verd_tr == "BUY" and "BUY" in _st_tr and "BUY" in _macd_tr:
+                stock["horizon"] = "POSITIONAL"
+            elif _verd_tr == "BUY" and _score_tr >= 68:
+                stock["horizon"] = "POSITIONAL"
+            elif _verd_tr == "BUY":
+                stock["horizon"] = "LONG TERM"
+            elif _verd_tr == "WATCHLIST":
+                stock["horizon"] = "POSITIONAL"
+            else:
+                stock["horizon"] = "LONG TERM"
+
+            # ── Risk Level: based on cap + D/E + beta + pledge + BS status ─────
+            _cap_tr    = str(stock.get("cap_category", "")).upper()
+            _beta_tr   = _sf(stock.get("beta", 1.0), 1.0)
+            _de_tr     = _sf(stock.get("de_ratio_num", stock.get("debt_equity", 0)), 0)
+            _bs_tr     = str(stock.get("bs_status", "HEALTHY"))
+            _pledge_tr = _sf(stock.get("pledge_pct", 0), 0)
+            _is_large  = "LARGE" in _cap_tr
+            _is_small  = "SMALL" in _cap_tr or "MICRO" in _cap_tr
+            if _bs_tr == "ALERT" or _pledge_tr > 20 or (_de_tr > 2.5 and _is_small):
+                stock["risk_level"] = "HIGH"
+            elif _is_large and _de_tr < 0.5 and _beta_tr < 0.9:
+                stock["risk_level"] = "LOW"
+            elif _is_large and _de_tr < 1.0 and _beta_tr < 1.2:
+                stock["risk_level"] = "LOW"
+            elif _is_small or _de_tr > 1.5 or _beta_tr > 1.5:
+                stock["risk_level"] = "HIGH"
+            else:
+                stock["risk_level"] = "MEDIUM"
 
             # Composite score + verdict
             score_result = scoring.calculate_composite_score(stock)

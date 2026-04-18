@@ -730,9 +730,16 @@ def compute_technicals(hist):
     atr14   = tr.rolling(14).mean()
     st_up   = ((h + l) / 2) + 3 * atr14
     st_lo   = ((h + l) / 2) - 3 * atr14
-    supertr = pd.Series('NEUTRAL', index=c.index)
-    supertr[c > st_up.shift()] = 'BUY'
-    supertr[c < st_lo.shift()] = 'SELL'
+    # Supertrend signal: price vs SMA20 + ATR14 threshold
+    # BUY  when close > SMA20 + 0.5*ATR14  (price trending above average)
+    # SELL when close < SMA20 - 0.5*ATR14  (price trending below average)
+    # NEUTRAL otherwise (consolidation)
+    sma20_st   = c.rolling(20).mean()
+    supertr    = pd.Series('NEUTRAL', index=c.index)
+    _buy_mask  = c > (sma20_st + 0.5 * atr14)
+    _sell_mask = c < (sma20_st - 0.5 * atr14)
+    supertr[_buy_mask]  = 'BUY'
+    supertr[_sell_mask] = 'SELL'
     sup1    = l.rolling(20).min()
     sup2    = l.rolling(40).min()
     res1    = h.rolling(20).max()
