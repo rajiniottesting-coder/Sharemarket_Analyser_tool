@@ -424,18 +424,30 @@ def run_master_pipeline():
             stock.setdefault("early_mover_badge", "")
             stock.setdefault("early_label", "EMERGING")
 
-            # Section 3L: Sector Rotation Stage — use 4w_chg + FII trend
-            _sec_ret   = _sf(stock.get("4w_chg", 0), 0)
-            _nft_ret   = 0.0
-            _rsi_val   = _sf(stock.get("rsi", 50), 50)
-            _fii_trend = str(stock.get("fii_3q_trend", "NEUTRAL"))
-            if   _fii_trend == "UP"   and _rsi_val > 55: _fii_flow = "turning_positive"
-            elif _fii_trend == "UP":                      _fii_flow = "positive"
-            elif _sec_ret < -2.0:                         _fii_flow = "decreasing"
-            else:                                         _fii_flow = "neutral"
-            stock["rotation_stage"] = rotation.calculate_rotation_stage(
-                _sec_ret, _nft_ret, _fii_flow
-            )
+            # Section 3L: Sector Rotation Stage — derived from technical signals
+            # Uses RSI + MACD + Supertrend + 4w_chg (all reliably populated)
+            _sec_ret  = _sf(stock.get("4w_chg", 0), 0)
+            _2w_ret   = _sf(stock.get("2w_chg", 0), 0)
+            _rsi_rs   = _sf(stock.get("rsi", 50), 50)
+            _macd_rs  = str(stock.get("macd_signal", "NEUTRAL")).upper()
+            _st_rs    = str(stock.get("supertrend", "NEUTRAL")).upper()
+            _del_rs   = _sf(stock.get("delivery_pct", 0), 0)
+            _vol_rs   = _sf(stock.get("vol_ratio", 1.0), 1.0)
+            if _rsi_rs > 70 and _sec_ret > 5:
+                _rot_stage = "STAGE 3 — MOMENTUM PEAK"
+            elif _rsi_rs > 70 and "SELL" in _macd_rs:
+                _rot_stage = "STAGE 4 — DISTRIBUTION"
+            elif _sec_ret < -3 and _rsi_rs < 45:
+                _rot_stage = "STAGE 4 — DISTRIBUTION"
+            elif "BUY" in _st_rs and "BUY" in _macd_rs and _sec_ret > 2:
+                _rot_stage = "STAGE 2 — CONFIRMED UPTREND"
+            elif 40 < _rsi_rs <= 58 and "BUY" in _macd_rs and _2w_ret > _sec_ret:
+                _rot_stage = "STAGE 1 — EARLY ACCUMULATION"
+            elif _del_rs >= 65 and _vol_rs >= 1.8 and _rsi_rs < 60:
+                _rot_stage = "STAGE 1 — EARLY ACCUMULATION"
+            else:
+                _rot_stage = "NEUTRAL"
+            stock["rotation_stage"] = _rot_stage
 
             # Ensure selection_reason is present for all stocks
             if not stock.get("selection_reason"):
@@ -1279,6 +1291,9 @@ def run_master_pipeline():
                 _macd_e = str(stock.get("macd_signal", "NEUTRAL"))
                 _etag   = str(stock.get("exchange_tag", ""))
 
+                _del_e  = _sf(stock.get("delivery_pct", 0), 0)
+                _mos_e  = _sf(stock.get("mos_pct", stock.get("upside", 0)), 0)
+                _verd_e = str(stock.get("verdict", ""))
                 if _vol_r >= 1.8 and 50 < _rsi_e <= 72:
                     _escore += 15
                     _esigs.append("VOL SURGE + RSI ACCUMULATION")
@@ -1288,13 +1303,32 @@ def run_master_pipeline():
                 if _st_e == "BUY" and _macd_e == "BUY":
                     _escore += 12
                     _esigs.append("TREND CONFLUENCE")
-                _del_e = _sf(stock.get("delivery_pct", 0), 0)
                 if _del_e >= 70 and _vol_r >= 2.0:
                     _escore += 10
                     _esigs.append("INSTITUTIONAL FOOTPRINT")
                 if _etag == "DUAL_LISTED" and _vol_r >= 1.5:
                     _escore += 8
                     _esigs.append("DUAL-LISTED DISCOVERY")
+                if _mos_e > 25 and _verd_e == "BUY":
+                    _escore += 10
+                    _esigs.append("DEEP VALUE + BUY")
+                elif _mos_e > 10 and _verd_e in ("BUY", "WATCHLIST"):
+                    _escore += 5
+                    _esigs.append("VALUE OPPORTUNITY")
+                _fii_e = stock.get("fii_qoq", 0)
+                try:
+                    if float(str(_fii_e).replace("—","0") or 0) > 1.0:
+                        _escore += 8
+                        _esigs.append("FII ACCUMULATION")
+                except (ValueError, TypeError):
+                    pass
+                _pro_e = stock.get("promoter_qoq", 0)
+                try:
+                    if float(str(_pro_e).replace("—","0") or 0) > 1.0:
+                        _escore += 8
+                        _esigs.append("PROMOTER ACCUMULATION")
+                except (ValueError, TypeError):
+                    pass
 
                 _escore = min(100, _escore)
                 stock["early_entry_score"] = _escore
@@ -1348,14 +1382,33 @@ def run_master_pipeline():
                 stock["vol_ratio"] = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
                 stock["days_since_analysis"] = 0  # prevent O5 firing for all stocks
 
-            # Smart money signals
+            # Smart money signals — use available shareholding + technical data
             if not stock.get("smart_money_signals"):
-                sentiment = stock.get("smart_money_sentiment", "NEUTRAL")
-                insider   = stock.get("insider_buy_alert", "NO")
                 signals = []
-                if sentiment == "ACCUMULATION": signals.append("INST ACCUMULATION")
-                if insider == "YES":            signals.append("INSIDER BUYING")
-                stock["smart_money_signals"] = ", ".join(signals) if signals else "NEUTRAL"
+                if str(stock.get("smart_money_sentiment","NEUTRAL")) == "ACCUMULATION":
+                    signals.append("INST ACCUMULATION")
+                if str(stock.get("insider_buy_alert","NO")) == "YES":
+                    signals.append("INSIDER BUYING")
+                _fii_q = stock.get("fii_qoq", 0)
+                try:
+                    if float(str(_fii_q).replace("—","0") or 0) > 0.5:
+                        signals.append("FII INCREASING")
+                except (ValueError, TypeError):
+                    pass
+                _pro_q = stock.get("promoter_qoq", 0)
+                try:
+                    if float(str(_pro_q).replace("—","0") or 0) > 0.5:
+                        signals.append("PROMOTER BUYING")
+                except (ValueError, TypeError):
+                    pass
+                _del_sm = _sf(stock.get("delivery_pct", 0), 0)
+                _vol_sm = _sf(stock.get("vol_ratio", 1.0), 1.0)
+                _rsi_sm = _sf(stock.get("rsi", 50), 50)
+                if _del_sm >= 70 and _vol_sm >= 2.0:
+                    signals.append("HIGH DELIVERY BUYING")
+                if 45 < _rsi_sm <= 60 and _vol_sm >= 1.5 and "HIGH DELIVERY BUYING" not in signals:
+                    signals.append("RSI ACCUMULATION ZONE")
+                stock["smart_money_signals"] = " | ".join(signals) if signals else "NEUTRAL"
 
             # MoS label
             mos = _sf(stock.get("mos_pct", 0), 0)
