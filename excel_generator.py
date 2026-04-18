@@ -645,11 +645,23 @@ class ExcelGeneratorV6:
         "bs_status":"HEALTHY","bs_flags":"—",
     }
 
-    def __init__(self,data,date_str):
+    def __init__(self,data,date_str,run_time=None,prev_scores=None):
         self.df=pd.DataFrame(data) if data else pd.DataFrame()
         self.date_str=date_str
         try: self.dlbl=datetime.strptime(date_str,"%Y%m%d").strftime("%-d %b %Y")
         except: self.dlbl=date_str
+        # Actual pipeline run time in IST — used in Alert Log and Delivery Preview
+        if run_time:
+            self.run_time = run_time
+        else:
+            try:
+                import pytz as _ptz2
+                _ist2 = _ptz2.timezone("Asia/Kolkata")
+                self.run_time = datetime.now(_ist2).strftime("%H:%M IST")
+            except Exception:
+                self.run_time = "—"
+        # Previous day scores for Score Δ computation in Alert Log
+        self.prev_scores = prev_scores or {}
         for col,dflt in self.REQUIRED_COLS.items():
             if col not in self.df.columns: self.df[col]=dflt
 
@@ -918,7 +930,7 @@ class ExcelGeneratorV6:
     def _alert_log(self,wb):
         ws=wb.create_sheet("🔔 Alert Log"); ws.sheet_properties.tabColor="7C3AED"
         ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=10)
-        c=ws.cell(1,1,"ALERT LOG  ·  Triggered Signals & Score Changes  ·  Auto-appended every trading day at 20:00 IST")
+        c=ws.cell(1,1,f"ALERT LOG  ·  Triggered Signals & Score Changes  ·  Generated {self.run_time}")
         c.fill=_f("7C3AED"); c.font=_ft(True,WHITE,11); c.alignment=_al()
         ws.row_dimensions[1].height=24
         hdrs=[("Date",12),("Time (IST)",11),("Symbol",12),("Alert Type",26),
@@ -935,18 +947,61 @@ class ExcelGeneratorV6:
                "⬇ SCORE DEGRADED":"FEE2E2","🛑 EXIT ALERT":"FEE2E2"}
         ri=3
         for stk in self.df.to_dict("records"):
-            spk=int(stk.get("spike_count",0) or 0)
-            early=_sf(stk.get("early_entry_score",0))
-            comp=_sf(stk.get("composite_score",0))
-            verd=str(stk.get("verdict","WATCHLIST"))
+            sym  = stk.get("symbol","")
+            spk  = int(stk.get("spike_count",0) or 0)
+            early= _sf(stk.get("early_entry_score",0))
+            comp = _sf(stk.get("composite_score",0))
+            verd = str(stk.get("verdict","WATCHLIST"))
+            mos  = _sf(stk.get("mos_pct", stk.get("upside", 0)))
+            vol  = _sf(stk.get("vol_ratio", 1.0))
+
             if spk>=1 or early>=70 or comp<30:
-                if comp<30:
-                    at="⬇ SCORE DEGRADED"; det=f"Score {comp:.0f}/100 below threshold — review position"; act="REVIEW FOR EXIT"
-                elif spk>=1:
-                    at="🔔 SPIKE FIRED"; det=f"Spike {spk}/6 | Score: {comp:.0f} | Early: {early:.0f}/100"; act="CONSIDER ENTRY"
+                # ── Prev Score + Delta ─────────────────────────────────────
+                prev = self.prev_scores.get(sym, None)
+                if prev is not None and prev > 0:
+                    prev_disp = f"{prev:.0f}"
+                    delta     = comp - prev
+                    delta_disp= f"+{delta:.0f}" if delta > 0 else f"{delta:.0f}"
                 else:
-                    at="⭐ EARLY MOVER DETECTED"; det=f"Early Entry {early:.0f}/100 | Score: {comp:.0f}"; act="REVIEW IMMEDIATELY"
-                row_data=[self.dlbl,"20:30 IST",stk.get("symbol",""),at,det,"—",f"{comp:.0f}","—",act,stk.get("exchange_tag","NSE")]
+                    prev_disp = "—"
+                    delta_disp= "—"
+
+                # ── Alert Type ─────────────────────────────────────────────
+                if comp < 30:
+                    at  = "⬇ SCORE DEGRADED"
+                    det = f"Score {comp:.0f}/100 below threshold — review position"
+                elif spk >= 1:
+                    at  = "🔔 SPIKE FIRED"
+                    det = f"Spike {spk}/6 | Score: {comp:.0f} | Early: {early:.0f}/100"
+                else:
+                    at  = "⭐ EARLY MOVER DETECTED"
+                    det = f"Early Entry {early:.0f}/100 | Score: {comp:.0f}"
+
+                # ── Action Required — logic based on verdict/score/MoS/Δ ──
+                if comp < 30:
+                    act = "REVIEW FOR EXIT"
+                elif verd == "BUY" and mos > 10 and comp >= 65:
+                    act = "CONSIDER ENTRY"
+                elif verd == "BUY" and mos <= 0:
+                    act = "BUY BUT OVERVALUED — WAIT"
+                elif verd == "BUY":
+                    act = "MONITOR FOR ENTRY"
+                elif verd == "WATCHLIST" and delta_disp != "—" and float(delta_disp) >= 3:
+                    act = "SCORE IMPROVING — WATCH"
+                elif verd == "WATCHLIST" and delta_disp != "—" and float(delta_disp) <= -3:
+                    act = "SCORE DECLINING — CAUTION"
+                elif vol >= 3.0:
+                    act = "VOLUME ALERT — INVESTIGATE"
+                elif early >= 70:
+                    act = "EARLY MOVER — ACCUMULATE"
+                elif verd == "WATCHLIST":
+                    act = "MONITOR CLOSELY"
+                else:
+                    act = "MONITOR CLOSELY"
+
+                row_data=[self.dlbl, self.run_time, sym, at, det,
+                          prev_disp, f"{comp:.0f}", delta_disp, act,
+                          stk.get("exchange_tag","NSE")]
                 ac=ACOLS.get(at,"FFFFFF"); ws.row_dimensions[ri].height=18
                 for ci,val in enumerate(row_data,1):
                     cell=ws.cell(ri,ci,_sv(val))
@@ -973,7 +1028,7 @@ class ExcelGeneratorV6:
         r=3
         r=R(r,None,"WHATSAPP MESSAGE PREVIEW","0D9488",True,18)
         r=R(r,None,"━"*51,"0D9488",False,10)
-        r=R(r,None,f"⭐  NSE/BSE GOLD STOCKS  ·  {self.dlbl}  ·  20:30 IST","B45309",True)
+        r=R(r,None,f"⭐  NSE/BSE GOLD STOCKS  ·  {self.dlbl}  ·  {self.run_time}","B45309",True)
         r=R(r,None,"━"*51,"0D9488",False,10)
         r=R(r,None,f"⭐  EARLY MOVERS TODAY: {gc} stocks identified","D1FAE5",False)
         if not gdf.empty:

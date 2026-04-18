@@ -2,7 +2,7 @@ name: NSE_BSE_Daily_Pipeline
 
 on:
   schedule:
-    - cron: '30 0 * * 2-6'
+    - cron: '0 0 * * 2-6'
   workflow_dispatch:
 
 permissions:

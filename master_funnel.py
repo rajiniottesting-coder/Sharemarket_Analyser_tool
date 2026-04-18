@@ -1507,7 +1507,20 @@ def run_master_pipeline():
             print("❌ CRITICAL: final_100_list is empty — cannot generate Excel.")
             raise ValueError("final_100_list empty at Excel generation — check Stage 2/3 logs.")
         print(f"   📊 Generating Excel for {len(final_100_list)} stocks...")
-        excel_gen = ExcelGeneratorV6(final_100_list, date_str)
+        import pytz as _ptz
+        _ist = _ptz.timezone("Asia/Kolkata")
+        _run_time_ist = datetime.datetime.now(_ist).strftime("%H:%M IST")
+        # Load previous scores BEFORE saving new results (for Δ in Alert Log)
+        try:
+            from data_bridge import load_latest_analysis_results as _load_prev
+            _prev_records = _load_prev()
+            _prev_scores = {r["symbol"]: float(r.get("composite_score", 0) or 0)
+                            for r in _prev_records}
+        except Exception:
+            _prev_scores = {}
+        excel_gen = ExcelGeneratorV6(final_100_list, date_str,
+                                     run_time=_run_time_ist,
+                                     prev_scores=_prev_scores)
         master_file, gold_file = excel_gen.generate_excel_reports()
         print(f"   ✅ Excel saved: {master_file}")
 
