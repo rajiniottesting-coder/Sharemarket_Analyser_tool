@@ -1344,6 +1344,67 @@ def run_master_pipeline():
                 stock.setdefault("early_mover_badge", "")
                 stock.setdefault("early_label", "EMERGING")
 
+            # ── BS Health re-evaluation with FM-enriched data ──────────────
+            # First pass (L465) had no FM data → always HEALTHY
+            # Re-run now that debt_equity, CR, FCF, total_debt, cash are populated
+            try:
+                _de_re   = float(str(stock.get("debt_equity",  stock.get("de_ratio_num", 0)) or 0))
+                _cr_re   = float(str(stock.get("current_ratio", 0) or 0).replace("—","0") or 0)
+                _fcf_re  = float(str(stock.get("fcf",  0) or 0).replace("—","0") or 0)
+                _td_re   = float(str(stock.get("total_debt", 0) or 0).replace("—","0") or 0)
+                _cash_re = float(str(stock.get("cash",  stock.get("cash_cr", 0)) or 0).replace("—","0") or 0)
+                _roe_re  = float(str(stock.get("roe_num", stock.get("roe", 0)) or 0).replace("—","0") or 0)
+                _pledge  = float(str(stock.get("pledge_pct", 0) or 0).replace("—","0") or 0)
+
+                _flags_re = []
+                _status_re = "HEALTHY"
+
+                # Positive flags
+                if _td_re > 0 and _cash_re >= _td_re:
+                    _flags_re.append(f"NET CASH COMPANY (Cash ₹{int(_cash_re)}Cr > Debt ₹{int(_td_re)}Cr)")
+                elif _td_re == 0 and _cash_re > 0:
+                    _flags_re.append(f"ZERO DEBT | Cash ₹{int(_cash_re)}Cr")
+
+                # Warning flags
+                if _de_re > 2.0:
+                    _flags_re.append(f"HIGH D/E {round(_de_re,1)}x")
+                    _status_re = "WATCH"
+                if 0 < _cr_re < 1.0:
+                    _flags_re.append(f"LOW LIQUIDITY CR={round(_cr_re,2)}")
+                    _status_re = "WATCH"
+                if _fcf_re < 0:
+                    _flags_re.append("NEGATIVE FCF")
+                    _status_re = "WATCH"
+                if _td_re > 0 and _cash_re > 0 and (_cash_re / _td_re) < 0.1:
+                    _flags_re.append(f"LOW CASH COVER {round(_cash_re/_td_re,2)}x")
+                    _status_re = "WATCH"
+                if _pledge > 20:
+                    _flags_re.append(f"HIGH PLEDGE {round(_pledge,1)}%")
+                    _status_re = "ALERT"
+
+                # Alert flags
+                if _de_re > 3.0:
+                    _status_re = "ALERT"
+                if _roe_re > 0 and _de_re > 2.0 and _fcf_re < 0:
+                    _flags_re.append("LEVERAGED + NEGATIVE FCF")
+                    _status_re = "ALERT"
+
+                # Only update if we have real data and found something meaningful
+                if _flags_re:
+                    stock["bs_status"] = _status_re
+                    stock["bs_flags"]  = " | ".join(_flags_re)
+                elif any(v > 0 for v in [_de_re, _cash_re, _td_re, _roe_re]):
+                    # We have real data and no flags — genuinely healthy
+                    _note = []
+                    if _td_re == 0: _note.append("Debt-free")
+                    if _cash_re > 0: _note.append(f"Cash ₹{int(_cash_re)}Cr")
+                    if _de_re > 0: _note.append(f"D/E {round(_de_re,2)}x")
+                    if _roe_re > 0: _note.append(f"ROE {round(_roe_re,1)}%")
+                    stock["bs_status"] = "HEALTHY"
+                    stock["bs_flags"]  = " | ".join(_note) if _note else "No red flags detected"
+            except Exception:
+                pass   # keep existing bs_status/bs_flags from first pass
+
             # Composite score + verdict
             score_result = scoring.calculate_composite_score(stock)
             stock.update(score_result)
