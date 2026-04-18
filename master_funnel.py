@@ -1142,6 +1142,19 @@ def run_master_pipeline():
                 stock["resist_1"]   = round(float(r1), 2) if r1 else 0
                 stock["resist_2"]   = round(float(r2), 2) if r2 else 0
 
+            # ── Technical alignment bonus for priority_score ─────────────────
+            # Rewards stocks where Supertrend AND MACD are both BUY
+            # This helps them rank higher in Stage 3 priority sort
+            _st_pa   = str(stock.get("supertrend",  "NEUTRAL")).upper()
+            _macd_pa = str(stock.get("macd_signal", "NEUTRAL")).upper()
+            _ps_curr = _sf(stock.get("priority_score", 0), 0)
+            if "BUY" in _st_pa and "BUY" in _macd_pa:
+                stock["priority_score"] = round(_ps_curr + 8, 2)   # both aligned → +8
+            elif "BUY" in _st_pa or "BUY" in _macd_pa:
+                stock["priority_score"] = round(_ps_curr + 3, 2)   # one signal → +3
+            elif "SELL" in _st_pa and "SELL" in _macd_pa:
+                stock["priority_score"] = round(max(0, _ps_curr - 5), 2)  # both sell → -5
+
             # ── Sector Stage: recomputed HERE after RSI/MACD/Supertrend loaded ──
             _rsi_rs2  = _sf(stock.get("rsi",   50), 50)
             _macd_rs2 = str(stock.get("macd_signal", "NEUTRAL")).upper()
@@ -1242,6 +1255,15 @@ def run_master_pipeline():
                 # OBV
                 if _obv_s == "RISING":  _ts += 4
                 elif _obv_s == "FALLING": _ts -= 4
+                # H3a: Stochastic K — oversold recovery (20-40 is accumulation zone)
+                _stk_s = _sf(stock.get("stoch_k", 50), 50)
+                if   20 < _stk_s <= 40:  _ts += 5   # oversold recovery — bullish
+                elif _stk_s > 80:        _ts -= 3   # overbought — caution
+                elif _stk_s <= 20:       _ts += 2   # deeply oversold — potential reversal
+                # H3b: MFI — money flow confirmation
+                _mfi_s = _sf(stock.get("mfi", 50), 50)
+                if   _mfi_s > 60:        _ts += 4   # strong money inflow
+                elif _mfi_s < 30:        _ts -= 3   # money outflow
                 stock["technical_score"] = max(0, min(100, round(_ts, 1)))
 
             # ── Pre-compute fundamental_score from available data ─────────────
@@ -1298,6 +1320,26 @@ def run_master_pipeline():
                 elif _pro_f > 35:      _fs += 2
                 elif 0 < _pro_f < 20:  _fs -= 3
 
+                # H1a: PAT YoY growth — earnings momentum
+                _pat_f = _sf(stock.get("pat_yoy", 0), 0)
+                if   _pat_f > 20:      _fs += 8
+                elif _pat_f > 10:      _fs += 4
+                elif _pat_f > 0:       _fs += 2
+                elif _pat_f < -10:     _fs -= 7
+
+                # H1b: Revenue YoY growth — top-line strength
+                _rev_f = _sf(stock.get("rev_yoy", stock.get("revenue_growth", 0)), 0)
+                if   _rev_f > 15:      _fs += 5
+                elif _rev_f > 8:       _fs += 3
+                elif _rev_f > 0:       _fs += 1
+                elif _rev_f < -5:      _fs -= 4
+
+                # H1c: FCF Yield — cash generation quality
+                _fcf_y = _sf(stock.get("fcf_yield", 0), 0)
+                if   _fcf_y > 6:       _fs += 6
+                elif _fcf_y > 3:       _fs += 3
+                elif _fcf_y < 0:       _fs -= 5
+
                 stock["fundamental_score"] = max(0, min(100, round(_fs, 1)))
 
             # ── Safety score from pledge/debt ────────────────────────────────
@@ -1312,6 +1354,15 @@ def run_master_pipeline():
                 elif _bet < 0.8: _ss += 5
                 if _de2 > 2.0: _ss -= 10
                 elif _de2 < 0.3 and _de2 > 0: _ss += 5   # very low debt = safer
+                # H2a: FCF — negative FCF is a risk signal
+                _fcf_ss = _sf(stock.get("fcf", 0), 0)
+                if   _fcf_ss < 0:      _ss -= 8
+                elif _fcf_ss > 0:      _ss += 3
+                # H2b: BS Health status from re-evaluation
+                _bs_ss = str(stock.get("bs_status", "HEALTHY"))
+                if   _bs_ss == "ALERT":  _ss -= 15
+                elif _bs_ss == "WATCH":  _ss -= 5
+                elif _bs_ss == "HEALTHY" and _fcf_ss > 0: _ss += 3
                 stock["safety_score"] = max(0, min(100, round(_ss, 1)))
 
             # ── Sentiment score from smart money / FII trend ─────────────────
@@ -1459,6 +1510,53 @@ def run_master_pipeline():
             # Composite score + verdict
             score_result = scoring.calculate_composite_score(stock)
             stock.update(score_result)
+
+            # ── Derive ghost keys for Storm/Sentiment/EDE before scoring ──────
+            # These keys are READ by scoring_engine but were never populated,
+            # causing storm/sentiment scores to always be near baseline.
+            # Derived from data already available in the stock dict.
+
+            # C1a: fcf_positive_4q — True if FCF > 0
+            _fcf_ghost = _sf(stock.get("fcf", 0), 0)
+            stock["fcf_positive_4q"] = bool(_fcf_ghost > 0)
+
+            # C1b: promoter_q_increase — True if promoter holding rose QoQ
+            _proq_ghost = stock.get("promoter_qoq", 0)
+            try:
+                stock["promoter_q_increase"] = float(
+                    str(_proq_ghost).replace("—","0") or 0) > 0.3
+            except (ValueError, TypeError):
+                stock["promoter_q_increase"] = False
+
+            # C1c: fii_buy_3q — True if FII holding rose QoQ
+            _fiiq_ghost = stock.get("fii_qoq", 0)
+            try:
+                stock["fii_buy_3q"] = float(
+                    str(_fiiq_ghost).replace("—","0") or 0) > 0.3
+            except (ValueError, TypeError):
+                stock["fii_buy_3q"] = False
+
+            # C1d: rev_growth_yoy — revenue YoY growth %
+            stock["rev_growth_yoy"] = _sf(
+                stock.get("rev_yoy", stock.get("revenue_growth", 0)), 0)
+
+            # C2: fii_3q_trend — derive from fii_qoq for sentiment score
+            if not stock.get("fii_3q_trend") or stock.get("fii_3q_trend") == "NEUTRAL":
+                _fii_q_sent = stock.get("fii_qoq", 0)
+                try:
+                    _fq = float(str(_fii_q_sent).replace("—","0") or 0)
+                    if   _fq > 1.0:  stock["fii_3q_trend"] = "UP"
+                    elif _fq < -1.0: stock["fii_3q_trend"] = "DOWN"
+                    else:            stock["fii_3q_trend"] = "NEUTRAL"
+                except (ValueError, TypeError):
+                    stock["fii_3q_trend"] = "NEUTRAL"
+
+            # C3: promoter_buying_30d — for Early Detection Engine
+            try:
+                _pq_ede = float(str(stock.get("promoter_qoq",0)).replace("—","0") or 0)
+                stock["promoter_buying_30d"] = bool(_pq_ede > 0.5)
+            except (ValueError, TypeError):
+                stock["promoter_buying_30d"] = False
 
             # Storm score
             storm = scoring.calculate_storm_score(stock, market_vix=12.0,

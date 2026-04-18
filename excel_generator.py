@@ -884,7 +884,7 @@ class ExcelGeneratorV6:
         # R3 summary strip
         strips=[(1,5,f"⭐ GOLD STOCKS: {gc}"),(6,11,f"AVG EARLY SCORE: {ae:.0f}/100"),
                 (12,17,f"AVG UPSIDE TO FV: +{au:.1f}%"),(18,23,f"AVG SPIKE SCORE: {asp:.1f}/6"),
-                (24,N,f"DELIVERED: 20:30 IST · WhatsApp + Email")]
+                (24,N,f"DELIVERED: {self.run_time} · WhatsApp + Email")]
         ws.row_dimensions[3].height=22
         for s,e,t in strips:
             if s!=e: ws.merge_cells(start_row=3,start_column=s,end_row=3,end_column=e)
@@ -1085,7 +1085,7 @@ class ExcelGeneratorV6:
         gdf=self._get_gold(); gc=len(gdf)
         top=gdf.iloc[0] if not gdf.empty else {}
         ws.row_dimensions[1].height=24
-        c=ws.cell(1,1,"DELIVERY PREVIEW  ·  WhatsApp & Email Format  ·  Sent daily 20:30 IST")
+        c=ws.cell(1,1,f"DELIVERY PREVIEW  ·  WhatsApp & Email Format  ·  Generated {self.run_time}")
         c.fill=_f(NAVY); c.font=_ft(True,WHITE,11)
         def R(r,a,b,bf=None,bb=False,h=16):
             ws.row_dimensions[r].height=h

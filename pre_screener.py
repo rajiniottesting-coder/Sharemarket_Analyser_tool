@@ -45,18 +45,30 @@ def stage_1_filter(all_stocks: list) -> list:
 
         # Symbol-based ETF/MF detection (catches NSE-listed funds)
         sym_up = sym.upper()
-        _etf_kw = ("LIQUID","BEES","GOLDETF","GOLDBEES","SILVERETF","SILVERBEES",
-                   "NIFTYBEES","JUNIORBEES","ICICIB22","SBILIQ","ABSLLIQ",
-                   "HDFCLIQ","KOTAKLIQ","EDELWEISS","IVZIN","AONELIQ",
-                   "LIQUIDETF","LIQUIDPLUS","LIQUIDSHRI","MAKEINDIA",
-                   "EQUAL50","CPSE","SHARIAH","MAFANG","BBETF","SMALLADD",
-                   "MIDADD","CPSEETF","MONQ50","MOGSEC","MOPHJINDAL",
-                   "LOWVOLIETF","QUALITIETF","MOVALUE","MOMOMENTUM",
-                   "NETFGSC10I","NETFLOWVOL","NETFMID","HDFCNIFETF",
-                   "SETFNIF50","SETFNN50","MOM100ETF","PSUBNKBEES")
+        _etf_kw = (
+            # Liquid / bond ETFs
+            "LIQUID","LIQUIDETF","LIQUIDPLUS","LIQUIDSHRI","SBILIQ","ABSLLIQ",
+            "HDFCLIQ","KOTAKLIQ","AONELIQ","ICICIB22",
+            # Equity index ETFs
+            "BEES","NIFTYBEES","JUNIORBEES","GOLDBEES","GOLDETF","SILVERETF",
+            "SILVERBEES","BANKBEES","ITBEES","PSUBNKBEES","INFRABEES",
+            "AUTOBEES","PHARMABEES","CONSUMIETF","DIVOPPBEES","HNGSNGBEES",
+            # Fund-of-fund / index ETFs
+            "MAKEINDIA","EQUAL50","CPSE","CPSEETF","SHARIAH","SHARIABEES",
+            "MAFANG","BBETF","SMALLADD","MIDADD","MONQ50","MOGSEC",
+            "MOPHJINDAL","LOWVOLIETF","QUALITIETF","MOVALUE","MOMOMENTUM",
+            "NETFGSC10I","NETFLOWVOL","NETFMID","HDFCNIFETF","SETFNIF50",
+            "SETFNN50","MOM100ETF","MON100ETF","ALPHA","IVZIN","EDELWEISS",
+            # Gold / Silver / Commodity ETFs
+            "GOLD1","SILVERAG","QGOLDHALF","GOLDIETF","SILVRETF",
+            # Index / international ETFs
+            "QNIFTY","MSCIINDIA","MASPTOP50","N50ETF","MAFSETF",
+            "NIFTY50","NIFTYMID","NIFTYIT",
+        )
         if any(sym_up.startswith(k) or sym_up.endswith("ETF") or
                sym_up.endswith("BEES") or sym_up.endswith("LIQUID") or
-               sym_up.endswith("ADD") for k in _etf_kw):
+               sym_up.endswith("ADD") or sym_up.endswith("INDEX")
+               for k in _etf_kw):
             dropped.setdefault("etf_mf", 0)
             dropped["etf_mf"] += 1
             continue
@@ -68,6 +80,15 @@ def stage_1_filter(all_stocks: list) -> list:
             any(k in sym_up for k in ("LIQUID","LIQ","CASH"))):
             dropped.setdefault("etf_mf", 0)
             dropped["etf_mf"] += 1
+            continue
+
+        # V0B: Exclude stocks with no company name AND no sector — almost always ETFs/funds
+        # Exception: allow if verdict could still be BUY (watchlist_override)
+        _cname  = str(stock.get("company_name", "") or "").strip()
+        _sector = str(stock.get("sector", "") or "").strip()
+        if (not _cname or _cname in ("—", "None", "0")) and            (not _sector or _sector in ("—", "None", "0")) and            not stock.get("watchlist_override", False):
+            dropped.setdefault("no_name_sector", 0)
+            dropped["no_name_sector"] += 1
             continue
 
         # V1: Must have traded today
