@@ -1807,6 +1807,17 @@ def run_master_pipeline():
         if not final_100_list:
             print("❌ CRITICAL: final_100_list is empty — cannot generate Excel.")
             raise ValueError("final_100_list empty at Excel generation — check Stage 2/3 logs.")
+        # Remove stocks with no company_name AND no sector after full enrichment
+        # (ETFs/funds that slipped through keyword filter — now have FM data to verify)
+        _pre_filter = len(final_100_list)
+        final_100_list = [
+            s for s in final_100_list
+            if str(s.get("company_name","") or "").strip() not in ("","—","None","0")
+            or str(s.get("sector","") or "").strip() not in ("","—","None","0")
+        ]
+        if len(final_100_list) < _pre_filter:
+            print(f"   🔍 Removed {_pre_filter - len(final_100_list)} stocks with no company name/sector")
+
         print(f"   📊 Generating Excel for {len(final_100_list)} stocks...")
         import pytz as _ptz
         _ist = _ptz.timezone("Asia/Kolkata")

@@ -82,15 +82,6 @@ def stage_1_filter(all_stocks: list) -> list:
             dropped["etf_mf"] += 1
             continue
 
-        # V0B: Exclude stocks with no company name AND no sector — almost always ETFs/funds
-        # Exception: allow if verdict could still be BUY (watchlist_override)
-        _cname  = str(stock.get("company_name", "") or "").strip()
-        _sector = str(stock.get("sector", "") or "").strip()
-        if (not _cname or _cname in ("—", "None", "0")) and            (not _sector or _sector in ("—", "None", "0")) and            not stock.get("watchlist_override", False):
-            dropped.setdefault("no_name_sector", 0)
-            dropped["no_name_sector"] += 1
-            continue
-
         # V1: Must have traded today
         volume = float(stock.get("volume", 0) or 0)
         if volume <= 0:
