@@ -1,5 +1,10 @@
 import pandas as pd
-import pandas_ta as ta
+try:
+    import pandas_ta as ta
+    PANDAS_TA_AVAILABLE = True
+except ImportError:
+    PANDAS_TA_AVAILABLE = False
+    ta = None
 
 class TechnicalAnalysisEngine:
     def __init__(self):
