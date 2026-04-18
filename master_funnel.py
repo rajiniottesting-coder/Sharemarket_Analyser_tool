@@ -907,8 +907,36 @@ def run_master_pipeline():
                 stock["roe_num"] = round(_roe_raw * 100, 2) if 0 < abs(_roe_raw) < 2.0 else round(_roe_raw, 2)
                 stock["gm_num"]  = round(_gm_raw  * 100, 2) if 0 < abs(_gm_raw)  < 2.0 else round(_gm_raw,  2)
                 stock["nm_num"]  = round(_nm_raw  * 100, 2) if 0 < abs(_nm_raw)  < 2.0 else round(_nm_raw,  2)
-                # Forensics — no free source
-                stock.setdefault("piotroski_f",  _fv(pf))
+                # Proxy F-Score (0-9) computed from available yfinance data
+                # Matches Piotroski scale: ≥7=strong, 4-6=average, ≤3=weak
+                _pf_roa  = _fvn(stock.get("roa_num",  stock.get("roa",  0)))
+                _pf_fcf  = _fvn(stock.get("fcf", 0) if stock.get("fcf") not in ("—",None) else 0)
+                _pf_pat  = _fvn(stock.get("pat_yoy",  stock.get("pat_yoy", 0)) if stock.get("pat_yoy") not in ("—",None) else 0)
+                _pf_de   = _fvn(stock.get("de_ratio_num", stock.get("debt_equity", 1)))
+                _pf_cr   = _fvn(stock.get("current_ratio", 0) if stock.get("current_ratio") not in ("—",None) else 0)
+                _pf_gm   = _fvn(stock.get("gm_num",  stock.get("gross_margin", 0)))
+                _pf_rev  = _fvn(stock.get("rev_yoy",  0) if stock.get("rev_yoy") not in ("—",None) else 0)
+                _pf_roe  = _fvn(stock.get("roe_num",  stock.get("roe", 0)))
+                _pf_cash = _fvn(stock.get("cash", stock.get("cash_cr", 0)) if stock.get("cash") not in ("—",None) else 0)
+                _pf_score = (
+                    (1 if _pf_roa  > 0   else 0) +   # P1: profitable (ROA > 0)
+                    (1 if _pf_fcf  > 0   else 0) +   # P2: positive FCF
+                    (1 if _pf_pat  > 0   else 0) +   # P3: growing earnings
+                    (1 if _pf_de   < 1.0 else 0) +   # P4: low leverage
+                    (1 if _pf_cr   > 1.0 else 0) +   # P5: liquid (CR > 1)
+                    (1 if _pf_gm   > 15  else 0) +   # P6: decent gross margin
+                    (1 if _pf_rev  > 0   else 0) +   # P7: growing revenue
+                    (1 if _pf_roe  > 10  else 0) +   # P8: good ROE
+                    (1 if _pf_cash > 0   else 0)     # P9: has cash
+                )
+                # Only set if we have enough real data (at least 4 fields populated)
+                _pf_data_count = sum(1 for v in [_pf_roa,_pf_fcf,_pf_de,_pf_gm,_pf_roe]
+                                     if v != 0)
+                if _pf_data_count >= 3:
+                    stock["piotroski_f"] = _pf_score
+                else:
+                    stock.setdefault("piotroski_f", _fv(pf))  # fallback to DB value or "—"
+                # Forensics — no free source for true Piotroski/Altman/Beneish
                 stock.setdefault("altman_z",     _fv(az))
                 stock.setdefault("beneish_m",    _fv(bm))
                 # Growth CAGRs — not available from yfinance
@@ -1428,9 +1456,22 @@ def run_master_pipeline():
             except Exception:
                 pass   # keep existing bs_status/bs_flags from first pass
 
-            # ── Time Horizon: based on verdict + technicals + spike ────────────
+            # Composite score + verdict
+            score_result = scoring.calculate_composite_score(stock)
+            stock.update(score_result)
+
+            # Storm score
+            storm = scoring.calculate_storm_score(stock, market_vix=12.0,
+                                                   market_off_peak=3.0)
+            if storm:
+                stock.update(storm)
+            else:
+                stock.setdefault("storm_score", 0)
+                stock.setdefault("storm_label", "N/A")
+
+            # ── Time Horizon: computed AFTER verdict+score+spike are all set ────
             _verd_tr  = str(stock.get("verdict", "WATCHLIST"))
-            _spike_tr = int(stock.get("spike_count", 0) or 0)
+            _spike_tr = int(stock.get("spike_count", stock.get("spike_count", 0)) or 0)
             _st_tr    = str(stock.get("supertrend",  "NEUTRAL")).upper()
             _macd_tr  = str(stock.get("macd_signal", "NEUTRAL")).upper()
             _score_tr = _sf(stock.get("composite_score", 0), 0)
@@ -1447,7 +1488,7 @@ def run_master_pipeline():
             else:
                 stock["horizon"] = "LONG TERM"
 
-            # ── Risk Level: based on cap + D/E + beta + pledge + BS status ─────
+            # ── Risk Level: computed AFTER BS status and de_ratio_num are set ───
             _cap_tr    = str(stock.get("cap_category", "")).upper()
             _beta_tr   = _sf(stock.get("beta", 1.0), 1.0)
             _de_tr     = _sf(stock.get("de_ratio_num", stock.get("debt_equity", 0)), 0)
@@ -1465,19 +1506,6 @@ def run_master_pipeline():
                 stock["risk_level"] = "HIGH"
             else:
                 stock["risk_level"] = "MEDIUM"
-
-            # Composite score + verdict
-            score_result = scoring.calculate_composite_score(stock)
-            stock.update(score_result)
-
-            # Storm score
-            storm = scoring.calculate_storm_score(stock, market_vix=12.0,
-                                                   market_off_peak=3.0)
-            if storm:
-                stock.update(storm)
-            else:
-                stock.setdefault("storm_score", 0)
-                stock.setdefault("storm_label", "N/A")
 
             # Spike Score — call SpikeScreener with correct key mappings
             try:
