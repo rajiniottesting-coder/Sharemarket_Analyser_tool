@@ -1318,31 +1318,61 @@ def _fetch_yfinance_data(symbols: list) -> dict:
             pass
         time.sleep(0.5)  # polite delay between batches
 
-    # Second pass: fetch balance_sheet for stocks missing currentRatio
-    # yfinance balance_sheet DataFrame has 'Current Assets'/'Current Liabilities'
-    # This is more reliable than info dict for Indian stocks
+    # Second pass: balance_sheet fetch for stocks still missing CR
+    # Fixes: correct row names (no 'Total' prefix), .NS + .BO, quarterly fallback,
+    #        proper QR = (CA - Inventory) / CL, cap raised to 100
     missing_cr = [s for s, d in result.items()
                   if d.get("current_ratio", 0) == 0 and d.get("_cr_computed", 0) == 0]
     if missing_cr:
         import yfinance as _yf2
-        for sym in missing_cr[:30]:   # cap at 30 to stay within rate limits
+
+        def _get_bs_row(bs_index, keywords, excludes=()):
+            """Find row matching ALL keywords, excluding any in excludes."""
+            for r in bs_index:
+                rs = str(r).lower()
+                if all(k.lower() in rs for k in keywords) and                    not any(e.lower() in rs for e in excludes):
+                    return r
+            return None
+
+        def _bs_val(bs, row):
             try:
-                _tk  = _yf2.Ticker(sym + ".NS")
-                _bs  = _tk.balance_sheet
-                if _bs is not None and not _bs.empty:
-                    _ca_row = next((r for r in _bs.index
-                                    if "Current Assets" in str(r) and "Total" in str(r)), None)
-                    _cl_row = next((r for r in _bs.index
-                                    if "Current Liabilities" in str(r) and "Total" in str(r)), None)
-                    if _ca_row and _cl_row:
-                        _ca = float(_bs.loc[_ca_row].iloc[0] or 0)
-                        _cl = float(_bs.loc[_cl_row].iloc[0] or 1)
-                        if _ca > 0 and _cl > 0:
-                            result[sym]["current_ratio"] = round(_ca / _cl, 3)
-                            result[sym]["quick_ratio"]   = round(_ca / _cl * 0.75, 3)
-                time.sleep(0.3)
+                return float(bs.loc[row].iloc[0] or 0)
             except Exception:
-                pass
+                return 0.0
+
+        for sym in missing_cr[:100]:
+            _cr_val = 0.0
+            _qr_val = 0.0
+            for suffix in (".NS", ".BO"):
+                try:
+                    _tk = _yf2.Ticker(sym + suffix)
+                    for _bs in [_tk.balance_sheet, _tk.quarterly_balance_sheet]:
+                        if _bs is None or _bs.empty:
+                            continue
+                        _ca_row = _get_bs_row(_bs.index, ["current", "assets"],
+                                              excludes=["non current", "noncurrent", "other"])
+                        _cl_row = _get_bs_row(_bs.index, ["current", "liabilit"],
+                                              excludes=["non current", "noncurrent",
+                                                        "deferred", "other"])
+                        if _ca_row and _cl_row:
+                            _ca = _bs_val(_bs, _ca_row)
+                            _cl = _bs_val(_bs, _cl_row)
+                            if _ca > 0 and _cl > 0:
+                                _cr_val = round(_ca / _cl, 3)
+                                _inv_row = _get_bs_row(_bs.index, ["inventor"],
+                                                       excludes=["non", "other"])
+                                _inv = _bs_val(_bs, _inv_row) if _inv_row else 0.0
+                                _qr_val = round((_ca - _inv) / _cl, 3) if _cl > 0                                           else round(_cr_val * 0.8, 3)
+                                break
+                    if _cr_val > 0:
+                        break
+                    time.sleep(0.2)
+                except Exception:
+                    pass
+
+            if _cr_val > 0:
+                result[sym]["current_ratio"] = _cr_val
+                result[sym]["quick_ratio"]   = max(_qr_val, 0.1)
 
     return result
 

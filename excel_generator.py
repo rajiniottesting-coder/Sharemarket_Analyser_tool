@@ -568,6 +568,75 @@ GLOSSARY_DATA = [
      "Any active SEBI actions, adjudication orders, or exchange surveillance flags. "
      "NONE = clean | Any other value = investigate before investing. "
      "Requires Anthropic API credits.","Full Dashboard"),
+
+    # ── GOLD SHEET SPECIFIC ────────────────────────────────────────────────────
+    ("SCORES","F-Score /9",
+     "Proxy Financial Health Score (0–9) computed from available data. "
+     "P1: ROA>0 | P2: FCF>0 | P3: PAT YoY>0 | P4: D/E<1 | P5: Current Ratio>1 | "
+     "P6: Gross Margin>15% | P7: Rev YoY>0 | P8: ROE>10% | P9: Cash>0. "
+     "≥7=Strong | 4–6=Average | ≤3=Weak | —=Insufficient data.","Gold Sheet"),
+    ("SCORES","Spike /6",
+     "Spike Score 0–6: count of institutional triggers fired. "
+     "Triggers: Value Breakout | Perfect Storm | Institutional Accumulation | "
+     "Technical Breakout | RSI Accumulation | Dual-Listed Discovery. "
+     "≥3=Strong setup | 1–2=Watch | 0=No spike.","All sheets"),
+    ("SCORES","Storm /10",
+     "Storm Score 0–10: defensive quality in volatile markets. "
+     "Rewards low beta, low D/E, positive FCF, high promoter holding, "
+     "low pledge and strong cash cover. Higher = safer defensive pick.","All sheets"),
+    ("TRADE PLAN","Horizon",
+     "Abbreviated Time Horizon used in Gold sheet. "
+     "SHORT TERM = 2–4 weeks (spike-driven entry) | "
+     "POSITIONAL = 1–3 months (trend confirmed) | "
+     "LONG TERM = 6–12 months (value accumulation).","Gold Sheet"),
+    ("VALUATION","P/E",
+     "Price-to-Earnings ratio (abbreviated in Gold sheet). "
+     "CMP ÷ Trailing 12-month EPS. "
+     "<15=Cheap | 15–25=Fair | 25–40=Premium | >40=Expensive.","Gold Sheet"),
+    ("VALUATION","PEG",
+     "PEG Ratio (abbreviated). P/E ÷ Earnings Growth Rate. "
+     "<1=Undervalued vs growth | 1–2=Fair | >2=Expensive vs growth.","Gold Sheet"),
+    ("VALUATION","D/E",
+     "Debt-to-Equity ratio (abbreviated in Gold sheet). "
+     "<0.5=Low debt | 0.5–1.5=Moderate | >2=High leverage risk.","Gold Sheet"),
+    ("TECHNICAL","Pattern",
+     "Latest candlestick pattern. Same as Chart Pattern in Full Dashboard. "
+     "BULLISH/BEARISH CANDLE | HAMMER | SHOOTING STAR | DOJI | ENGULFING.","Gold Sheet"),
+    ("FIN HEALTH","Quick Ratio",
+     "Quick Ratio = (Current Assets − Inventory) ÷ Current Liabilities. "
+     "More conservative than Current Ratio — excludes slow inventory. "
+     ">1=Can meet short-term obligations | <1=Potential liquidity risk.","Full Dashboard"),
+
+    # ── PRICE & MARKET ─────────────────────────────────────────────────────────
+    ("PRICE & MARKET","CMP (₹)",
+     "Current Market Price — closing price from today's bhav copy (NSE/BSE). "
+     "All FV models and ratio calculations use this as the base price.","All sheets"),
+    ("PRICE & MARKET","52W High (₹)",
+     "Highest closing price in the past 52 weeks. "
+     "CMP within 5% of 52W High = near resistance peak, caution on entry. "
+     "Breakout above 52W High with high volume = very strong signal.","Full Dashboard"),
+    ("PRICE & MARKET","52W Low (₹)",
+     "Lowest closing price in the past 52 weeks. "
+     "CMP near 52W Low + good fundamentals = potential deep value opportunity.","Full Dashboard"),
+
+    # ── WEEKLY CHANGE ──────────────────────────────────────────────────────────
+    ("WEEKLY CHANGE %","Chg% [2-Wk]",
+     "Price return over last 2 weeks (10 trading days). "
+     "2-Wk rising faster than 4-Wk = accelerating momentum — bullish signal.","All sheets"),
+    ("WEEKLY CHANGE %","Chg% [4-Wk]",
+     "Price return over last 4 weeks (20 trading days). "
+     "Used in Sector Stage scoring and Early Entry detection. "
+     ">5%=Strong uptrend | <-5%=Downtrend caution.","All sheets"),
+    ("WEEKLY CHANGE %","Chg% [6-Wk]",
+     "Price return over last 6 weeks. Medium-term trend confirmation.","Full Dashboard"),
+    ("WEEKLY CHANGE %","Chg% [8-Wk]",
+     "Price return over last 8 weeks. Confirms whether trend is sustained.","Full Dashboard"),
+
+    # ── FAIR VALUE ─────────────────────────────────────────────────────────────
+    ("FAIR VALUE","Upside %",
+     "Upside to Fair Value = (CFV − CMP) ÷ CMP × 100. "
+     "Same as MoS % in Full Dashboard. "
+     "Positive=upside potential | Negative=currently priced above fair value.","Gold Sheet"),
 ]
 
 GRP_COLORS = {
