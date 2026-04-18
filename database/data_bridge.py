@@ -379,7 +379,7 @@ def get_today_consolidated_data(target_date,
     Standardises all 4 price streams + 2 delivery streams into one DataFrame.
     BSE streams being None is normal in NSE-only mode — handled gracefully.
     """
-    from reconciler import reconcile_exchanges
+    from ingestion.reconciler import reconcile_exchanges
 
     date_str = (target_date.strftime("%Y-%m-%d")
                 if hasattr(target_date, "strftime")

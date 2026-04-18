@@ -9,7 +9,7 @@ Fixes:
 """
 
 import pandas as pd
-from data_bridge import get_20d_avg_vol
+from database.data_bridge import get_20d_avg_vol
 
 
 def calculate_priority_score(row: dict) -> float:

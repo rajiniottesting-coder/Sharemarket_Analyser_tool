@@ -21,14 +21,14 @@ import pandas as pd
 from pathlib import Path
 
 # Section 1: System & Data Imports
-from orchestrator import gate_check
-from harvester import (
+from ingestion.orchestrator import gate_check
+from ingestion.harvester import (
     download_nse_bhavcopy,
     download_nse_delivery,
     download_nse_sme_bhavcopy,
     download_nse_fo_participant_data,
 )
-from data_bridge import (
+from database.data_bridge import (
     save_to_database, check_data_integrity,
     get_historical_quarter_data,
     get_symbol_history, get_nifty_52w_high_from_db,
@@ -37,18 +37,18 @@ from data_bridge import (
 )
 
 # Section 0 & 3: Screening & Analytics
-from pre_screener import stage_1_filter, stage_2_fundamental_scorer
-from priority_ranker import get_top_100_candidates
-from v7_analysis_engine import V7AnalysisEngine
-from ownership_tracker import analyze_ownership_trends
-from forensics_engine import ForensicsEngine
-from rotation_engine import SectorRotationRadar
-from db_maintenance import enforce_circular_queue
-from intel_fetcher import fetch_latest_intelligence
+from screening.pre_screener import stage_1_filter, stage_2_fundamental_scorer
+from screening.priority_ranker import get_top_100_candidates
+from analysis.v7_analysis_engine import V7AnalysisEngine
+from analysis.ownership_tracker import analyze_ownership_trends
+from analysis.forensics_engine import ForensicsEngine
+from analysis.rotation_engine import SectorRotationRadar
+from database.db_maintenance import enforce_circular_queue
+from analysis.intel_fetcher import fetch_latest_intelligence
 
 # Section 7 & 8: AI & Formatting
-from ai_analyst import get_ai_analysis
-from report_formatter import ReportFormatter
+from ai.ai_analyst import get_ai_analysis
+from reporting.report_formatter import ReportFormatter
 
 
 def cleanup_temp_files():
@@ -220,7 +220,7 @@ def _bse_delivery(target_date):
 def _bse_sme(target_date):
     """BSE SME bhav — best-effort via harvester (non-critical)."""
     try:
-        from harvester import download_bse_sme_bhavcopy
+        from ingestion.harvester import download_bse_sme_bhavcopy
         return download_bse_sme_bhavcopy(target_date)
     except Exception:
         return None
@@ -252,7 +252,7 @@ def run_master_pipeline():
     gate_result = gate_check()
 
     if not gate_result["run"]:
-        from email_service import send_analysis_email
+        from reporting.email_service import send_analysis_email
         print(f"🛑 Pipeline Halted: {gate_result['reason']}")
         try:
             send_analysis_email(is_skip=True, skip_reason=gate_result["reason"])
@@ -295,7 +295,7 @@ def run_master_pipeline():
         if not integrity["pass"]:
             reason = f"C5 FAIL: {integrity['message']}"
             print(f"🛑 {reason}")
-            from email_service import send_analysis_email
+            from reporting.email_service import send_analysis_email
             send_analysis_email(is_skip=True, skip_reason=reason)
             return
         print(f"✅ C5 PASS: {integrity['message']}")
@@ -307,7 +307,7 @@ def run_master_pipeline():
         bulk_deals_df   = pd.DataFrame()
         insider_trades_df = pd.DataFrame()
         try:
-            from smart_money import SmartMoneyScraper
+            from analysis.smart_money import SmartMoneyScraper
             scraper = SmartMoneyScraper()
             result_bulk = scraper.fetch_nse_bulk_deals()
             result_insider = scraper.fetch_sast_insider_trading()
@@ -463,7 +463,7 @@ def run_master_pipeline():
                 stock["selection_reason"] = "; ".join(parts) or "Passed quality filters"
 
             # Section 4: Balance Sheet Health — fed with yfinance data
-            from bs_engine import BalanceSheetEngine
+            from analysis.bs_engine import BalanceSheetEngine
             _debt_bs  = _sf(stock.get("total_debt", stock.get("total_debt_cr", 0)), 0)
             _cash_bs  = _sf(stock.get("cash", stock.get("cash_cr", 0)), 0)
             _de_bs    = _sf(stock.get("debt_equity", 0), 0)
@@ -1181,7 +1181,7 @@ def run_master_pipeline():
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 5B: FAIR VALUE ENGINE
         # ─────────────────────────────────────────────────────────────────────
-        from fair_value_engine import FairValueEngine
+        from analysis.fair_value_engine import FairValueEngine
         fv_engine = FairValueEngine()
         for stock in final_100_list:
             beta       = _sf(stock.get("beta", 1.0), 1.0)
@@ -1222,7 +1222,7 @@ def run_master_pipeline():
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 6: SCORING + KEY FIXES + PRICE TARGETS
         # ─────────────────────────────────────────────────────────────────────
-        from scoring_engine import ScoringEngine
+        from analysis.scoring_engine import ScoringEngine
         scoring = ScoringEngine()
         for stock in final_100_list:
 
@@ -1379,7 +1379,7 @@ def run_master_pipeline():
 
             # Section 3I: Early Entry Score — computed here after vol_ratio + technicals are populated
             try:
-                from early_detection_engine import EarlyDetectionEngine
+                from analysis.early_detection_engine import EarlyDetectionEngine
                 _ede   = EarlyDetectionEngine()
                 _early = _ede.calculate_early_score(stock, {})
                 _escore = _early.get("total_score", 0)
@@ -1607,7 +1607,7 @@ def run_master_pipeline():
 
             # Spike Score — call SpikeScreener with correct key mappings
             try:
-                from spike_screener import SpikeScreener
+                from analysis.spike_screener import SpikeScreener
                 _spiker = SpikeScreener()
                 # SpikeScreener uses 'vol_spike_50d' — map from our 'vol_ratio'
                 _spike_input = dict(stock)
@@ -1624,7 +1624,7 @@ def run_master_pipeline():
 
             # Vol ratio (use DB-enriched value if already set, else calculate)
             if not stock.get("vol_ratio"):
-                from data_bridge import get_20d_avg_vol
+                from database.data_bridge import get_20d_avg_vol
                 avg_vol = get_20d_avg_vol(str(stock.get("symbol", "") or ""))
                 curr_vol = _sf(stock.get("volume", 0), 0)
                 stock["vol_ratio"] = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
@@ -1789,8 +1789,8 @@ def run_master_pipeline():
         # SECTION 9 & 10: REPORTING & DELIVERY
         # ─────────────────────────────────────────────────────────────────────
         print("📝 [Section 9/10] Constructing Final Deliverables...")
-        from excel_generator import ExcelGeneratorV6
-        from daily_report_generator import DailyReportGenerator
+        from reporting.excel_generator import ExcelGeneratorV6
+        from reporting.daily_report_generator import DailyReportGenerator
 
         date_str = target_date.strftime("%Y%m%d")
 
@@ -1824,7 +1824,7 @@ def run_master_pipeline():
         _run_time_ist = datetime.datetime.now(_ist).strftime("%H:%M IST")
         # Load previous scores BEFORE saving new results (for Δ in Alert Log)
         try:
-            from data_bridge import load_latest_analysis_results as _load_prev
+            from database.data_bridge import load_latest_analysis_results as _load_prev
             _prev_records = _load_prev()
             _prev_scores = {r["symbol"]: float(r.get("composite_score", 0) or 0)
                             for r in _prev_records}
@@ -1851,7 +1851,7 @@ def run_master_pipeline():
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 12: EMAIL DELIVERY
         # ─────────────────────────────────────────────────────────────────────
-        from email_service import send_analysis_email
+        from reporting.email_service import send_analysis_email
         attachments = [master_file, gold_file, report_filename]
         attachments = [a for a in attachments if a and os.path.exists(a)]
         send_analysis_email(attachments=attachments)
@@ -1889,7 +1889,7 @@ def run_master_pipeline():
         print(f"❌ CRITICAL FAILURE: {e}")
         traceback.print_exc()
         try:
-            from email_service import send_analysis_email
+            from reporting.email_service import send_analysis_email
             send_analysis_email(is_error=True, error_msg=str(e))
         except Exception:
             pass

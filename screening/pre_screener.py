@@ -12,7 +12,7 @@ Key fixes:
 """
 
 import pandas as pd
-from forensics_engine import ForensicsEngine
+from analysis.forensics_engine import ForensicsEngine
 
 
 # ─── SECTION 0A: STAGE 1 FILTER ──────────────────────────────────────────────

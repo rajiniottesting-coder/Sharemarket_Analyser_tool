@@ -1,8 +1,8 @@
 import re
 import pandas as pd
-from data_bridge import get_today_consolidated_data, get_symbol_history
-from excel_generator import ExcelGeneratorV6
-from daily_report_generator import DailyReportGenerator
+from database.data_bridge import get_today_consolidated_data, get_symbol_history
+from reporting.excel_generator import ExcelGeneratorV6
+from reporting.daily_report_generator import DailyReportGenerator
 
 class CommandParser:
     def __init__(self, data_context=None):

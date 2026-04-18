@@ -1,7 +1,7 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-from command_parser import CommandParser
-from data_bridge import load_latest_analysis_results
+from reporting.command_parser import CommandParser
+from database.data_bridge import load_latest_analysis_results
 
 app = Flask(__name__)
 

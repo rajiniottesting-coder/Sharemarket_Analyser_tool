@@ -1,10 +1,10 @@
 import sys
 import pandas as pd
 from datetime import datetime
-from command_parser import CommandParser
+from reporting.command_parser import CommandParser
 from master_funnel import run_master_pipeline # To refresh context
-from v7_analysis_engine import V7AnalysisEngine
-from data_bridge import get_symbol_history
+from analysis.v7_analysis_engine import V7AnalysisEngine
+from database.data_bridge import get_symbol_history
 
 class StockChatAI:
     def __init__(self):

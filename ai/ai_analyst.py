@@ -11,7 +11,7 @@ import os
 import time
 import anthropic
 from dotenv import load_dotenv
-from fundamental_engine import FundamentalEngine
+from analysis.fundamental_engine import FundamentalEngine
 
 
 def _sf(val, default=0.0):
