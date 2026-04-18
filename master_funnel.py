@@ -1786,7 +1786,7 @@ def run_master_pipeline():
             pass
 
     finally:
-        # Always close BSE session and clean up temp files
+        # Always close BSE session and clean up temp files..
         _close_bse_client()
 
 
