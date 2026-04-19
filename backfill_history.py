@@ -212,6 +212,10 @@ def init_all_tables(conn):
             q_rev_cr         REAL    DEFAULT 0,
             q_pat_cr         REAL    DEFAULT 0,
             q_ebitda_cr      REAL    DEFAULT 0,
+            npm_q1           REAL    DEFAULT 0,
+            npm_q2           REAL    DEFAULT 0,
+            npm_q3           REAL    DEFAULT 0,
+            margin_expansion INTEGER DEFAULT 0,
             piotroski_f      REAL    DEFAULT 0,
             altman_z         REAL    DEFAULT 0,
             beneish_m        REAL    DEFAULT 0,
@@ -1374,6 +1378,140 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                 result[sym]["current_ratio"] = _cr_val
                 result[sym]["quick_ratio"]   = max(_qr_val, 0.1)
 
+    # ── Third pass: quarterly + annual income statement for growth/margin fields ──
+    # Populates: npm_q1/q2/q3, margin_expansion, q3_rev/pat/ebitda (₹Cr),
+    #            rev_cagr_1y/3y, pat_cagr_1y/3y, ebitda_cagr_1y
+    # One Ticker call per symbol. Capped at 150 symbols to stay within rate limits.
+    # Runs only for symbols that have basic info (already in result dict).
+    _syms_for_income = list(result.keys())[:150]
+    if _syms_for_income:
+        import yfinance as _yf3
+
+        def _is_val(df, row_keywords, col_idx):
+            """Extract a numeric value from an income-stmt DataFrame safely.
+            Tries multiple row-name variants (yfinance names differ across versions).
+            row_keywords = list of keyword sets to try in order, e.g.
+              [["Total Revenue"], ["Revenue"], ["TotalRevenue"]]
+            """
+            if df is None or df.empty:
+                return 0.0
+            idx_lower = {str(r).lower(): r for r in df.index}
+            for kws in row_keywords:
+                for idx_str, real_row in idx_lower.items():
+                    if all(k.lower() in idx_str for k in kws):
+                        try:
+                            cols = list(df.columns)
+                            if col_idx >= len(cols):
+                                return 0.0
+                            v = df.loc[real_row, cols[col_idx]]
+                            return float(v) if v is not None and str(v) != "nan" else 0.0
+                        except Exception:
+                            return 0.0
+            return 0.0
+
+        def _safe_cagr(v_new, v_old, years):
+            """CAGR % rounded to 2dp. Returns 0 if inputs invalid or NaN."""
+            try:
+                import math as _math
+                if v_old <= 0 or v_new <= 0 or years <= 0:
+                    return 0.0
+                if _math.isnan(v_new) or _math.isnan(v_old):
+                    return 0.0
+                result = round(((v_new / v_old) ** (1.0 / years) - 1.0) * 100, 2)
+                return result if not _math.isnan(result) else 0.0
+            except Exception:
+                return 0.0
+
+        # Row-name keyword lists for each metric (try in order — first match wins)
+        _REV  = [["total revenue"], ["totalrevenue"], ["revenue"]]
+        _PAT  = [["net income"], ["netincome"], ["net profit"], ["profit after tax"]]
+        _EBIT = [["ebitda"], ["operating income", "ebitda"],
+                 ["operating income"], ["operatingincome"]]
+
+        for _sym in _syms_for_income:
+            try:
+                _tk3 = _yf3.Ticker(_sym + ".NS")
+
+                # ── Quarterly income statement ─────────────────────────────
+                # Columns ordered newest → oldest: col[0]=most recent Q, col[1]=Q-1, etc.
+                _qi = None
+                for _attr in ("quarterly_income_stmt", "quarterly_financials"):
+                    _qi = getattr(_tk3, _attr, None)
+                    if _qi is not None and not _qi.empty:
+                        break
+
+                if _qi is not None and not _qi.empty and len(_qi.columns) >= 3:
+                    # Q1 = most recent quarter (col 0), Q2 = col 1, Q3 = col 2
+                    _rev_q0 = _is_val(_qi, _REV,  0)
+                    _rev_q1 = _is_val(_qi, _REV,  1)
+                    _rev_q2 = _is_val(_qi, _REV,  2)
+                    _pat_q0 = _is_val(_qi, _PAT,  0)
+                    _pat_q1 = _is_val(_qi, _PAT,  1)
+                    _pat_q2 = _is_val(_qi, _PAT,  2)
+                    _ebi_q2 = _is_val(_qi, _EBIT, 2)
+
+                    # NPM = Net Profit Margin = PAT / Revenue * 100
+                    _npm_q1 = round(_pat_q0 / _rev_q0 * 100, 2) if _rev_q0 > 0 else 0.0
+                    _npm_q2 = round(_pat_q1 / _rev_q1 * 100, 2) if _rev_q1 > 0 else 0.0
+                    _npm_q3 = round(_pat_q2 / _rev_q2 * 100, 2) if _rev_q2 > 0 else 0.0
+
+                    # Margin Expansion = "YES" when NPM has risen 3 consecutive quarters
+                    # i.e. Q3(oldest) < Q2 < Q1(newest)  — improving trend
+                    _mexp = "YES" if (_npm_q1 > 0 and _npm_q2 > 0 and _npm_q3 > 0
+                                      and _npm_q3 < _npm_q2 < _npm_q1) else "NO"
+
+                    if _npm_q1 != 0: result[_sym]["npm_q1"] = _npm_q1
+                    if _npm_q2 != 0: result[_sym]["npm_q2"] = _npm_q2
+                    if _npm_q3 != 0: result[_sym]["npm_q3"] = _npm_q3
+                    result[_sym]["margin_expansion"] = _mexp
+
+                    # Q3 absolute figures in ₹ Crore (col[2] = third most recent quarter)
+                    _INR_CR = 1e7
+                    if _rev_q2 > 0:
+                        result[_sym]["q3_rev"]   = round(_rev_q2 / _INR_CR, 2)
+                    if _pat_q2 > 0:
+                        result[_sym]["q3_pat"]   = round(_pat_q2 / _INR_CR, 2)
+                    if _ebi_q2 > 0:
+                        result[_sym]["q3_ebitda"] = round(_ebi_q2 / _INR_CR, 2)
+
+                # ── Annual income statement for CAGR ──────────────────────
+                # Columns ordered newest → oldest: col[0]=FY current, col[1]=FY-1, col[3]=FY-3
+                _ai = None
+                for _attr in ("income_stmt", "financials"):
+                    _ai = getattr(_tk3, _attr, None)
+                    if _ai is not None and not _ai.empty:
+                        break
+
+                if _ai is not None and not _ai.empty and len(_ai.columns) >= 2:
+                    _rev_y0 = _is_val(_ai, _REV,  0)   # latest FY
+                    _rev_y1 = _is_val(_ai, _REV,  1)   # FY-1
+                    _pat_y0 = _is_val(_ai, _PAT,  0)
+                    _pat_y1 = _is_val(_ai, _PAT,  1)
+                    _ebi_y0 = _is_val(_ai, _EBIT, 0)
+                    _ebi_y1 = _is_val(_ai, _EBIT, 1)
+
+                    # 1Y CAGR (= simple YoY when n=1)
+                    _rc1 = _safe_cagr(_rev_y0, _rev_y1, 1)
+                    _pc1 = _safe_cagr(_pat_y0, _pat_y1, 1)
+                    _ec1 = _safe_cagr(_ebi_y0, _ebi_y1, 1)
+
+                    if _rc1 != 0: result[_sym]["rev_cagr_1y"]   = _rc1
+                    if _pc1 != 0: result[_sym]["pat_cagr_1y"]   = _pc1
+                    if _ec1 != 0: result[_sym]["ebitda_cagr_1y"] = _ec1
+
+                    # 3Y CAGR requires at least 4 annual columns
+                    if len(_ai.columns) >= 4:
+                        _rev_y3 = _is_val(_ai, _REV, 3)
+                        _pat_y3 = _is_val(_ai, _PAT, 3)
+                        _rc3 = _safe_cagr(_rev_y0, _rev_y3, 3)
+                        _pc3 = _safe_cagr(_pat_y0, _pat_y3, 3)
+                        if _rc3 != 0: result[_sym]["rev_cagr_3y"] = _rc3
+                        if _pc3 != 0: result[_sym]["pat_cagr_3y"] = _pc3
+
+                time.sleep(0.3)   # polite rate-limit delay per symbol
+            except Exception:
+                pass   # never break the outer loop — missing data is fine
+
     return result
 
 
@@ -1505,6 +1643,21 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             "payout_ratio": d.get("payout_ratio", 0),   # payoutRatio ×100
             "rev_yoy":      d.get("rev_yoy", 0),        # revenueGrowth ×100
             "pat_yoy":      d.get("pat_yoy", 0),        # earningsGrowth ×100
+            # ── Quarterly NPM / Margin Expansion (from third pass) ─────────
+            "npm_q1":           d.get("npm_q1", 0),
+            "npm_q2":           d.get("npm_q2", 0),
+            "npm_q3":           d.get("npm_q3", 0),
+            "margin_expansion": 1 if d.get("margin_expansion") == "YES" else 0,
+            # ── Q3 absolute figures in ₹ Crore ─────────────────────────────
+            "q_rev_cr":         d.get("q3_rev",    0),
+            "q_pat_cr":         d.get("q3_pat",    0),
+            "q_ebitda_cr":      d.get("q3_ebitda", 0),
+            # ── Growth CAGRs (from third pass) ─────────────────────────────
+            "rev_cagr_1y":      d.get("rev_cagr_1y",    0),
+            "rev_cagr_3y":      d.get("rev_cagr_3y",    0),
+            "pat_cagr_1y":      d.get("pat_cagr_1y",    0),
+            "pat_cagr_3y":      d.get("pat_cagr_3y",    0),
+            "ebitda_cagr_1y":   d.get("ebitda_cagr_1y", 0),
         })
 
         # ── FIX: populate shareholding table from yfinance holding data ──────

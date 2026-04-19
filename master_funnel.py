@@ -555,6 +555,18 @@ def run_master_pipeline():
                 ("payout_ratio",   "REAL DEFAULT 0"),
                 ("rev_yoy",        "REAL DEFAULT 0"),
                 ("pat_yoy",        "REAL DEFAULT 0"),
+                ("npm_q1",           "REAL DEFAULT 0"),
+                ("npm_q2",           "REAL DEFAULT 0"),
+                ("npm_q3",           "REAL DEFAULT 0"),
+                ("margin_expansion", "INTEGER DEFAULT 0"),
+                ("q_rev_cr",         "REAL DEFAULT 0"),
+                ("q_pat_cr",         "REAL DEFAULT 0"),
+                ("q_ebitda_cr",      "REAL DEFAULT 0"),
+                ("ebitda_cagr_1y",   "REAL DEFAULT 0"),
+                ("rev_cagr_1y",      "REAL DEFAULT 0"),
+                ("rev_cagr_3y",      "REAL DEFAULT 0"),
+                ("pat_cagr_1y",      "REAL DEFAULT 0"),
+                ("pat_cagr_3y",      "REAL DEFAULT 0"),
             ]:
                 if _col not in _existing_cols:
                     _mc.execute(
@@ -592,7 +604,15 @@ def run_master_pipeline():
                         fm.quick_ratio, fm.cash_cr, fm.fcf_yield,
                         COALESCE(fm.rev_yoy, 0)        as rev_yoy,
                         COALESCE(fm.pat_yoy, 0)        as pat_yoy,
-                        COALESCE(fm.payout_ratio, 0)   as payout_ratio
+                        COALESCE(fm.payout_ratio, 0)   as payout_ratio,
+                        COALESCE(fm.npm_q1, 0)         as npm_q1,
+                        COALESCE(fm.npm_q2, 0)         as npm_q2,
+                        COALESCE(fm.npm_q3, 0)         as npm_q3,
+                        COALESCE(fm.margin_expansion,0) as margin_expansion,
+                        COALESCE(fm.q_rev_cr, 0)       as q_rev_cr,
+                        COALESCE(fm.q_pat_cr, 0)       as q_pat_cr,
+                        COALESCE(fm.q_ebitda_cr, 0)    as q_ebitda_cr,
+                        COALESCE(fm.ebitda_cagr_1y, 0) as ebitda_cagr_1y
                         FROM fundamental_metrics fm
                         INNER JOIN (
                             SELECT symbol, MAX(date) as md FROM fundamental_metrics
@@ -796,14 +816,25 @@ def run_master_pipeline():
 
             # Enrich from fundamental_metrics
             if sym in _fm_map:
-                _fmv = list(_fm_map[sym]) + [0]*35
+                _fmv = list(_fm_map[sym]) + [0]*45
                 # Cols 0-28 (original): pe,pb,ey,dy,pf,az,bm,roe,roce,roa,gm,em,nm,
                 #       de,cr,rc1,rc3,pc1,pc3,td,fcf,nde,ic,ps,ev,peg,qr,cash,fcfy
-                # Cols 29-31 (new): rev_yoy, pat_yoy, payout_ratio
+                # Cols 29-31: rev_yoy, pat_yoy, payout_ratio
+                # Cols 32-39: npm_q1, npm_q2, npm_q3, margin_expansion,
+                #             q_rev_cr, q_pat_cr, q_ebitda_cr, ebitda_cagr_1y
                 pe,pb,ey,dy,pf,az,bm,roe,roce,roa,gm,em,nm,de,cr,rc1,rc3,pc1,pc3,td,fcf,nde,ic,ps_v,ev_v,peg_v,qr_v,cash_v,fcfy_v = _fmv[:29] + [0]*(29-min(len(_fmv),29))
                 rev_yoy_v    = _fmv[29] if len(_fmv) > 29 else 0
                 pat_yoy_v    = _fmv[30] if len(_fmv) > 30 else 0
                 payout_v     = _fmv[31] if len(_fmv) > 31 else 0
+                # Quarterly / CAGR fields (cols 32-39 from extended SELECT)
+                npm_q1_v     = _fmv[32] if len(_fmv) > 32 else 0
+                npm_q2_v     = _fmv[33] if len(_fmv) > 33 else 0
+                npm_q3_v     = _fmv[34] if len(_fmv) > 34 else 0
+                mexp_v       = _fmv[35] if len(_fmv) > 35 else 0   # INTEGER 0/1
+                q_rev_v      = _fmv[36] if len(_fmv) > 36 else 0
+                q_pat_v      = _fmv[37] if len(_fmv) > 37 else 0
+                q_ebitda_v   = _fmv[38] if len(_fmv) > 38 else 0
+                ebitda_c1_v  = _fmv[39] if len(_fmv) > 39 else 0
                 # Extended fields from secondary safe query (0 if DB column missing)
                 _ext = _fm_ext.get(sym, (0, 0, 0))
                 op_cf_v     = float(_ext[0]) if _ext[0] else 0   # operating cash flow ₹Cr
@@ -946,6 +977,19 @@ def run_master_pipeline():
                 stock.setdefault("pat_cagr_3y",  _fv(pc3))
                 stock.setdefault("rev_yoy",      _fv(rev_yoy_v))
                 stock.setdefault("pat_yoy",      _fv(pat_yoy_v))
+                # ── Quarterly NPM / Margin Expansion (from DB via backfill) ──
+                stock.setdefault("npm_q1",  _fv(npm_q1_v))
+                stock.setdefault("npm_q2",  _fv(npm_q2_v))
+                stock.setdefault("npm_q3",  _fv(npm_q3_v))
+                # margin_expansion stored as INTEGER 0/1 in DB; display as YES/NO
+                stock.setdefault("margin_expansion",
+                                 "YES" if int(_fvn(mexp_v)) == 1 else "NO")
+                # ── Q3 absolute figures (₹ Crore) ────────────────────────────
+                stock.setdefault("q3_rev",    _fv(q_rev_v))
+                stock.setdefault("q3_pat",    _fv(q_pat_v))
+                stock.setdefault("q3_ebitda", _fv(q_ebitda_v))
+                # ── EBITDA CAGR 1Y (not in old rc1..pc3 vars) ────────────────
+                stock.setdefault("ebitda_cagr_1y", _fv(ebitda_c1_v))
                 # Financial Health — with unit fixes
                 stock.setdefault("debt_equity",  _ratio(de))  # yfinance ×100 → ratio
                 # Numeric D/E for scoring (never "—")
