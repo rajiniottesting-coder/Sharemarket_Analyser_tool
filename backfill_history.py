@@ -1009,14 +1009,51 @@ def run_backfill():
     print("\n🔧 Computing technical indicators & weekly momentum for all symbols...")
     _compute_all_indicators(conn)
 
-    # ── Section 10: Fetch NSE fundamentals for all symbols ────────────────────
-    print("\n🏦 Fetching NSE fundamentals (PE, sector, promoter%, FII%)...")
+    # ── Section 10: Fetch NSE fundamentals — tiered symbol selection ──────────
+    # Tier 1: top 100 by turnover → guaranteed to cover large/mid caps
+    # Tier 2: close>₹50 AND delivery>40% → quality small/micro caps
+    #         (high institutional delivery = genuine interest, not penny junk)
+    # Combined ~200 symbols at ~1.5s each = ~5 min total.
+    # This mirrors Stage 3's MAX_SMALL_MICRO=65 intent without excluding quality
+    # small/micro caps that have strong BS and high institutional delivery.
+    print("\n🏦 Fetching NSE fundamentals (large/mid + quality small/micro)...")
     try:
-        all_syms = pd.read_sql(
-            "SELECT DISTINCT symbol FROM daily_prices WHERE exchange='NSE' ORDER BY symbol",
+        stage3_syms = pd.read_sql(
+            """
+            WITH base AS (
+                SELECT
+                    symbol,
+                    AVG(close)        AS avg_close,
+                    AVG(delivery_pct) AS avg_deliv,
+                    COUNT(*)          AS days_traded,
+                    SUM(turnover)     AS total_turnover
+                FROM daily_prices
+                WHERE exchange = 'NSE'
+                  AND close > 10
+                  AND delivery_pct > 20
+                GROUP BY symbol
+                HAVING days_traded >= 10
+            ),
+            tier1 AS (
+                SELECT symbol, 1 AS tier FROM base
+                ORDER BY total_turnover DESC LIMIT 100
+            ),
+            tier2 AS (
+                SELECT symbol, 2 AS tier FROM base
+                WHERE avg_close > 50
+                  AND avg_deliv > 40
+                  AND symbol NOT IN (SELECT symbol FROM tier1)
+                ORDER BY avg_deliv DESC, total_turnover DESC LIMIT 100
+            )
+            SELECT symbol FROM tier1
+            UNION ALL
+            SELECT symbol FROM tier2
+            """,
             conn
         )['symbol'].tolist()
-        fetch_nse_fundamentals(conn, all_syms, max_symbols=500)
+        print(f"   {len(stage3_syms)} symbols selected "
+              f"(top-100 by turnover + quality small/micro by delivery)")
+        fetch_nse_fundamentals(conn, stage3_syms, max_symbols=200)
     except Exception as e:
         print(f"   ⚠️  Fundamentals fetch warning: {e}")
 
@@ -1256,71 +1293,72 @@ def _fetch_yfinance_data(symbols: list) -> dict:
     except ImportError:
         return {}
 
+    # NOTE: yfinance 1.3.0 does NOT accept a session= parameter in Ticker().
+    # Passing session= raises TypeError → all symbols silently fail.
+    # Plain yf.Ticker(sym) works reliably — confirmed by test_yfinance.py (165 keys).
+
     result = {}
-    # Process in batches of 10 to avoid rate limits
-    batch_size = 10
-    for i in range(0, len(symbols), batch_size):
-        batch = symbols[i:i+batch_size]
-        # Yahoo Finance uses .NS suffix for NSE stocks
-        tickers_str = " ".join(s + ".NS" for s in batch)
+    # Per-symbol loop — yf.Tickers() batch is unreliable in yfinance 1.x.
+    for sym in symbols:
         try:
-            tickers = yf.Tickers(tickers_str)
-            for sym in batch:
-                try:
-                    info = tickers.tickers.get(sym + ".NS", yf.Ticker(sym + ".NS")).info
-                    if not info or info.get("regularMarketPrice", 0) == 0:
-                        continue
-                    mcap_inr = float(info.get("marketCap", 0) or 0)
-                    def _yf(k, m=1.0, d=0.0):
-                        try: return round(float(info.get(k) or 0) * m, 4)
-                        except: return d
-                    result[sym] = {
-                        "pe":            _yf("trailingPE"),
-                        "eps":           _yf("trailingEps"),
-                        "pb":            _yf("priceToBook"),
-                        "beta":          _yf("beta", d=1.0) or 1.0,
-                        "mcap_cr":       round(mcap_inr / 1e7, 2),
-                        "sector":        str(info.get("sector") or ""),
-                        "company_name":  str(info.get("longName") or ""),
-                        # dividendYield: yfinance ALWAYS returns true fraction (0.0224 = 2.24%)
-                        # Store as-is (fraction). master_funnel converts to % for display.
-                        # Never multiply by 100 here — that caused 224% bug.
-                        "div_yield":     _yf("dividendYield"),   # stored as fraction e.g. 0.0224
-                        "roe":           _yf("returnOnEquity", m=100),
-                        "roa":           _yf("returnOnAssets", m=100),
-                        "debt_equity":   _yf("debtToEquity"),
-                        "current_ratio": _yf("currentRatio"),
-                        "quick_ratio":   _yf("quickRatio"),
-                        # Compute CR from balance sheet — try multiple yfinance field names
-                        "_cr_computed": (lambda ca, cl: round(ca/cl, 3) if ca > 0 and cl > 0 else 0)(
-                            float(info.get("totalCurrentAssets") or
-                                  info.get("currentAssets") or 0),
-                            float(info.get("totalCurrentLiabilities") or
-                                  info.get("currentLiabilities") or 1)
-                        ),
-                        "gross_margin":  _yf("grossMargins", m=100),
-                        "ebitda_margin": _yf("ebitdaMargins", m=100),
-                        "net_margin":    _yf("profitMargins", m=100),
-                        "rev_yoy":       _yf("revenueGrowth", m=100),
-                        "pat_yoy":       _yf("earningsGrowth", m=100),
-                        "total_cash":    round(float(info.get("totalCash") or 0)/1e7, 2),
-                        "total_debt":    round(float(info.get("totalDebt") or 0)/1e7, 2),
-                        "fcf":           round(float(info.get("freeCashflow") or 0)/1e7, 2),
-                        "operating_cf":  round(float(info.get("operatingCashflow") or 0)/1e7, 2),
-                        "total_current_assets": round(float(info.get("totalCurrentAssets") or 0)/1e7, 2),
-                        "total_current_liab":   round(float(info.get("totalCurrentLiabilities") or 0)/1e7, 2),
-                        "payout_ratio":  _yf("payoutRatio", m=100),
-                        "ps":            _yf("priceToSalesTrailing12Months"),
-                        "ev_ebitda":     _yf("enterpriseToEbitda"),
-                        "peg":           _yf("pegRatio"),
-                        "promoter_pct":  _yf("heldPercentInsiders", m=100),
-                        "inst_pct":      _yf("heldPercentInstitutions", m=100),
-                    }
-                except Exception:
-                    pass
+            info = yf.Ticker(sym + ".NS").info
+            # yfinance >=0.2 uses "currentPrice"; older used "regularMarketPrice"
+            if not info:
+                continue
+            _price = (info.get("currentPrice") or
+                      info.get("regularMarketPrice") or
+                      info.get("previousClose") or 0)
+            if not _price:
+                continue
+            mcap_inr = float(info.get("marketCap", 0) or 0)
+            def _yf(k, m=1.0, d=0.0):
+                try: return round(float(info.get(k) or 0) * m, 4)
+                except: return d
+            result[sym] = {
+                "pe":            _yf("trailingPE"),
+                "eps":           _yf("trailingEps"),
+                "pb":            _yf("priceToBook"),
+                "beta":          _yf("beta", d=1.0) or 1.0,
+                "mcap_cr":       round(mcap_inr / 1e7, 2),
+                "sector":        str(info.get("sector") or ""),
+                "company_name":  str(info.get("longName") or ""),
+                # dividendYield: yfinance ALWAYS returns true fraction (0.0224 = 2.24%)
+                # Store as-is (fraction). master_funnel converts to % for display.
+                # Never multiply by 100 here — that caused 224% bug.
+                "div_yield":     _yf("dividendYield"),   # stored as fraction e.g. 0.0224
+                "roe":           _yf("returnOnEquity", m=100),
+                "roa":           _yf("returnOnAssets", m=100),
+                "debt_equity":   _yf("debtToEquity"),
+                "current_ratio": _yf("currentRatio"),
+                "quick_ratio":   _yf("quickRatio"),
+                # Compute CR from balance sheet — try multiple yfinance field names
+                "_cr_computed": (lambda ca, cl: round(ca/cl, 3) if ca > 0 and cl > 0 else 0)(
+                    float(info.get("totalCurrentAssets") or
+                          info.get("currentAssets") or 0),
+                    float(info.get("totalCurrentLiabilities") or
+                          info.get("currentLiabilities") or 1)
+                ),
+                "gross_margin":  _yf("grossMargins", m=100),
+                "ebitda_margin": _yf("ebitdaMargins", m=100),
+                "net_margin":    _yf("profitMargins", m=100),
+                "rev_yoy":       _yf("revenueGrowth", m=100),
+                "pat_yoy":       _yf("earningsGrowth", m=100),
+                "total_cash":    round(float(info.get("totalCash") or 0)/1e7, 2),
+                "total_debt":    round(float(info.get("totalDebt") or 0)/1e7, 2),
+                "fcf":           round(float(info.get("freeCashflow") or 0)/1e7, 2),
+                "operating_cf":  round(float(info.get("operatingCashflow") or 0)/1e7, 2),
+                "total_current_assets": round(float(info.get("totalCurrentAssets") or 0)/1e7, 2),
+                "total_current_liab":   round(float(info.get("totalCurrentLiabilities") or 0)/1e7, 2),
+                "payout_ratio":  _yf("payoutRatio", m=100),
+                "ps":            _yf("priceToSalesTrailing12Months"),
+                "ev_ebitda":     _yf("enterpriseToEbitda"),
+                "peg":           _yf("pegRatio"),
+                "promoter_pct":  _yf("heldPercentInsiders", m=100),
+                "inst_pct":      _yf("heldPercentInstitutions", m=100),
+            }
         except Exception:
             pass
-        time.sleep(0.5)  # polite delay between batches
+        time.sleep(0.5)  # polite delay per symbol
 
     # Second pass: balance_sheet fetch for stocks still missing CR
     # Fixes: correct row names (no 'Total' prefix), .NS + .BO, quarterly fallback,
@@ -1381,9 +1419,11 @@ def _fetch_yfinance_data(symbols: list) -> dict:
     # ── Third pass: quarterly + annual income statement for growth/margin fields ──
     # Populates: npm_q1/q2/q3, margin_expansion, q3_rev/pat/ebitda (₹Cr),
     #            rev_cagr_1y/3y, pat_cagr_1y/3y, ebitda_cagr_1y
-    # One Ticker call per symbol. Capped at 150 symbols to stay within rate limits.
-    # Runs only for symbols that have basic info (already in result dict).
-    _syms_for_income = list(result.keys())[:150]
+    # Runs on the FULL symbols list (not just those that got basic info in pass 1)
+    # because quarterly_income_stmt uses a different Yahoo endpoint from .info —
+    # it works independently even when the batch .info call fails.
+    # Capped at 150 symbols to stay within rate limits.
+    _syms_for_income = symbols[:150]
     if _syms_for_income:
         import yfinance as _yf3
 
@@ -1409,6 +1449,37 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                             return 0.0
             return 0.0
 
+        def _ebitda_val(df, col_idx):
+            """Get EBITDA value, preferring plain 'EBITDA' row over 'Normalized EBITDA'.
+            yfinance 1.3.0 returns both; plain EBITDA is more accurate."""
+            if df is None or df.empty:
+                return 0.0
+            idx_lower = {str(r).lower(): r for r in df.index}
+            # Pass 1: exact "ebitda" row excluding any "normalized" qualifier
+            for idx_str, real_row in idx_lower.items():
+                if idx_str.strip() == "ebitda" or \
+                   ("ebitda" in idx_str and "normalized" not in idx_str
+                    and "adjusted" not in idx_str):
+                    try:
+                        cols = list(df.columns)
+                        if col_idx >= len(cols): return 0.0
+                        v = df.loc[real_row, cols[col_idx]]
+                        return float(v) if v is not None and str(v) != "nan" else 0.0
+                    except Exception:
+                        return 0.0
+            # Pass 2: any EBITDA including normalized
+            for idx_str, real_row in idx_lower.items():
+                if "ebitda" in idx_str:
+                    try:
+                        cols = list(df.columns)
+                        if col_idx >= len(cols): return 0.0
+                        v = df.loc[real_row, cols[col_idx]]
+                        return float(v) if v is not None and str(v) != "nan" else 0.0
+                    except Exception:
+                        return 0.0
+            # Pass 3: operating income as last resort
+            return _is_val(df, [["operating income"]], col_idx)
+
         def _safe_cagr(v_new, v_old, years):
             """CAGR % rounded to 2dp. Returns 0 if inputs invalid or NaN."""
             try:
@@ -1423,10 +1494,13 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                 return 0.0
 
         # Row-name keyword lists for each metric (try in order — first match wins)
-        _REV  = [["total revenue"], ["totalrevenue"], ["revenue"]]
-        _PAT  = [["net income"], ["netincome"], ["net profit"], ["profit after tax"]]
-        _EBIT = [["ebitda"], ["operating income", "ebitda"],
-                 ["operating income"], ["operatingincome"]]
+        _REV  = [["total revenue"], ["operating revenue"], ["totalrevenue"], ["revenue"]]
+        _PAT  = [["net income common"], ["net income"], ["netincome"],
+                 ["net profit"], ["profit after tax"]]
+        # For EBITDA: prefer plain "EBITDA" row over "Normalized EBITDA"
+        # _is_val will try each keyword set in order; within a set it takes first match.
+        # We separate "ebitda" (no qualifier) from "normalized ebitda" by checking
+        # that "normalized" is NOT in the row name for the first attempt.
 
         for _sym in _syms_for_income:
             try:
@@ -1448,7 +1522,7 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                     _pat_q0 = _is_val(_qi, _PAT,  0)
                     _pat_q1 = _is_val(_qi, _PAT,  1)
                     _pat_q2 = _is_val(_qi, _PAT,  2)
-                    _ebi_q2 = _is_val(_qi, _EBIT, 2)
+                    _ebi_q2 = _ebitda_val(_qi, 2)
 
                     # NPM = Net Profit Margin = PAT / Revenue * 100
                     _npm_q1 = round(_pat_q0 / _rev_q0 * 100, 2) if _rev_q0 > 0 else 0.0
@@ -1460,6 +1534,9 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                     _mexp = "YES" if (_npm_q1 > 0 and _npm_q2 > 0 and _npm_q3 > 0
                                       and _npm_q3 < _npm_q2 < _npm_q1) else "NO"
 
+                    # Ensure entry exists even if pass-1 batch .info returned nothing
+                    if _sym not in result:
+                        result[_sym] = {}
                     if _npm_q1 != 0: result[_sym]["npm_q1"] = _npm_q1
                     if _npm_q2 != 0: result[_sym]["npm_q2"] = _npm_q2
                     if _npm_q3 != 0: result[_sym]["npm_q3"] = _npm_q3
@@ -1487,14 +1564,17 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                     _rev_y1 = _is_val(_ai, _REV,  1)   # FY-1
                     _pat_y0 = _is_val(_ai, _PAT,  0)
                     _pat_y1 = _is_val(_ai, _PAT,  1)
-                    _ebi_y0 = _is_val(_ai, _EBIT, 0)
-                    _ebi_y1 = _is_val(_ai, _EBIT, 1)
+                    _ebi_y0 = _ebitda_val(_ai, 0)
+                    _ebi_y1 = _ebitda_val(_ai, 1)
 
                     # 1Y CAGR (= simple YoY when n=1)
                     _rc1 = _safe_cagr(_rev_y0, _rev_y1, 1)
                     _pc1 = _safe_cagr(_pat_y0, _pat_y1, 1)
                     _ec1 = _safe_cagr(_ebi_y0, _ebi_y1, 1)
 
+                    # Ensure entry exists even if pass-1 batch .info returned nothing
+                    if _sym not in result:
+                        result[_sym] = {}
                     if _rc1 != 0: result[_sym]["rev_cagr_1y"]   = _rc1
                     if _pc1 != 0: result[_sym]["pat_cagr_1y"]   = _pc1
                     if _ec1 != 0: result[_sym]["ebitda_cagr_1y"] = _ec1

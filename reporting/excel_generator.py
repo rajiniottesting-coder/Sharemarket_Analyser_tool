@@ -391,23 +391,23 @@ GLOSSARY_DATA = [
     ("PROFITABILITY","NPM %",
      "Net Profit Margin = Net Income ÷ Revenue × 100. Bottom-line profitability after everything. "
      ">15% = excellent | 8–15% = good | 3–8% = average | <3% = thin (watch for debt servicing risk)","Full Dashboard"),
-    ("PROFITABILITY","NPM Q1 %","Net Profit Margin in Q1 (Apr–Jun). Compare 3 quarters for Margin Expansion trend.","Full Dashboard"),
-    ("PROFITABILITY","NPM Q2 %","Net Profit Margin in Q2 (Jul–Sep). Rising NPM Q1→Q2→Q3 = Margin Expansion flag.","Full Dashboard"),
-    ("PROFITABILITY","NPM Q3 %","Net Profit Margin in Q3 (Oct–Dec). No free data source — requires BSE quarterly filings.","Full Dashboard"),
+    ("PROFITABILITY","NPM Q1 %","Net Profit Margin for most recent quarter (Q1). Source: yfinance quarterly_income_stmt. Rising trend across Q1→Q2→Q3 signals Margin Expansion.","Full Dashboard"),
+    ("PROFITABILITY","NPM Q2 %","Net Profit Margin for second most recent quarter (Q2). Source: yfinance quarterly_income_stmt. Compare with Q1 and Q3 for trend.","Full Dashboard"),
+    ("PROFITABILITY","NPM Q3 %","Net Profit Margin for third most recent quarter (Q3). Source: yfinance quarterly_income_stmt. Oldest of the 3 quarters shown.","Full Dashboard"),
     ("PROFITABILITY","Margin Expansion",
-     "YES = NPM has risen for 3 consecutive quarters (Q1→Q2→Q3). "
-     "Strong signal of operational leverage or pricing power. No free data source.","Full Dashboard"),
+     "YES = NPM has risen for 3 consecutive quarters (Q3→Q2→Q1, oldest to newest). "
+     "Source: derived from NPM Q1/Q2/Q3 via yfinance. Strong signal of operational leverage or pricing power.","Full Dashboard"),
 
     # ── GROWTH ────────────────────────────────────────────────────────────────
-    ("GROWTH","Rev CAGR 3Y %","Revenue Compound Annual Growth Rate over 3 years. >15% = fast growing. No free source — requires multi-year financials.","Full Dashboard"),
-    ("GROWTH","PAT CAGR 3Y %","Profit After Tax CAGR over 3 years. >15% = quality compounder. No free source.","Full Dashboard"),
-    ("GROWTH","EBITDA CAGR 1Y %","EBITDA growth year-over-year. No free source — requires quarterly filings.","Full Dashboard"),
+    ("GROWTH","Rev CAGR 3Y %","Revenue Compound Annual Growth Rate over 3 years. Source: yfinance income_stmt (annual). >15% = fast growing compounder.","Full Dashboard"),
+    ("GROWTH","PAT CAGR 3Y %","Profit After Tax CAGR over 3 years. Source: yfinance income_stmt (annual). >15% = quality earnings compounder.","Full Dashboard"),
+    ("GROWTH","EBITDA CAGR 1Y %","EBITDA growth year-over-year. Source: yfinance income_stmt (annual). >15% = strong operating leverage improvement.","Full Dashboard"),
     ("GROWTH","Rev YoY %",
      "Revenue growth year-over-year (%) from yfinance revenueGrowth. "
      ">20% = fast growth | 10–20% = good | 0–10% = stable | <0% = shrinking","Full Dashboard"),
-    ("GROWTH","Q3 Rev (₹Cr)","Revenue in Q3 (Oct–Dec) in ₹ Crore. No free data source.","Full Dashboard"),
-    ("GROWTH","Q3 PAT (₹Cr)","Net Profit in Q3 in ₹ Crore. No free data source.","Full Dashboard"),
-    ("GROWTH","Q3 EBITDA (₹Cr)","EBITDA in Q3 in ₹ Crore. No free data source.","Full Dashboard"),
+    ("GROWTH","Q3 Rev (₹Cr)","Revenue in the third most recent quarter in ₹ Crore. Source: yfinance quarterly_income_stmt.","Full Dashboard"),
+    ("GROWTH","Q3 PAT (₹Cr)","Net Profit in the third most recent quarter in ₹ Crore. Source: yfinance quarterly_income_stmt.","Full Dashboard"),
+    ("GROWTH","Q3 EBITDA (₹Cr)","EBITDA in the third most recent quarter in ₹ Crore. Source: yfinance quarterly_income_stmt.","Full Dashboard"),
 
     # ── FIN HEALTH ────────────────────────────────────────────────────────────
     ("FIN HEALTH","ND/EBITDA",
@@ -652,15 +652,19 @@ GRP_COLORS = {
 # Columns permanently blank — no free data source available
 # These are highlighted with bold red headers so user knows at a glance
 NO_FREE_SOURCE_COLS = {
-    "Rev CAGR 1Y %","Rev CAGR 3Y %","PAT CAGR 1Y %","PAT CAGR 3Y %",
-    "EBITDA CAGR 1Y %","Q3 Rev (₹Cr)","Q3 PAT (₹Cr)","Q3 EBITDA (₹Cr)",
+    # Financial ratios needing balance sheet detail (BSE filings / paid API)
     "ND/EBITDA","Int Coverage","CCC Days","Capex / Rev %",
+    # Shareholding QoQ changes (need quarterly filing history)
     "Pro QoQ Δ","Pledge %","Pledge Direction","DII %","DII QoQ Δ",
     "FII QoQ Δ","Public Float %",
+    # Forensic / quality scores (need multi-year filed financials)
     "Piotroski F /9","Altman Z","Beneish M","Earn Quality",
+    # Intelligence / pipeline (needs company-specific filed data)
     "OB/Bill Ratio","Pipeline Vis","L1 Wins 90D","L1 Est (₹Cr)","New Mkt Entry",
+    # AI-generated text fields (needs Anthropic credits — separate amber set below)
     "Key Catalyst","News Sentiment","Primary Risk","SEBI Flags",
-    "NPM Q1 %","NPM Q2 %","NPM Q3 %","Margin Expansion",
+    # NOTE: NPM Q1/Q2/Q3, Margin Expansion, CAGRs, Q3 Rev/PAT/EBITDA
+    # were previously red but are now calculated via yfinance — moved to normal.
 }
 # Needs Anthropic API credits — amber highlight
 NEEDS_AI_CREDITS = {"View Analysis Summary"}
@@ -792,7 +796,7 @@ class ExcelGeneratorV6:
         ws.row_dimensions[1].height=34
         # R2
         ws.merge_cells(start_row=2,start_column=1,end_row=2,end_column=N)
-        c2=ws.cell(2,1,"AutoFilter (row 4): Exchange · Cap Category · Sector · Verdict · MoS Label · BS Flag · Risk · Storm · Sector Stage · Weekly Change   |  Last column = 'View Analysis Summary' — scroll right to see full AI reasoning with recent company facts   |  GOLD=Early Mover · GREEN=Deep Value · BLUE=Buy · AMBER=Watch · RED=Avoid   |  RED column header = No free data source available (requires paid API / BSE filings). AMBER header = Needs Anthropic API credits.")
+        c2=ws.cell(2,1,"AutoFilter (row 4): Exchange · Cap Category · Sector · Verdict · MoS Label · BS Flag · Risk · Storm · Sector Stage · Weekly Change   |  Last column = 'View Analysis Summary' — scroll right to see full AI reasoning with recent company facts   |  GOLD=Early Mover · GREEN=Deep Value · BLUE=Buy · AMBER=Watch · RED=Avoid   |  RED column header = No free data source (requires paid API / BSE filings). AMBER header = Needs Anthropic API credits. Normal header = calculated from free sources (yfinance / NSE).")
         c2.fill=_f(LG); c2.font=_ft(False,"475569",8,True); c2.alignment=_al("left","center")
         ws.row_dimensions[2].height=16
         # R3 groups

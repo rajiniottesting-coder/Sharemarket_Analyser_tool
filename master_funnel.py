@@ -241,7 +241,12 @@ def run_master_pipeline():
 
     import sqlite3
     conn = sqlite3.connect("market_data.db")
-    initialize_v7_tables(conn)
+    initialize_v7_tables(conn)          # data_bridge tables (daily_prices etc.)
+    try:
+        from backfill_history import init_all_tables as _init_bf
+        _init_bf(conn)                  # backfill tables (fundamental_metrics,
+    except Exception:                   # symbol_master, technical_indicators etc.)
+        pass
     conn.close()
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -520,9 +525,30 @@ def run_master_pipeline():
         # ─────────────────────────────────────────────────────────────────────
         print("\n🏦 [Section 4B] Refreshing NSE fundamentals for top-100 stocks...")
         try:
-            from backfill_history import fetch_nse_fundamentals
+            from backfill_history import fetch_nse_fundamentals, init_all_tables
             import sqlite3 as _sq_pre
             _conn_pre = _sq_pre.connect("market_data.db")
+            init_all_tables(_conn_pre)   # ensures fundamental_metrics, symbol_master etc. exist
+
+            # ── Seed symbol_master from daily_prices for today's symbols ────
+            # fetch_nse_fundamentals uses UPDATE (not INSERT), so rows must exist first.
+            # IMPORTANT: save_to_database stamps rows with date.today() (run date),
+            # NOT target_date — so we seed from MAX(date) not target_date.
+            try:
+                _conn_pre.execute("""
+                    INSERT OR IGNORE INTO symbol_master (symbol, isin, exchange, updated_on)
+                    SELECT DISTINCT symbol, isin, exchange, date
+                    FROM daily_prices
+                    WHERE date = (SELECT MAX(date) FROM daily_prices)
+                    AND symbol != ''
+                """)
+                _conn_pre.commit()
+                _seeded = _conn_pre.execute(
+                    "SELECT COUNT(*) FROM symbol_master").fetchone()[0]
+                print(f"   ✅ symbol_master seeded: {_seeded} symbols")
+            except Exception as _se:
+                print(f"   ⚠️  symbol_master seed: {_se}")
+
             _nse_syms = [s.get("symbol","") for s in final_100_list
                         if s.get("exchange_tag","") not in ("BSE_SME","BSE_ONLY")
                         and s.get("symbol","")]
@@ -1384,6 +1410,39 @@ def run_master_pipeline():
                 elif _fcf_y > 3:       _fs += 3
                 elif _fcf_y < 0:       _fs -= 5
 
+                # ── H2: New growth/quality fields (CAGR + margin trend) ──────
+                # 3Y CAGR is a structural signal — harder to fake than 1Y YoY
+                # Only applied when data is available (non-zero means yfinance fetched it)
+
+                # H2a: PAT CAGR 3Y — sustained earnings compounding
+                _pc3 = _sf(stock.get("pat_cagr_3y", 0), 0)
+                if   _pc3 > 20:        _fs += 8
+                elif _pc3 > 10:        _fs += 4
+
+                # H2b: Revenue CAGR 3Y — top-line compounding (moat signal)
+                _rc3 = _sf(stock.get("rev_cagr_3y", 0), 0)
+                if   _rc3 > 15:        _fs += 5
+                elif _rc3 > 8:         _fs += 3
+
+                # H2c: EBITDA CAGR 1Y — operating leverage improving
+                _ec1 = _sf(stock.get("ebitda_cagr_1y", 0), 0)
+                if   _ec1 > 15:        _fs += 4
+                elif _ec1 > 8:         _fs += 2
+
+                # H2d: Margin Expansion — 3 consecutive quarters of rising NPM
+                # Strongest single quality signal: not a one-off quarter
+                _mexp = str(stock.get("margin_expansion", "NO") or "NO").upper()
+                if _mexp == "YES":     _fs += 5
+
+                # H2e: Most-recent quarterly NPM supplements static TTM margin
+                # Only applies when TTM margin is missing/stale
+                _npm1 = _sf(stock.get("npm_q1", 0), 0)
+                _nm_f2 = _sf(stock.get("npm", _nm_f), _nm_f)
+                if _npm1 > 0 and _nm_f <= 0:
+                    _fs += 4            # recovering profitability not yet in TTM
+                elif _npm1 > _nm_f2 * 1.1 and _nm_f2 > 0:
+                    _fs += 2            # accelerating above TTM average
+
                 stock["fundamental_score"] = max(0, min(100, round(_fs, 1)))
 
             # ── Safety score from pledge/debt ────────────────────────────────
@@ -1407,6 +1466,9 @@ def run_master_pipeline():
                 if   _bs_ss == "ALERT":  _ss -= 15
                 elif _bs_ss == "WATCH":  _ss -= 5
                 elif _bs_ss == "HEALTHY" and _fcf_ss > 0: _ss += 3
+                # Margin expansion = reducing operational risk
+                if str(stock.get("margin_expansion","NO") or "NO").upper() == "YES":
+                    _ss += 3
                 stock["safety_score"] = max(0, min(100, round(_ss, 1)))
 
             # ── Sentiment score from smart money / FII trend ─────────────────
@@ -1851,16 +1913,22 @@ def run_master_pipeline():
         if not final_100_list:
             print("❌ CRITICAL: final_100_list is empty — cannot generate Excel.")
             raise ValueError("final_100_list empty at Excel generation — check Stage 2/3 logs.")
-        # Remove stocks with no company_name AND no sector after full enrichment
-        # (ETFs/funds that slipped through keyword filter — now have FM data to verify)
-        _pre_filter = len(final_100_list)
-        final_100_list = [
-            s for s in final_100_list
-            if str(s.get("company_name","") or "").strip() not in ("","—","None","0")
-            or str(s.get("sector","") or "").strip() not in ("","—","None","0")
-        ]
-        if len(final_100_list) < _pre_filter:
-            print(f"   🔍 Removed {_pre_filter - len(final_100_list)} stocks with no company name/sector")
+        # Fallback: stocks still missing company_name or sector (not in EQUITY_L /
+        # NSE index CSVs, e.g. BSE-only, ETFs) get the symbol as display name and
+        # "General" as sector so they are never silently dropped from the Excel.
+        # Real names will populate on the next full backfill run.
+        _fallback_count = 0
+        for _s in final_100_list:
+            _cn  = str(_s.get("company_name","") or "").strip()
+            _sec = str(_s.get("sector","")       or "").strip()
+            if _cn  in ("","—","None","0"):
+                _s["company_name"] = _s.get("symbol","Unknown")
+                _fallback_count += 1
+            if _sec in ("","—","None","0"):
+                _s["sector"] = "General"
+        if _fallback_count:
+            print(f"   ℹ️  {_fallback_count} stocks used symbol as fallback name "
+                  f"(not in EQUITY_L/NSE CSVs — will resolve after backfill)")
 
         print(f"   📊 Generating Excel for {len(final_100_list)} stocks...")
         import pytz as _ptz

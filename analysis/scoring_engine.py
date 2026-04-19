@@ -63,11 +63,15 @@ class ScoringEngine:
             
         final_score = max(0, min(100, final_score)) # Clamp 0-100
         
-        cap_cat = str(data.get("cap_category", "") or "")
-        mos     = data.get("mos_pct", None)
+        cap_cat     = str(data.get("cap_category", "") or "")
+        mos         = data.get("mos_pct", None)
+        supertrend  = str(data.get("supertrend", "") or "").upper()
+        sector_stage= str(data.get("rotation_stage", data.get("sector_stage", "")) or "").upper()
         return {
             "composite_score": round(final_score, 2),
-            "verdict": self._get_verdict(final_score, cap_cat, mos),
+            "verdict": self._get_verdict(final_score, cap_cat, mos,
+                                         supertrend=supertrend,
+                                         sector_stage=sector_stage),
             "label": self._assign_quick_pick(data, final_score)
         }
 
@@ -84,7 +88,9 @@ class ScoringEngine:
         if data.get('promoter_q_increase', False): score += 1
         if data.get('div_yield', 0) > 2.0: score += 1 
         if data.get('fii_buy_3q', False): score += 1 
-        if data.get('rev_growth_yoy', 0) > 10.0: score += 1 
+        if data.get('rev_growth_yoy', 0) > 10.0: score += 1
+        # Margin expansion = earnings quality improving = more storm-resistant
+        if str(data.get('margin_expansion', 'NO') or 'NO').upper() == 'YES': score += 1
         
         # Labels 
         label = "HIGH RISK"
@@ -93,17 +99,25 @@ class ScoringEngine:
         
         return {"storm_score": score, "storm_label": label}
 
-    def _get_verdict(self, score, cap_category="", mos_pct=None):
+    def _get_verdict(self, score, cap_category="", mos_pct=None,
+                     supertrend="", sector_stage=""):
         """
         Returns one of: BUY, WATCHLIST, NEUTRAL, AVOID.
 
         BUY requires:
           1. Score above cap-adjusted BUY threshold
-          2. MoS >= -10% (CMP should not be more than 10% above fair value)
-             — slight overvaluation allowed for strong momentum stocks
+          2. MoS above the overvaluation gate (default -10%)
+
+        Technical Override:
+          When score ≥ 70 AND Supertrend = BUY AND Sector Stage = STAGE 2,
+          the MoS gate relaxes from -10% to -20%.
+          Rationale: a confirmed uptrend breakout with strong fundamentals
+          represents genuine re-rating — the static FV model is backward-looking
+          and should not veto what all technical signals confirm.
+          Gate still blocks at -20% to prevent chasing extreme overvaluation.
 
         WATCHLIST:
-          Score qualifies for BUY but stock is significantly overvalued (MoS < -10%)
+          Score qualifies for BUY but MoS gate blocks it
           OR score is in the WATCHLIST band regardless of MoS
 
         NEUTRAL / AVOID: as before
@@ -121,9 +135,17 @@ class ScoringEngine:
 
         buy_min, watch_min = self.CAP_THRESHOLDS[tier]
 
-        # MoS gate: if stock is significantly overvalued, cap at WATCHLIST
+        # Technical override: relax MoS gate when trend confirmation is strong
+        # Conditions: high score + confirmed uptrend + supertrend buy signal
+        tech_confirmed = (
+            score >= 70
+            and "BUY" in str(supertrend).upper()
+            and "STAGE 2" in str(sector_stage).upper()
+        )
+        mos_gate = -20 if tech_confirmed else -10
+
         mos = mos_pct if mos_pct is not None else 0
-        mos_blocks_buy = (mos < -10)   # CMP more than 10% above fair value
+        mos_blocks_buy = mos <= mos_gate
 
         if   score >= buy_min and not mos_blocks_buy:  return "BUY"
         elif score >= buy_min and mos_blocks_buy:       return "WATCHLIST"

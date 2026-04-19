@@ -51,23 +51,74 @@ def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFr
     nse_df["isin"] = nse_df["isin"].astype(str).str.strip().str.upper()
     bse_df["isin"] = bse_df["isin"].astype(str).str.strip().str.upper()
 
-    # ── Outer merge on ISIN ───────────────────────────────────────────────────
-    merged = pd.merge(
-        nse_df,
-        bse_df,
-        on="isin",
-        how="outer",
-        suffixes=("_NSE", "_BSE"),
-    )
+    # Clean symbol values (used as fallback key)
+    nse_df["symbol"] = nse_df["symbol"].astype(str).str.strip().str.upper()
+    bse_df["symbol"] = bse_df["symbol"].astype(str).str.strip().str.upper()
+
+    # ── Primary merge: ISIN ───────────────────────────────────────────────────
+    # Filter to rows with non-empty ISINs on both sides for the ISIN merge.
+    # The bse pip package sometimes returns UDiFF format with empty ISIN column —
+    # in that case the ISIN merge produces 0 DUAL_LISTED and we fall back to symbol.
+    nse_has_isin = nse_df["isin"].str.len() >= 12
+    bse_has_isin = bse_df["isin"].str.len() >= 12
+
+    use_isin_merge = nse_has_isin.any() and bse_has_isin.any()
+
+    if use_isin_merge:
+        merged = pd.merge(
+            nse_df,
+            bse_df,
+            on="isin",
+            how="outer",
+            suffixes=("_NSE", "_BSE"),
+        )
+        # Check if ISIN merge produced meaningful DUAL_LISTED results
+        # (at least 5% of NSE stocks should be dual-listed if BSE ISINs are valid)
+        sym_nse_test = merged.get("symbol_NSE", merged.get("symbol", pd.Series()))
+        sym_bse_test = merged.get("symbol_BSE", pd.Series(index=merged.index))
+        dual_test = (
+            sym_nse_test.notna() & (sym_nse_test.astype(str).str.strip() != "") &
+            (sym_nse_test.astype(str).str.strip() != "nan") &
+            sym_bse_test.notna() & (sym_bse_test.astype(str).str.strip() != "") &
+            (sym_bse_test.astype(str).str.strip() != "nan")
+        ).sum()
+        if dual_test < len(nse_df) * 0.05:
+            use_isin_merge = False  # ISIN merge failed → fall back to symbol
+
+    if not use_isin_merge:
+        # ── Fallback merge: SYMBOL ────────────────────────────────────────────
+        # ~85% of dual-listed stocks have identical NSE and BSE ticker symbols.
+        # BSE bse_code is preserved from BSE-side for all matched rows.
+        merged = pd.merge(
+            nse_df,
+            bse_df,
+            on="symbol",
+            how="outer",
+            suffixes=("_NSE", "_BSE"),
+        )
 
     # ── Exchange Tagging ──────────────────────────────────────────────────────
     def _apply_exchange_tag(row) -> str:
-        sym_nse = row.get("symbol_NSE", row.get("symbol", ""))
+        # Works for both merge types:
+        # ISIN merge:   produces symbol_NSE / symbol_BSE columns
+        # Symbol merge: 'symbol' is the key; close_NSE / close_BSE show which side
+        sym_nse = row.get("symbol_NSE", "")
         sym_bse = row.get("symbol_BSE", "")
         grp     = str(row.get("sc_group_BSE", row.get("sc_group", "")) or "").strip().upper()
 
-        has_nse = pd.notnull(sym_nse) and str(sym_nse).strip() not in ["", "nan", "0"]
-        has_bse = pd.notnull(sym_bse) and str(sym_bse).strip() not in ["", "nan", "0"]
+        # ISIN-merge detection: symbol_NSE/BSE are present
+        if pd.notnull(sym_nse) and str(sym_nse).strip() not in ["", "nan", "0"]:
+            has_nse = True
+            has_bse = pd.notnull(sym_bse) and str(sym_bse).strip() not in ["", "nan", "0"]
+        elif pd.notnull(sym_bse) and str(sym_bse).strip() not in ["", "nan", "0"]:
+            has_nse = False
+            has_bse = True
+        else:
+            # Symbol-merge: use close_NSE / close_BSE as presence indicators
+            cn = row.get("close_NSE", None)
+            cb = row.get("close_BSE", None)
+            has_nse = pd.notnull(cn) and float(cn) > 0 if pd.notnull(cn) else False
+            has_bse = pd.notnull(cb) and float(cb) > 0 if pd.notnull(cb) else False
 
         if has_nse and has_bse:
             return "DUAL_LISTED"
