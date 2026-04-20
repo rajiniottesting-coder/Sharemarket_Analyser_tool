@@ -654,9 +654,9 @@ GRP_COLORS = {
 NO_FREE_SOURCE_COLS = {
     # Financial ratios needing balance sheet detail (BSE filings / paid API)
     "ND/EBITDA","Int Coverage","CCC Days","Capex / Rev %",
-    # Shareholding QoQ changes (need quarterly filing history)
+    # Shareholding QoQ changes (need quarterly filing history). Public Float % is derived and shown in normal colour.
     "Pro QoQ Δ","Pledge %","Pledge Direction","DII %","DII QoQ Δ",
-    "FII QoQ Δ","Public Float %",
+    "FII QoQ Δ",
     # Forensic / quality scores (need multi-year filed financials)
     "Piotroski F /9","Altman Z","Beneish M","Earn Quality",
     # Intelligence / pipeline (needs company-specific filed data)
@@ -718,9 +718,10 @@ class ExcelGeneratorV6:
         "bs_status":"HEALTHY","bs_flags":"—",
     }
 
-    def __init__(self,data,date_str,run_time=None,prev_scores=None):
+    def __init__(self,data,date_str,run_time=None,prev_scores=None,gap_days=0):
         self.df=pd.DataFrame(data) if data else pd.DataFrame()
         self.date_str=date_str
+        self.gap_days=int(gap_days or 0)  # trading days missed since last run
         try: self.dlbl=datetime.strptime(date_str,"%Y%m%d").strftime("%-d %b %Y")
         except: self.dlbl=date_str
         # Actual pipeline run time in IST — used in Alert Log and Delivery Preview
@@ -734,7 +735,8 @@ class ExcelGeneratorV6:
             except Exception:
                 self.run_time = "—"
         # Previous day scores for Score Δ computation in Alert Log
-        self.prev_scores = prev_scores or {}
+        # Suppress if gap > 5 trading days — deltas are meaningless after a long gap
+        self.prev_scores = {} if self.gap_days > 5 else (prev_scores or {})
         for col,dflt in self.REQUIRED_COLS.items():
             if col not in self.df.columns: self.df[col]=dflt
 
@@ -1143,14 +1145,19 @@ class ExcelGeneratorV6:
             c=ws.cell(2,ci,h); c.fill=_f(NAVY); c.font=_ft(True,WHITE,9); c.alignment=_al()
             ws.row_dimensions[2].height=28
         ws.freeze_panes="B3"
+        import math as _math_gl
         for ri,(grp,short,desc,where) in enumerate(GLOSSARY_DATA,3):
-            ws.row_dimensions[ri].height=16
+            # Auto-height: col D is 70 units wide, font-9 ≈ 85 chars/line
+            # Each wrapped line ≈ 13pt; +4pt padding; 16pt minimum
+            _desc_str = str(desc) if desc else ""
+            _lines    = max(1, -(-len(_desc_str) // 85))  # ceiling division
+            ws.row_dimensions[ri].height = max(16, _lines * 13 + 4)
             bg=LG if ri%2==0 else WHITE
             gc=GRP_COLORS.get(grp,"475569")
             c=ws.cell(ri,2,grp); c.fill=_f(gc); c.font=_ft(True,WHITE,9); c.alignment=_al()
-            c=ws.cell(ri,3,str(short) if short else ""); c.fill=_f(bg); c.font=_ft(True,NAVY,9); c.alignment=_al("left","center"); c.data_type="s"
-            c=ws.cell(ri,4,str(desc) if desc else "");  c.fill=_f(bg); c.font=_ft(False,"475569",9); c.alignment=_al("left","center",True); c.data_type="s"
-            c=ws.cell(ri,5,where); c.fill=_f(bg); c.font=_ft(False,NAVY,9);    c.alignment=_al()
+            c=ws.cell(ri,3,str(short) if short else ""); c.fill=_f(bg); c.font=_ft(True,NAVY,9); c.alignment=_al("left","top"); c.data_type="s"
+            c=ws.cell(ri,4,_desc_str); c.fill=_f(bg); c.font=_ft(False,"475569",9); c.alignment=_al("left","top",True); c.data_type="s"
+            c=ws.cell(ri,5,where); c.fill=_f(bg); c.font=_ft(False,NAVY,9); c.alignment=_al("center","top")
 
     def _get_gold(self):
         if self.df.empty: return pd.DataFrame()

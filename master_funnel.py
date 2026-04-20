@@ -324,7 +324,36 @@ def run_master_pipeline():
             print(f"⚠️  Smart Money warning: {e}")
 
         # ─────────────────────────────────────────────────────────────────────
-        # SECTION 1.2: DATABASE SYNC
+        # SECTION 1.2: GAP DETECTION — must run BEFORE save_to_database
+        # Read MAX(date) now while the DB still reflects the last real run.
+        # After save_to_database() the MAX date becomes today → gap = 0.
+        # ─────────────────────────────────────────────────────────────────────
+        _missed_trading_days = 0
+        _gap_trading_days    = []
+        try:
+            import sqlite3 as _sq_gap
+            _conn_gap  = _sq_gap.connect("market_data.db")
+            _last_row  = _conn_gap.execute(
+                "SELECT MAX(date) FROM daily_prices WHERE exchange='NSE'"
+            ).fetchone()
+            _conn_gap.close()
+            _last_ds = _last_row[0] if _last_row and _last_row[0] else None
+            if _last_ds:
+                _last_d = datetime.date.fromisoformat(_last_ds)
+                _d = _last_d + datetime.timedelta(days=1)
+                while _d < target_date:
+                    if _d.weekday() < 5:
+                        _gap_trading_days.append(_d)
+                    _d += datetime.timedelta(days=1)
+                _missed_trading_days = len(_gap_trading_days)
+                if _missed_trading_days >= 2:
+                    print(f"⚠️  [Gap Detect] {_missed_trading_days} trading days missing "
+                          f"({_gap_trading_days[0]} → {_gap_trading_days[-1]})")
+        except Exception as _gde:
+            print(f"   ⚠️  Gap detection (non-critical): {_gde}")
+
+        # ─────────────────────────────────────────────────────────────────────
+        # SECTION 1.3: DATABASE SYNC
         # ─────────────────────────────────────────────────────────────────────
         save_to_database(
             nse_data=raw_nse, bse_data=raw_bse,
@@ -337,6 +366,64 @@ def run_master_pipeline():
             save_to_database(df=bulk_deals_df, table="bulk_deals")
         if not insider_trades_df.empty:
             save_to_database(df=insider_trades_df, table="insider_trades")
+
+        # ─────────────────────────────────────────────────────────────────────
+        # SECTION 1.4: GAP-FILL — backfill missing trading days
+        # Runs after today's data is saved. Downloads missing days from
+        # NSE archives so technicals (SMA, Chg% windows) stay accurate.
+        # ─────────────────────────────────────────────────────────────────────
+        if _missed_trading_days >= 2:
+            print(f"🔄 [Gap Fill] Downloading {_missed_trading_days} missing trading days...")
+            try:
+                from backfill_history import (
+                    init_all_tables    as _bf_init,
+                    download_nse_bhav  as _dl_nse,
+                    download_bse_bhav  as _dl_bse,
+                    normalise          as _norm,
+                    upsert             as _upsert,
+                    _compute_all_indicators,
+                )
+                import tempfile as _tmp, sqlite3 as _sq2
+                from bse import BSE as _BseClient
+                _bf_tmp  = _tmp.mkdtemp(prefix="gapfill_")
+                _bf_conn = _sq2.connect("market_data.db")
+                _bf_init(_bf_conn)
+                try:
+                    _bf_bse = _BseClient(download_folder=_bf_tmp)
+                except Exception:
+                    _bf_bse = None
+
+                _filled = 0
+                for _gd in _gap_trading_days:
+                    _gd_iso  = _gd.strftime("%Y-%m-%d")
+                    _nse_raw = _dl_nse(_gd)
+                    _nse_df  = _norm(_nse_raw, "NSE") if _nse_raw is not None else None
+                    if _nse_df is not None:
+                        _nse_df["date"] = _gd_iso
+                        _upsert(_nse_df, "daily_prices", _bf_conn)
+                        _filled += 1
+                    if _bf_bse:
+                        try:
+                            _bse_raw = _dl_bse(_gd, _bf_bse, _bf_tmp)
+                            _bse_df  = _norm(_bse_raw, "BSE") if _bse_raw is not None else None
+                            if _bse_df is not None:
+                                _bse_df["date"] = _gd_iso
+                                _upsert(_bse_df, "daily_prices", _bf_conn)
+                        except Exception:
+                            pass
+                _bf_conn.commit()
+                if _filled > 0:
+                    print(f"   ✅ Gap filled: {_filled}/{_missed_trading_days} days. "
+                          f"Recomputing indicators...")
+                    _compute_all_indicators(_bf_conn)
+                else:
+                    print(f"   ⚠️  Gap fill: NSE archives not available for gap dates "
+                          f"(older than 30 days). Continuing with available data.")
+                _bf_conn.close()
+                import shutil as _sh
+                _sh.rmtree(_bf_tmp, ignore_errors=True)
+            except Exception as _gfe:
+                print(f"   ⚠️  Gap fill error (non-critical): {_gfe}")
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 0: PRE-SCREENING FUNNEL (STAGES 1–3)
@@ -964,31 +1051,36 @@ def run_master_pipeline():
                 stock["roe_num"] = round(_roe_raw * 100, 2) if 0 < abs(_roe_raw) < 2.0 else round(_roe_raw, 2)
                 stock["gm_num"]  = round(_gm_raw  * 100, 2) if 0 < abs(_gm_raw)  < 2.0 else round(_gm_raw,  2)
                 stock["nm_num"]  = round(_nm_raw  * 100, 2) if 0 < abs(_nm_raw)  < 2.0 else round(_nm_raw,  2)
-                # Proxy F-Score (0-9) computed from available yfinance data
-                # Matches Piotroski scale: ≥7=strong, 4-6=average, ≤3=weak
-                _pf_roa  = _fvn(stock.get("roa_num",  stock.get("roa",  0)))
-                _pf_fcf  = _fvn(stock.get("fcf", 0) if stock.get("fcf") not in ("—",None) else 0)
-                _pf_pat  = _fvn(stock.get("pat_yoy",  stock.get("pat_yoy", 0)) if stock.get("pat_yoy") not in ("—",None) else 0)
-                _pf_de   = _fvn(stock.get("de_ratio_num", stock.get("debt_equity", 1)))
-                _pf_cr   = _fvn(stock.get("current_ratio", 0) if stock.get("current_ratio") not in ("—",None) else 0)
-                _pf_gm   = _fvn(stock.get("gm_num",  stock.get("gross_margin", 0)))
-                _pf_rev  = _fvn(stock.get("rev_yoy",  0) if stock.get("rev_yoy") not in ("—",None) else 0)
-                _pf_roe  = _fvn(stock.get("roe_num",  stock.get("roe", 0)))
-                _pf_cash = _fvn(stock.get("cash", stock.get("cash_cr", 0)) if stock.get("cash") not in ("—",None) else 0)
+                # ── Proxy F-Score (0-9) ──────────────────────────────────────
+                # IMPORTANT: use local tuple variables (roa, fcf, de, cr, gm,
+                # roe, cash_v, rev_yoy_v, pat_yoy_v) — they are unpacked from
+                # the FM tuple above and ARE available here.
+                # Do NOT use stock.get() for these — the stock dict fields
+                # (stock["roa"], stock["fcf"] etc.) are only written ~50 lines
+                # below this block, so stock.get() would read zeros → score = 2.
+                _pf_roa  = _fvn(roa)        # ROA directly from FM tuple
+                _pf_fcf  = _fvn(fcf)        # FCF directly from FM tuple
+                _pf_pat  = _fvn(pat_yoy_v)  # PAT YoY from extended FM cols
+                _pf_de   = _fvn(de) if _fvn(de) > 0 else 99.0   # D/E, default high if missing
+                _pf_cr   = _fvn(cr)         # Current ratio from FM tuple
+                _pf_gm   = stock["gm_num"]  # Gross margin — set 2 lines above this block
+                _pf_rev  = _fvn(rev_yoy_v)  # Revenue YoY from extended FM cols
+                _pf_roe  = stock["roe_num"]  # ROE — set 2 lines above this block
+                _pf_cash = _fvn(cash_v)     # Cash from FM tuple
                 _pf_score = (
                     (1 if _pf_roa  > 0   else 0) +   # P1: profitable (ROA > 0)
                     (1 if _pf_fcf  > 0   else 0) +   # P2: positive FCF
-                    (1 if _pf_pat  > 0   else 0) +   # P3: growing earnings
-                    (1 if _pf_de   < 1.0 else 0) +   # P4: low leverage
-                    (1 if _pf_cr   > 1.0 else 0) +   # P5: liquid (CR > 1)
-                    (1 if _pf_gm   > 15  else 0) +   # P6: decent gross margin
-                    (1 if _pf_rev  > 0   else 0) +   # P7: growing revenue
-                    (1 if _pf_roe  > 10  else 0) +   # P8: good ROE
+                    (1 if _pf_pat  > 0   else 0) +   # P3: growing earnings (PAT YoY > 0)
+                    (1 if _pf_de   < 1.0 else 0) +   # P4: low leverage (D/E < 1)
+                    (1 if _pf_cr   > 1.0 else 0) +   # P5: liquid (Current Ratio > 1)
+                    (1 if _pf_gm   > 15  else 0) +   # P6: decent gross margin (>15%)
+                    (1 if _pf_rev  > 0   else 0) +   # P7: growing revenue (Rev YoY > 0)
+                    (1 if _pf_roe  > 10  else 0) +   # P8: good ROE (>10%)
                     (1 if _pf_cash > 0   else 0)     # P9: has cash
                 )
-                # Only set if we have enough real data (at least 4 fields populated)
-                _pf_data_count = sum(1 for v in [_pf_roa,_pf_fcf,_pf_de,_pf_gm,_pf_roe]
-                                     if v != 0)
+                # Require at least 4 real data points to avoid defaulting to DB value
+                _pf_data_count = sum(1 for v in [_pf_roa, _pf_fcf, _pf_de, _pf_gm, _pf_roe]
+                                     if v not in (0, 99.0))
                 if _pf_data_count >= 3:
                     stock["piotroski_f"] = _pf_score
                 else:
@@ -1502,27 +1594,58 @@ def run_master_pipeline():
                 _del_e  = _sf(stock.get("delivery_pct", 0), 0)
                 _mos_e  = _sf(stock.get("mos_pct", stock.get("upside", 0)), 0)
                 _verd_e = str(stock.get("verdict", ""))
+                _score_e= _sf(stock.get("composite_score", 0), 0)
+                _cmp_e  = _sf(stock.get("close", 0), 0)
+                _h52_e  = _sf(stock.get("high_52w", 0), 0)
+
+                # Signal: Vol Surge + RSI Accumulation (15 pts)
                 if _vol_r >= 1.8 and 50 < _rsi_e <= 72:
                     _escore += 15
                     _esigs.append("VOL SURGE + RSI ACCUMULATION")
-                if _2w_e > 1.5 and _4w_e < _2w_e:
+
+                # Signal: Momentum (10 pts) — relaxed: 2w > 2% (was: 2w>1.5 AND 4w<2w)
+                if _2w_e > 2.0:
                     _escore += 10
                     _esigs.append("MOMENTUM BUILDING")
+
+                # Signal: Trend Confluence (12 pts)
                 if _st_e == "BUY" and _macd_e == "BUY":
                     _escore += 12
                     _esigs.append("TREND CONFLUENCE")
+
+                # Signal: Institutional Footprint (10 pts)
                 if _del_e >= 70 and _vol_r >= 2.0:
                     _escore += 10
                     _esigs.append("INSTITUTIONAL FOOTPRINT")
+
+                # Signal: Dual-Listed Discovery (8 pts)
                 if _etag == "DUAL_LISTED" and _vol_r >= 1.5:
                     _escore += 8
                     _esigs.append("DUAL-LISTED DISCOVERY")
+
+                # Signal: Value + Verdict (10 pts / 5 pts)
                 if _mos_e > 25 and _verd_e == "BUY":
                     _escore += 10
                     _esigs.append("DEEP VALUE + BUY")
                 elif _mos_e > 10 and _verd_e in ("BUY", "WATCHLIST"):
                     _escore += 5
                     _esigs.append("VALUE OPPORTUNITY")
+
+                # Signal: 52W Breakout (10 pts) — CMP within 5% of 52W High + vol + uptrend
+                # Stock breaking multi-month resistance with institutional backing
+                if _h52_e > 0 and _cmp_e > 0:
+                    _dist_pct = (_h52_e - _cmp_e) / _h52_e * 100
+                    if _dist_pct <= 5.0 and _vol_r > 2.0 and _st_e == "BUY":
+                        _escore += 10
+                        _esigs.append("52W BREAKOUT")
+
+                # Signal: Score + Technical Convergence (8 pts)
+                # Strong fundamentals (score>=70) meeting technical confirmation
+                if _score_e >= 70 and _rsi_e > 60 and _st_e == "BUY":
+                    _escore += 8
+                    _esigs.append("SCORE CONVERGENCE")
+
+                # Signal: FII/Promoter Accumulation (8 pts each — paid QoQ data)
                 _fii_e = stock.get("fii_qoq", 0)
                 try:
                     if float(str(_fii_e).replace("—","0") or 0) > 1.0:
@@ -1551,6 +1674,40 @@ def run_master_pipeline():
                 stock.setdefault("early_entry_score", 0)
                 stock.setdefault("early_mover_badge", "")
                 stock.setdefault("early_label", "EMERGING")
+
+            # ── F-Score second pass (definitive) ─────────────────────────────
+            # The first pass (inside `if sym in _fm_map`) reads raw FM tuple
+            # values which may be 0 if the DB column was NULL for that stock.
+            # This second pass runs AFTER all stock fields are fully set
+            # (roa, fcf, debt_equity, current_ratio, gross_margin, roe, cash etc.)
+            # so it always has the complete picture.
+            # Only overwrites if the first pass left "—" (i.e. fallback ran).
+            if stock.get("piotroski_f") in ("—", None, "", 0):
+                try:
+                    def _pfv(k, d=0.0):
+                        v = stock.get(k, d)
+                        if v in ("—", None, ""): return d
+                        try: return float(v)
+                        except: return d
+                    _p1 = _pfv("roa",            0) > 0
+                    _p2 = _pfv("fcf",            0) > 0
+                    _p3 = _pfv("pat_yoy",        0) > 0
+                    _p4 = _pfv("de_ratio_num",   _pfv("debt_equity", 99)) < 1.0
+                    _p5 = _pfv("current_ratio",  0) > 1.0
+                    _p6 = _pfv("gross_margin",   0) > 15
+                    _p7 = _pfv("rev_yoy",        0) > 0
+                    _p8 = _pfv("roe_num",        0) > 10
+                    _p9 = _pfv("cash",           0) > 0
+                    # Count how many fields are genuinely available
+                    _p_data = sum(1 for v in [
+                        _pfv("roa",0), _pfv("fcf",0),
+                        _pfv("de_ratio_num", _pfv("debt_equity",0)),
+                        _pfv("gross_margin",0), _pfv("roe_num",0)
+                    ] if v != 0)
+                    if _p_data >= 2:   # lower threshold — at least roa+gm or fcf+roe
+                        stock["piotroski_f"] = sum([_p1,_p2,_p3,_p4,_p5,_p6,_p7,_p8,_p9])
+                except Exception:
+                    pass
 
             # ── BS Health re-evaluation with FM-enriched data ──────────────
             # First pass (L465) had no FM data → always HEALTHY
@@ -1673,25 +1830,6 @@ def run_master_pipeline():
                 stock.setdefault("storm_score", 0)
                 stock.setdefault("storm_label", "N/A")
 
-            # ── Time Horizon: computed AFTER verdict+score+spike are all set ────
-            _verd_tr  = str(stock.get("verdict", "WATCHLIST"))
-            _spike_tr = int(stock.get("spike_count", stock.get("spike_count", 0)) or 0)
-            _st_tr    = str(stock.get("supertrend",  "NEUTRAL")).upper()
-            _macd_tr  = str(stock.get("macd_signal", "NEUTRAL")).upper()
-            _score_tr = _sf(stock.get("composite_score", 0), 0)
-            if _verd_tr == "BUY" and _spike_tr >= 2:
-                stock["horizon"] = "SHORT TERM"
-            elif _verd_tr == "BUY" and "BUY" in _st_tr and "BUY" in _macd_tr:
-                stock["horizon"] = "POSITIONAL"
-            elif _verd_tr == "BUY" and _score_tr >= 68:
-                stock["horizon"] = "POSITIONAL"
-            elif _verd_tr == "BUY":
-                stock["horizon"] = "LONG TERM"
-            elif _verd_tr == "WATCHLIST":
-                stock["horizon"] = "POSITIONAL"
-            else:
-                stock["horizon"] = "LONG TERM"
-
             # ── Risk Level: computed AFTER BS status and de_ratio_num are set ───
             _cap_tr    = str(stock.get("cap_category", "")).upper()
             _beta_tr   = _sf(stock.get("beta", 1.0), 1.0)
@@ -1727,6 +1865,25 @@ def run_master_pipeline():
             except Exception as _esp:
                 stock.setdefault("spike_count", 0)
                 stock.setdefault("spike_score", 0)
+            # ── Time Horizon: computed AFTER verdict+score+spike are all set ────
+            _verd_tr  = str(stock.get("verdict", "WATCHLIST"))
+            _spike_tr = int(stock.get("spike_count", stock.get("spike_count", 0)) or 0)
+            _st_tr    = str(stock.get("supertrend",  "NEUTRAL")).upper()
+            _macd_tr  = str(stock.get("macd_signal", "NEUTRAL")).upper()
+            _score_tr = _sf(stock.get("composite_score", 0), 0)
+            if _verd_tr == "BUY" and _spike_tr >= 2:
+                stock["horizon"] = "SHORT TERM"
+            elif _verd_tr == "BUY" and "BUY" in _st_tr and "BUY" in _macd_tr:
+                stock["horizon"] = "POSITIONAL"
+            elif _verd_tr == "BUY" and _score_tr >= 68:
+                stock["horizon"] = "POSITIONAL"
+            elif _verd_tr == "BUY":
+                stock["horizon"] = "LONG TERM"
+            elif _verd_tr == "WATCHLIST":
+                stock["horizon"] = "POSITIONAL"
+            else:
+                stock["horizon"] = "LONG TERM"
+
 
             # Vol ratio (use DB-enriched value if already set, else calculate)
             if not stock.get("vol_ratio"):
@@ -1934,7 +2091,11 @@ def run_master_pipeline():
         import pytz as _ptz
         _ist = _ptz.timezone("Asia/Kolkata")
         _run_time_ist = datetime.datetime.now(_ist).strftime("%H:%M IST")
-        # Load previous scores BEFORE saving new results (for Δ in Alert Log)
+
+        # ── Step A: Load PREVIOUS run scores FIRST (before any write) ────────────
+        # This reads yesterday's scores from latest_analysis_results so the
+        # Alert Log can show a real delta vs today's scores.
+        # If the table is empty (first-ever run) prev_scores = {} → shows '—'.
         try:
             from database.data_bridge import load_latest_analysis_results as _load_prev
             _prev_records = _load_prev()
@@ -1942,9 +2103,43 @@ def run_master_pipeline():
                             for r in _prev_records}
         except Exception:
             _prev_scores = {}
+
+        # ── Step B: Save TODAY's scores (for NEXT run to use as prev_scores) ─────
+        # Must run AFTER loading prev_scores — otherwise we'd compare today
+        # against today and Score Δ would always be 0.
+        try:
+            import sqlite3 as _sq_lar
+            _conn_lar = _sq_lar.connect("market_data.db")
+            _date_lar = target_date.strftime("%Y-%m-%d")
+            for _s_lar in final_100_list:
+                _conn_lar.execute(
+                    """
+                    INSERT OR REPLACE INTO latest_analysis_results
+                        (symbol, date, composite_score, early_score,
+                         spike_score, storm_score, cfv, mos_pct, verdict)
+                    VALUES (?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        str(_s_lar.get("symbol", "") or ""),
+                        _date_lar,
+                        float(_s_lar.get("composite_score", 0) or 0),
+                        float(_s_lar.get("early_entry_score", 0) or 0),
+                        int(_s_lar.get("spike_count", 0) or 0),
+                        float(_s_lar.get("storm_score", 0) or 0),
+                        float(_s_lar.get("cfv", 0) or 0),
+                        float(_s_lar.get("mos_pct", 0) or 0),
+                        str(_s_lar.get("verdict", "") or ""),
+                    )
+                )
+            _conn_lar.commit()
+            _conn_lar.close()
+            print(f"   💾 Saved {len(final_100_list)} scores → next run will compute Δ")
+        except Exception as _lar_e:
+            print(f"   ⚠️  Could not save analysis results: {_lar_e}")
         excel_gen = ExcelGeneratorV6(final_100_list, date_str,
                                      run_time=_run_time_ist,
-                                     prev_scores=_prev_scores)
+                                     prev_scores=_prev_scores,
+                                     gap_days=_missed_trading_days)
         master_file, gold_file = excel_gen.generate_excel_reports()
         print(f"   ✅ Excel saved: {master_file}")
 

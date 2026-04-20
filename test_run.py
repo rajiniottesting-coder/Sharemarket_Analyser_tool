@@ -7,10 +7,12 @@ Usage:
     python test_run.py
 
 What this does:
-  1. Monkey-patches gate_check() to always return "run approved" for 2026-04-16
-  2. Calls run_master_pipeline() normally — all real data fetching, DB writes,
+  1. Clears all __pycache__ directories so stale bytecode never causes
+     confusing import behaviour after code changes.
+  2. Monkey-patches gate_check() to always return "run approved" for 2026-04-16
+  3. Calls run_master_pipeline() normally — all real data fetching, DB writes,
      scoring, Excel generation, etc. run exactly as they would in production
-  3. Does NOT send emails (patches send_analysis_email to just print)
+  4. Does NOT send emails (patches send_analysis_email to just print)
 """
 
 import datetime
@@ -19,6 +21,18 @@ import os
 
 # ── 0. Force working directory ────────────────────────────────────────────────
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+# ── 0a. Clean __pycache__ before every run ───────────────────────────────────
+# Removes stale bytecode so code changes always take effect immediately.
+import shutil
+_base    = os.path.dirname(os.path.abspath(__file__))
+_removed = 0
+for _root, _dirs, _files in os.walk(_base):
+    for _d in list(_dirs):
+        if _d == "__pycache__":
+            shutil.rmtree(os.path.join(_root, _d), ignore_errors=True)
+            _removed += 1
+print(f"🧹 Cleared {_removed} __pycache__ director{'y' if _removed == 1 else 'ies'}")
 
 FORCE_DATE = datetime.date(2026, 4, 16)   # Last Thursday (Good Friday was 17th)
 print(f"\n{'='*60}")
