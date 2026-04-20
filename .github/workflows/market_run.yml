@@ -67,6 +67,16 @@ jobs:
           TWILIO_AUTH_TOKEN:     ${{ secrets.TWILIO_AUTH_TOKEN }}
         run: python master_funnel.py || true
 
+      # Delete the old artifact BEFORE uploading the new one.
+      # This frees the ~400 MB quota slot so the upload never hits the storage limit.
+      # continue-on-error: true so the step doesn't fail on the very first run
+      # (when there is no previous artifact to delete yet).
+      - name: Delete previous DB artifact to free storage quota
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: market-data-db
+        continue-on-error: true
+
       - name: Save market_data.db as artifact
         if: hashFiles('market_data.db') != ''
         uses: actions/upload-artifact@v4
