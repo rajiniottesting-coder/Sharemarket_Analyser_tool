@@ -67,15 +67,31 @@ jobs:
           TWILIO_AUTH_TOKEN:     ${{ secrets.TWILIO_AUTH_TOKEN }}
         run: python master_funnel.py || true
 
-      # Delete the old artifact BEFORE uploading the new one.
-      # This frees the ~400 MB quota slot so the upload never hits the storage limit.
-      # continue-on-error: true so the step doesn't fail on the very first run
-      # (when there is no previous artifact to delete yet).
+      # Delete old artifact via GitHub REST API — no external action needed.
+      # Uses the built-in GITHUB_TOKEN (actions: write permission already set above).
+      # Lists all artifacts named 'market-data-db' and deletes each one before upload.
+      # This keeps storage at ~443 MB (1 copy only) instead of accumulating every run.
       - name: Delete previous DB artifact to free storage quota
-        uses: geekyeggo/delete-artifact@v5
-        with:
-          name: market-data-db
-        continue-on-error: true
+        run: |
+          echo "Listing existing artifacts named 'market-data-db'..."
+          ARTIFACTS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=market-data-db&per_page=100")
+          IDS=$(echo "$ARTIFACTS" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          ids = [str(a['id']) for a in data.get('artifacts', [])]
+          print('\n'.join(ids))
+          ")
+          if [ -z "$IDS" ]; then
+            echo "No existing artifacts found — skipping delete (first run)"
+          else
+            for ID in $IDS; do
+              echo "Deleting artifact ID: $ID"
+              curl -s -X DELETE -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ID"
+            done
+            echo "✅ Old artifacts deleted"
+          fi
 
       - name: Save market_data.db as artifact
         if: hashFiles('market_data.db') != ''
