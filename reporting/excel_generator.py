@@ -200,7 +200,10 @@ GLOSSARY_DATA = [
      "SLIGHT PREMIUM = MoS −15–0% (slightly overvalued, ok for quality stocks) | "
      "OVERVALUED = MoS −30–−15% (CMP exceeds FV, caution) | "
      "SIGNIFICANTLY OVERVALUED = MoS < −30% (avoid, major downside risk)","All sheets"),
-    ("FAIR VALUE","M1: DCF FV","3-Stage DCF. WACC = 10Y GSec + Beta×ERP. Terminal growth 4.5%. Session 19 cap: M1 limited to 4× CMP to prevent low-beta inflation.","Full Dashboard"),
+    # Session 27: Removed duplicate "M1: DCF FV" glossary row here — the more
+    # complete version remains in the second FAIR VALUE block below (with
+    # Session 19 cap details + SBIN β=0.2 example). Leaving both created
+    # two consecutive "M1" rows in the Glossary sheet.
     ("FAIR VALUE","M2: Graham FV","Graham Number = √(22.5×EPS×BVPS). Skip if EPS negative","Full Dashboard"),
     ("FAIR VALUE","M3: PE FV","EPS × Sector 5yr median P/E (mean reversion)","Full Dashboard"),
     ("FAIR VALUE","M4: PB FV","BVPS × Sector median Price/Book. Good for asset-heavy sectors (banks, metals)","Full Dashboard"),
@@ -701,11 +704,9 @@ GLOSSARY_DATA = [
      "tiny terminal-value denominator) from distorting the composite. "
      "If you see MoS near 200%, treat it as 'deeply undervalued by model, "
      "verify inputs' rather than a guaranteed bargain.","Full Dashboard"),
-    ("FAIR VALUE","M1 DCF Cap (4× CMP)",
-     "The DCF model (30% weight in CFV) is capped at 4× CMP. A WACC floor "
-     "of 10% is also applied to prevent extreme terminal values for low-beta "
-     "stocks (beta < 0.5). These guardrails reflect that Indian equity "
-     "discount rates below 10% are unrealistic given the ~6.8% risk-free rate.","Full Dashboard"),
+    # Session 27: Removed standalone "M1 DCF Cap (4× CMP)" row — its content
+    # is already covered by the main "M1: DCF FV (₹)" row above (Session 26
+    # added the Session 19 cap + SBIN β=0.2 example inline to that entry).
 ]
 
 GRP_COLORS = {
@@ -896,6 +897,80 @@ _HDR_TIPS = {
     "View Analysis Summary":("Claude AI investor narrative(150-250 words)","Business quality,ratios,risks,catalysts,verdict rationale.\nGenerated fresh each trading day."),
 }
 
+
+def _patch_tooltip_vml(xlsx_path):
+    """Session 27: Post-process .xlsx to fix tooltip box dimensions.
+
+    openpyxl writes Comment VML shapes with hardcoded 144px × 79px dimensions
+    regardless of the width/height set on the Comment object (see
+    openpyxl/comments/comment_sheet.py — from_cell copies width/height to
+    CommentRecord but ShapeWriter re-generates VML with its own defaults).
+
+    We fix this by opening the .xlsx (a zip) and rewriting every
+    xl/drawings/commentsDrawing*.vml file to substitute the cramped defaults
+    with dimensions that fit our 15-30 line tooltips comfortably.
+
+    Target size: 380px wide × 320px tall. This fits ~18 lines at default font
+    before scrolling. For longer content, Excel's built-in comment scrollbar
+    activates automatically once content overflows.
+    """
+    import re
+    import shutil
+    import zipfile
+    import os as _os
+    import tempfile
+
+    tmpdir = tempfile.mkdtemp(prefix="xlsx_patch_")
+    try:
+        with zipfile.ZipFile(xlsx_path, "r") as zin:
+            zin.extractall(tmpdir)
+
+        vml_dir = _os.path.join(tmpdir, "xl", "drawings")
+        if not _os.path.isdir(vml_dir):
+            return  # no comments; nothing to patch
+
+        # Regex: width:Npx;height:Mpx  →  width:380px;height:320px
+        dim_re = re.compile(
+            r'width\s*:\s*\d+px\s*;\s*height\s*:\s*\d+px',
+            re.IGNORECASE
+        )
+        replacement = "width:380px;height:320px"
+
+        patched_count = 0
+        for fn in _os.listdir(vml_dir):
+            if not fn.lower().startswith("commentsdrawing") or not fn.lower().endswith(".vml"):
+                continue
+            fpath = _os.path.join(vml_dir, fn)
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+            new_content, n = dim_re.subn(replacement, content)
+            if n > 0:
+                with open(fpath, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+                patched_count += n
+
+        # Rewrite the .xlsx from the patched directory
+        backup = xlsx_path + ".orig"
+        shutil.move(xlsx_path, backup)
+        try:
+            with zipfile.ZipFile(xlsx_path, "w", zipfile.ZIP_DEFLATED) as zout:
+                for root, _, files in _os.walk(tmpdir):
+                    for fn in files:
+                        full = _os.path.join(root, fn)
+                        rel = _os.path.relpath(full, tmpdir)
+                        # zip paths use forward slashes
+                        zout.write(full, rel.replace(_os.sep, "/"))
+            _os.remove(backup)
+        except Exception:
+            # Restore original on any error
+            if _os.path.exists(backup):
+                shutil.move(backup, xlsx_path)
+            raise
+    finally:
+        import shutil as _sh
+        _sh.rmtree(tmpdir, ignore_errors=True)
+
+
 class ExcelGeneratorV6:
     REQUIRED_COLS = {
         "early_entry_score":0,"composite_score":0,"spike_count":0,"storm_score":0,
@@ -982,7 +1057,17 @@ class ExcelGeneratorV6:
         _ref = wb["📖 Tooltip Reference"]
         wb._sheets.remove(_ref); wb._sheets.append(_ref)
         for ws in wb.worksheets: ws.sheet_view.showGridLines=False
-        fn=f"NSE_BSE_Full_Dashboard_{self.date_str}.xlsx"; wb.save(fn); return fn
+        fn=f"NSE_BSE_Full_Dashboard_{self.date_str}.xlsx"; wb.save(fn)
+        # Session 27 fix: openpyxl does NOT persist Comment.width/height to the
+        # saved VML drawing — it always writes 144×79 (its internal defaults)
+        # regardless of what _comment() set. This makes every tooltip box cramped:
+        # 27-line tooltips (Score/EE/Verdict) overflow invisibly into an 79pt-tall
+        # container so users see only the first 3-4 lines. Post-process the .xlsx
+        # VML files to:  (a) set generous dimensions (380×320 px),
+        #                (b) enable internal wrap so long lines don't clip horizontally,
+        #                (c) add auto-scroll so content remains reachable.
+        _patch_tooltip_vml(fn)
+        return fn
 
     def _gold_file(self):
         """Kept for backward compatibility — returns master file path."""

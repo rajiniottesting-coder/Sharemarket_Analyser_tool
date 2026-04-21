@@ -2164,11 +2164,25 @@ def run_master_pipeline():
                     stock["earn_yield"]     = stock["earnings_yield"]
 
             # P/E cross-check: if pe is from DB use it, else derive from EPS/CMP
+            # Session 27: Loss-making stocks (negative EPS) now display their
+            # actual negative P/E instead of 0. User preference: a P/E of −8.2
+            # communicates the severity of losses (CMP ₹1000 / EPS ₹−122 means
+            # the market cap is 8.2× annual losses) whereas "—" or 0 hides that
+            # signal. Only true zero-EPS (eps == 0 exactly, division undefined)
+            # falls back to "—". Previous versions:
+            #   pre-S27: only computed when EPS > 0 (left at 0 for neg-EPS)
+            #   S27 v1:  set "—" for all EPS ≤ 0 (hid useful negative signal)
             if not stock.get("pe") or stock.get("pe") == "—":
                 _eps3 = _sf(stock.get("eps", 0), 0)
                 _cmp3 = _sf(stock.get("close", 0), 0)
-                if _eps3 > 0 and _cmp3 > 0:
-                    stock["pe"] = round(_cmp3 / _eps3, 2)
+                if _cmp3 > 0:
+                    if _eps3 != 0:
+                        # Positive OR negative EPS — compute signed P/E
+                        # Negative result signals loss-making; user sees how bad
+                        stock["pe"] = round(_cmp3 / _eps3, 2)
+                    else:
+                        # EPS exactly zero — ratio genuinely undefined
+                        stock["pe"] = "—"
 
             # OB/Bill — set to "—" explicitly (no source, not 0)
             if not stock.get("ob_bill_ratio") or stock.get("ob_bill_ratio") == 0:

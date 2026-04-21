@@ -573,17 +573,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
         "terminal-value denominator) from distorting the composite.\n\n"
         "If you see MoS near 200%, treat it as 'deeply undervalued by\n"
         "model — verify inputs' rather than a guaranteed bargain."),
-    "M1 DCF Safety Cap": (
-        "M1 DCF individually capped at 4× CMP",
-        "M1 DCF (30% weight in CFV) has two guardrails:\n"
-        "  1. WACC floor at 10%: prevents low-beta stocks producing\n"
-        "     tiny (WACC − terminal_growth) denominators that blow up\n"
-        "     the terminal value calculation.\n"
-        "  2. Output capped at 4× CMP: catches residual extreme cases\n"
-        "     after the WACC floor.\n\n"
-        "Reflects that Indian equity discount rates below 10% are\n"
-        "unrealistic given the ~6.8% risk-free rate and true equity\n"
-        "risk premium (typically 6-8%, not the default 5.5%)."),
+    # Session 27: Removed duplicate "M1 DCF Safety Cap" entry. Its content
+    # (4× CMP cap + WACC 10% floor) is already documented in the main
+    # "M1: DCF FV (₹)" entry above (added in Session 26). A separate entry
+    # created a confusing duplicate row in the Tooltip Reference sheet
+    # (rows 24 & 25 both showed M1-related info).
 }
 
 
@@ -678,7 +672,7 @@ _ICON_FAMILIES = {
            "Div Yield %", "Payout Ratio %",
            "M1: DCF FV (₹)", "M2: Graham FV (₹)", "M3: PE FV (₹)",
            "M4: PB FV (₹)", "M5: EV FV (₹)", "M6: DDM FV (₹)", "M7: PEG FV (₹)",
-           "CFV Safety Cap", "M1 DCF Safety Cap"},
+           "CFV Safety Cap"},
     "📈": {"CMP (₹)", "Day Chg %", "52W High (₹)", "52W Low (₹)",
            "Chg% [2-Weekly]", "Chg% [4-Weekly]", "Chg% [6-Weekly]", "Chg% [8-Weekly]",
            "Chg% [2-Wk]", "Chg% [4-Wk]", "Chg% [6-Wk]", "Chg% [8-Wk]"},
