@@ -2170,15 +2170,43 @@ def run_master_pipeline():
                 stock["bs_output"] = f"BS: {stock.get('bs_status','HEALTHY')} — No red flags detected"
 
             # Price targets from CMP and CFV
+            # Session 22: T1 derivation reworked for proper R:R discipline.
+            # Previous formula (T1 = CMP × 1.05) produced mechanical R:R = 0.85
+            # for every stock because:
+            #   Entry midpoint ≈ CMP × 0.995
+            #   SL = CMP × 0.93 → risk = 6.5% of CMP
+            #   T1 = CMP × 1.05 → reward = 5.5% of CMP
+            #   R:R = 5.5/6.5 = 0.85, ALWAYS
+            # No serious trade should have R:R < 1, let alone < 2.
+            #
+            # New approach: derive T1 from actual risk distance + CFV.
+            #   1. risk_pct = (entry_mid - SL) / entry_mid (= ~6.5% by default)
+            #   2. T1 = max(entry_mid × (1 + 2×risk_pct), CFV-weighted target)
+            #   3. T2 = T1 × 1.05 (modest extension)
+            #   4. T3 = max(T2, CFV) — long-term target tied to fair value
             cmp = _sf(stock.get("close", 0), 0)
             cfv = _sf(stock.get("cfv", 0))
             if cmp > 0:
-                stock.setdefault("stop_loss",   round(cmp * 0.93, 2))
-                stock.setdefault("entry_range", f"{round(cmp*0.98,1)}–{round(cmp*1.01,1)}")
-                t_base = cfv if cfv > cmp else cmp
-                stock.setdefault("t1", round(cmp * 1.05, 2))
-                stock.setdefault("t2", round(cmp * 1.10, 2))
-                stock.setdefault("t3", round(t_base, 2) if cfv > 0 else round(cmp * 1.20, 2))
+                _sl_default    = round(cmp * 0.93, 2)
+                _entry_lo      = round(cmp * 0.98, 1)
+                _entry_hi      = round(cmp * 1.01, 1)
+                _entry_mid     = (_entry_lo + _entry_hi) / 2
+                stock.setdefault("stop_loss",   _sl_default)
+                stock.setdefault("entry_range", f"{_entry_lo}–{_entry_hi}")
+                # Risk-symmetric T1: 2× the risk distance from entry
+                _risk_dist = _entry_mid - _sl_default
+                _t1_risk_based = round(_entry_mid + 2 * _risk_dist, 2)
+                # CFV-anchored T1 (only if CFV is meaningfully above entry)
+                _t1_cfv_based = round(_entry_mid + (cfv - _entry_mid) * 0.30, 2) \
+                                if cfv > _entry_mid * 1.05 else 0
+                # Use higher of the two so R:R is at least 2
+                _t1 = max(_t1_risk_based, _t1_cfv_based) if _t1_cfv_based > 0 \
+                      else _t1_risk_based
+                stock.setdefault("t1", _t1)
+                # T2 extends T1 modestly; T3 anchored to CFV when available
+                stock.setdefault("t2", round(_t1 * 1.05, 2))
+                _t3_cfv = round(cfv, 2) if cfv > _t1 * 1.05 else round(_t1 * 1.10, 2)
+                stock.setdefault("t3", _t3_cfv)
             else:
                 for k in ["t1","t2","t3","stop_loss","entry_range"]:
                     stock.setdefault(k, "—")

@@ -153,7 +153,10 @@ GLOSSARY_DATA = [
      "NSE_ONLY = only on National Stock Exchange | "
      "BSE_ONLY = only on Bombay Stock Exchange | "
      "DUAL_LISTED = on both NSE and BSE (broader institutional access, preferred) | "
-     "BSE_SME = BSE Small & Medium Enterprise platform (use limit orders, low liquidity)","All sheets"),
+     "BSE_SME = BSE Small & Medium Enterprise platform (use limit orders, low liquidity). "
+     "Session 22: when BSE bhavcopy download fails (Cloudflare blocks cloud IPs), "
+     "a curated allowlist of Nifty 100 + popular mid-caps is used to tag DUAL_LISTED. "
+     "Lesser-known small-caps may show NSE_ONLY even if also listed on BSE.","All sheets"),
     ("SCORES","Score /100","Composite: Fundamental 35% + Technical 30% + Early 15% + News 10% + Risk 10%","All sheets"),
     ("SCORES","Early Entry /100","12-signal system measuring how early vs consensus. ≥50 = EARLY MOVER badge | ≥35 = AHEAD OF CONSENSUS","All sheets"),
     ("SCORES","Spike Score /6","Count of active triggers from 6 IF-THEN spike conditions (Section 3H)","All sheets"),
@@ -295,12 +298,12 @@ GLOSSARY_DATA = [
      "WATCH = moderate debt or pledge 10–20%, monitor quarterly results | "
      "ALERT = high debt (D/E>2), pledge>20%, negative FCF, or interest coverage<1.5 (extra caution)","All sheets"),
     ("TRADE PLAN","R:R Ratio",
-     "Risk:Reward = (Target1 − Entry) ÷ (Entry − Stop Loss). "
-     "< 1:1 = Poor (risk more than you can gain, avoid) | "
-     "1:1 to 2:1 = Acceptable (only for high-conviction BUY with strong MoS) | "
+     "Risk:Reward = (Target1 − Entry midpoint) ÷ (Entry midpoint − Stop Loss). "
+     "< 1:1 = Poor (avoid) | 1:1 to 2:1 = Acceptable | "
      "2:1 to 3:1 = Good (standard for positional trades) | "
-     "> 3:1 = Excellent (ideal setup, asymmetric payoff) | "
-     "Rule: never enter a trade with R:R below 1.5:1","Trade Summary"),
+     "> 3:1 = Excellent (asymmetric payoff). "
+     "Session 22: Target1 auto-derived to keep R:R ≥ 2.0 — uses max of "
+     "(Entry + 2× risk distance) and CFV-weighted target.","Trade Summary"),
     ("TRADE PLAN","Time Horizon",
      "SWING = 5–15 trading days (short-term momentum play) | "
      "POSITIONAL = 1–3 months (medium-term trend follow) | "
@@ -515,11 +518,13 @@ GLOSSARY_DATA = [
      ">80 = Overbought | 40–60 = Neutral. "
      "MFI divergence from price = early warning of trend reversal.","Full Dashboard"),
     ("TECHNICAL","Chart Pattern",
-     "Most recent chart pattern detected: "
+     "Most recent chart pattern detected from OHLC: "
      "BULLISH CANDLE / BEARISH CANDLE / DOJI (indecision) / "
-     "HAMMER (bullish reversal) / SHOOTING STAR (bearish reversal) / "
-     "ENGULFING BULLISH / ENGULFING BEARISH. "
-     "Candlestick patterns are more reliable when they occur near key support/resistance levels.","Full Dashboard"),
+     "HAMMER (bullish reversal) / HANGING MAN (bearish reversal) / "
+     "SHOOTING STAR (bearish reversal) / NEUTRAL / "
+     "UPPER CIRCUIT (hit upper price band) / LOWER CIRCUIT (hit lower band) / "
+     "'—' when OHLC data incomplete. "
+     "Candlestick patterns are more reliable near key support/resistance levels.","Full Dashboard"),
     ("TECHNICAL","Support 1 (₹)",
      "Nearest support level below CMP — price where buying is historically strong. "
      "Stop loss should be placed slightly below Support 1.","Full Dashboard"),
@@ -607,8 +612,9 @@ GLOSSARY_DATA = [
      "Debt-to-Equity ratio (abbreviated in Gold sheet). "
      "<0.5=Low debt | 0.5–1.5=Moderate | >2=High leverage risk.","Gold Sheet"),
     ("TECHNICAL","Pattern",
-     "Latest candlestick pattern. Same as Chart Pattern in Full Dashboard. "
-     "BULLISH/BEARISH CANDLE | HAMMER | SHOOTING STAR | DOJI | ENGULFING.","Gold Sheet"),
+     "Latest candlestick pattern (abbreviated in Gold sheet — same as Chart Pattern). "
+     "BULLISH/BEARISH CANDLE | HAMMER | HANGING MAN | SHOOTING STAR | DOJI | "
+     "NEUTRAL | UPPER/LOWER CIRCUIT | '—' if OHLC missing.","Gold Sheet"),
     ("FIN HEALTH","Quick Ratio",
      "Quick Ratio = (Current Assets − Inventory) ÷ Current Liabilities. "
      "More conservative than Current Ratio — excludes slow inventory. "

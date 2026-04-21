@@ -48,7 +48,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "DUAL_LISTED: Both NSE + BSE (best liquidity)\n"
                  "NSE_ONLY: Good liquidity\n"
                  "BSE_ONLY: Lower liquidity — check volume before trading\n"
-                 "BSE_SME: Very low liquidity — high impact cost"),
+                 "BSE_SME: Very low liquidity — high impact cost\n\n"
+                 "Note: When BSE bhavcopy is unavailable (cloud-runner IP\n"
+                 "blocking), a curated allowlist of known dual-listed\n"
+                 "Nifty 100 + popular mid-cap names is used to tag DUAL_LISTED.\n"
+                 "Lesser-known stocks may show NSE_ONLY even if also on BSE."),
     "Cap Category": ("LARGE=safest | MICRO=speculative",
                      "BUY thresholds: LARGE≥60 | MID≥63 | SMALL≥66 | MICRO≥70\n"
                      "LARGE: >₹20,000Cr | MID: ₹5,000–20,000Cr\n"
@@ -166,7 +170,8 @@ TIPS: Dict[str, Tuple[str, str]] = {
               "at ~200%, treat it as 'model says deeply undervalued —\n"
               "verify inputs' rather than a guaranteed bargain."),
     "MoS Label": ("Valuation summary",
-                  "EXCEPTIONAL >40% | STRONG >25% | ADEQUATE >10% | THIN 0–10% | PREMIUM <0%"),
+                  "EXCEPTIONAL >40% | STRONG >25% | ADEQUATE >10% | THIN 0-10%\n"
+                  "SLIGHT PREMIUM −10% to 0% | SIGNIFICANT PREMIUM <−10%"),
     "Upside to FV %": (">20% = meaningful upside remaining",
                        "Percentage price can rise to reach fair value."),
     "Upside %": (">20% meaningful upside",
@@ -371,8 +376,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                      "STAGE 3 MOMENTUM PEAK: Overbought (caution)\n"
                      "STAGE 4 DISTRIBUTION: Smart money exiting (avoid)"),
     "Smart Money": ("ACCUMULATION = institutional buying",
-                    "INST ACCUMULATION | INSIDER BUYING | FII INCREASING\n"
-                    "PROMOTER BUYING | HIGH DELIVERY BUYING | NEUTRAL"),
+                    "Possible values:\n"
+                    "  HIGH DELIVERY BUYING — delivery >70% with good volume\n"
+                    "  RSI ACCUMULATION ZONE — RSI in 50-65 with sideways action\n"
+                    "  INST ACCUMULATION — block deals + delivery uptick\n"
+                    "  INSIDER BUYING — promoter/director buys on record\n"
+                    "  FII INCREASING — FII QoQ holding up (paid data)\n"
+                    "  PROMOTER BUYING — promoter QoQ up (paid data)\n"
+                    "  NEUTRAL — none of above"),
 
     # ── Technical ───────────────────────────────────────────────────────────
     "SMA 200": ("CMP > SMA200 = bull trend confirmed",
@@ -407,10 +418,24 @@ TIPS: Dict[str, Tuple[str, str]] = {
                    "RISING: +4 Technical | FALLING: −4 Technical"),
     "Above VWAP": ("YES = institutional support | NO = weak",
                    "YES: +4 Technical | NO: −2 Technical"),
-    "Chart Pattern": ("BULLISH REVERSAL = buy signal",
-                      "BULLISH REVERSAL | BEARISH CANDLE | DOJI (indecision)"),
-    "Pattern": ("BULLISH REVERSAL = buy signal",
-                "BULLISH REVERSAL | BEARISH CANDLE | DOJI (indecision)"),
+    "Chart Pattern": ("Today's candle pattern from OHLC",
+                      "Detected from open/high/low/close + previous close.\n"
+                      "Possible values:\n"
+                      "  BULLISH CANDLE — close > open > prev close +1%\n"
+                      "  BEARISH CANDLE — close < open < prev close -1%\n"
+                      "  DOJI — body very small (indecision, possible reversal)\n"
+                      "  HAMMER — long lower wick (bullish reversal signal)\n"
+                      "  HANGING MAN — long lower wick at top (bearish reversal)\n"
+                      "  SHOOTING STAR — long upper wick (bearish reversal)\n"
+                      "  UPPER CIRCUIT — hit upper price band (no trading room left)\n"
+                      "  LOWER CIRCUIT — hit lower price band (forced sellers stuck)\n"
+                      "  NEUTRAL — none of above; sideways action\n"
+                      "  '—' — OHLC data incomplete"),
+    "Pattern": ("Today's candle pattern from OHLC",
+                "Same as Chart Pattern, abbreviated for Gold sheet.\n"
+                "Values: BULLISH CANDLE | BEARISH CANDLE | DOJI | HAMMER\n"
+                "       HANGING MAN | SHOOTING STAR | NEUTRAL\n"
+                "       UPPER CIRCUIT | LOWER CIRCUIT | '—'"),
 
     # ── Support / resistance ────────────────────────────────────────────────
     "Support 1 (₹)": ("Nearest support = buy zone floor",
@@ -451,8 +476,12 @@ TIPS: Dict[str, Tuple[str, str]] = {
                    "LOW: High score + low beta + low D/E + no pledge\n"
                    "MEDIUM: Acceptable | HIGH: Small/micro | VERY HIGH: Speculative"),
     "R:R Ratio": ("Aim for >1:2 | Higher = better risk/reward",
-                  "R:R = (T1 − Entry) / (Entry − SL)\n"
-                  ">2: Excellent | 1–2: Acceptable | <1: Avoid"),
+                  "R:R = (T1 − Entry mid) / (Entry mid − SL)\n"
+                  ">2: Excellent | 1–2: Acceptable | <1: Avoid\n\n"
+                  "Session 22: T1 is now auto-derived to ensure R:R ≥ 2.0:\n"
+                  "  T1 = max(Entry + 2×risk_distance, CFV-weighted target)\n"
+                  "Stocks with high CFV will get value-anchored targets;\n"
+                  "stocks without CFV get pure risk-symmetric targets."),
 
     # ── Narrative / AI ──────────────────────────────────────────────────────
     "Key Catalyst": ("Primary near-term growth driver",

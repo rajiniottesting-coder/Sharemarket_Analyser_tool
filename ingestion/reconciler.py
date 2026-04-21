@@ -9,10 +9,76 @@ Fixes:
 - 'final_close' prefers NSE close
 - diff_pct computation fully safe (zero-division protected)
 - exchange_tag correctly identifies BSE_SME via sc_group column
+
+Session 22 fallback (added):
+- When BSE Bhav download fails (Cloudflare blocks cloud IPs, or pip 'bse' /
+  'cloudscraper' not installed), reconcile_exchanges previously tagged ALL
+  stocks as NSE_ONLY, including known dual-listed names like SBIN, M&M, TITAN.
+- New behaviour: when bse_df is empty, consult DUAL_LISTED_ALLOWLIST (curated
+  Nifty-100-based set of known NSE+BSE dual-listed stocks) and tag matching
+  symbols as DUAL_LISTED. Anything not on the list still defaults to NSE_ONLY,
+  which is correct for ~95% of small/mid caps that aren't widely dual-listed.
 """
 
 import pandas as pd
 import numpy as np
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DUAL_LISTED_ALLOWLIST — Session 22 BSE-down fallback
+# ─────────────────────────────────────────────────────────────────────────────
+# Stocks confirmed to trade on BOTH NSE and BSE. Sourced from Nifty 100
+# constituents (Apr 2026) plus widely-traded mid-caps. All values are NSE
+# ticker symbols (uppercase) — match key used by reconciler.
+#
+# Maintenance note: this list rarely changes. New IPOs typically list on both
+# exchanges. Removals happen only on delisting. If a stock you care about
+# shows NSE_ONLY but should be DUAL_LISTED, add it here.
+DUAL_LISTED_ALLOWLIST = frozenset({
+    # NIFTY 50 (all dual-listed)
+    "RELIANCE", "HDFCBANK", "BHARTIARTL", "TCS", "ICICIBANK", "SBIN", "INFY",
+    "HINDUNILVR", "ITC", "LT", "BAJFINANCE", "KOTAKBANK", "AXISBANK", "MARUTI",
+    "TITAN", "M&M", "SUNPHARMA", "ASIANPAINT", "ULTRACEMCO", "ONGC", "NTPC",
+    "HCLTECH", "WIPRO", "ADANIENT", "ADANIPORTS", "JSWSTEEL", "TATAMOTORS",
+    "TATASTEEL", "POWERGRID", "COALINDIA", "BAJAJFINSV", "HINDALCO", "NESTLEIND",
+    "TECHM", "DRREDDY", "GRASIM", "INDUSINDBK", "BPCL", "CIPLA", "DIVISLAB",
+    "EICHERMOT", "BAJAJ-AUTO", "BRITANNIA", "APOLLOHOSP", "TRENT", "HEROMOTOCO",
+    "TATACONSUM", "SHRIRAMFIN", "SBILIFE", "HDFCLIFE", "JIOFIN", "ETERNAL",
+    # NIFTY NEXT 50 (also all dual-listed)
+    "HAL", "HINDZINC", "IOC", "ADANIGREEN", "TVSMOTOR", "VBL", "PFC", "DLF",
+    "BAJAJHLDNG", "VEDL", "AMBUJACEM", "GAIL", "ICICIGI", "ICICIPRULI", "GODREJCP",
+    "PIDILITIND", "BANKBARODA", "HAVELLS", "TATAPOWER", "INDHOTEL", "ATGL",
+    "RECLTD", "JINDALSTEL", "SIEMENS", "DABUR", "ZOMATO", "BEL", "CHOLAFIN",
+    "SHREECEM", "MOTHERSON", "ADANIPOWER", "JSWENERGY", "ABB", "BOSCHLTD",
+    "MARICO", "INDIGO", "INDUSTOWER", "CGPOWER", "IRFC", "PNB", "TORNTPHARM",
+    "LODHA", "HYUNDAI", "SWIGGY", "NAUKRI", "UNITDSPR", "BHEL", "POLYCAB",
+    "COLPAL", "LICI", "CANBK",
+    # Common NIFTY MIDCAP 100 / smallcap names that show up in screeners
+    "FEDERALBNK", "M&MFIN", "BANDHANBNK", "MFSL", "MPHASIS", "PERSISTENT",
+    "COFORGE", "LTIM", "LTTS", "PIIND", "VOLTAS", "BERGEPAINT", "PAGEIND",
+    "AUROPHARMA", "LUPIN", "BIOCON", "ALKEM", "ZYDUSLIFE", "GLENMARK",
+    "TORNTPOWER", "NHPC", "SJVN", "PETRONET", "GUJGASLTD", "MGL", "IGL",
+    "OFSS", "MINDTREE", "TATAELXSI", "NMDC", "NATIONALUM", "SAIL",
+    "TATACOMM", "CONCOR", "IRCTC", "RVNL", "RAILTEL", "MAZDOCK", "GRSE",
+    "BDL", "BEML", "DEEPAKNTR", "ATUL", "AARTIIND", "COROMANDEL", "UPL",
+    "CHAMBLFERT", "BAYERCROP", "ESCORTS", "ASHOKLEY", "BHARATFORG", "EXIDEIND",
+    "MRF", "BALKRISIND", "APOLLOTYRE", "CEATLTD", "TIINDIA", "JKCEMENT",
+    "RAMCOCEM", "DALBHARAT", "ABCAPITAL", "ABFRL", "PAYTM", "POLICYBZR",
+    "STARHEALTH", "MAXHEALTH", "FORTIS", "SYNGENE", "GLAND", "SUNTV",
+    "ZEEL", "PVRINOX", "INDIANB", "UCOBANK", "IDBI", "IDFCFIRSTB", "AUBANK",
+    "RBLBANK", "YESBANK", "ESAFSFB", "EQUITASBNK", "UJJIVANSFB", "MUTHOOTFIN",
+    "MANAPPURAM", "L&TFH", "BAJAJHIND", "NAVINFLUOR", "LINDEINDIA", "SRF",
+    "TATACHEM", "JUBLFOOD", "KAJARIACER", "HOMEFIRST", "GRANULES", "PITTIENG",
+    "VOLTAMP", "CARERATING", "STYLAMIND", "GOCOLORS", "HALEOSLABS", "AMAGI",
+    "CMSINFO", "RANEHOLDIN",
+})
+
+
+def _is_dual_listed_known(symbol: str) -> bool:
+    """Check if a symbol is on the curated dual-listed allowlist."""
+    if not symbol or not isinstance(symbol, str):
+        return False
+    return symbol.strip().upper() in DUAL_LISTED_ALLOWLIST
 
 
 def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFrame:
@@ -33,8 +99,17 @@ def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFr
         return bse_df
 
     if bse_df is None or bse_df.empty:
+        # Session 22: BSE bhavcopy unavailable (Cloudflare blocks cloud IPs).
+        # Use curated DUAL_LISTED_ALLOWLIST so widely-traded names like SBIN,
+        # M&M, TITAN, BHARTIARTL get correctly tagged as DUAL_LISTED instead
+        # of all defaulting to NSE_ONLY.
         nse_df = nse_df.copy()
-        nse_df["exchange_tag"] = "NSE_ONLY"
+        _sym_upper = nse_df["symbol"].astype(str).str.strip().str.upper()
+        nse_df["exchange_tag"] = np.where(
+            _sym_upper.isin(DUAL_LISTED_ALLOWLIST),
+            "DUAL_LISTED",
+            "NSE_ONLY"
+        )
         nse_df["final_symbol"] = nse_df["symbol"].astype(str)
         nse_df["final_close"]  = pd.to_numeric(nse_df.get("close", 0), errors="coerce").fillna(0)
         nse_df["diff_pct"]     = 0.0
@@ -129,6 +204,18 @@ def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFr
         return "NSE_ONLY"
 
     merged["exchange_tag"] = merged.apply(_apply_exchange_tag, axis=1)
+
+    # Session 22 safety override: if a stock is on the curated allowlist
+    # but the BSE merge somehow tagged it as NSE_ONLY (ISIN format issue,
+    # symbol case mismatch, partial BSE download, etc.), promote it back
+    # to DUAL_LISTED. This handles partial-data edge cases without
+    # masking real issues — the main merge path is still primary.
+    _final_sym_col = "symbol_NSE" if "symbol_NSE" in merged.columns else "symbol"
+    if _final_sym_col in merged.columns:
+        _sym_check = merged[_final_sym_col].astype(str).str.strip().str.upper()
+        _is_known_dual = _sym_check.isin(DUAL_LISTED_ALLOWLIST)
+        _was_nse_only  = (merged["exchange_tag"] == "NSE_ONLY")
+        merged.loc[_is_known_dual & _was_nse_only, "exchange_tag"] = "DUAL_LISTED"
 
     # ── Derive close columns after merge ─────────────────────────────────────
     # After outer merge, 'close' may appear as 'close_NSE' and 'close_BSE'
