@@ -2,7 +2,7 @@ name: NSE_BSE_Daily_Pipeline
 
 on:
   schedule:
-    - cron: '0 0 * * 2-6'
+    - cron: '0 23 * * 1-5'   # 23:00 UTC = 04:30 IST next day (Tue–Sat IST)
   workflow_dispatch:
 
 permissions:

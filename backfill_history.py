@@ -1072,36 +1072,38 @@ def run_backfill():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _compute_all_indicators(conn):
-    # ── Step 1: Active symbols only (traded in last 30 days) ─────────────────
-    # Processing ALL 8,711+ historical symbols is wasteful — dead/delisted stocks
-    # are dropped at Stage 1 Gate F3 (volume=0) before technicals are ever read.
-    # Filtering to active symbols reduces ~8,700 → ~2,500 without any quality
-    # stock falling off the radar.
+    # ── Step 1: Active symbols only (traded in last 7 days) ──────────────────
+    # Processing ALL 8,700+ historical symbols one-by-one is very slow.
+    # A stock not traded in the last 7 days will have volume=0 today and
+    # gets dropped at Stage 1 Gate F3 BEFORE technicals are ever read.
+    # So computing technicals for inactive/delisted symbols is 100% wasted work.
+    # -7 days (vs -30 days) gives ~2,500 active symbols instead of 6,600+.
     active_syms = pd.read_sql(
         """
         SELECT DISTINCT symbol
         FROM   daily_prices
-        WHERE  date >= date('now', '-30 days')
+        WHERE  date >= date('now', '-7 days')
         ORDER  BY symbol
         """,
         conn
     )['symbol'].tolist()
 
-    total = len(active_syms)
-    skipped = 8711 - total if total < 8711 else 0
+    total   = len(active_syms)
+    skipped = max(0, 8711 - total)
     print(f"   {total} active symbols to process "
-          f"(traded last 30 days — {skipped}+ inactive/delisted skipped)...",
+          f"(traded last 7 days — {skipped}+ inactive/delisted skipped)...",
           flush=True)
 
-    ti_rows  = []
-    wm_rows  = []
+    ti_rows   = []
+    wm_rows   = []
     processed = 0
 
     # ── Step 2: Chunked bulk reads (500 symbols per chunk) ────────────────────
-    # Each chunk = 1 DB query instead of 500 individual queries.
-    # ~2,500 / 500 = ~5 queries total vs 8,711 previously.
-    # RAM per chunk: 500 syms × 250 days × ~60 bytes ≈ 12 MB — safe on
-    # GitHub Actions 7 GB limit. DataFrame released after each chunk.
+    # 1 DB query per 500 symbols instead of 1 query per symbol.
+    # ~2,500 / 500 = ~5 queries vs 8,711 previously.
+    # RAM per chunk: 500 syms × 250 days × ~60 bytes ≈ 12 MB
+    # — well within GitHub Actions 7 GB free tier limit.
+    # DataFrame is deleted after each chunk to keep memory flat.
     CHUNK  = 500
     chunks = [active_syms[i: i + CHUNK] for i in range(0, total, CHUNK)]
 
@@ -1141,7 +1143,7 @@ def _compute_all_indicators(conn):
             if processed % 250 == 0:
                 print(f"   ... {processed}/{total}", flush=True)
 
-        # Release chunk DataFrame from memory after each chunk
+        # Release chunk from memory immediately after processing
         del chunk_hist
 
     if ti_rows:
