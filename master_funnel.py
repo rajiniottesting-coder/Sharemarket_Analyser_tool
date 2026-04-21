@@ -1877,6 +1877,34 @@ def run_master_pipeline():
             score_result = scoring.calculate_composite_score(stock)
             stock.update(score_result)
 
+            # ── Session 21 EE polish pass: Score Convergence (+8) ────────────
+            # The inline EE scorer runs BEFORE composite_score is computed,
+            # so "Score Convergence" (requires score>=70) never fires in the
+            # main pass. Apply it here now that composite is known. Ceiling
+            # remains 100; we don't double-count if convergence already
+            # present in signals list (defensive).
+            _ee_now = int(stock.get("early_entry_score", 0) or 0)
+            _score_final = _sf(stock.get("composite_score", 0), 0)
+            _rsi_final   = _sf(stock.get("rsi", 50), 50)
+            _st_final    = str(stock.get("supertrend", "NEUTRAL"))
+            _sigs_str    = str(stock.get("early_signals", ""))
+            if (_score_final >= 70 and _rsi_final > 60 and _st_final == "BUY"
+                    and "SCORE CONVERGENCE" not in _sigs_str):
+                _ee_now = min(100, _ee_now + 8)
+                stock["early_entry_score"] = _ee_now
+                # Preserve signal label in early_signals (merge with existing)
+                _cur_sigs = [s.strip() for s in _sigs_str.split("|")
+                             if s.strip() and s.strip() != "—"]
+                if "SCORE CONVERGENCE" not in _cur_sigs:
+                    _cur_sigs.insert(0, "SCORE CONVERGENCE")
+                stock["early_signals"] = " | ".join(_cur_sigs) if _cur_sigs else "—"
+                # Refresh badge/label in case score crossed the 50 threshold
+                stock["early_mover_badge"] = "EARLY MOVER" if _ee_now >= 50 else stock.get("early_mover_badge","")
+                if _ee_now >= 50:
+                    stock["early_label"] = "EARLY MOVER — Act before the crowd"
+                elif _ee_now >= 35:
+                    stock["early_label"] = "AHEAD OF CONSENSUS"
+
             # ── Derive ghost keys for Storm/Sentiment/EDE before scoring ──────
             # These keys are READ by scoring_engine but were never populated,
             # causing storm/sentiment scores to always be near baseline.
@@ -2059,6 +2087,12 @@ def run_master_pipeline():
                 _l = _sf(stock.get("low", 0), 0)
                 _c = _sf(stock.get("close", 0), 0)
                 _pc = _sf(stock.get("prev_close", 0), 0)
+                # Session 21 bug fix: previously, if OHLC data was missing OR
+                # the stock hit upper/lower circuit (H==L), chart_pattern stayed
+                # None → cell rendered as blank in Excel (user-reported for
+                # SOMATEX, which hit 9.99% upper circuit). Now we set a
+                # meaningful fallback label in every branch.
+                _assigned = False
                 if _o > 0 and _h > 0 and _l > 0 and _c > 0:
                     _body  = abs(_c - _o)
                     _range = _h - _l
@@ -2077,6 +2111,28 @@ def run_master_pipeline():
                             stock["chart_pattern"] = "BEARISH CANDLE"
                         else:
                             stock["chart_pattern"] = "NEUTRAL"
+                        _assigned = True
+                    else:
+                        # H == L: stock hit circuit (upper or lower), or only
+                        # one trade. Use day-change direction as fallback.
+                        if _pc > 0:
+                            _chg = (_c - _pc) / _pc * 100
+                            if _chg >= 4.5:
+                                stock["chart_pattern"] = "UPPER CIRCUIT"
+                            elif _chg <= -4.5:
+                                stock["chart_pattern"] = "LOWER CIRCUIT"
+                            elif _chg > 0:
+                                stock["chart_pattern"] = "BULLISH CANDLE"
+                            elif _chg < 0:
+                                stock["chart_pattern"] = "BEARISH CANDLE"
+                            else:
+                                stock["chart_pattern"] = "NEUTRAL"
+                        else:
+                            stock["chart_pattern"] = "NEUTRAL"
+                        _assigned = True
+                if not _assigned:
+                    # OHLC incomplete (rare — stock with only close price)
+                    stock["chart_pattern"] = "—"
 
             # Key-name fixes + derived fields
             if "earn_yield" in stock and not stock.get("earnings_yield"):
