@@ -128,10 +128,15 @@ class ForensicsEngine:
 
         # 3G: Altman Z + Beneish M (Session 15: wire numeric forensics scores)
         # Both are safe — return 0.0 when paid BS inputs are missing, which is
-        # the norm for yfinance free data. Caller should treat 0.0 as "unknown"
-        # rather than "safe". This populates Excel cols 'altman_z' and 'beneish_m'.
-        results['altman_z']   = ForensicsEngine.calculate_altman_z(row)
-        results['beneish_m']  = ForensicsEngine.calculate_beneish_m(row)
+        # the norm for yfinance free data.
+        # Session 20: display as "—" (em-dash) when value is 0.0 so users don't
+        # misinterpret "0" as "this stock is on the edge of Altman distress".
+        # 0.0 genuinely means "insufficient balance-sheet data to compute".
+        # Real computed values (e.g., 3.67, -2.50) remain numeric as before.
+        _alt_val = ForensicsEngine.calculate_altman_z(row)
+        _ben_val = ForensicsEngine.calculate_beneish_m(row)
+        results['altman_z']   = _alt_val  if _alt_val  != 0.0 else "—"
+        results['beneish_m']  = _ben_val  if _ben_val  != 0.0 else "—"
 
         # 3G: M-Score Proxy (Is receivables growth > 1.5x Revenue growth?)
         results['earnings_manipulation_risk'] = row.get('rec_growth', 0) > (row.get('rev_growth', 0) * 1.5)

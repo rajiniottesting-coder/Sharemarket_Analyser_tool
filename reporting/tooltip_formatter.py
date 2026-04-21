@@ -332,13 +332,21 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "Safety score impact:\n"
                        "  F ≥ 7 → +6\n"
                        "  F = 5–6 → +3\n"
-                       "Free data typically reaches 4; full 9 needs paid BS feeds."),
+                       "Computed from free yfinance data (Session 14+20); typical\n"
+                       "distribution on a real run: 4–8 range, with most quality\n"
+                       "stocks scoring 6–8."),
     "Altman Z": (">2.99 safe | <1.81 distress zone",
                  "<1.81: Triggers anti-trigger guard (Spike suppressed).\n"
-                 "0 = insufficient balance sheet data."),
+                 "Requires balance-sheet inputs (working capital, retained\n"
+                 "earnings, EBIT, total assets, total liabilities) which\n"
+                 "yfinance free data doesn't provide. Column displays '—'\n"
+                 "(em-dash) for stocks without the required BS feed."),
     "Beneish M": ("<−2.22 honest | >−2.22 possible manipulation",
                   ">−2.22: Triggers anti-trigger guard (Spike suppressed).\n"
-                  "0 = insufficient data."),
+                  "Requires net income, cash flow from operations, and total\n"
+                  "assets from the balance sheet — yfinance free data doesn't\n"
+                  "provide these. Column displays '—' (em-dash) for stocks\n"
+                  "without the required BS feed."),
     "Earn Quality": ("HIGH = cash-backed earnings",
                      "HIGH: Cash flow matches profits | LOW: Accounting concern."),
 
@@ -741,11 +749,14 @@ def format_tooltip(header: str, short: str, full: str) -> str:
 _CUE = " ⓘ"
 
 
-def _comment(text: str, width: int = 340, height: int = 240) -> Comment:
+def _comment(text: str, width: int = 380, height: int = 260) -> Comment:
     c = Comment(text, "NSE/BSE Analyser")
     line_count = text.count("\n") + 1
     c.width = width
-    c.height = max(height, min(18 * line_count + 30, 420))
+    # Session 20: height ceiling raised from 420→540 so post-Session-16
+    # tooltips (Piotroski, Score /100, Early Entry /100 — all gained scoring
+    # detail in their "DETAIL" sections) render fully without clipping.
+    c.height = max(height, min(18 * line_count + 40, 540))
     return c
 
 

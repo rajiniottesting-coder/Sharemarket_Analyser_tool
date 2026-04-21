@@ -242,9 +242,9 @@ GLOSSARY_DATA = [
     ("SHAREHOLDING","Promoter %","Promoter holding. <25% = low conviction. 0% = hard drop","All sheets"),
     ("SHAREHOLDING","Pledge %","Pledged shares. >20% = anti-trigger fires. >40% = hard drop","All sheets"),
     ("SHAREHOLDING","FII %","Foreign Institutional Investor holding. Rising = smart money signal","Full Dashboard"),
-    ("QUALITY SCORES","Piotroski F /9","9-point health score. ≥7 = strong. ≤3 = weak","All sheets"),
-    ("QUALITY SCORES","Altman Z","Bankruptcy predictor. >2.99 safe. <1.81 = distress zone","Full Dashboard"),
-    ("QUALITY SCORES","Beneish M","Manipulation score. >-2.22 = risk. Anti-trigger fires","Full Dashboard"),
+    ("QUALITY SCORES","Piotroski F /9","9-point business health score computed from free yfinance data (Session 14 wire-up). ≥7=strong, ≤3=weak. Typical distribution on a real run: 4-8 range","All sheets"),
+    ("QUALITY SCORES","Altman Z","Bankruptcy predictor. >2.99=safe, <1.81=distress zone. Requires paid balance-sheet feed (working capital, retained earnings, EBIT, total liabilities, total assets) — displays '—' when missing","Full Dashboard"),
+    ("QUALITY SCORES","Beneish M","Manipulation risk score. >-2.22=risk, <-2.22=clean. Requires paid balance-sheet feed (NI from ops, CFO, total assets) — displays '—' when missing","Full Dashboard"),
     ("PIPELINE / OB","OB/Bill Ratio","Order Book ÷ Revenue. >1.5× = strong pipeline","All sheets"),
     ("EARLY DETECTION","Early Entry /100","12 signals: quiet accum, SME migration, analyst imminent, sector Stage 1","All sheets"),
     ("EARLY DETECTION","Sector Stage",
@@ -702,7 +702,10 @@ NO_FREE_SOURCE_COLS = {
     "Pro QoQ Δ","Pledge %","Pledge Direction","DII %","DII QoQ Δ",
     "FII QoQ Δ",
     # Forensic / quality scores (need multi-year filed financials)
-    "Piotroski F /9","Altman Z","Beneish M","Earn Quality",
+    # Session 20: Piotroski F /9 removed — it now computes from free data
+    # via FundamentalEngine.calculate_piotroski_f_score (Session 14 wire-up).
+    # Typical output 4-8 of 9 on free data; no longer a paid-source column.
+    "Altman Z","Beneish M","Earn Quality",
     # Intelligence / pipeline (needs company-specific filed data)
     "OB/Bill Ratio","Pipeline Vis","L1 Wins 90D","L1 Est (₹Cr)","New Mkt Entry",
     # AI-generated text fields (needs Anthropic credits — separate amber set below)

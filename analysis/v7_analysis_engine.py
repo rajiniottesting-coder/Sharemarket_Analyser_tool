@@ -93,15 +93,23 @@ class V7AnalysisEngine:
 
         # Rule: Altman_Z < 1.81 (Financial Distress)
         # Only fire if we actually computed a real Altman score (non-zero).
-        # 0.0 means insufficient BS data — NOT a distress signal.
-        _alt = row.get('altman_z', 0)
+        # 0.0 or "—" means insufficient BS data — NOT a distress signal.
+        # Session 20: altman_z may now be "—" (string) when data missing —
+        # coerce to float defensively so guard doesn't crash.
+        try:
+            _alt = float(row.get('altman_z', 0) or 0)
+        except (ValueError, TypeError):
+            _alt = 0
         if _alt and _alt != 0 and _alt < 1.81:
             is_suppressed = True
             reasons.append("Altman Z < 1.81")
 
         # Rule: Beneish_M > -2.22 (Manipulation Risk)
-        # Only fire on non-zero values. 0.0 = insufficient data, not a flag.
-        _ben = row.get('beneish_m', 0)
+        # Only fire on non-zero values. 0.0 or "—" = insufficient data.
+        try:
+            _ben = float(row.get('beneish_m', 0) or 0)
+        except (ValueError, TypeError):
+            _ben = 0
         if _ben and _ben != 0 and _ben > -2.22:
             is_suppressed = True
             reasons.append("Beneish M > -2.22")

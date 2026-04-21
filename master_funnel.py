@@ -2127,16 +2127,30 @@ def run_master_pipeline():
                 for k in ["t1","t2","t3","stop_loss","entry_range"]:
                     stock.setdefault(k, "—")
 
-            # early_signals — combine spike triggers + early mover signals
+            # early_signals — combine spike triggers + EE-scorer labels + mover badge
+            # Session 20: previously this block overwrote stock["early_signals"],
+            # wiping the inline EE signal labels (VOL SURGE + RSI ACCUMULATION,
+            # TREND CONFLUENCE, INSTITUTIONAL FOOTPRINT, DEEP VALUE + BUY, etc.)
+            # that the EE scorer had written at ~line 1775. Those labels are what
+            # explain the EE score — without them the user sees "EE=55" with no
+            # visible reason. Fix: preserve prior early_signals content and MERGE
+            # spike triggers + badge/label on top (de-duplicated).
+            _ee_prev_signals = stock.get("early_signals", "")
             _early_sigs = []
+            if _ee_prev_signals and _ee_prev_signals not in ("—", ""):
+                _early_sigs += [s.strip() for s in str(_ee_prev_signals).split("|") if s.strip()]
             _spike_trigs = stock.get("spike_triggers", "")
             if _spike_trigs and _spike_trigs != "—":
-                _early_sigs += [s.strip() for s in str(_spike_trigs).split("|") if s.strip()]
+                for s in str(_spike_trigs).split("|"):
+                    s = s.strip()
+                    if s and s not in _early_sigs:
+                        _early_sigs.append(s)
             _early_badge = stock.get("early_mover_badge", "")
-            if _early_badge:
+            if _early_badge and _early_badge not in _early_sigs:
                 _early_sigs.append(str(_early_badge))
             _early_label = stock.get("early_label", "")
-            if _early_label and _early_label not in ("EMERGING", "—", ""):
+            if (_early_label and _early_label not in ("EMERGING", "—", "")
+                    and _early_label not in _early_sigs):
                 _early_sigs.append(str(_early_label))
             stock["early_signals"] = " | ".join(_early_sigs) if _early_sigs else "—"
 
