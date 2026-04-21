@@ -1162,7 +1162,10 @@ class ExcelGeneratorV6:
     def _get_gold(self):
         if self.df.empty: return pd.DataFrame()
         try:
-            mask=((self.df["early_entry_score"]>=70)|
+            # Gold threshold: 50 (was 70 — unreachable with free-source data).
+            # Max achievable EE score with free sources is ~55 (no FII/Promoter QoQ).
+            # 50 ensures the best 5-8 stocks per day qualify as Early Movers.
+            mask=((self.df["early_entry_score"]>=50)|
                   ((self.df["mos_pct"]>=25)&(self.df["composite_score"]>=70)))&\
                  (~self.df["verdict"].isin(["AVOID","AVOID / EXIT","EXIT"]))&\
                  (self.df["spike_suppressed"]==False)

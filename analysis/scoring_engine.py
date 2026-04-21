@@ -47,15 +47,21 @@ class ScoringEngine:
         
         # B. Adjustments & Bonuses
         # MoS Adjustment from Section 5B Step 4 
-        final_score = base_score + data.get('mos_adjustment', 0)
+        # score_adjustment is set by fair_value_engine.get_composite_fair_value()
+        # and stored in stock dict as 'score_adjustment' via stock.update(fv_result).
+        # Previously read as 'mos_adjustment' — wrong key, always returned 0.
+        final_score = base_score + data.get('score_adjustment',
+                                   data.get('mos_adjustment', 0))
         
         # Spike Bonus: +2 per trigger (cap +10) 
         spike_bonus = min(data.get('spike_count', 0) * 2, 10) 
         final_score += spike_bonus
         
-        # Early Mover Bonus (Section 6) 
-        if data.get('early_entry_score', 0) >= 70:
-            final_score += 5 
+        # Early Mover Bonus (Section 6)
+        # Threshold 50 (was 70) — consistent with Gold sheet threshold.
+        # Max achievable EE with free data is ~55, so 70 was unreachable.
+        if data.get('early_entry_score', 0) >= 50:
+            final_score += 5
             
         # Anti-trigger Penalty (Section 6) 
         if data.get('risk_flag_active', False):
@@ -82,7 +88,11 @@ class ScoringEngine:
         score = 0
         # Scoring Logic (Section 7)
         if data.get('beta', 1.0) < 0.8: score += 2
-        _de_val = float(data.get('de_ratio', 1.0) or 1.0)
+        # de_ratio_num is the normalised key set in master_funnel;
+        # fall back to debt_equity then 1.0 so D/E<0.3 stocks correctly get +2 pts
+        _de_val = float(data.get('de_ratio',
+                        data.get('de_ratio_num',
+                        data.get('debt_equity', 1.0))) or 1.0)
         if _de_val < 0.3: score += 2
         if data.get('fcf_positive_4q', False): score += 2 
         if data.get('promoter_q_increase', False): score += 1

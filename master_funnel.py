@@ -507,8 +507,11 @@ def run_master_pipeline():
 
             # Section 3H: Anti-Trigger Guard
             guard = v7_engine.apply_section_3H_guards(stock)
-            stock["spike_suppressed"] = guard["suppressed"]
-            stock["guard_reasons"]    = ", ".join(guard["reasons"])
+            stock["spike_suppressed"]  = guard["suppressed"]
+            stock["guard_reasons"]     = ", ".join(guard["reasons"])
+            # risk_flag_active is read by scoring_engine for -10 penalty.
+            # Bridge from spike_suppressed (same condition, different key name).
+            stock["risk_flag_active"]  = guard["suppressed"]
 
             # Section 3I: Early Entry Score deferred to Section 6 scoring loop
             # (vol_ratio, rsi, supertrend, 2w_chg are not available yet in this pass)
@@ -1663,10 +1666,13 @@ def run_master_pipeline():
 
                 _escore = min(100, _escore)
                 stock["early_entry_score"] = _escore
-                stock["early_mover_badge"] = "EARLY MOVER" if _escore >= 70 else ""
+                # Badge threshold 50 (was 70) — consistent with Gold sheet + bonus threshold.
+                # Label thresholds adjusted: EARLY MOVER>=50, AHEAD OF CONSENSUS>=35.
+                # Max achievable EE with free data is ~55 (no FII/Promoter QoQ).
+                stock["early_mover_badge"] = "EARLY MOVER" if _escore >= 50 else ""
                 stock["early_label"] = (
-                    "EARLY MOVER — Act before the crowd" if _escore >= 80 else
-                    "AHEAD OF CONSENSUS" if _escore >= 60 else "EMERGING"
+                    "EARLY MOVER — Act before the crowd" if _escore >= 50 else
+                    "AHEAD OF CONSENSUS" if _escore >= 35 else "EMERGING"
                 )
                 if _esigs:
                     stock["early_signals"] = " | ".join(_esigs)
@@ -1820,6 +1826,13 @@ def run_master_pipeline():
                 stock["promoter_buying_30d"] = bool(_pq_ede > 0.5)
             except (ValueError, TypeError):
                 stock["promoter_buying_30d"] = False
+
+            # C4: de_ratio — normalise key for scoring_engine.py
+            # scoring_engine reads 'de_ratio' but master_funnel stores
+            # the value as 'de_ratio_num' / 'debt_equity'. Bridge both.
+            stock['de_ratio'] = _sf(
+                stock.get('de_ratio_num',
+                stock.get('debt_equity', 1.0)), 1.0)
 
             # Storm score
             storm = scoring.calculate_storm_score(stock, market_vix=12.0,
