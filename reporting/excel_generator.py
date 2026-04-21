@@ -155,7 +155,7 @@ GLOSSARY_DATA = [
      "DUAL_LISTED = on both NSE and BSE (broader institutional access, preferred) | "
      "BSE_SME = BSE Small & Medium Enterprise platform (use limit orders, low liquidity)","All sheets"),
     ("SCORES","Score /100","Composite: Fundamental 35% + Technical 30% + Early 15% + News 10% + Risk 10%","All sheets"),
-    ("SCORES","Early Entry /100","12-signal system measuring how early vs consensus. ≥70 = EARLY MOVER badge","All sheets"),
+    ("SCORES","Early Entry /100","12-signal system measuring how early vs consensus. ≥50 = EARLY MOVER badge | ≥35 = AHEAD OF CONSENSUS","All sheets"),
     ("SCORES","Spike Score /6","Count of active triggers from 6 IF-THEN spike conditions (Section 3H)","All sheets"),
     ("SCORES","Storm Score /10","Volatility resilience score. Higher = more defensive in downturns (VIX>18)","Full Dashboard"),
     ("PRICE & MARKET","CMP","Current Market Price in Indian Rupees (₹)","All sheets"),
@@ -644,6 +644,41 @@ GLOSSARY_DATA = [
      "Upside to Fair Value = (CFV − CMP) ÷ CMP × 100. "
      "Same as MoS % in Full Dashboard. "
      "Positive=upside potential | Negative=currently priced above fair value.","Gold Sheet"),
+
+    # ── GOLD-TIER FILTER (Session 19) ─────────────────────────────────────────
+    # Documents why the Gold sheet only shows a small number of stocks per day.
+    # Any user looking at the Gold sheet with few or zero stocks can reference
+    # this to understand the strict 8-condition filter.
+    ("GOLD FILTER","Gold-Tier Definition",
+     "A stock qualifies for the Gold – Early Movers sheet only if ALL 8 "
+     "conditions are met: (1) Verdict = BUY (not WATCHLIST), (2) Composite "
+     "Score ≥ 70, (3) Margin of Safety between 15% and 100%, (4) Storm Score "
+     "≥ 5 (defensively sound), (5) RSI ≤ 70 (not overbought), (6) BS Health "
+     "Flag ≠ ALERT, (7) Pledge % ≤ 10, (8) not spike-suppressed. Some days "
+     "may show 0-3 stocks; other days 8-12. This is by design — the filter "
+     "reflects market reality, not a fixed daily quota.","Gold Sheet"),
+    ("GOLD FILTER","Why so few Gold stocks?",
+     "The Gold filter is strict by design: 'patient upside, healthy stocks "
+     "only'. It rejects (a) stocks the system isn't confident enough to BUY, "
+     "(b) stocks already overbought (RSI > 70), (c) stocks with inflated or "
+     "shallow margins of safety, (d) anything with balance-sheet red flags "
+     "or high pledge. Most days the top 3-8 stocks by score will also pass "
+     "this filter; days with broad overbought conditions will produce fewer.","Gold Sheet"),
+
+    # ── FAIR VALUE SAFETY CAP (Session 19) ────────────────────────────────────
+    ("FAIR VALUE","CFV Cap (3× CMP)",
+     "Composite Fair Value is capped at 3× Current Market Price as a "
+     "safety net. This means the MoS column will never exceed approximately "
+     "200% even if individual fair-value models produce higher outputs. "
+     "Prevents a single broken model (e.g., DCF on a low-beta stock with "
+     "tiny terminal-value denominator) from distorting the composite. "
+     "If you see MoS near 200%, treat it as 'deeply undervalued by model, "
+     "verify inputs' rather than a guaranteed bargain.","Full Dashboard"),
+    ("FAIR VALUE","M1 DCF Cap (4× CMP)",
+     "The DCF model (30% weight in CFV) is capped at 4× CMP. A WACC floor "
+     "of 10% is also applied to prevent extreme terminal values for low-beta "
+     "stocks (beta < 0.5). These guardrails reflect that Indian equity "
+     "discount rates below 10% are unrealistic given the ~6.8% risk-free rate.","Full Dashboard"),
 ]
 
 GRP_COLORS = {
@@ -654,6 +689,8 @@ GRP_COLORS = {
     "PIPELINE / OB":"1D4ED8","EARLY DETECTION":"B45309","TECHNICAL":"6D28D9",
     "BALANCE SHEET":"D97706","TRADE PLAN":"059669","NEWS & RISK":"475569",
     "ANALYSIS SUMMARY":"0F172A",
+    # Session 19: new group for documenting the Gold-Tier filter definition
+    "GOLD FILTER":"B45309",
 }
 
 # Columns permanently blank — no free data source available

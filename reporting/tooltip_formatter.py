@@ -146,7 +146,13 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "CFV (₹)": ("Composite Fair Value (7 models)",
                 "M1 DCF 30% | M2 Graham 15% | M3 PE 20% | M4 PB 15%\n"
                 "M5 EV/EBITDA 10% | M6 DDM 5% | M7 PEG 5%\n"
-                "CMP<CFV = undervalued | CMP>CFV = overvalued"),
+                "CMP<CFV = undervalued | CMP>CFV = overvalued\n\n"
+                "Safety caps (Session 19):\n"
+                "  M1 DCF individually capped at 4× CMP\n"
+                "  Composite CFV capped at 3× CMP\n"
+                "These prevent a single model misbehaving (e.g., low-beta\n"
+                "stock with tiny terminal-value denominator) from producing\n"
+                "implausible 5× or 10× fair values."),
     "FV Low (₹)": ("Conservative FV = CFV × 0.85",
                   "CMP below FV Low = very deeply undervalued."),
     "FV High (₹)": ("Optimistic FV = CFV × 1.15",
@@ -154,7 +160,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "MoS %": (">25% strong buy | <−15% overvalued",
               "Margin of Safety = (CFV − CMP) / CMP × 100\n"
               ">40%: Exceptional (+12) | >25%: Strong (+8) | 10–25%: Adequate (+4)\n"
-              "−15 to −30%: Overvalued (−5) | <−30%: Significant premium (−10)"),
+              "−15 to −30%: Overvalued (−5) | <−30%: Significant premium (−10)\n\n"
+              "Note: MoS is effectively capped near 200% because CFV is\n"
+              "capped at 3× CMP (Session 19 safety net). If you see MoS\n"
+              "at ~200%, treat it as 'model says deeply undervalued —\n"
+              "verify inputs' rather than a guaranteed bargain."),
     "MoS Label": ("Valuation summary",
                   "EXCEPTIONAL >40% | STRONG >25% | ADEQUATE >10% | THIN 0–10% | PREMIUM <0%"),
     "Upside to FV %": (">20% = meaningful upside remaining",
@@ -469,6 +479,45 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Action Required": ("What to do with this stock today",
                         "CONSIDER ENTRY | MONITOR CLOSELY\n"
                         "BUY BUT OVERVALUED — WAIT | SCORE IMPROVED | SCORE DEGRADED"),
+
+    # Session 19: reference-only entries (not actual Excel column headers).
+    # These don't get hover tooltips attached to any cell, but they DO show up
+    # as reference cards on the 📖 Tooltip Reference sheet, giving the user
+    # a quick-reference card for concepts that the Glossary also documents.
+    # Keeping Glossary + Tooltip Reference sheet in sync matters — both are
+    # discovery surfaces for the same knowledge.
+    "Gold-Tier Filter": (
+        "8-condition filter for the Gold – Early Movers sheet",
+        "ALL 8 conditions must be true for Gold qualification:\n"
+        "  1. Verdict = BUY (not WATCHLIST or weaker)\n"
+        "  2. Composite Score ≥ 70\n"
+        "  3. 15% ≤ MoS ≤ 100% (real upside, not phantom)\n"
+        "  4. Storm Score ≥ 5 (defensively sound)\n"
+        "  5. RSI ≤ 70 (not already overbought)\n"
+        "  6. BS Health Flag ≠ ALERT\n"
+        "  7. Pledge % ≤ 10 (clean cap structure)\n"
+        "  8. Not spike-suppressed (no anti-trigger guard fire)\n\n"
+        "Daily count will vary: some days 0-3 stocks, some days 8+. Filter "
+        "reflects market reality, not a fixed quota."),
+    "CFV Safety Cap": (
+        "Composite Fair Value capped at 3× CMP",
+        "CFV is capped at 3× Current Market Price as a safety net, which\n"
+        "means MoS never exceeds approximately 200%. Prevents any single\n"
+        "model misbehaving (e.g., DCF on a low-beta stock with tiny\n"
+        "terminal-value denominator) from distorting the composite.\n\n"
+        "If you see MoS near 200%, treat it as 'deeply undervalued by\n"
+        "model — verify inputs' rather than a guaranteed bargain."),
+    "M1 DCF Safety Cap": (
+        "M1 DCF individually capped at 4× CMP",
+        "M1 DCF (30% weight in CFV) has two guardrails:\n"
+        "  1. WACC floor at 10%: prevents low-beta stocks producing\n"
+        "     tiny (WACC − terminal_growth) denominators that blow up\n"
+        "     the terminal value calculation.\n"
+        "  2. Output capped at 4× CMP: catches residual extreme cases\n"
+        "     after the WACC floor.\n\n"
+        "Reflects that Indian equity discount rates below 10% are\n"
+        "unrealistic given the ~6.8% risk-free rate and true equity\n"
+        "risk premium (typically 6-8%, not the default 5.5%)."),
 }
 
 
@@ -555,13 +604,15 @@ GROUP_TIPS: Dict[str, Tuple[str, str]] = {
 # ════════════════════════════════════════════════════════════════════════════
 _ICON_FAMILIES = {
     "🎯": {"Verdict", "Score /100", "Early Entry /100", "Spike Score /6", "Spike /6",
-           "Storm Score /10", "Storm /10", "F-Score /9", "Action Required"},
+           "Storm Score /10", "Storm /10", "F-Score /9", "Action Required",
+           "Gold-Tier Filter"},
     "💰": {"CFV (₹)", "FV Low (₹)", "FV High (₹)", "MoS %", "MoS Label",
            "Upside to FV %", "Upside %", "P/E TTM", "P/E", "Earn Yield %",
            "P/CF", "PEG Ratio", "PEG", "P/B", "P/S", "EV/EBITDA",
            "Div Yield %", "Payout Ratio %",
            "M1: DCF FV (₹)", "M2: Graham FV (₹)", "M3: PE FV (₹)",
-           "M4: PB FV (₹)", "M5: EV FV (₹)", "M6: DDM FV (₹)", "M7: PEG FV (₹)"},
+           "M4: PB FV (₹)", "M5: EV FV (₹)", "M6: DDM FV (₹)", "M7: PEG FV (₹)",
+           "CFV Safety Cap", "M1 DCF Safety Cap"},
     "📈": {"CMP (₹)", "Day Chg %", "52W High (₹)", "52W Low (₹)",
            "Chg% [2-Weekly]", "Chg% [4-Weekly]", "Chg% [6-Weekly]", "Chg% [8-Weekly]",
            "Chg% [2-Wk]", "Chg% [4-Wk]", "Chg% [6-Wk]", "Chg% [8-Wk]"},
