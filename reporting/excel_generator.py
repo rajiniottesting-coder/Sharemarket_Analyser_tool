@@ -1040,7 +1040,7 @@ class ExcelGeneratorV6:
         ws.row_dimensions[1].height=30
         # R2
         ws.merge_cells(start_row=2,start_column=1,end_row=2,end_column=N)
-        c2=ws.cell(2,1,f"Criteria: Early Entry Score ≥70 OR (MoS ≥25% + Score ≥70)  ·  {gc} stocks qualify  ·  No AVOID stocks  ·  Spike Suppressed = FALSE")
+        c2=ws.cell(2,1,f"Gold-Tier Criteria (ALL must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed  ·  {gc} stocks qualify")
         c2.fill=_f("FEF3C7"); c2.font=_ft(False,"92400E",8,True); c2.alignment=_al("left","center")
         ws.row_dimensions[2].height=14
         # R3 summary strip
@@ -1333,12 +1333,40 @@ class ExcelGeneratorV6:
     def _get_gold(self):
         if self.df.empty: return pd.DataFrame()
         try:
-            # Gold threshold: 50 (was 70 — unreachable with free-source data).
-            # Max achievable EE score with free sources is ~55 (no FII/Promoter QoQ).
-            # 50 ensures the best 5-8 stocks per day qualify as Early Movers.
-            mask=((self.df["early_entry_score"]>=50)|
-                  ((self.df["mos_pct"]>=25)&(self.df["composite_score"]>=70)))&\
-                 (~self.df["verdict"].isin(["AVOID","AVOID / EXIT","EXIT"]))&\
-                 (self.df["spike_suppressed"]==False)
+            # Session 19: strict Gold-tier filter. Previous filter was
+            # ((EE>=50) | (MoS>=25 & Score>=70)) & verdict NOT AVOID & NOT suppressed.
+            # That produced ~26 candidates but most were either overbought,
+            # WATCHLIST-verdict with negative MoS, or carrying implausible
+            # MoS>100% (which was itself masking a DCF bug, now fixed in
+            # fair_value_engine.py). New definition enforces "patient upside,
+            # healthy stocks only" — see README / user request.
+            #
+            # All 8 conditions must be true for Gold-tier:
+            #  1. Verdict = BUY                 — system-confident, not WATCHLIST
+            #  2. Score >= 70                   — uniform Gold bar, not cap-adjusted
+            #  3. 15 <= MoS <= 100              — real upside, not phantom inflation
+            #  4. Storm Score >= 5              — defensively sound
+            #  5. RSI <= 70                     — not already overbought
+            #  6. BS Health Flag != ALERT       — no balance-sheet red flags
+            #  7. Pledge % <= 10                — Gold = clean, not just "not awful"
+            #  8. spike_suppressed == False     — Altman/Beneish/pledge all clear
+            _mos = self.df["mos_pct"]
+            _rsi = self.df.get("rsi", pd.Series([50]*len(self.df)))
+            _storm = self.df.get("storm_score", pd.Series([0]*len(self.df)))
+            _pledge = pd.to_numeric(self.df.get("pledge_pct",
+                                                pd.Series([0]*len(self.df))),
+                                    errors="coerce").fillna(0)
+            _bs = self.df.get("bs_status", pd.Series([""]*len(self.df))) \
+                       .astype(str).str.upper()
+            mask = (
+                (self.df["verdict"] == "BUY") &
+                (self.df["composite_score"] >= 70) &
+                (_mos >= 15) & (_mos <= 100) &
+                (_storm >= 5) &
+                (pd.to_numeric(_rsi, errors="coerce").fillna(50) <= 70) &
+                (~_bs.str.contains("ALERT", na=False)) &
+                (_pledge <= 10) &
+                (self.df["spike_suppressed"] == False)
+            )
             return self.df[mask].copy().reset_index(drop=True)
-        except: return pd.DataFrame()
+        except Exception: return pd.DataFrame()

@@ -1977,15 +1977,13 @@ def run_master_pipeline():
                 # set spike_suppressed=True (which cost −10 via risk_flag_active)
                 # but the Excel cell still showed the raw 4-6 spike count — the
                 # tooltip's "Suppressed to 0 if ..." was silently broken.
+                # Session 18: don't add a [SUPPRESSED] prefix to the Early
+                # Signals column — when triggers are suppressed, simply clear
+                # them (cleaner UX; guard_reasons column still explains why).
                 if stock.get("spike_suppressed"):
                     stock["spike_count"] = 0
                     stock["spike_score"] = 0
-                    # Prepend a visible note but preserve the triggers list
-                    # so analysts can see what WOULD have fired.
-                    _orig = stock.get("spike_triggers", "")
-                    stock["spike_triggers"] = (
-                        "[SUPPRESSED] " + _orig if _orig else "[SUPPRESSED]"
-                    )
+                    stock["spike_triggers"] = ""
             except Exception as _esp:
                 stock.setdefault("spike_count", 0)
                 stock.setdefault("spike_score", 0)

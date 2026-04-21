@@ -23,15 +23,41 @@ class FairValueEngine:
         bv = data.get('bvps', 0)
         
         # M1: DCF (3-Stage) — Stage 1 capped at 25%
-        wacc = (self.gsec + beta * 5.5) / 100  # convert % to decimal (e.g. 11.5% → 0.115)
+        # Session 19 fix: two guards to prevent M1 from producing absurd
+        # fair-value multiples (10×+ CMP) on low-beta stocks.
+        #
+        #   Guard 1 — WACC floor at 10%:
+        #     With gsec=6.8% and equity-risk-premium=5.5%, a stock with
+        #     beta=0.2 (like SBIN) gets WACC = 6.8 + 0.2×5.5 = 7.9%.
+        #     Terminal growth is 4.5%, so the denominator (WACC-gt) becomes
+        #     just 3.4%, and dividing terminal value by 3.4% produces
+        #     mathematically correct but practically absurd fair values
+        #     (SBIN came out at ₹12,126 vs CMP ₹1,108 = 10.9× CMP).
+        #     Indian equity discount rates of less than 10% are unrealistic
+        #     given a ~6.8% risk-free rate and the true equity risk premium
+        #     in Indian markets (typically 6-8%, not 5.5%).
+        #
+        #   Guard 2 — cap final DCF at 4× CMP:
+        #     Even with WACC floored, an EPS-based DCF with aggressive
+        #     growth assumptions can produce fair values many multiples of
+        #     price for outliers. A 4× cap means "deeply undervalued" but
+        #     not absurd — anything beyond should skip this model rather
+        #     than distort the composite.
+        _raw_wacc = (self.gsec + beta * 5.5) / 100
+        wacc = max(_raw_wacc, 0.10)             # floor WACC at 10%
         gt = 0.045
+        cmp_m1 = _sf(data.get('close', 0))
         if eps > 0 and wacc > gt:               # WACC must exceed terminal growth rate
             g1 = min(growth_3yr / 100, 0.25)
             g2 = g1 / 2
             dcf = sum(eps * (1+g1)**y / (1+wacc)**y for y in range(1,6))
             dcf += sum(eps * (1+g1)**5 * (1+g2)**(y-5) / (1+wacc)**y for y in range(6,11))
             terminal = (eps * (1+g1)**5 * (1+g2)**5 * (1+gt)) / (wacc - gt) / (1+wacc)**10
-            models['M1_DCF'] = round(dcf + terminal, 2)
+            _m1 = dcf + terminal
+            # Guard 2: cap at 4× CMP (or skip if we can't compare to price)
+            if cmp_m1 > 0 and _m1 > cmp_m1 * 4:
+                _m1 = cmp_m1 * 4
+            models['M1_DCF'] = round(_m1, 2)
         else:
             models['M1_DCF'] = 0
 
@@ -151,6 +177,16 @@ class FairValueEngine:
             cfv = sum(available.values()) / len(available)  # equal-weight fallback
         else:
             cfv = 0
+
+        # Session 19 safety net: cap composite CFV at 3× CMP.
+        # Even with M1 guarded, other models can occasionally spike (e.g., a
+        # Graham number from a high-EPS + high-BVPS stock, or an EV/EBITDA
+        # output when the sector multiple is far above current). A 3× cap
+        # corresponds to 200% MoS — already the extreme edge of plausible
+        # value. Anything beyond should be treated as a data-quality signal,
+        # not a buy signal. This is belt-and-suspenders with the M1 4× cap.
+        if cmp > 0 and cfv > cmp * 3:
+            cfv = cmp * 3
 
         cfv = round(cfv, 2)
 

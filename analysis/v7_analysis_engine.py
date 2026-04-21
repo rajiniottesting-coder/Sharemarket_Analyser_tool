@@ -73,22 +73,36 @@ class V7AnalysisEngine:
         """
         The Gatekeeper: Suppresses all spikes if quality is poor.
         Checks Pledge, Altman Z, and Beneish M (Section 3H).
+
+        Session 18 bug fix: Altman/Beneish return 0.0 when balance-sheet
+        inputs are missing (typical for free yfinance data). Previously
+        the guard treated 0.0 as a positive flag (Altman 0 < 1.81 → distress;
+        Beneish 0 > -2.22 → manipulation), so EVERY stock without paid BS
+        data was being suppressed. Now 0.0 is correctly treated as "unknown"
+        and doesn't trigger suppression. Only MEANINGFUL values (non-zero
+        outputs from real balance-sheet computation) trigger the guard.
         """
         is_suppressed = False
         reasons = []
 
-        # Rule: Promoter_Pledge > 20%
+        # Rule: Promoter_Pledge > 20% (this always works — pledge_pct is
+        # reliably 0 when absent, never missing data masquerading as a flag)
         if row.get('pledge_pct', 0) > 20:
             is_suppressed = True
             reasons.append("Pledge > 20%")
-            
+
         # Rule: Altman_Z < 1.81 (Financial Distress)
-        if row.get('altman_z', 5) < 1.81:
+        # Only fire if we actually computed a real Altman score (non-zero).
+        # 0.0 means insufficient BS data — NOT a distress signal.
+        _alt = row.get('altman_z', 0)
+        if _alt and _alt != 0 and _alt < 1.81:
             is_suppressed = True
             reasons.append("Altman Z < 1.81")
-            
+
         # Rule: Beneish_M > -2.22 (Manipulation Risk)
-        if row.get('beneish_m', -5) > -2.22:
+        # Only fire on non-zero values. 0.0 = insufficient data, not a flag.
+        _ben = row.get('beneish_m', 0)
+        if _ben and _ben != 0 and _ben > -2.22:
             is_suppressed = True
             reasons.append("Beneish M > -2.22")
 
