@@ -112,11 +112,18 @@ FULL_COLS = [
 ]
 
 GOLD_GROUPS = [
+    # Session 25 fix: After Session 23 removed the "Upside %" column from
+    # GOLD_COLS, this band table wasn't updated. KEY METRICS was still 7 wide
+    # (including the now-removed Upside col), so every band from EARLY DETECTION
+    # onward was shifted right by 1 — headers like "Early Signals" appeared
+    # under KEY METRICS, "Supertrend" under EARLY DETECTION, etc. Fixed by
+    # reducing KEY METRICS span 7→6 and shifting all subsequent starts by -1.
+    # Sum of spans now = 6+4+1+4+3+6+3+3+7+2+1 = 40 = len(GOLD_COLS). ✓
     (1,"IDENTITY","1E293B",6),(7,"SCORES","7C3AED",4),(11,"PRICE","0369A1",1),
     (12,"WEEKLY CHANGE %","0F766E",4),(16,"FAIR VALUE","B45309",3),
-    (19,"KEY METRICS","0891B2",7),(26,"EARLY DETECTION","B45309",3),
-    (29,"TECHNICAL","6D28D9",3),(32,"TRADE PLAN","059669",7),
-    (39,"NEWS","475569",2),(41,"ANALYSIS SUMMARY","0F172A",1),
+    (19,"KEY METRICS","0891B2",6),(25,"EARLY DETECTION","B45309",3),
+    (28,"TECHNICAL","6D28D9",3),(31,"TRADE PLAN","059669",7),
+    (38,"NEWS","475569",2),(40,"ANALYSIS SUMMARY","0F172A",1),
 ]
 
 GOLD_COLS = [
