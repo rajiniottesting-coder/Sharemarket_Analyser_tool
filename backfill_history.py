@@ -1072,42 +1072,77 @@ def run_backfill():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _compute_all_indicators(conn):
-    symbols = pd.read_sql(
-        "SELECT DISTINCT symbol FROM daily_prices ORDER BY symbol", conn
+    # ── Step 1: Active symbols only (traded in last 30 days) ─────────────────
+    # Processing ALL 8,711+ historical symbols is wasteful — dead/delisted stocks
+    # are dropped at Stage 1 Gate F3 (volume=0) before technicals are ever read.
+    # Filtering to active symbols reduces ~8,700 → ~2,500 without any quality
+    # stock falling off the radar.
+    active_syms = pd.read_sql(
+        """
+        SELECT DISTINCT symbol
+        FROM   daily_prices
+        WHERE  date >= date('now', '-30 days')
+        ORDER  BY symbol
+        """,
+        conn
     )['symbol'].tolist()
 
-    print(f"   {len(symbols)} symbols to process...")
-    ti_rows = []
-    wm_rows = []
+    total = len(active_syms)
+    skipped = 8711 - total if total < 8711 else 0
+    print(f"   {total} active symbols to process "
+          f"(traded last 30 days — {skipped}+ inactive/delisted skipped)...",
+          flush=True)
 
-    for idx, sym in enumerate(symbols, 1):
-        try:
-            hist = pd.read_sql(
-                "SELECT date, open, high, low, close, volume "
-                "FROM daily_prices WHERE symbol=? ORDER BY date ASC",
-                conn, params=(sym,)
-            )
-            if hist.empty or len(hist) < 5:
-                continue
+    ti_rows  = []
+    wm_rows  = []
+    processed = 0
 
-            latest_date = hist['date'].iloc[-1]
+    # ── Step 2: Chunked bulk reads (500 symbols per chunk) ────────────────────
+    # Each chunk = 1 DB query instead of 500 individual queries.
+    # ~2,500 / 500 = ~5 queries total vs 8,711 previously.
+    # RAM per chunk: 500 syms × 250 days × ~60 bytes ≈ 12 MB — safe on
+    # GitHub Actions 7 GB limit. DataFrame released after each chunk.
+    CHUNK  = 500
+    chunks = [active_syms[i: i + CHUNK] for i in range(0, total, CHUNK)]
 
-            ti = compute_technicals(hist)
-            if ti:
-                ti['symbol'] = sym
-                ti['date']   = latest_date
-                ti_rows.append(ti)
+    for chunk_syms in chunks:
+        placeholders = ",".join(["?"] * len(chunk_syms))
+        chunk_hist = pd.read_sql(
+            f"SELECT symbol, date, open, high, low, close, volume "
+            f"FROM daily_prices "
+            f"WHERE symbol IN ({placeholders}) "
+            f"ORDER BY symbol, date ASC",
+            conn, params=chunk_syms
+        )
 
-            wm = compute_weekly_momentum(hist)
-            wm['symbol'] = sym
-            wm['date']   = latest_date
-            wm_rows.append(wm)
+        for sym, hist in chunk_hist.groupby('symbol', sort=False):
+            try:
+                hist = hist.reset_index(drop=True)
+                if len(hist) < 5:
+                    continue
 
-        except Exception:
-            pass
+                latest_date = hist['date'].iloc[-1]
 
-        if idx % 250 == 0:
-            print(f"   ... {idx}/{len(symbols)}", flush=True)
+                ti = compute_technicals(hist)
+                if ti:
+                    ti['symbol'] = sym
+                    ti['date']   = latest_date
+                    ti_rows.append(ti)
+
+                wm = compute_weekly_momentum(hist)
+                wm['symbol'] = sym
+                wm['date']   = latest_date
+                wm_rows.append(wm)
+
+            except Exception:
+                pass
+
+            processed += 1
+            if processed % 250 == 0:
+                print(f"   ... {processed}/{total}", flush=True)
+
+        # Release chunk DataFrame from memory after each chunk
+        del chunk_hist
 
     if ti_rows:
         upsert(pd.DataFrame(ti_rows), 'technical_indicators', conn)
@@ -1116,7 +1151,6 @@ def _compute_all_indicators(conn):
     if wm_rows:
         upsert(pd.DataFrame(wm_rows), 'weekly_momentum', conn)
         print(f"   ✅ weekly_momentum: {len(wm_rows)} rows")
-
 
 
 
