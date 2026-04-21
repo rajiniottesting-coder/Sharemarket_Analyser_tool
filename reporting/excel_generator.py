@@ -161,8 +161,8 @@ GLOSSARY_DATA = [
      "a curated allowlist of Nifty 100 + popular mid-caps is used to tag DUAL_LISTED. "
      "Lesser-known small-caps may show NSE_ONLY even if also listed on BSE.","All sheets"),
     ("SCORES","Score /100","Composite: Fundamental 35% + Technical 30% + Early 15% + News 10% + Risk 10%","All sheets"),
-    ("SCORES","Early Entry /100","12-signal system measuring how early vs consensus. ≥50 = EARLY MOVER badge | ≥35 = AHEAD OF CONSENSUS","All sheets"),
-    ("SCORES","Spike Score /6","Count of active triggers from 6 IF-THEN spike conditions (Section 3H)","All sheets"),
+    ("SCORES","Early Entry /100","12-signal system measuring how early vs consensus. ≥50 = EARLY MOVER badge | ≥35 = AHEAD OF CONSENSUS. Session 23: low EE on a Gold-sheet stock is not a bug — Gold admits two archetypes: MOMENTUM (high EE from firing trend/volume signals) and VALUE (low EE but high Score + MoS + clean safety; quietly accumulating without momentum triggers yet)","All sheets"),
+    ("SCORES","Spike Score /6","Count of active triggers from 6 IF-THEN spike conditions (Section 3H). Session 23: low Spike on a Gold stock is OK — VALUE-archetype candidates may be accumulating quietly without hot momentum triggers","All sheets"),
     ("SCORES","Storm Score /10","Volatility resilience score. Higher = more defensive in downturns (VIX>18)","Full Dashboard"),
     ("PRICE & MARKET","CMP","Current Market Price in Indian Rupees (₹)","All sheets"),
     ("PRICE & MARKET","52W High","Highest closing price in past 52 weeks","Full Dashboard"),
@@ -252,7 +252,7 @@ GLOSSARY_DATA = [
     ("QUALITY SCORES","Altman Z","Bankruptcy predictor. >2.99=safe, <1.81=distress zone. Requires paid balance-sheet feed (working capital, retained earnings, EBIT, total liabilities, total assets) — displays '—' when missing","Full Dashboard"),
     ("QUALITY SCORES","Beneish M","Manipulation risk score. >-2.22=risk, <-2.22=clean. Requires paid balance-sheet feed (NI from ops, CFO, total assets) — displays '—' when missing","Full Dashboard"),
     ("PIPELINE / OB","OB/Bill Ratio","Order Book ÷ Revenue. >1.5× = strong pipeline","All sheets"),
-    ("EARLY DETECTION","Early Entry /100","12 signals: quiet accum, SME migration, analyst imminent, sector Stage 1","All sheets"),
+    ("EARLY DETECTION","Early Entry /100","12 signals: quiet accum, SME migration, analyst imminent, sector Stage 1. Session 23: low EE on Gold is OK — VALUE archetype (high Score + MoS + clean safety) qualifies without momentum signals","All sheets"),
     ("EARLY DETECTION","Sector Stage",
      "Stage 1 = Early Accumulation (sector just starting to move, best entry point, low risk/reward) | "
      "Stage 2 = Confirmed Uptrend (momentum building, institutional buying, good entry) | "
