@@ -10,6 +10,13 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.utils import get_column_letter
 from datetime import datetime
+# Session 16: tooltip system — polished hover + ⓘ cue + Tooltip Reference sheet
+from reporting.tooltip_formatter import (
+    TIPS as _TT_TIPS,
+    apply_tooltips as _tt_apply,
+    apply_group_tooltips as _tt_apply_groups,
+    build_reference_sheet as _tt_build_ref,
+)
 
 NAVY  = "1E293B";  WHITE = "FFFFFF";  LG = "F8FAFC"
 
@@ -893,12 +900,20 @@ class ExcelGeneratorV6:
 
     def _full(self):
         wb=Workbook(); wb.active.title="📊 Full Dashboard"
+        # Session 16: build reference sheet FIRST so header hyperlinks have
+        # row anchors to target. Rearranged at the end so it sits after all
+        # the primary data sheets in the tab order.
+        self._tt_ref_anchors = _tt_build_ref(wb)
         self._full_sheet(wb.active)
         self._gold_sheet(wb)
         self._trade_summary(wb)
         self._alert_log(wb)
         self._delivery_preview(wb)
         self._glossary(wb)
+        # Move Tooltip Reference to the end so tab order is:
+        # Full Dashboard → Gold → Trade Summary → Alert Log → Delivery → Glossary → Reference
+        _ref = wb["📖 Tooltip Reference"]
+        wb._sheets.remove(_ref); wb._sheets.append(_ref)
         for ws in wb.worksheets: ws.sheet_view.showGridLines=False
         fn=f"NSE_BSE_Full_Dashboard_{self.date_str}.xlsx"; wb.save(fn); return fn
 
@@ -908,14 +923,20 @@ class ExcelGeneratorV6:
 
 
     def _apply_col_tips(self, ws, header_row, col_headers):
-        """Add hover tooltips to every header cell that has a tip defined."""
-        from openpyxl.comments import Comment as _C
-        for ci, h in enumerate(col_headers, 1):
-            if h in _HDR_TIPS:
-                sh, fl = _HDR_TIPS[h]
-                cm = _C(f"\U0001f4a1 {sh}\n\n{fl}", "NSE/BSE Analyser")
-                cm.width = 300; cm.height = 180
-                ws.cell(header_row, ci).comment = cm
+        """Add polished hover tooltips + visible ⓘ cue + ref-sheet hyperlink
+        to every header cell that has an entry in tooltip_formatter.TIPS.
+
+        Session 16: delegates to reporting.tooltip_formatter for the full
+        Tier 1+2+3 treatment. Legacy _HDR_TIPS (still present for backward
+        compatibility with any external reader) is no longer used by this
+        method — tooltip_formatter.TIPS is the active source of truth and
+        has richer, curated content for 150+ headers.
+        """
+        _tt_apply(
+            ws, header_row, col_headers,
+            add_cue=True,
+            ref_anchors=getattr(self, "_tt_ref_anchors", None),
+        )
 
     def _full_sheet(self,ws):
         N=len(FULL_COLS)
@@ -936,6 +957,8 @@ class ExcelGeneratorV6:
             if sp>1: ws.merge_cells(start_row=3,start_column=sc,end_row=3,end_column=ec)
             c=ws.cell(3,sc,nm); c.fill=_f(col); c.font=_ft(True,WHITE,8); c.alignment=_al()
             c.border=_border(is_section_edge=True)
+        # Session 17: section-header tooltips (IDENTITY, SCORES, FAIR VALUE, …)
+        _tt_apply_groups(ws, 3, FULL_GROUPS)
         # R4 headers
         # Build col→group_color map so each header cell matches its section
         _col_color = {}
@@ -958,13 +981,11 @@ class ExcelGeneratorV6:
             else:
                 c=ws.cell(4,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
                 c.alignment=_al("center","center",True); c.border=_border()
-        from openpyxl.comments import Comment as _Comment
-        for _ci,(h,w,_) in enumerate(FULL_COLS,1):
-            if h in _HDR_TIPS:
-                _short,_full = _HDR_TIPS[h]
-                _cmnt = _Comment(f"\U0001f4a1 {_short}\n\n{_full}", "NSE/BSE Analyser")
-                _cmnt.width = 300; _cmnt.height = 180
-                ws.cell(4,_ci).comment = _cmnt
+        # Session 16: polished tooltips + ⓘ cue + reference-sheet hyperlinks
+        # for all headers. Replaces the legacy 💡-prefixed 300×180 yellow note
+        # with a structured QUICK READ / DETAIL layout and a Tooltip Reference
+        # tab for headers that want full-colour cards.
+        self._apply_col_tips(ws, 4, [h for h,w,_ in FULL_COLS])
         ws.freeze_panes="A5"
         ws.auto_filter.ref=f"A4:{get_column_letter(N)}4"
         # Data
@@ -1036,6 +1057,8 @@ class ExcelGeneratorV6:
             ec=sc+sp-1
             if sp>1: ws.merge_cells(start_row=4,start_column=sc,end_row=4,end_column=ec)
             c=ws.cell(4,sc,nm); c.fill=_f(col); c.font=_ft(True,WHITE,8); c.alignment=_al()
+        # Session 17: section-header tooltips on Gold sheet too
+        _tt_apply_groups(ws, 4, GOLD_GROUPS)
         # R5 headers
         # Build col→group_color map for gold headers
         _gcol_color = {}

@@ -47,9 +47,15 @@ class FairValueEngine:
         
         # M4: Price-to-Book Fair Value = BVPS × sector_median_PB
         _pb_v = _sf(data.get('pb'))
-        _bvps4 = _bvps if '_bvps' in dir() and _bvps else (
-            round(float(data.get('close',0) or 0) / _pb_v, 2) if _pb_v > 0 else 0
-        )
+        # Session 15: the old check `'_bvps' in dir() and _bvps` was a no-op —
+        # dir() always contained '_bvps' after the M2 block. Simplified to a
+        # direct truthiness check with the fallback derivation preserved.
+        if _bvps and _bvps > 0:
+            _bvps4 = _bvps
+        elif _pb_v > 0:
+            _bvps4 = round(float(data.get('close', 0) or 0) / _pb_v, 2)
+        else:
+            _bvps4 = 0
         # Sector median PB benchmarks
         _sec_pb = {"Banks": 2.0, "IT": 6.0, "Pharma": 3.5, "FMCG": 8.0,
                    "Auto": 3.0, "Metals": 1.5, "Energy": 1.8}.get(
@@ -71,11 +77,19 @@ class FairValueEngine:
             "Chemical": 28,
         }
         _fair_pe = _sec_pe_map.get(_sec_word, _sf(data.get('sector_pe_5yr', 0), 0) or 25)
-        models['M3_PE'] = round(eps * _fair_pe, 2)
+        # Session 15: guard against negative EPS — negative fair value is nonsensical
+        # and would distort composite FV; Graham / DCF already do this guard.
+        models['M3_PE'] = round(eps * _fair_pe, 2) if eps > 0 else 0
         
         # M7: PEG-Adjusted (Growth capped at 30%)
+        # Session 15: gate on positive EPS + positive growth; round for display
+        # consistency with other models. Previously returned negative FV for
+        # loss-making or declining-growth stocks (dimensionally wrong).
         adj_growth = min(growth_3yr, 30)
-        models['M7_PEG'] = eps * adj_growth
+        if eps > 0 and adj_growth > 0:
+            models['M7_PEG'] = round(eps * adj_growth, 2)
+        else:
+            models['M7_PEG'] = 0
 
         # M5: EV/EBITDA-based Fair Value
         # EV FV = EBITDA × sector_median_EV_multiple / shares_proxy

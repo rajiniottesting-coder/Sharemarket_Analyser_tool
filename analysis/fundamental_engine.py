@@ -17,18 +17,48 @@ class FundamentalEngine:
 
     @staticmethod
     def calculate_piotroski_f_score(data):
-        """Section 3G: Piotroski F-Score (0-9)"""
+        """
+        Section 3G: Piotroski F-Score (0-9).
+        Canonical 9 criteria, grouped into Profitability / Leverage-Liquidity / Efficiency.
+        Each criterion scores +1 when the condition is met, else 0.
+        Returns an integer in [0, 9].
+
+        Missing / zero inputs fail their test silently (score does not advance),
+        so with free data the realistic ceiling is ~6-7; full 9 requires YoY
+        comparisons that need at least two reporting periods of data.
+        """
         score = 0
-        # 1. Profitability (ROA > 0, CFO > 0, etc.)
+
+        # ── 1. Profitability (4 criteria) ───────────────────────────────────
+        # P1: Net income positive
+        if data.get('net_profit', 0) > 0: score += 1
+        # P2: ROA positive
         if data.get('roa', 0) > 0: score += 1
+        # P3: CFO positive
         if data.get('cfo', 0) > 0: score += 1
-        if data.get('cfo', 0) > data.get('net_profit', 0): score += 1 # Quality check
-        # 2. Leverage/Liquidity
-        if data.get('debt_current', 0) < data.get('debt_prev', 0): score += 1
+        # P4: Accrual quality — CFO should exceed Net Income (earnings backed by cash)
+        if data.get('cfo', 0) > data.get('net_profit', 0): score += 1
+
+        # ── 2. Leverage / Liquidity / Source of Funds (3 criteria) ──────────
+        # L1: Long-term debt decreased YoY (lower leverage)
+        #     Accepts either explicit 'lt_debt_now/prev' or generic 'debt_current/prev'
+        _dt_now  = data.get('lt_debt_now',  data.get('debt_current', 0))
+        _dt_prev = data.get('lt_debt_prev', data.get('debt_prev',    0))
+        if _dt_prev > 0 and _dt_now < _dt_prev: score += 1
+        # L2: Current ratio improved YoY (better short-term liquidity)
         if data.get('current_ratio_now', 0) > data.get('current_ratio_prev', 0): score += 1
-        # 3. Operating Efficiency
+        # L3: No new shares issued (share count not increased)
+        _sh_now  = data.get('shares_now',  0)
+        _sh_prev = data.get('shares_prev', 0)
+        # Tolerate 0.5% drift (buybacks/splits); fail only on real dilution
+        if _sh_prev > 0 and _sh_now <= _sh_prev * 1.005: score += 1
+
+        # ── 3. Operating Efficiency (2 criteria) ────────────────────────────
+        # E1: Gross margin improved YoY
         if data.get('gross_margin_now', 0) > data.get('gross_margin_prev', 0): score += 1
+        # E2: Asset turnover improved YoY
         if data.get('asset_turnover_now', 0) > data.get('asset_turnover_prev', 0): score += 1
+
         return score
 
     @staticmethod

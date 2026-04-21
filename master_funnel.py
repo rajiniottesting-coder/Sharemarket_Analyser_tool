@@ -1401,12 +1401,17 @@ def run_master_pipeline():
                 _vwap_s = str(stock.get("above_vwap", "NO"))
                 _obv_s  = str(stock.get("obv_signal", "NEUTRAL"))
                 # RSI contribution
-                if   _rsi_s > 60: _ts += 8
+                # Session 16: added +2 for strong-but-not-overbought RSI (60-70)
+                # so a truly bullish momentum stock can reach the 100 ceiling.
+                if   _rsi_s > 70: _ts += 8   # still capped — overbought deserves no bonus
+                elif _rsi_s > 60: _ts += 10  # sweet spot: strong + not overextended
                 elif _rsi_s > 50: _ts += 4
                 elif _rsi_s < 40: _ts -= 8
                 elif _rsi_s < 50: _ts -= 4
                 # ADX (trend strength)
-                if _adx_s > 25: _ts += 5
+                # Session 16: added a +2 tier for very strong trends (>30)
+                if   _adx_s > 30: _ts += 7   # established trend
+                elif _adx_s > 25: _ts += 5
                 elif _adx_s > 20: _ts += 2
                 # MACD
                 if _macd_s == "BUY":  _ts += 6
@@ -1429,6 +1434,13 @@ def run_master_pipeline():
                 _mfi_s = _sf(stock.get("mfi", 50), 50)
                 if   _mfi_s > 60:        _ts += 4   # strong money inflow
                 elif _mfi_s < 30:        _ts -= 3   # money outflow
+                # Session 16: SMA 200 trend alignment (classic long-term trend signal
+                # that was missing from the scorer). +3 when CMP above SMA 200
+                # (bull regime confirmed); −3 when below (bear regime).
+                _sma200 = _sf(stock.get("sma_200", 0), 0)
+                _cmp_ts = _sf(stock.get("close", 0), 0)
+                if   _sma200 > 0 and _cmp_ts > _sma200 * 1.02: _ts += 3   # clearly above
+                elif _sma200 > 0 and _cmp_ts < _sma200 * 0.98: _ts -= 3   # clearly below
                 stock["technical_score"] = max(0, min(100, round(_ts, 1)))
 
             # ── Pre-compute fundamental_score from available data ─────────────
@@ -1540,6 +1552,19 @@ def run_master_pipeline():
 
                 stock["fundamental_score"] = max(0, min(100, round(_fs, 1)))
 
+            # ── Piotroski F-Score (display only — populates Excel piotroski_f col) ─
+            # Session 14: wire up FundamentalEngine.calculate_piotroski_f_score.
+            # Pure display field — does NOT feed back into fundamental_score to
+            # avoid changing scoring behaviour on existing stocks.
+            # Most YoY inputs (debt prev, current_ratio prev, etc.) are not in
+            # free data, so realistic output is 2-4 of 9; full 9 needs paid data.
+            if "piotroski_f" not in stock or not stock.get("piotroski_f"):
+                try:
+                    from analysis.fundamental_engine import FundamentalEngine as _FE
+                    stock["piotroski_f"] = _FE.calculate_piotroski_f_score(stock)
+                except Exception:
+                    stock.setdefault("piotroski_f", 0)
+
             # ── Safety score from pledge/debt ────────────────────────────────
             if not stock.get("safety_score"):
                 _ss = 50.0
@@ -1548,6 +1573,9 @@ def run_master_pipeline():
                 _de2  = stock.get("de_ratio_num", _sf(stock.get("debt_equity", 0), 0))
                 if _pled > 20: _ss -= 15
                 elif _pled > 10: _ss -= 7
+                # Session 16: reward zero pledge (was neutral) — clean cap
+                # structure is a genuine safety signal, not just an absence of risk.
+                elif _pled == 0: _ss += 4
                 if _bet > 1.5: _ss -= 5
                 elif _bet < 0.8: _ss += 5
                 if _de2 > 2.0: _ss -= 10
@@ -1564,10 +1592,46 @@ def run_master_pipeline():
                 # Margin expansion = reducing operational risk
                 if str(stock.get("margin_expansion","NO") or "NO").upper() == "YES":
                     _ss += 3
+                # Session 16: additional safety branches so a genuinely safe
+                # stock can reach the 100 ceiling (was capped ~69 before).
+                # All gated — only fire when inputs are meaningful (not zero).
+                # Net cash position (cash > total debt = very defensive)
+                _cash_ss = _sf(stock.get("cash", 0), 0)
+                _debt_ss = _sf(stock.get("total_debt", 0), 0)
+                if _cash_ss > 0 and _cash_ss > _debt_ss: _ss += 6
+                # Strong interest coverage (can service debt easily)
+                _ic_ss = _sf(stock.get("int_coverage", 0), 0)
+                if   _ic_ss > 10: _ss += 5
+                elif _ic_ss > 5:  _ss += 2
+                # Low ND/EBITDA (deleveraging quickly / negligible debt load)
+                _nde_ss = _sf(stock.get("nd_ebitda", 0), 0)
+                if _nde_ss != 0 and _nde_ss < 1.0: _ss += 5
+                # Piotroski quality floor — high F-Score correlates with safety
+                _pio_ss = _sf(stock.get("piotroski_f", 0), 0)
+                if   _pio_ss >= 7: _ss += 6
+                elif _pio_ss >= 5: _ss += 3
+                # Anti-trigger guard clean — Altman/Beneish not flagging risk
+                if not stock.get("spike_suppressed", False): _ss += 5
                 stock["safety_score"] = max(0, min(100, round(_ss, 1)))
 
             # ── Sentiment score from smart money / FII trend ─────────────────
             if not stock.get("sentiment_score"):
+                # Session 15: derive fii_3q_trend INLINE before reading it.
+                # Previously this derivation happened ~250 lines later (C2 block)
+                # so sentiment_score always saw "NEUTRAL" — the +10 "FII up"
+                # branch was unreachable. ownership_tracker also returns
+                # "NEUTRAL" by default because only 1 historical quarter is
+                # passed, so fii_qoq is the reliable signal.
+                if not stock.get("fii_3q_trend") or stock.get("fii_3q_trend") == "NEUTRAL":
+                    _fq_inline = stock.get("fii_qoq", 0)
+                    try:
+                        _fq_v = float(str(_fq_inline).replace("—","0") or 0)
+                        if   _fq_v > 1.0:  stock["fii_3q_trend"] = "UP"
+                        elif _fq_v < -1.0: stock["fii_3q_trend"] = "DOWN"
+                        else:              stock["fii_3q_trend"] = "NEUTRAL"
+                    except (ValueError, TypeError):
+                        stock["fii_3q_trend"] = "NEUTRAL"
+
                 _sent = 50.0
                 _fii_t = str(stock.get("fii_3q_trend", "NEUTRAL"))
                 _sm    = str(stock.get("smart_money_sentiment", "NEUTRAL"))
@@ -1576,6 +1640,39 @@ def run_master_pipeline():
                 if _sm == "ACCUMULATION":       _sent += 10
                 if _ins == "YES":               _sent += 8
                 if _fii_t == "DOWN":            _sent -= 10
+
+                # Session 16: additional sentiment branches so a stock with
+                # broadly bullish flow can reach the 100 ceiling (was 78).
+                # Each branch gated on real data — fires only when meaningful.
+                # Promoter QoQ buying (insider signal — promoters voting with wallet)
+                try:
+                    _pq_sent = float(str(stock.get("promoter_qoq", 0)).replace("—","0") or 0)
+                except (ValueError, TypeError):
+                    _pq_sent = 0
+                if   _pq_sent >  0.5:  _sent += 5
+                elif _pq_sent < -0.5:  _sent -= 5
+                # DII QoQ — domestic institutional accumulation
+                try:
+                    _dq_sent = float(str(stock.get("dii_qoq", 0)).replace("—","0") or 0)
+                except (ValueError, TypeError):
+                    _dq_sent = 0
+                if   _dq_sent >  0.5:  _sent += 6
+                elif _dq_sent >  0.3:  _sent += 4
+                elif _dq_sent < -0.3:  _sent -= 3
+                # News sentiment (populated by ai_analyst when credits available)
+                _news_sent = str(stock.get("news_sentiment", "NEUTRAL") or "NEUTRAL").upper()
+                if   _news_sent == "POSITIVE": _sent += 4
+                elif _news_sent == "NEGATIVE": _sent -= 5
+                # High delivery % — sustained institutional order flow
+                _del_sent = _sf(stock.get("delivery_pct", 0), 0)
+                if   _del_sent > 70: _sent += 4
+                elif _del_sent > 60: _sent += 2
+                elif 0 < _del_sent < 30: _sent -= 3
+                # Pledge direction — ownership quality trend
+                _pdir = str(stock.get("pledge_direction", "—") or "—").upper()
+                if   "FALL" in _pdir:  _sent += 3
+                elif "RIS"  in _pdir:  _sent -= 5
+
                 stock["sentiment_score"] = max(0, min(100, round(_sent, 1)))
 
             # Section 3I: Early Entry Score — computed here after vol_ratio + technicals are populated
@@ -1875,6 +1972,20 @@ def run_master_pipeline():
                 _spike_tags = _spike_result.get("tags", [])
                 if _spike_tags:
                     stock["spike_triggers"] = " | ".join(_spike_tags)
+                # Session 15: enforce Section 3H anti-trigger guard on displayed
+                # spike_count. Previously a pledge>20 / Altman / Beneish failure
+                # set spike_suppressed=True (which cost −10 via risk_flag_active)
+                # but the Excel cell still showed the raw 4-6 spike count — the
+                # tooltip's "Suppressed to 0 if ..." was silently broken.
+                if stock.get("spike_suppressed"):
+                    stock["spike_count"] = 0
+                    stock["spike_score"] = 0
+                    # Prepend a visible note but preserve the triggers list
+                    # so analysts can see what WOULD have fired.
+                    _orig = stock.get("spike_triggers", "")
+                    stock["spike_triggers"] = (
+                        "[SUPPRESSED] " + _orig if _orig else "[SUPPRESSED]"
+                    )
             except Exception as _esp:
                 stock.setdefault("spike_count", 0)
                 stock.setdefault("spike_score", 0)
