@@ -86,7 +86,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                          "52W Breakout +10 | Deep Value+BUY +10 | Inst Footprint +10\n"
                          "Score Convergence +8 | FII Accum +8 | Promoter Accum +8 | Dual-Listed +8\n\n"
                          "≥50: EARLY MOVER — accumulate before crowd\n"
-                         "≥35: AHEAD OF CONSENSUS | <35: EMERGING"),
+                         "≥35: AHEAD OF CONSENSUS | <35: EMERGING\n\n"
+                         "Note: low EE on a Gold-sheet stock is not a bug — Gold\n"
+                         "includes patient VALUE candidates (high Score + high MoS\n"
+                         "+ clean safety) that aren't showing momentum signals yet.\n"
+                         "Two legit Gold archetypes: MOMENTUM (high EE) and VALUE (low EE)."),
     "Spike Score /6": ("≥2 notable | ≥4 strong | 6 very rare",
                        "Six momentum triggers — how many fire simultaneously:\n"
                        "T1: CMP within 3% of 52W High + vol>2×\n"
@@ -95,10 +99,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "T4: RSI 45–65 + vol>2×\n"
                        "T5: vol>3× + delivery>60%\n"
                        "T6: 2w_chg>3% + 2w>4w + vol>1.5×\n\n"
-                       "Suppressed to 0 if pledge>20% or Altman/Beneish flags active"),
+                       "Suppressed to 0 if pledge>20% or Altman/Beneish flags active.\n"
+                       "Low Spike on a Gold stock is fine — value candidates\n"
+                       "may be accumulating quietly without hot momentum triggers."),
     "Spike /6": ("≥2 notable | ≥4 strong | 6 very rare",
                  "Six momentum triggers — how many fire simultaneously.\n"
-                 "Suppressed to 0 if pledge>20% or Altman/Beneish flags active."),
+                 "Suppressed to 0 if pledge>20% or Altman/Beneish flags active.\n"
+                 "Low Spike on Gold is OK — pure-value candidates qualify\n"
+                 "on fundamentals + MoS + safety without momentum signals."),
     "Storm Score /10": ("≥8 Storm Safe | ≥5 Moderate | <5 High Risk",
                         "Defensive quality — how safe in a market crash?\n"
                         "Beta<0.8 +2 | D/E<0.3 +2 | FCF positive +2\n"
@@ -173,9 +181,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "EXCEPTIONAL >40% | STRONG >25% | ADEQUATE >10% | THIN 0-10%\n"
                   "SLIGHT PREMIUM −10% to 0% | SIGNIFICANT PREMIUM <−10%"),
     "Upside to FV %": (">20% = meaningful upside remaining",
-                       "Percentage price can rise to reach fair value."),
-    "Upside %": (">20% meaningful upside",
-                 "Percentage price can rise to reach fair value."),
+                       "Percentage price can rise to reach fair value.\n"
+                       "Identical to MoS % (same formula, different label).\n"
+                       "Session 23: removed from Gold/Trade Summary to avoid\n"
+                       "duplication; kept on Full Dashboard for trader-style\n"
+                       "interpretation. MoS % is the single source of truth."),
+    # 'Upside %' kept for backward compat in case any old cell still references it
+    "Upside %": ("Same as MoS % (removed from Gold/Trade Summary)",
+                 "Identical to MoS %. Column removed in Session 23 to avoid duplication."),
     "M1: DCF FV (₹)": ("Discounted Cash Flow fair value — 30% weight in CFV",
                        "Projects 10 years of free cash flow and discounts at WACC.\n"
                        "Best for mature, cash-generating businesses."),

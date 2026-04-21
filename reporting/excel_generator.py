@@ -120,7 +120,10 @@ GOLD_COLS = [
     ("Spike /6",9,"spike_count"),("Storm /10",9,"storm_score"),
     ("CMP (₹)",11,"close"),("Chg% [2-Wk]",13,"2w_chg"),("Chg% [4-Wk]",13,"4w_chg"),
     ("Chg% [6-Wk]",13,"6w_chg"),("Chg% [8-Wk]",13,"8w_chg"),
-    ("CFV (₹)",11,"cfv"),("MoS %",10,"mos_pct"),("Upside %",11,"upside"),
+    ("CFV (₹)",11,"cfv"),("MoS %",10,"mos_pct"),
+    # Session 23: "Upside %" removed — it was always identical to MoS %
+    # ((CFV-CMP)/CMP×100 computed once, displayed under two labels).
+    # Kept in stock dict as 'upside' key for backward compat with scorer and Trade Summary.
     ("MoS Label",20,"mos_label"),("P/E",9,"pe"),("PEG",9,"peg"),
     ("ROE %",9,"roe"),("D/E",9,"debt_equity"),("PAT YoY %",10,"pat_yoy"),
     ("F-Score /9",11,"piotroski_f"),
@@ -344,9 +347,8 @@ GLOSSARY_DATA = [
     ("FAIR VALUE","FV High (₹)",
      "Bull-case fair value = CFV × 1.15. "
      "If CMP > FV High, stock is overvalued even optimistically.","Full Dashboard"),
-    ("FAIR VALUE","Upside to FV %",
-     "(CFV − CMP) / CMP × 100. % gain if CMP reaches fair value. "
-     "Positive = upside potential | Negative = downside risk. Same formula as MoS%.","All sheets"),
+    # Session 23: "Upside to FV %" glossary entry moved to FAIR VALUE section later
+    # (kept single authoritative entry rather than two).
     ("FAIR VALUE","MoS Label",
      "Text label for MoS %: "
      "EXCEPTIONAL VALUE (>40%) | STRONG VALUE (>25%) | GOOD VALUE (>10%) | "
@@ -646,10 +648,13 @@ GLOSSARY_DATA = [
      "Price return over last 8 weeks. Confirms whether trend is sustained.","Full Dashboard"),
 
     # ── FAIR VALUE ─────────────────────────────────────────────────────────────
-    ("FAIR VALUE","Upside %",
+    ("FAIR VALUE","Upside to FV %",
      "Upside to Fair Value = (CFV − CMP) ÷ CMP × 100. "
-     "Same as MoS % in Full Dashboard. "
-     "Positive=upside potential | Negative=currently priced above fair value.","Gold Sheet"),
+     "Identical to MoS % (same formula, same number — just different label). "
+     "Positive=stock below fair value (buying opportunity) | "
+     "Negative=stock above fair value (overpriced). "
+     "Session 23: the redundant 'Upside %' column was removed from Gold and "
+     "Trade Summary sheets to avoid confusion — MoS % is the single source of truth.","Full Dashboard"),
 
     # ── GOLD-TIER FILTER (Session 19) ─────────────────────────────────────────
     # Documents why the Gold sheet only shows a small number of stocks per day.
@@ -1145,12 +1150,12 @@ class ExcelGeneratorV6:
     def _trade_summary(self,wb):
         ws=wb.create_sheet("📊 Trade Summary"); ws.sheet_properties.tabColor="059669"
         gdf=self._get_gold()
-        ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=17)
+        ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=16)
         c=ws.cell(1,1,f"GOLD STOCKS — TRADE PLAN SUMMARY  ·  Entry / SL / Targets / R:R Ratio  ·  {self.dlbl}")
         c.fill=_f("059669"); c.font=_ft(True,WHITE,11); c.alignment=_al()
         ws.row_dimensions[1].height=26
         hdrs=[("Symbol",12),("Company",25),("CMP (₹)",11),("CFV (₹)",12),
-              ("MoS %",10),("Upside %",10),("Chg% [2-Wk]",13),("Chg% [4-Wk]",13),
+              ("MoS %",10),("Chg% [2-Wk]",13),("Chg% [4-Wk]",13),
               ("Chg% [8-Wk]",13),("Entry Range (₹)",16),("Stop Loss (₹)",13),
               ("Target 1 (₹)",12),("Target 2 (₹)",12),("Target 3 (₹)",12),
               ("R:R Ratio",11),("Time Horizon",22),("Risk Level",11)]
@@ -1160,7 +1165,8 @@ class ExcelGeneratorV6:
             c=ws.cell(2,ci,h); c.fill=_f("059669"); c.font=_ft(True,WHITE,9)
             c.alignment=_al("center","center",True)
         # Tooltips on row 2 headers
-        _ts_hdrs=["Symbol","Company","CMP (₹)","CFV (₹)","MoS %","Upside %",
+        # Session 23: "Upside %" removed from Trade Summary too (duplicated MoS %)
+        _ts_hdrs=["Symbol","Company","CMP (₹)","CFV (₹)","MoS %",
                    "Chg% [2-Wk]","Chg% [4-Wk]","Chg% [8-Wk]",
                    "Entry Range (₹)","Stop Loss (₹)","Target 1 (₹)",
                    "Target 2 (₹)","Target 3 (₹)","R:R Ratio",
@@ -1171,12 +1177,14 @@ class ExcelGeneratorV6:
             rn=ri+3; ws.row_dimensions[rn].height=22
             bg="D1FAE5" if ri%2==0 else "ECFDF5"; tx="065F46"
             cmp=_g(stk,"close",0); cfv=_g(stk,"cfv",0)
-            mos=_g(stk,"mos_pct",0); up=_g(stk,"upside",0)
+            mos=_g(stk,"mos_pct",0)
+            # Session 23: Upside column removed — same value as MoS. The
+            # stock['upside'] key is kept in data dict for backward compat
+            # but not displayed as a separate column in Trade Summary.
             vals=[_g(stk,"symbol"),_g(stk,"company_name",""),
                   f"₹{cmp:,}" if isinstance(cmp,(int,float)) and cmp else cmp,
                   f"₹{cfv:,}" if isinstance(cfv,(int,float)) and cfv else cfv,
                   f"+{mos:.1f}%" if isinstance(mos,(int,float)) else mos,
-                  f"+{up:.1f}%"  if isinstance(up,(int,float))  else up,
                   _g(stk,"2w_chg"),_g(stk,"4w_chg"),_g(stk,"8w_chg"),
                   _g(stk,"entry_range"),_g(stk,"stop_loss"),
                   _g(stk,"t1"),_g(stk,"t2"),_g(stk,"t3"),
@@ -1184,7 +1192,8 @@ class ExcelGeneratorV6:
             for ci,val in enumerate(vals,1):
                 cell=ws.cell(rn,ci,val); cell.fill=_f(bg); cell.font=_ft(False,tx,9)
                 cell.alignment=_al("center","center")
-                if ci==11: cell.fill=_f("FEE2E2"); cell.font=_ft(False,"7F1D1D",9)
+                # Column 10 is now Stop Loss (was 11); red highlight kept
+                if ci==10: cell.fill=_f("FEE2E2"); cell.font=_ft(False,"7F1D1D",9)
             # Compute R:R numerically — entry_range is text "353.8–364.7",
             # parse midpoint so Excel formula doesn't fail on text input
             try:
@@ -1206,7 +1215,7 @@ class ExcelGeneratorV6:
                     _rr_val = "—"
             except Exception:
                 _rr_val = "—"
-            rr=ws.cell(rn,15,_rr_val); rr.fill=_f(bg); rr.font=_ft(True,"065F46",9)
+            rr=ws.cell(rn,14,_rr_val); rr.fill=_f(bg); rr.font=_ft(True,"065F46",9)
             rr.alignment=_al()
             if isinstance(_rr_val,(int,float)):
                 rr.number_format="0.00"

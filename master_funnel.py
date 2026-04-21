@@ -893,9 +893,14 @@ def run_master_pipeline():
                 # Parse EPS and mcap from the tag in updated_on
                 if upd and "|eps=" in str(upd):
                     import re as _re
-                    _eps_m  = _re.search(r"eps=([0-9.]+)", str(upd))
+                    # Session 23 fix: regex now matches negative values (`-` prefix)
+                    # for loss-making stocks. Previously only `[0-9.]+` → negative
+                    # EPS silently dropped → P/E = 0 / EPS_none → value engine breaks
+                    # for distressed / turnaround stocks. Same fix applied to PE
+                    # (can be reported negative by some feeds when EPS is negative).
+                    _eps_m  = _re.search(r"eps=(-?[0-9.]+)", str(upd))
                     _mcap_m = _re.search(r"mcap=([0-9.]+)", str(upd))
-                    _pe_m   = _re.search(r"pe=([0-9.]+)",   str(upd))
+                    _pe_m   = _re.search(r"pe=(-?[0-9.]+)",  str(upd))
                     if _eps_m  and not stock.get("eps"):
                         stock["eps"]     = float(_eps_m.group(1))
                     if _mcap_m and not stock.get("mcap_cr"):
