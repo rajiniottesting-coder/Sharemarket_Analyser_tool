@@ -200,7 +200,7 @@ GLOSSARY_DATA = [
      "SLIGHT PREMIUM = MoS −15–0% (slightly overvalued, ok for quality stocks) | "
      "OVERVALUED = MoS −30–−15% (CMP exceeds FV, caution) | "
      "SIGNIFICANTLY OVERVALUED = MoS < −30% (avoid, major downside risk)","All sheets"),
-    ("FAIR VALUE","M1: DCF FV","3-Stage DCF. WACC = 10Y GSec + Beta×ERP. Terminal growth 4.5%","Full Dashboard"),
+    ("FAIR VALUE","M1: DCF FV","3-Stage DCF. WACC = 10Y GSec + Beta×ERP. Terminal growth 4.5%. Session 19 cap: M1 limited to 4× CMP to prevent low-beta inflation.","Full Dashboard"),
     ("FAIR VALUE","M2: Graham FV","Graham Number = √(22.5×EPS×BVPS). Skip if EPS negative","Full Dashboard"),
     ("FAIR VALUE","M3: PE FV","EPS × Sector 5yr median P/E (mean reversion)","Full Dashboard"),
     ("FAIR VALUE","M4: PB FV","BVPS × Sector median Price/Book. Good for asset-heavy sectors (banks, metals)","Full Dashboard"),
@@ -370,7 +370,7 @@ GLOSSARY_DATA = [
      "EXCEPTIONAL VALUE (>40%) | STRONG VALUE (>25%) | GOOD VALUE (>10%) | "
      "FAIR VALUE (0–10%) | SLIGHT PREMIUM (0 to -15%) | OVERVALUED (-15% to -30%) | "
      "SIGNIFICANTLY OVERVALUED (<-30%)","All sheets"),
-    ("FAIR VALUE","M1: DCF FV (₹)","3-Stage Discounted Cash Flow. WACC = 10Y GSec + Beta×5.5%. Terminal growth 4.5%. Best for steady compounders.","Full Dashboard"),
+    ("FAIR VALUE","M1: DCF FV (₹)","3-Stage Discounted Cash Flow. WACC = 10Y GSec + Beta×5.5%. Terminal growth 4.5%. Best for steady compounders. Session 19 cap: M1 limited to 4× CMP so low-beta stocks (e.g., SBIN β=0.2) don't produce absurd DCF outputs.","Full Dashboard"),
     ("FAIR VALUE","M2: Graham FV (₹)","Graham Number = √(22.5 × EPS × BVPS). Benjamin Graham's intrinsic value formula. Best for value stocks with positive EPS.","Full Dashboard"),
     ("FAIR VALUE","M3: PE FV (₹)","EPS × Sector 5yr median P/E. Mean-reversion model — assumes P/E reverts to sector norm.","Full Dashboard"),
     ("FAIR VALUE","M4: PB FV (₹)","BVPS × Sector median Price/Book. Best for asset-heavy sectors: banks, metals, real estate.","Full Dashboard"),

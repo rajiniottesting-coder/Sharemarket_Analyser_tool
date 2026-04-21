@@ -203,7 +203,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "Identical to MoS %. Column removed in Session 23 to avoid duplication."),
     "M1: DCF FV (₹)": ("Discounted Cash Flow fair value — 30% weight in CFV",
                        "Projects 10 years of free cash flow and discounts at WACC.\n"
-                       "Best for mature, cash-generating businesses."),
+                       "Best for mature, cash-generating businesses.\n\n"
+                       "Session 19 cap: M1 is limited to 4× CMP to prevent unrealistic\n"
+                       "valuations when low-beta inputs (e.g., SBIN with β=0.2) inflate\n"
+                       "the DCF output to absurd levels. Capping here also protects the\n"
+                       "composite CFV (which is separately capped at 3× CMP)."),
     "M2: Graham FV (₹)": ("Benjamin Graham formula — 15% weight in CFV",
                           "Classic value formula: FV = √(22.5 × EPS × BVPS)\n"
                           "Conservative — rewards stable earnings + book value."),
