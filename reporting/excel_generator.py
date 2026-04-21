@@ -789,6 +789,17 @@ class ExcelGeneratorV6:
         """Kept for backward compatibility — returns master file path."""
         return f"NSE_BSE_Full_Dashboard_{self.date_str}.xlsx"
 
+
+    def _apply_col_tips(self, ws, header_row, col_headers):
+        """Add hover tooltips to every header cell that has a tip defined."""
+        from openpyxl.comments import Comment as _C
+        for ci, h in enumerate(col_headers, 1):
+            if h in _HDR_TIPS:
+                sh, fl = _HDR_TIPS[h]
+                cm = _C(f"\U0001f4a1 {sh}\n\n{fl}", "NSE/BSE Analyser")
+                cm.width = 300; cm.height = 180
+                ws.cell(header_row, ci).comment = cm
+
     def _full_sheet(self,ws):
         N=len(FULL_COLS)
         # R1
@@ -1041,6 +1052,8 @@ class ExcelGeneratorV6:
                 c=ws.cell(5,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
             c.border=_border()
             c.alignment=_al("center","center",True)
+        # Tooltips on row 5 headers
+        self._apply_col_tips(ws, 5, [h for h,w,_ in GOLD_COLS])
         ws.freeze_panes="A6"
         ws.auto_filter.ref=f"A5:{get_column_letter(N)}5"
         # Data
@@ -1076,6 +1089,13 @@ class ExcelGeneratorV6:
             ws.column_dimensions[get_column_letter(ci)].width=w
             c=ws.cell(2,ci,h); c.fill=_f("059669"); c.font=_ft(True,WHITE,9)
             c.alignment=_al("center","center",True)
+        # Tooltips on row 2 headers
+        _ts_hdrs=["Symbol","Company","CMP (₹)","CFV (₹)","MoS %","Upside %",
+                   "Chg% [2-Wk]","Chg% [4-Wk]","Chg% [8-Wk]",
+                   "Entry Range (₹)","Stop Loss (₹)","Target 1 (₹)",
+                   "Target 2 (₹)","Target 3 (₹)","R:R Ratio",
+                   "Time Horizon","Risk Level"]
+        self._apply_col_tips(ws, 2, _ts_hdrs)
         ws.freeze_panes="A3"
         for ri,stk in enumerate(gdf.to_dict("records")):
             rn=ri+3; ws.row_dimensions[rn].height=22
@@ -1139,6 +1159,10 @@ class ExcelGeneratorV6:
             ws.column_dimensions[get_column_letter(ci)].width=w
             c=ws.cell(2,ci,h); c.fill=_f("7C3AED"); c.font=_ft(True,WHITE,9)
             c.alignment=_al("center","center",True)
+        # Tooltips on row 2 headers
+        _al_hdrs=["Date","Time (IST)","Symbol","Alert Type","Trigger Detail",
+                   "Prev Score","New Score","Score Δ","Action Required","Exchange"]
+        self._apply_col_tips(ws, 2, _al_hdrs)
         ws.freeze_panes="A3"
         ACOLS={"⭐ EARLY MOVER DETECTED":"FAC775","🔔 SPIKE FIRED":"D1FAE5",
                "💰 SMART MONEY ENTRY":"D1FAE5","📈 SECTOR STAGE CHANGE":"FAC775",
