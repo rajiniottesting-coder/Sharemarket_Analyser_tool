@@ -1461,8 +1461,16 @@ def run_master_pipeline():
                 _ey_f  = _sf(stock.get("earnings_yield", 0), 0)
                 _pro_f = _sf(stock.get("promoter_pct", 0), 0)
 
-                # Stage 2 score (0-30) → base 30-70
-                _fs = 30.0 + (_s2_f / 30.0) * 40.0
+                # Session 24 fix: Stage 2 baseline reduced.
+                # Previously: _fs = 30.0 + (_s2_f / 30.0) * 40.0  → range 30-70
+                # That made Stage 2 (pure liquidity/delivery/price/dual-listing)
+                # dominate the fundamental baseline — a liquid weak stock got
+                # ~70/100 before real fundamentals could contribute.
+                # New: Stage 2 contributes 0-10 points above a 45 base, so the
+                # baseline ranges only 45-55. True fundamentals (PE/ROE/D/E/
+                # margin/growth/CAGR — +25 to -20 range) are now the primary
+                # driver of fundamental_score, which is correct.
+                _fs = 45.0 + (_s2_f / 30.0) * 10.0
 
                 # PE: 5-20 excellent, 20-40 good, >60 stretched
                 if   0 < _pe_f <= 20:  _fs += 12

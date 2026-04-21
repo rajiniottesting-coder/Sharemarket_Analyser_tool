@@ -1,5 +1,21 @@
 import pandas as pd
 
+
+def _nonzero_qoq(val) -> bool:
+    """
+    Session 24 helper for sentiment informedness check.
+    Returns True if a QoQ shareholding delta is a meaningful signal
+    (not None, not zero, not '—', and magnitude > 0.1 percentage points).
+    """
+    if val is None:
+        return False
+    try:
+        v = float(str(val).replace("—", "0") or 0)
+        return abs(v) > 0.1
+    except (ValueError, TypeError):
+        return False
+
+
 class ScoringEngine:
     """
     Three-verdict system with cap-category-adjusted thresholds.
@@ -35,50 +51,113 @@ class ScoringEngine:
     def calculate_composite_score(self, data):
         """
         Implements Section 6: Weighted Composite Scoring (0-100).
+
+        Session 24 refinements (five fixes, one coherent pass):
+         1. Sentiment weight redistributes if sentiment is weakly-informed
+            (no paid/AI inputs fired). Prevents "5 free points" for ignorance.
+         2. Spike bonus gated by fundamental quality — full +10 only when
+            fundamental_score ≥ 55. Momentum enhances quality; doesn't rescue junk.
+         3. Confidence indicator (HIGH/MEDIUM/LOW) tells user how far from
+            threshold the score is. Honest disclosure near cliffs.
+         4. New OVERVALUED verdict for stocks that score BUY but MoS gate blocks.
+            Distinguishes "great business, currently expensive" from "weak signal".
+         5. Stage-2 inflation fix is upstream in master_funnel.py — this block
+            receives the corrected fundamental_score unchanged.
         """
-        # A. Base Weighted Scores
-        f_score = data.get('fundamental_score', 50) * 0.35   # Sections 3A-3G + 4 
-        t_score = data.get('technical_score', 50) * 0.30     # Section 5 
-        e_score = data.get('early_entry_score', 0) * 0.15    # Section 3I 
-        s_score = data.get('sentiment_score', 50) * 0.10     # Section 2 
-        r_score = data.get('safety_score', 50) * 0.10        # Pledge, Debt, Beneish 
-        
-        base_score = f_score + t_score + e_score + s_score + r_score
-        
-        # B. Adjustments & Bonuses
-        # MoS Adjustment from Section 5B Step 4 
-        # score_adjustment is set by fair_value_engine.get_composite_fair_value()
-        # and stored in stock dict as 'score_adjustment' via stock.update(fv_result).
-        # Previously read as 'mos_adjustment' — wrong key, always returned 0.
+        # A. Base weighted sub-scores (unchanged weights for strong scores)
+        # ────────────────────────────────────────────────────────────────────
+        # Canonical weights: fundamental 35% / technical 30% / EE 15% / sentiment 10% / safety 10%
+        f_raw = data.get('fundamental_score', 50)
+        t_raw = data.get('technical_score',   50)
+        e_raw = data.get('early_entry_score',  0)
+        sent_raw = data.get('sentiment_score', 50)
+        safe_raw = data.get('safety_score',    50)
+
+        # Fix #1: sentiment "informedness" detection.
+        # On free data, 5 of 8 sentiment inputs are paid (FII/Promoter/DII QoQ,
+        # insider alert, pledge direction) and 1 is AI (news_sentiment). Only
+        # smart_money_sentiment and delivery_pct are reliable free inputs.
+        # If the stock has none of the paid/AI signals, sentiment_score was
+        # built on weak evidence — redistribute its 10% weight instead of
+        # letting a default 50 give "free 5 points".
+        _has_paid_sentiment = any([
+            data.get('fii_3q_trend') in ('UP', 'DOWN'),
+            data.get('insider_buy_alert') == 'YES',
+            _nonzero_qoq(data.get('promoter_qoq')),
+            _nonzero_qoq(data.get('dii_qoq')),
+            str(data.get('news_sentiment', 'NEUTRAL')).upper() in ('POSITIVE', 'NEGATIVE'),
+            str(data.get('pledge_direction', '—')).upper() in ('FALLING', 'RISING'),
+        ])
+        sentiment_is_informed = _has_paid_sentiment
+
+        # Compute base with canonical or redistributed weights
+        if sentiment_is_informed:
+            # Canonical weights as originally designed
+            base_score = (
+                f_raw * 0.35 + t_raw * 0.30 + e_raw * 0.15
+                + sent_raw * 0.10 + safe_raw * 0.10
+            )
+            _weights_used = "canonical"
+        else:
+            # Redistribute sentiment's 10% across the 4 remaining sub-scores
+            # proportionally to their original weights (sum = 0.90):
+            #   fundamental: 0.35/0.90 = 0.389  → +0.0389 boost
+            #   technical:   0.30/0.90 = 0.333  → +0.0333 boost
+            #   early:       0.15/0.90 = 0.167  → +0.0167 boost
+            #   safety:      0.10/0.90 = 0.111  → +0.0111 boost
+            # Final adjusted weights:
+            #   fundamental 0.389, technical 0.333, early 0.167, safety 0.111
+            base_score = (
+                f_raw * 0.389 + t_raw * 0.333 + e_raw * 0.167
+                + safe_raw * 0.111
+            )
+            _weights_used = "redistributed (no paid sentiment)"
+
+        # B. Adjustments & Bonuses (applied the same in both branches)
+        # ────────────────────────────────────────────────────────────────────
+        # MoS Adjustment (from fair_value_engine)
         final_score = base_score + data.get('score_adjustment',
                                    data.get('mos_adjustment', 0))
-        
-        # Spike Bonus: +2 per trigger (cap +10) 
-        spike_bonus = min(data.get('spike_count', 0) * 2, 10) 
+
+        # Fix #2: Spike bonus gated on fundamental quality
+        # Full +10 only when fundamentals ≥ 55 (decent baseline). Otherwise
+        # capped at +3 so momentum doesn't rescue a genuinely weak stock.
+        _spk_cnt = data.get('spike_count', 0) or 0
+        if f_raw >= 55:
+            spike_bonus = min(_spk_cnt * 2, 10)          # full bonus
+        else:
+            spike_bonus = min(_spk_cnt * 2, 3)           # capped — don't mask weakness
         final_score += spike_bonus
-        
-        # Early Mover Bonus (Section 6)
-        # Threshold 50 (was 70) — consistent with Gold sheet threshold.
-        # Max achievable EE with free data is ~55, so 70 was unreachable.
-        if data.get('early_entry_score', 0) >= 50:
+
+        # Early Mover Bonus (unchanged)
+        if e_raw >= 50:
             final_score += 5
-            
-        # Anti-trigger Penalty (Section 6) 
+
+        # Anti-trigger Penalty
         if data.get('risk_flag_active', False):
             final_score -= 10
-            
-        final_score = max(0, min(100, final_score)) # Clamp 0-100
-        
+
+        final_score = max(0, min(100, final_score))  # Clamp 0-100
+
+        # C. Verdict derivation with confidence + OVERVALUED (fixes #4, #5)
+        # ────────────────────────────────────────────────────────────────────
         cap_cat     = str(data.get("cap_category", "") or "")
         mos         = data.get("mos_pct", None)
         supertrend  = str(data.get("supertrend", "") or "").upper()
         sector_stage= str(data.get("rotation_stage", data.get("sector_stage", "")) or "").upper()
+
+        verdict_info = self._get_verdict_with_confidence(
+            final_score, cap_cat, mos,
+            supertrend=supertrend, sector_stage=sector_stage
+        )
+
         return {
-            "composite_score": round(final_score, 2),
-            "verdict": self._get_verdict(final_score, cap_cat, mos,
-                                         supertrend=supertrend,
-                                         sector_stage=sector_stage),
-            "label": self._assign_quick_pick(data, final_score)
+            "composite_score":    round(final_score, 2),
+            "verdict":            verdict_info["verdict"],
+            "verdict_confidence": verdict_info["confidence"],
+            "verdict_display":    verdict_info["display"],
+            "label":              self._assign_quick_pick(data, final_score),
+            "weights_used":       _weights_used,
         }
 
     def calculate_storm_score(self, data, market_vix, market_off_peak):
@@ -113,30 +192,46 @@ class ScoringEngine:
                      supertrend="", sector_stage=""):
         """
         Returns one of: BUY, WATCHLIST, NEUTRAL, AVOID.
-
-        BUY requires:
-          1. Score above cap-adjusted BUY threshold
-          2. MoS above the overvaluation gate (default -10%)
-
-        Technical Override:
-          When score ≥ 70 AND Supertrend = BUY AND Sector Stage = STAGE 2,
-          the MoS gate relaxes from -10% to -20%.
-          Rationale: a confirmed uptrend breakout with strong fundamentals
-          represents genuine re-rating — the static FV model is backward-looking
-          and should not veto what all technical signals confirm.
-          Gate still blocks at -20% to prevent chasing extreme overvaluation.
-
-        WATCHLIST:
-          Score qualifies for BUY but MoS gate blocks it
-          OR score is in the WATCHLIST band regardless of MoS
-
-        NEUTRAL / AVOID: as before
+        (Legacy entry point — kept for any direct callers.)
+        Session 24: see _get_verdict_with_confidence() for the enriched version
+        that also returns confidence + OVERVALUED distinction.
         """
-        # Universal floor
-        if score < self.AVOID_BELOW:
-            return "AVOID"
+        return self._get_verdict_with_confidence(
+            score, cap_category, mos_pct, supertrend, sector_stage
+        )["verdict"]
 
-        # Cap tier
+    def _get_verdict_with_confidence(self, score, cap_category="", mos_pct=None,
+                                      supertrend="", sector_stage=""):
+        """
+        Session 24: Enriched verdict derivation.
+
+        Returns dict with:
+          verdict    — one of BUY, OVERVALUED, WATCHLIST, NEUTRAL, AVOID
+          confidence — one of HIGH, MEDIUM, LOW (based on distance from threshold)
+          display    — e.g., "BUY ●●●", "OVERVALUED ●●○", "WATCHLIST ●○○"
+
+        Verdict rules:
+          AVOID       — score < 38 (universal floor)
+          BUY         — score ≥ cap-adjusted BUY threshold AND MoS passes gate
+          OVERVALUED  — score ≥ cap-adjusted BUY threshold BUT MoS gate blocks
+                        (great business, but currently expensive)
+          WATCHLIST   — score in WATCHLIST band (between BUY threshold and AVOID floor)
+          NEUTRAL     — 38 ≤ score < WATCHLIST threshold
+
+        Confidence rules (distance from the threshold the verdict clears):
+          HIGH   — ≥ 5 points above the decisive threshold
+          MEDIUM — 2–5 points above the decisive threshold
+          LOW    — within 2 points of the threshold (cliff zone)
+        """
+        # Universal AVOID floor
+        if score < self.AVOID_BELOW:
+            # Distance from 38 floor going downward
+            dist = self.AVOID_BELOW - score
+            conf = "HIGH" if dist > 5 else ("MEDIUM" if dist > 2 else "LOW")
+            return {"verdict":"AVOID","confidence":conf,
+                    "display":f"AVOID {self._dots(conf)}"}
+
+        # Cap tier resolution
         cap_up = str(cap_category).upper()
         if   "LARGE" in cap_up: tier = "LARGE"
         elif "MID"   in cap_up: tier = "MID"
@@ -145,22 +240,47 @@ class ScoringEngine:
 
         buy_min, watch_min = self.CAP_THRESHOLDS[tier]
 
-        # Technical override: relax MoS gate when trend confirmation is strong
-        # Conditions: high score + confirmed uptrend + supertrend buy signal
+        # Technical override for MoS gate
         tech_confirmed = (
             score >= 70
             and "BUY" in str(supertrend).upper()
             and "STAGE 2" in str(sector_stage).upper()
         )
         mos_gate = -20 if tech_confirmed else -10
-
         mos = mos_pct if mos_pct is not None else 0
         mos_blocks_buy = mos <= mos_gate
 
-        if   score >= buy_min and not mos_blocks_buy:  return "BUY"
-        elif score >= buy_min and mos_blocks_buy:       return "WATCHLIST"
-        elif score >= watch_min:                        return "WATCHLIST"
-        else:                                           return "NEUTRAL"
+        # Verdict + confidence
+        if score >= buy_min and not mos_blocks_buy:
+            dist = score - buy_min
+            conf = "HIGH" if dist >= 5 else ("MEDIUM" if dist >= 2 else "LOW")
+            return {"verdict":"BUY","confidence":conf,
+                    "display":f"BUY {self._dots(conf)}"}
+
+        if score >= buy_min and mos_blocks_buy:
+            # Session 24: new OVERVALUED verdict — distinguishes "BUY-quality
+            # business, currently expensive" from WATCHLIST "weak signal".
+            dist = score - buy_min
+            conf = "HIGH" if dist >= 5 else ("MEDIUM" if dist >= 2 else "LOW")
+            return {"verdict":"OVERVALUED","confidence":conf,
+                    "display":f"OVERVALUED {self._dots(conf)}"}
+
+        if score >= watch_min:
+            dist = score - watch_min
+            conf = "HIGH" if dist >= 5 else ("MEDIUM" if dist >= 2 else "LOW")
+            return {"verdict":"WATCHLIST","confidence":conf,
+                    "display":f"WATCHLIST {self._dots(conf)}"}
+
+        # NEUTRAL — between AVOID floor and WATCHLIST threshold
+        dist = score - self.AVOID_BELOW
+        conf = "HIGH" if dist >= 8 else ("MEDIUM" if dist >= 4 else "LOW")
+        return {"verdict":"NEUTRAL","confidence":conf,
+                "display":f"NEUTRAL {self._dots(conf)}"}
+
+    @staticmethod
+    def _dots(confidence: str) -> str:
+        """Visual confidence indicator for the display field."""
+        return {"HIGH": "●●●", "MEDIUM": "●●○", "LOW": "●○○"}.get(confidence, "")
 
     def _assign_quick_pick(self, data, score):
         """Implements Section 6 Quick-Pick Labels"""

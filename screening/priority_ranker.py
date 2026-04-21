@@ -246,7 +246,8 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
     # Sort so Excel shows: BUY first → WATCHLIST → NEUTRAL → AVOID
     # Within each verdict tier: highest priority_score first
     # This ensures the user sees the best BUY stocks at the top
-    VERDICT_ORDER = {"BUY": 0, "WATCHLIST": 1, "NEUTRAL": 2, "AVOID": 3}
+    VERDICT_ORDER = {"BUY": 0, "OVERVALUED": 1, "WATCHLIST": 2,
+                     "NEUTRAL": 3, "AVOID": 4}
     if "verdict" in top_100.columns:
         top_100 = top_100.copy()
         top_100["_vord"] = top_100["verdict"].apply(

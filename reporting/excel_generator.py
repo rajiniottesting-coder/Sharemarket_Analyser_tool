@@ -26,6 +26,9 @@ VERDICT_STYLES = {
     "DEEP VALUE":             {"bg":"D1FAE5","text":"065F46"},
     "BUY":                    {"bg":"DBEAFE","text":"1E3A5F"},
     "BUY / EARLY MOVER":      {"bg":"DBEAFE","text":"1E3A5F"},
+    # Session 24: OVERVALUED distinct from BUY (blue) and WATCHLIST (yellow)
+    # Soft orange reads as "good stock, caution on price" — not green, not red
+    "OVERVALUED":             {"bg":"FED7AA","text":"7C2D12"},
     "WATCHLIST":              {"bg":"FEF3C7","text":"78350F"},
     "NEUTRAL":                {"bg":"FEF3C7","text":"78350F"},
     "AVOID":                  {"bg":"FEE2E2","text":"7F1D1D"},
@@ -50,7 +53,10 @@ FULL_GROUPS = [
 FULL_COLS = [
     ("Symbol",12,"symbol"),("Company Name",28,"company_name"),("Sector",22,"sector"),
     ("Exchange",13,"exchange_tag"),("BSE Code",10,"bse_code"),("Cap Category",13,"cap_category"),
-    ("Verdict",26,"verdict"),("Score /100",10,"composite_score"),("Early Entry /100",14,"early_entry_score"),
+    # Session 24: Verdict col now uses verdict_display (e.g., "BUY ●●●") to
+    # show confidence dots inline. Plain 'verdict' key is still used by Gold
+    # filter, priority_ranker, and styling lookup.
+    ("Verdict",26,"verdict_display"),("Score /100",10,"composite_score"),("Early Entry /100",14,"early_entry_score"),
     ("Spike Score /6",11,"spike_count"),("Storm Score /10",12,"storm_score"),
     ("CMP (₹)",11,"close"),("Day Chg %",10,"day_change"),("52W High (₹)",12,"high_52w"),
     ("52W Low (₹)",12,"low_52w"),("Vol Spike (×50D)",14,"vol_ratio"),("Delivery %",11,"delivery_pct"),
@@ -147,11 +153,14 @@ GLOSSARY_DATA = [
      "MICRO CAP = < ₹500 Cr (highest risk, highest potential)","All sheets"),
     ("IDENTITY","Verdict",
      "BUY = score above cap threshold AND MoS ≥ −10% (CMP at/below fair value, act now) | "
-     "WATCHLIST = signal building, almost BUY or score qualifies but overvalued (monitor) | "
+     "OVERVALUED = score qualifies for BUY but MoS gate blocks (great business, currently expensive, wait for pullback) | "
+     "WATCHLIST = signal building, below BUY threshold (monitor for score improvement) | "
      "NEUTRAL = no clear signal yet, hold off | "
      "AVOID = weak fundamentals + bad technicals + overvalued (stay out) | "
      "DEEP VALUE = significantly undervalued (MoS>25%) with high score | "
-     "EARLY MOVER = early signal detected before consensus (act ahead of crowd)","All sheets"),
+     "EARLY MOVER = early signal detected before consensus (act ahead of crowd). "
+     "Session 24: confidence dots indicate distance from the decisive threshold — "
+     "●●● = HIGH (≥5 points clear), ●●○ = MEDIUM (2-5 above), ●○○ = LOW (<2 above; cliff zone; treat with extra caution).","All sheets"),
     ("IDENTITY","Exchange",
      "NSE_ONLY = only on National Stock Exchange | "
      "BSE_ONLY = only on Bombay Stock Exchange | "
@@ -160,7 +169,7 @@ GLOSSARY_DATA = [
      "Session 22: when BSE bhavcopy download fails (Cloudflare blocks cloud IPs), "
      "a curated allowlist of Nifty 100 + popular mid-caps is used to tag DUAL_LISTED. "
      "Lesser-known small-caps may show NSE_ONLY even if also listed on BSE.","All sheets"),
-    ("SCORES","Score /100","Composite: Fundamental 35% + Technical 30% + Early 15% + News 10% + Risk 10%","All sheets"),
+    ("SCORES","Score /100","Composite: Fundamental 35% + Technical 30% + Early 15% + Sentiment 10% + Safety 10%. Session 24: if no paid/AI sentiment signals fired (no FII/Promoter/DII QoQ, no insider buy, no news sentiment, no pledge direction), the 10% sentiment weight redistributes proportionally to the other 4 sub-scores (Fundamental→0.389, Technical→0.333, Early→0.167, Safety→0.111) — no 'free 5 points' for missing data. Spike bonus (+2 per trigger, max +10) is gated on fundamental quality: only awards full +10 when fundamental_score ≥ 55; capped at +3 for weaker stocks to prevent momentum masking weak fundamentals.","All sheets"),
     ("SCORES","Early Entry /100","12-signal system measuring how early vs consensus. ≥50 = EARLY MOVER badge | ≥35 = AHEAD OF CONSENSUS. Session 23: low EE on a Gold-sheet stock is not a bug — Gold admits two archetypes: MOMENTUM (high EE from firing trend/volume signals) and VALUE (low EE but high Score + MoS + clean safety; quietly accumulating without momentum triggers yet)","All sheets"),
     ("SCORES","Spike Score /6","Count of active triggers from 6 IF-THEN spike conditions (Section 3H). Session 23: low Spike on a Gold stock is OK — VALUE-archetype candidates may be accumulating quietly without hot momentum triggers","All sheets"),
     ("SCORES","Storm Score /10","Volatility resilience score. Higher = more defensive in downturns (VIX>18)","Full Dashboard"),
@@ -1279,14 +1288,16 @@ class ExcelGeneratorV6:
                     det = f"Early Entry {early:.0f}/100 | Score: {comp:.0f}"
 
                 # ── Action Required — logic based on verdict/score/MoS/Δ ──
+                # Session 24: handle new OVERVALUED verdict (score qualifies
+                # for BUY but MoS gate blocks — "great stock, expensive").
                 if comp < 30:
                     act = "REVIEW FOR EXIT"
                 elif verd == "BUY" and mos > 10 and comp >= 65:
                     act = "CONSIDER ENTRY"
-                elif verd == "BUY" and mos <= 0:
-                    act = "BUY BUT OVERVALUED — WAIT"
                 elif verd == "BUY":
                     act = "MONITOR FOR ENTRY"
+                elif verd == "OVERVALUED":
+                    act = "STRONG STOCK — WAIT FOR PULLBACK"
                 elif verd == "WATCHLIST" and delta_disp != "—" and float(delta_disp) >= 3:
                     act = "SCORE IMPROVING — WATCH"
                 elif verd == "WATCHLIST" and delta_disp != "—" and float(delta_disp) <= -3:

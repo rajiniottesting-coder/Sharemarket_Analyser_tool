@@ -62,13 +62,19 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "Helpful when the same company has different tickers across exchanges."),
 
     # ── Verdicts & composite scores ─────────────────────────────────────────
-    "Verdict": ("✅ BUY=strong | WATCHLIST=wait | AVOID=skip",
+    "Verdict": ("BUY | OVERVALUED | WATCHLIST | NEUTRAL | AVOID",
                 "BUY: Score clears cap-tier threshold + MoS > −10%\n"
-                "WATCHLIST: Score qualifies but MoS gate blocks, or in watch band\n"
-                "NEUTRAL: Score below WATCHLIST minimum\n"
+                "OVERVALUED: Score clears BUY threshold but MoS gate blocks\n"
+                "  (great business, currently expensive, wait for pullback)\n"
+                "WATCHLIST: Score in watch band (below BUY threshold)\n"
+                "NEUTRAL: Score above AVOID floor but below WATCHLIST min\n"
                 "AVOID: Score < 38 (universal floor)\n\n"
                 "BUY thresholds: LARGE ≥60 | MID ≥63 | SMALL ≥66 | MICRO ≥70\n"
-                "Tech Override: MoS gate relaxes to −20% when Score≥70 + ST=BUY + Stage 2"),
+                "Tech Override: MoS gate relaxes to −20% when Score≥70 + ST=BUY + Stage 2\n\n"
+                "Confidence dots (Session 24) indicate distance from threshold:\n"
+                "  ●●● HIGH   (≥5 points clear — decisive)\n"
+                "  ●●○ MEDIUM (2-5 points clear — solid)\n"
+                "  ●○○ LOW    (<2 points — cliff zone, treat with caution)"),
     "Score /100": ("≥70 strong | ≥60 watch | <38 avoid",
                    "Weighted composite (all sub-scores now reach 100):\n"
                    "  Fundamental × 35%  +  Technical × 30%  +  EarlyEntry × 15%\n"
@@ -79,7 +85,13 @@ TIPS: Dict[str, Tuple[str, str]] = {
                    "  − Risk penalty (−10 if anti-trigger guard fires)\n\n"
                    "Verdict bands: ≥80 Exceptional | ≥70 Strong BUY | ≥60 Watchlist\n"
                    "<38 universal AVOID floor (regardless of cap tier).\n"
-                   "BUY thresholds vary by cap: LARGE≥60 MID≥63 SMALL≥66 MICRO≥70."),
+                   "BUY thresholds vary by cap: LARGE≥60 MID≥63 SMALL≥66 MICRO≥70.\n\n"
+                   "Session 24 refinements:\n"
+                   "• Sentiment redistributes its 10% when no paid/AI signals fired\n"
+                   "  (prevents 'free 5 points' for ignorance)\n"
+                   "• Spike bonus gated: full +10 only when fundamental_score ≥ 55;\n"
+                   "  capped at +3 otherwise (momentum can't mask weak fundamentals)\n"
+                   "• Stage 2 baseline reduced (liquidity no longer dominates fundamental)"),
     "Early Entry /100": ("≥50=Early Mover | ≥35=Ahead of Consensus",
                          "Detects stocks 4–12 weeks BEFORE institutional coverage.\n"
                          "Vol Surge+RSI +15 | Trend Confluence +12 | Momentum +10\n"
