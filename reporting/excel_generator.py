@@ -899,20 +899,27 @@ _HDR_TIPS = {
 
 
 def _patch_tooltip_vml(xlsx_path):
-    """Session 27: Post-process .xlsx to fix tooltip box dimensions.
+    """Session 27+28+29: Post-process .xlsx to fix tooltip VML shapes.
 
-    openpyxl writes Comment VML shapes with hardcoded 144px × 79px dimensions
-    regardless of the width/height set on the Comment object (see
-    openpyxl/comments/comment_sheet.py — from_cell copies width/height to
-    CommentRecord but ShapeWriter re-generates VML with its own defaults).
+    Three things this function does that openpyxl won't:
 
-    We fix this by opening the .xlsx (a zip) and rewriting every
-    xl/drawings/commentsDrawing*.vml file to substitute the cramped defaults
-    with dimensions that fit our 15-30 line tooltips comfortably.
+    1. Box dimensions. openpyxl writes VML shapes with hardcoded 144×79px
+       regardless of what Comment.width/height are set to. We rewrite every
+       shape to 420×380 px so 15-line tooltips render fully.
 
-    Target size: 380px wide × 320px tall. This fits ~18 lines at default font
-    before scrolling. For longer content, Excel's built-in comment scrollbar
-    activates automatically once content overflows.
+    2. Anchor direction for right-side columns (Session 29). openpyxl sets
+       `margin-left:59.25pt` on every shape, which pushes the comment box
+       to the RIGHT of the anchor cell. On the rightmost few columns of a
+       sheet, the box gets clipped or hidden off-screen. We scan each
+       drawing's shapes to find the rightmost anchor column, then for any
+       shape whose column is in the right portion of the sheet, flip the
+       margin to a negative value so the box opens to the LEFT of the cell.
+       Threshold: any column at >= 70% of the rightmost tooltipped column
+       index on that sheet gets flipped.
+
+    3. Nothing for scrolling. VML comments do not support internal
+       scrollbars (that's a threaded-comments feature). We size the box
+       for the known-tallest tooltip content plus padding.
     """
     import re
     import shutil
@@ -929,31 +936,79 @@ def _patch_tooltip_vml(xlsx_path):
         if not _os.path.isdir(vml_dir):
             return  # no comments; nothing to patch
 
-        # Regex: width:Npx;height:Mpx  →  width:420px;height:380px
-        # Session 28: box size bumped from 380×320 → 420×380. The 320px
-        # interior was still clipping 15-line tooltips (Verdict, Score /100,
-        # Early Entry /100, CFV, etc.) because VML borders + internal padding
-        # eat ~30-40px of the nominal height, leaving only ~280px of usable
-        # text area. 380px total gives ~340px interior — comfortably fits
-        # every tooltip in TIPS (max natural content is 310px).
+        # ---- Session 28 box size: 420×380 ----------------------------------
+        # Fits every tooltip in TIPS (max natural 310px) with ~40px headroom.
         dim_re = re.compile(
             r'width\s*:\s*\d+px\s*;\s*height\s*:\s*\d+px',
             re.IGNORECASE
         )
-        replacement = "width:420px;height:380px"
+        BOX_W_PX   = 420
+        BOX_H_PX   = 380
+        dim_replacement = f"width:{BOX_W_PX}px;height:{BOX_H_PX}px"
+
+        # ---- Session 29 per-shape margin flip ------------------------------
+        # Default openpyxl emits: margin-left:59.25pt (positive → box opens
+        # to the right of the anchor cell). For cells on the right edge of
+        # a sheet, we flip to a negative value so Excel draws the box to the
+        # left of the cell instead. 420px box + a small buffer → flip value
+        # pushes the box left-of-cell with a 15pt gap.
+        LEFT_FLIP_MARGIN_PT = -(BOX_W_PX * 0.75 + 15)  # ≈ -330pt (420px ≈ 315pt)
+        DEFAULT_MARGIN_PT   = 59.25
+        # "Right portion" threshold: any column ≥ 70% of max-tooltipped-col
+        # gets flipped to the left side. Picks 3-4 right-most columns on
+        # typical sheets, and none on very wide sheets where even col 40
+        # isn't near the viewport edge.
+        FLIP_THRESHOLD = 0.70
+
+        shape_re = re.compile(
+            r'(<[^:]*:shape\b[^>]*\bstyle=")([^"]+)("[^>]*>.*?</[^:]*:shape>)',
+            re.DOTALL
+        )
+        col_re = re.compile(r'<[^:]*:Column>\s*(\d+)\s*</[^:]*:Column>')
+        margin_left_re = re.compile(r'margin-left\s*:\s*[^;"]+')
 
         patched_count = 0
+        flipped_count = 0
         for fn in _os.listdir(vml_dir):
             if not fn.lower().startswith("commentsdrawing") or not fn.lower().endswith(".vml"):
                 continue
             fpath = _os.path.join(vml_dir, fn)
             with open(fpath, "r", encoding="utf-8") as f:
                 content = f.read()
-            new_content, n = dim_re.subn(replacement, content)
-            if n > 0:
+
+            # Pass 1: find max anchor column across all shapes in this file
+            max_col = 0
+            for shape_m in shape_re.finditer(content):
+                col_m = col_re.search(shape_m.group(0))
+                if col_m:
+                    max_col = max(max_col, int(col_m.group(1)))
+            flip_col_threshold = max_col * FLIP_THRESHOLD if max_col > 0 else float("inf")
+
+            # Pass 2: rewrite each shape's style
+            def _fix_shape(m):
+                nonlocal patched_count, flipped_count
+                full_shape = m.group(0)
+                style = m.group(2)
+                # Fix dimensions
+                new_style, n_dim = dim_re.subn(dim_replacement, style)
+                if n_dim > 0:
+                    patched_count += n_dim
+                # Decide if margin should be flipped
+                col_m = col_re.search(full_shape)
+                if col_m:
+                    col_idx = int(col_m.group(1))
+                    if col_idx >= flip_col_threshold and col_idx > 0:
+                        new_style = margin_left_re.sub(
+                            f"margin-left:{LEFT_FLIP_MARGIN_PT:.2f}pt",
+                            new_style
+                        )
+                        flipped_count += 1
+                return m.group(1) + new_style + m.group(3)
+
+            new_content = shape_re.sub(_fix_shape, content)
+            if new_content != content:
                 with open(fpath, "w", encoding="utf-8") as f:
                     f.write(new_content)
-                patched_count += n
 
         # Rewrite the .xlsx from the patched directory
         backup = xlsx_path + ".orig"

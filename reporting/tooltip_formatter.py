@@ -372,7 +372,8 @@ TIPS: Dict[str, Tuple[str, str]] = {
                      "STAGE 1 EARLY ACCUM: Smart money entering\n"
                      "STAGE 2 CONFIRMED UPTREND: All signals aligned (BEST ENTRY)\n"
                      "STAGE 3 MOMENTUM PEAK: Overbought (caution)\n"
-                     "STAGE 4 DISTRIBUTION: Smart money exiting (avoid)"),
+                     "STAGE 4 DISTRIBUTION: Smart money exiting (avoid)\n"
+                     "NEUTRAL: No clear stage yet (insufficient signals)."),
     "Smart Money": ("ACCUMULATION = institutional buying",
                     "Possible values:\n"
                     "HIGH DELIVERY BUYING: delivery >70% + good volume.\n"
@@ -495,7 +496,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Time (IST)": ("Time pipeline ran",
                    "Typically 05:00–05:30 IST on trading days."),
     "Alert Type": ("Type of signal that fired",
-                   "SPIKE FIRED | EARLY MOVER | SMART MONEY | SCORE DEGRADED | EXIT ALERT"),
+                   "🔔 SPIKE FIRED: momentum trigger(s) lit up today.\n"
+                   "⭐ EARLY MOVER DETECTED: early-entry score ≥ 70.\n"
+                   "⬇ SCORE DEGRADED: composite dropped ≥ 3 vs yesterday."),
     "Trigger Detail": ("Full details of the alert",
                        "Shows all signals fired and current score context."),
     "Prev Score": ("Yesterday's composite score",
@@ -505,8 +508,15 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Score Δ": ("Score change vs yesterday | +ve = improving",
                 "+ve: Getting stronger | −ve: Getting weaker."),
     "Action Required": ("What to do with this stock today",
-                        "CONSIDER ENTRY | MONITOR CLOSELY\n"
-                        "BUY BUT OVERVALUED — WAIT | SCORE IMPROVED | SCORE DEGRADED"),
+                        "CONSIDER ENTRY: BUY + MoS>10% + Score≥65.\n"
+                        "MONITOR FOR ENTRY: BUY, weaker conviction.\n"
+                        "STRONG STOCK — WAIT FOR PULLBACK: OVERVALUED verdict.\n"
+                        "VOLUME ALERT — INVESTIGATE: vol spike ≥ 3× avg.\n"
+                        "EARLY MOVER — ACCUMULATE: early_entry ≥ 70.\n"
+                        "SCORE IMPROVING — WATCH (Δ ≥ +3) /\n"
+                        "SCORE DECLINING — CAUTION (Δ ≤ −3).\n"
+                        "REVIEW FOR EXIT: Score < 30.\n"
+                        "MONITOR CLOSELY: default."),
 
     # Session 19: reference-only entries (not actual Excel column headers).
     # These don't get hover tooltips attached to any cell, but they DO show up
