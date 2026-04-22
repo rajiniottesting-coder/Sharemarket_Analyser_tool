@@ -759,18 +759,17 @@ def format_tooltip(header: str, short: str, full: str) -> str:
 _CUE = " ⓘ"
 
 
-def _comment(text: str, width: int = 380, height: int = 260) -> Comment:
+def _comment(text: str, width: int = 420, height: int = 260) -> Comment:
     c = Comment(text, "NSE/BSE Analyser")
     line_count = text.count("\n") + 1
     c.width = width
-    # Session 25: height ceiling lowered from 540→320 so tooltips anchored
-    # to header row 4 (which sits near the top of the viewport) don't get
-    # clipped by Excel's VML-comment rendering. The 320px limit corresponds
-    # to ~15 visible lines — the practical ceiling for legacy (openpyxl)
-    # comments that have no internal scrollbar. Tooltip content that
-    # previously needed more was trimmed to fit; full reference material
-    # lives on the "📖 Tooltip Reference" sheet (linked via header ⓘ cue).
-    c.height = max(height, min(18 * line_count + 40, 320))
+    # Session 28: height ceiling raised 320→380 to match the post-process
+    # VML patch in excel_generator._patch_tooltip_vml(). openpyxl drops these
+    # dimensions when writing VML, so the actual on-screen box is set by
+    # _patch_tooltip_vml. Keeping the in-memory ceiling in sync with the VML
+    # patch value prevents divergence if a future Excel version ever stops
+    # overriding the openpyxl dimensions.
+    c.height = max(height, min(18 * line_count + 40, 380))
     return c
 
 
@@ -931,6 +930,9 @@ def apply_group_tooltips(ws, header_row: int,
     hover with an explanation of what the whole section covers. Complementary
     to per-column tooltips — the group tip is an orientation aid when scanning
     left-to-right across the wide dashboard.
+
+    Session 28: also append the visible ⓘ cue to the section label so users
+    know the section header is hoverable (matches per-column behaviour).
     """
     for sc, nm, _color, _span in groups:
         if nm not in GROUP_TIPS:
@@ -939,3 +941,6 @@ def apply_group_tooltips(ws, header_row: int,
         cell = ws.cell(header_row, sc)
         cell.comment = _comment(format_tooltip(nm, short, full),
                                  width=340, height=200)
+        # Append the ⓘ cue (matches apply_tooltips behaviour for columns)
+        if isinstance(cell.value, str) and not cell.value.endswith(_CUE):
+            cell.value = f"{cell.value}{_CUE}"

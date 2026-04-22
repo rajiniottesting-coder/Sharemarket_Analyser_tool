@@ -128,7 +128,7 @@ GOLD_GROUPS = [
 
 GOLD_COLS = [
     ("Symbol",12,"symbol"),("Company Name",28,"company_name"),("Sector",22,"sector"),
-    ("Exchange",13,"exchange_tag"),("Cap Category",13,"cap_category"),("Verdict",26,"verdict"),
+    ("Exchange",13,"exchange_tag"),("Cap Category",13,"cap_category"),("Verdict",26,"verdict_display"),
     ("Score /100",10,"composite_score"),("Early Entry /100",14,"early_entry_score"),
     ("Spike /6",9,"spike_count"),("Storm /10",9,"storm_score"),
     ("CMP (₹)",11,"close"),("Chg% [2-Wk]",13,"2w_chg"),("Chg% [4-Wk]",13,"4w_chg"),
@@ -929,12 +929,18 @@ def _patch_tooltip_vml(xlsx_path):
         if not _os.path.isdir(vml_dir):
             return  # no comments; nothing to patch
 
-        # Regex: width:Npx;height:Mpx  →  width:380px;height:320px
+        # Regex: width:Npx;height:Mpx  →  width:420px;height:380px
+        # Session 28: box size bumped from 380×320 → 420×380. The 320px
+        # interior was still clipping 15-line tooltips (Verdict, Score /100,
+        # Early Entry /100, CFV, etc.) because VML borders + internal padding
+        # eat ~30-40px of the nominal height, leaving only ~280px of usable
+        # text area. 380px total gives ~340px interior — comfortably fits
+        # every tooltip in TIPS (max natural content is 310px).
         dim_re = re.compile(
             r'width\s*:\s*\d+px\s*;\s*height\s*:\s*\d+px',
             re.IGNORECASE
         )
-        replacement = "width:380px;height:320px"
+        replacement = "width:420px;height:380px"
 
         patched_count = 0
         for fn in _os.listdir(vml_dir):
