@@ -45,75 +45,51 @@ TIPS: Dict[str, Tuple[str, str]] = {
                "Used for rotation analysis and peer comparison.\n"
                "Stage 2 sectors offer the best entry opportunities."),
     "Exchange": ("DUAL_LISTED = best liquidity",
-                 "DUAL_LISTED: Both NSE + BSE (best liquidity)\n"
-                 "NSE_ONLY: Good liquidity\n"
-                 "BSE_ONLY: Lower liquidity — check volume before trading\n"
-                 "BSE_SME: Very low liquidity — high impact cost\n\n"
-                 "Note: When BSE bhavcopy is unavailable (cloud-runner IP\n"
-                 "blocking), a curated allowlist of known dual-listed\n"
-                 "Nifty 100 + popular mid-cap names is used to tag DUAL_LISTED.\n"
-                 "Lesser-known stocks may show NSE_ONLY even if also on BSE."),
-    "Cap Category": ("LARGE=safest | MICRO=speculative",
-                     "BUY thresholds: LARGE≥60 | MID≥63 | SMALL≥66 | MICRO≥70\n"
-                     "LARGE: >₹20,000Cr | MID: ₹5,000–20,000Cr\n"
-                     "SMALL: ₹500–5,000Cr | MICRO: <₹500Cr"),
+                 "DUAL_LISTED: Both NSE + BSE (best liquidity).\n"
+                 "NSE_ONLY: Good liquidity. BSE_ONLY: lower, check volume.\n"
+                 "BSE_SME: very low liquidity — high impact cost.\n"
+                 "When BSE bhavcopy unavailable, an allowlist of dual-listed\n"
+                 "Nifty-100 + popular mid-caps tags DUAL_LISTED."),
+    "Cap Category": ("LARGE=safest · MICRO=speculative",
+                     "BUY cutoffs: LARGE≥60, MID≥63, SMALL≥66, MICRO≥70.\n"
+                     "LARGE: >₹20,000Cr. MID: ₹5,000–20,000Cr.\n"
+                     "SMALL: ₹500–5,000Cr. MICRO: <₹500Cr."),
     "BSE Code": ("6-digit BSE scrip code",
                  "Used on BSE terminal. NSE uses Symbol; BSE uses this numeric code.\n"
                  "Helpful when the same company has different tickers across exchanges."),
 
     # ── Verdicts & composite scores ─────────────────────────────────────────
-    "Verdict": ("BUY | OVERVALUED | WATCHLIST | NEUTRAL | AVOID",
-                "BUY: Score clears cap-tier threshold + MoS > −10%\n"
-                "OVERVALUED: Score clears BUY threshold but MoS gate blocks\n"
-                "  (great business, currently expensive, wait for pullback)\n"
-                "WATCHLIST: Score in watch band (below BUY threshold)\n"
-                "NEUTRAL: Score above AVOID floor but below WATCHLIST min\n"
-                "AVOID: Score < 38 (universal floor)\n\n"
-                "BUY thresholds: LARGE ≥60 | MID ≥63 | SMALL ≥66 | MICRO ≥70\n"
-                "Tech Override: MoS gate relaxes to −20% when Score≥70 + ST=BUY + Stage 2\n\n"
-                "Confidence dots (Session 24) indicate distance from threshold:\n"
-                "  ●●● HIGH   (≥5 points clear — decisive)\n"
-                "  ●●○ MEDIUM (2-5 points clear — solid)\n"
-                "  ●○○ LOW    (<2 points — cliff zone, treat with caution)"),
-    "Score /100": ("≥70 strong | ≥60 watch | <38 avoid",
-                   "Weighted composite (all sub-scores now reach 100):\n"
-                   "  Fundamental × 35%  +  Technical × 30%  +  EarlyEntry × 15%\n"
-                   "  + Sentiment × 10%  +  Safety × 10%\n"
-                   "  + MoS adjustment (−10 to +12)\n"
-                   "  + Spike bonus (+2 per trigger, max +10; zeroed if guard active)\n"
-                   "  + Early Mover bonus (+5 if EE ≥ 50)\n"
-                   "  − Risk penalty (−10 if anti-trigger guard fires)\n\n"
-                   "Verdict bands: ≥80 Exceptional | ≥70 Strong BUY | ≥60 Watchlist\n"
-                   "<38 universal AVOID floor (regardless of cap tier).\n"
-                   "BUY thresholds vary by cap: LARGE≥60 MID≥63 SMALL≥66 MICRO≥70.\n\n"
-                   "Session 24 refinements:\n"
-                   "• Sentiment redistributes its 10% when no paid/AI signals fired\n"
-                   "  (prevents 'free 5 points' for ignorance)\n"
-                   "• Spike bonus gated: full +10 only when fundamental_score ≥ 55;\n"
-                   "  capped at +3 otherwise (momentum can't mask weak fundamentals)\n"
-                   "• Stage 2 baseline reduced (liquidity no longer dominates fundamental)"),
-    "Early Entry /100": ("≥50=Early Mover | ≥35=Ahead of Consensus",
+    "Verdict": ("BUY · OVERVALUED · WATCHLIST · NEUTRAL · AVOID",
+                "BUY: clears cap-tier threshold + MoS>−10%.\n"
+                "OVERVALUED: clears threshold but MoS blocks (wait for pullback).\n"
+                "WATCHLIST: in watch band below BUY threshold.\n"
+                "NEUTRAL: above AVOID floor but below WATCHLIST min.\n"
+                "AVOID: Score<38. Cutoffs: LARGE≥60, MID≥63, SMALL≥66, MICRO≥70.\n"
+                "Tech Override: MoS relaxes to −20% if Score≥70+ST=BUY+Stage 2.\n"
+                "Confidence dots (Session 24): ●●●HIGH ●●○MED ●○○LOW."),
+    "Score /100": ("≥70 strong · ≥60 watch · <38 avoid",
+                   "Weighted composite (0-100):\n"
+                   "Fundamental 35% + Technical 30% + EarlyEntry 15%\n"
+                   "+ Sentiment 10% + Safety 10% + MoS adj (−10 to +12)\n"
+                   "+ Spike bonus (max +10) + Early Mover +5 − Risk −10.\n"
+                   "BUY cutoffs by cap: LARGE≥60, MID≥63, SMALL≥66, MICRO≥70.\n"
+                   "Session 24: sentiment redistributes when no paid signals;\n"
+                   "spike bonus capped at +3 if fundamental<55."),
+    "Early Entry /100": ("≥50 Early Mover · ≥35 Ahead of Consensus",
                          "Detects stocks 4–12 weeks BEFORE institutional coverage.\n"
-                         "Vol Surge+RSI +15 | Trend Confluence +12 | Momentum +10\n"
-                         "52W Breakout +10 | Deep Value+BUY +10 | Inst Footprint +10\n"
-                         "Score Convergence +8 | FII Accum +8 | Promoter Accum +8 | Dual-Listed +8\n\n"
-                         "≥50: EARLY MOVER — accumulate before crowd\n"
-                         "≥35: AHEAD OF CONSENSUS | <35: EMERGING\n\n"
-                         "Note: low EE on a Gold-sheet stock is not a bug — Gold\n"
-                         "includes patient VALUE candidates (high Score + high MoS\n"
-                         "+ clean safety) that aren't showing momentum signals yet.\n"
-                         "Two legit Gold archetypes: MOMENTUM (high EE) and VALUE (low EE)."),
-    "Spike Score /6": ("≥2 notable | ≥4 strong | 6 very rare",
-                       "Six momentum triggers — how many fire simultaneously:\n"
-                       "T1: CMP within 3% of 52W High + vol>2×\n"
-                       "T2: MACD+ST=BUY + vol>1.5×\n"
-                       "T3: ADX>25 + delivery>60% + vol>1.5×\n"
-                       "T4: RSI 45–65 + vol>2×\n"
-                       "T5: vol>3× + delivery>60%\n"
-                       "T6: 2w_chg>3% + 2w>4w + vol>1.5×\n\n"
-                       "Suppressed to 0 if pledge>20% or Altman/Beneish flags active.\n"
-                       "Low Spike on a Gold stock is fine — value candidates\n"
-                       "may be accumulating quietly without hot momentum triggers."),
+                         "Key triggers: Vol+RSI, Trend Confluence, Momentum,\n"
+                         "52W Breakout, Deep Value+BUY, Inst Footprint,\n"
+                         "Score Convergence, FII/Promoter Accum, Dual-Listed.\n"
+                         "≥50 EARLY MOVER, ≥35 Ahead of Consensus, <35 Emerging.\n"
+                         "Low EE on Gold is OK — two archetypes: MOMENTUM and VALUE.\n"
+                         "See Tooltip Reference for all 12 signals."),
+    "Spike Score /6": ("≥2 notable · ≥4 strong · 6 very rare",
+                       "Six momentum triggers — how many fire simultaneously.\n"
+                       "T1: CMP near 52W High + vol>2×. T2: MACD+ST=BUY + vol>1.5×.\n"
+                       "T3: ADX>25 + delivery>60%. T4: RSI 45–65 + vol>2×.\n"
+                       "T5: vol>3× + delivery>60%. T6: 2w_chg>3% + 2w>4w + vol>1.5×.\n"
+                       "Suppressed to 0 if pledge>20% or Altman/Beneish flags fire.\n"
+                       "Low Spike on a Gold stock is fine (VALUE archetype)."),
     "Spike /6": ("≥2 notable | ≥4 strong | 6 very rare",
                  "Six momentum triggers — how many fire simultaneously.\n"
                  "Suppressed to 0 if pledge>20% or Altman/Beneish flags active.\n"
@@ -121,9 +97,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "on fundamentals + MoS + safety without momentum signals."),
     "Storm Score /10": ("≥8 Storm Safe | ≥5 Moderate | <5 High Risk",
                         "Defensive quality — how safe in a market crash?\n"
-                        "Beta<0.8 +2 | D/E<0.3 +2 | FCF positive +2\n"
-                        "Div yield>2% +1 | Rev growth>10% +1 | Margin Expansion +1\n"
-                        "Promoter QoQ up +1 | FII buying 3Q +1"),
+                        "Beta<0.8 +2, D/E<0.3 +2, FCF positive +2, Div yield>2% +1,\n"
+                        "Rev growth>10% +1, Margin Expansion +1,\n"
+                        "Promoter QoQ up +1, FII buying 3Q +1."),
     "Storm /10": ("≥8 Storm Safe | ≥5 Moderate | <5 High Risk",
                   "Defensive quality — higher score = more resilient in downturns."),
     "F-Score /9": ("≥7 strong | ≤3 weak",
@@ -141,12 +117,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                    "Verify fundamentals before buying near 52W Low."),
     "Vol Spike (×50D)": ("≥2× unusual | ≥3× institutional",
                          "1×: Normal | 1.5–2×: Above avg | 2–3×: Unusual | >3×: Major event"),
-    "Delivery %": ("≥60% institutional | <40% speculative",
+    "Delivery %": ("≥60% institutional · <40% speculative",
                    "Share of traded volume actually delivered (not intraday).\n"
-                   "≥70%: Strong institutional conviction\n"
-                   "40–70%: Mixed | <40%: Mostly speculative — caution\n"
-                   "Sentiment score impact:\n"
-                   "  >70%: +4 | >60%: +2 | <30%: −3"),
+                   "≥70% strong institutional conviction. 40–70% mixed.\n"
+                   "<40% mostly speculative — caution.\n"
+                   "Sentiment impact: >70%: +4, >60%: +2, <30%: −3."),
     "Beta": ("<0.8 defensive | >1.2 volatile",
             "Beta<0.8: Less volatile — good in downturns (+2 Storm)."),
     "Chg% [2-Weekly]": ("2-week return | >3% strong momentum",
@@ -168,27 +143,24 @@ TIPS: Dict[str, Tuple[str, str]] = {
 
     # ── Fair value & valuation ──────────────────────────────────────────────
     "CFV (₹)": ("Composite Fair Value (7 models)",
-                "M1 DCF 30% | M2 Graham 15% | M3 PE 20% | M4 PB 15%\n"
-                "M5 EV/EBITDA 10% | M6 DDM 5% | M7 PEG 5%\n"
-                "CMP<CFV = undervalued | CMP>CFV = overvalued\n\n"
-                "Safety caps (Session 19):\n"
-                "  M1 DCF individually capped at 4× CMP\n"
-                "  Composite CFV capped at 3× CMP\n"
-                "These prevent a single model misbehaving (e.g., low-beta\n"
-                "stock with tiny terminal-value denominator) from producing\n"
-                "implausible 5× or 10× fair values."),
+                "Weights: M1 DCF 30%, M2 Graham 15%, M3 PE 20%, M4 PB 15%,\n"
+                "M5 EV/EBITDA 10%, M6 DDM 5%, M7 PEG 5%.\n"
+                "CMP<CFV = undervalued. CMP>CFV = overvalued.\n"
+                "Session 19 safety caps: M1 DCF capped at 4× CMP,\n"
+                "composite CFV capped at 3× CMP.\n"
+                "Prevents low-beta stocks with tiny terminal-value denominators\n"
+                "from producing implausible 5×–10× fair values."),
     "FV Low (₹)": ("Conservative FV = CFV × 0.85",
                   "CMP below FV Low = very deeply undervalued."),
     "FV High (₹)": ("Optimistic FV = CFV × 1.15",
                    "CMP above FV High = significantly overvalued."),
-    "MoS %": (">25% strong buy | <−15% overvalued",
-              "Margin of Safety = (CFV − CMP) / CMP × 100\n"
-              ">40%: Exceptional (+12) | >25%: Strong (+8) | 10–25%: Adequate (+4)\n"
-              "−15 to −30%: Overvalued (−5) | <−30%: Significant premium (−10)\n\n"
-              "Note: MoS is effectively capped near 200% because CFV is\n"
-              "capped at 3× CMP (Session 19 safety net). If you see MoS\n"
-              "at ~200%, treat it as 'model says deeply undervalued —\n"
-              "verify inputs' rather than a guaranteed bargain."),
+    "MoS %": (">25% strong buy · <−15% overvalued",
+              "Margin of Safety = (CFV − CMP) / CMP × 100.\n"
+              ">40% Exceptional (+12), >25% Strong (+8), 10–25% Adequate (+4).\n"
+              "−15 to −30% Overvalued (−5), <−30% Significant premium (−10).\n"
+              "Effectively capped near 200% because CFV is capped at 3× CMP\n"
+              "(Session 19 safety net). If MoS ≈200%, verify inputs rather\n"
+              "than treating it as a guaranteed bargain."),
     "MoS Label": ("Valuation summary",
                   "EXCEPTIONAL >40% | STRONG >25% | ADEQUATE >10% | THIN 0-10%\n"
                   "SLIGHT PREMIUM −10% to 0% | SIGNIFICANT PREMIUM <−10%"),
@@ -360,15 +332,12 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "<20%: Volatile, easier to manipulate."),
 
     # ── Forensics ───────────────────────────────────────────────────────────
-    "Piotroski F /9": ("≥7 strong | ≤3 weak",
-                       "9 criteria: Profitability (4) + Leverage/Liquidity (3) + Efficiency (2)\n"
-                       "8–9: Excellent | 6–7: Good | ≤3: Avoid\n"
-                       "Safety score impact:\n"
-                       "  F ≥ 7 → +6\n"
-                       "  F = 5–6 → +3\n"
-                       "Computed from free yfinance data (Session 14+20); typical\n"
-                       "distribution on a real run: 4–8 range, with most quality\n"
-                       "stocks scoring 6–8."),
+    "Piotroski F /9": ("≥7 strong · ≤3 weak",
+                       "9 criteria across Profitability (4), Leverage/Liquidity (3),\n"
+                       "Efficiency (2). 8–9 Excellent, 6–7 Good, ≤3 Avoid.\n"
+                       "Safety impact: F≥7 → +6, F=5–6 → +3.\n"
+                       "Computed from free yfinance data (Session 14+20);\n"
+                       "typical run distribution: 4–8, quality stocks 6–8."),
     "Altman Z": (">2.99 safe | <1.81 distress zone",
                  "<1.81: Triggers anti-trigger guard (Spike suppressed).\n"
                  "Requires balance-sheet inputs (working capital, retained\n"
@@ -406,13 +375,12 @@ TIPS: Dict[str, Tuple[str, str]] = {
                      "STAGE 4 DISTRIBUTION: Smart money exiting (avoid)"),
     "Smart Money": ("ACCUMULATION = institutional buying",
                     "Possible values:\n"
-                    "  HIGH DELIVERY BUYING — delivery >70% with good volume\n"
-                    "  RSI ACCUMULATION ZONE — RSI in 50-65 with sideways action\n"
-                    "  INST ACCUMULATION — block deals + delivery uptick\n"
-                    "  INSIDER BUYING — promoter/director buys on record\n"
-                    "  FII INCREASING — FII QoQ holding up (paid data)\n"
-                    "  PROMOTER BUYING — promoter QoQ up (paid data)\n"
-                    "  NEUTRAL — none of above"),
+                    "HIGH DELIVERY BUYING: delivery >70% + good volume.\n"
+                    "RSI ACCUMULATION ZONE: RSI 50–65 + sideways action.\n"
+                    "INST ACCUMULATION: block deals + delivery uptick.\n"
+                    "INSIDER BUYING: promoter/director buys on record.\n"
+                    "FII/PROMOTER BUYING: QoQ holding up (paid data).\n"
+                    "NEUTRAL: none of the above."),
 
     # ── Technical ───────────────────────────────────────────────────────────
     "SMA 200": ("CMP > SMA200 = bull trend confirmed",
@@ -430,13 +398,13 @@ TIPS: Dict[str, Tuple[str, str]] = {
             "  25–30: Strong → +5\n"
             "  20–25: Moderate → +2\n"
             "  <20: Weak / sideways → 0"),
-    "RSI (14)": ("45–65 sweet spot | >70 overbought | <30 oversold",
+    "RSI (14)": ("45–65 sweet spot · >70 overbought · <30 oversold",
                  "Technical score impact:\n"
-                 "  60–70: SWEET SPOT → +10 (highest reward — strong + not overbought)\n"
-                 "  >70: Overbought → +8 (rewarded but capped)\n"
-                 "  50–60: Mildly bullish → +4\n"
-                 "  40–50: Mildly bearish → −4 | <40: Bearish → −8\n"
-                 "  45–65 also the ideal entry zone for spike triggers (T4)"),
+                 "60–70 SWEET SPOT → +10 (strongest reward).\n"
+                 ">70 Overbought → +8 (rewarded but capped).\n"
+                 "50–60 Mildly bullish → +4.\n"
+                 "40–50 Mildly bearish → −4. <40 Bearish → −8.\n"
+                 "45–65 is also the entry zone for spike trigger T4."),
     "MACD Signal": ("BUY = bullish crossover | SELL = bearish",
                     "BUY: +6 Technical | SELL: −6 Technical"),
     "Stoch %K": ("20–40 accumulation zone | >80 overbought",
@@ -448,23 +416,17 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Above VWAP": ("YES = institutional support | NO = weak",
                    "YES: +4 Technical | NO: −2 Technical"),
     "Chart Pattern": ("Today's candle pattern from OHLC",
-                      "Detected from open/high/low/close + previous close.\n"
-                      "Possible values:\n"
-                      "  BULLISH CANDLE — close > open > prev close +1%\n"
-                      "  BEARISH CANDLE — close < open < prev close -1%\n"
-                      "  DOJI — body very small (indecision, possible reversal)\n"
-                      "  HAMMER — long lower wick (bullish reversal signal)\n"
-                      "  HANGING MAN — long lower wick at top (bearish reversal)\n"
-                      "  SHOOTING STAR — long upper wick (bearish reversal)\n"
-                      "  UPPER CIRCUIT — hit upper price band (no trading room left)\n"
-                      "  LOWER CIRCUIT — hit lower price band (forced sellers stuck)\n"
-                      "  NEUTRAL — none of above; sideways action\n"
-                      "  '—' — OHLC data incomplete"),
+                      "Detected from OHLC + previous close. Possible values:\n"
+                      "BULLISH / BEARISH CANDLE (close vs open vs prev close).\n"
+                      "DOJI (indecision), HAMMER (bullish reversal signal).\n"
+                      "HANGING MAN / SHOOTING STAR (bearish reversal).\n"
+                      "UPPER / LOWER CIRCUIT (hit price band).\n"
+                      "NEUTRAL (sideways). '—' (OHLC incomplete)."),
     "Pattern": ("Today's candle pattern from OHLC",
                 "Same as Chart Pattern, abbreviated for Gold sheet.\n"
-                "Values: BULLISH CANDLE | BEARISH CANDLE | DOJI | HAMMER\n"
-                "       HANGING MAN | SHOOTING STAR | NEUTRAL\n"
-                "       UPPER CIRCUIT | LOWER CIRCUIT | '—'"),
+                "Values: BULLISH / BEARISH CANDLE, DOJI, HAMMER,\n"
+                "HANGING MAN, SHOOTING STAR, UPPER / LOWER CIRCUIT,\n"
+                "NEUTRAL, '—'."),
 
     # ── Support / resistance ────────────────────────────────────────────────
     "Support 1 (₹)": ("Nearest support = buy zone floor",
@@ -504,13 +466,13 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Risk Level": ("LOW=safest | VERY HIGH=speculative only",
                    "LOW: High score + low beta + low D/E + no pledge\n"
                    "MEDIUM: Acceptable | HIGH: Small/micro | VERY HIGH: Speculative"),
-    "R:R Ratio": ("Aim for >1:2 | Higher = better risk/reward",
-                  "R:R = (T1 − Entry mid) / (Entry mid − SL)\n"
-                  ">2: Excellent | 1–2: Acceptable | <1: Avoid\n\n"
-                  "Session 22: T1 is now auto-derived to ensure R:R ≥ 2.0:\n"
-                  "  T1 = max(Entry + 2×risk_distance, CFV-weighted target)\n"
-                  "Stocks with high CFV will get value-anchored targets;\n"
-                  "stocks without CFV get pure risk-symmetric targets."),
+    "R:R Ratio": ("Aim for >1:2 · Higher = better risk/reward",
+                  "R:R = (T1 − Entry mid) / (Entry mid − SL).\n"
+                  ">2 Excellent, 1–2 Acceptable, <1 Avoid.\n"
+                  "Session 22: T1 auto-derived to ensure R:R ≥ 2.0:\n"
+                  "T1 = max(Entry + 2×risk_distance, CFV-weighted target).\n"
+                  "High-CFV stocks get value-anchored targets; others get\n"
+                  "pure risk-symmetric targets."),
 
     # ── Narrative / AI ──────────────────────────────────────────────────────
     "Key Catalyst": ("Primary near-term growth driver",
@@ -553,18 +515,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # Keeping Glossary + Tooltip Reference sheet in sync matters — both are
     # discovery surfaces for the same knowledge.
     "Gold-Tier Filter": (
-        "8-condition filter for the Gold – Early Movers sheet",
+        "8-condition filter for Gold – Early Movers sheet",
         "ALL 8 conditions must be true for Gold qualification:\n"
-        "  1. Verdict = BUY (not WATCHLIST or weaker)\n"
-        "  2. Composite Score ≥ 70\n"
-        "  3. 15% ≤ MoS ≤ 100% (real upside, not phantom)\n"
-        "  4. Storm Score ≥ 5 (defensively sound)\n"
-        "  5. RSI ≤ 70 (not already overbought)\n"
-        "  6. BS Health Flag ≠ ALERT\n"
-        "  7. Pledge % ≤ 10 (clean cap structure)\n"
-        "  8. Not spike-suppressed (no anti-trigger guard fire)\n\n"
-        "Daily count will vary: some days 0-3 stocks, some days 8+. Filter "
-        "reflects market reality, not a fixed quota."),
+        "1. Verdict = BUY. 2. Composite Score ≥ 70.\n"
+        "3. 15% ≤ MoS ≤ 100% (real upside, not phantom).\n"
+        "4. Storm Score ≥ 5. 5. RSI ≤ 70.\n"
+        "6. BS Health Flag ≠ ALERT. 7. Pledge % ≤ 10.\n"
+        "8. Not spike-suppressed (no anti-trigger guard fire).\n"
+        "Daily count varies: some days 0–3 stocks, some days 8+."),
     "CFV Safety Cap": (
         "Composite Fair Value capped at 3× CMP",
         "CFV is capped at 3× Current Market Price as a safety net, which\n"
@@ -805,10 +763,14 @@ def _comment(text: str, width: int = 380, height: int = 260) -> Comment:
     c = Comment(text, "NSE/BSE Analyser")
     line_count = text.count("\n") + 1
     c.width = width
-    # Session 20: height ceiling raised from 420→540 so post-Session-16
-    # tooltips (Piotroski, Score /100, Early Entry /100 — all gained scoring
-    # detail in their "DETAIL" sections) render fully without clipping.
-    c.height = max(height, min(18 * line_count + 40, 540))
+    # Session 25: height ceiling lowered from 540→320 so tooltips anchored
+    # to header row 4 (which sits near the top of the viewport) don't get
+    # clipped by Excel's VML-comment rendering. The 320px limit corresponds
+    # to ~15 visible lines — the practical ceiling for legacy (openpyxl)
+    # comments that have no internal scrollbar. Tooltip content that
+    # previously needed more was trimmed to fit; full reference material
+    # lives on the "📖 Tooltip Reference" sheet (linked via header ⓘ cue).
+    c.height = max(height, min(18 * line_count + 40, 320))
     return c
 
 
