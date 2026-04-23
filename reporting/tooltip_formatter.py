@@ -291,7 +291,10 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "Cash Conversion Cycle = DIO + DSO − DPO.\n"
                  "Negative CCC = collects cash before paying suppliers."),
     "Div Yield %": (">2% good income | >4% check sustainability",
-                    ">2%: +1 Storm Score"),
+                    ">2%: +1 Storm Score.\n"
+                    "Display: '—' means company pays no dividend (v10.9).\n"
+                    "Zero vs '—' distinction: '—' = no dividend policy;\n"
+                    "0 would mean the stock pays but at 0% yield (rare)."),
     "Payout Ratio %": ("40–60% balanced | >80% unsustainable",
                        "30–60%: Balanced | >80%: Check FCF coverage."),
     "Capex / Rev %": ("<5% asset-light | >15% capital-heavy",
@@ -305,7 +308,10 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "Sentiment score impact:\n"
                   "  >+0.5%: Promoters buying → +5\n"
                   "  <−0.5%: Promoters selling → −5\n"
-                  "Storm score also +1 if >0.3%"),
+                  "Storm score also +1 if >0.3%.\n"
+                  "Display: '—' when shareholding table lacks ≥90-day\n"
+                  "history (v10.4/v10.9). Populates after ~3 months of\n"
+                  "daily runs accumulate prior-quarter data."),
     "Pledge %": ("0% ideal | >10% watch | >20% RED FLAG",
                  "Safety score impact:\n"
                  "  0%: Clean cap structure → +4 (rewarded, not just neutral)\n"
@@ -320,7 +326,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "FII %": (">15% institutional backed",
               ">25%: High global interest | Rising FII = strong signal."),
     "FII QoQ Δ": (">1% accumulation | <−1% selling",
-                  "+8 EE if >1% | +1 Storm if >0.3%."),
+                  "+8 EE if >1% | +1 Storm if >0.3%.\n"
+                  "Display: '—' when no ≥90-day history in shareholding\n"
+                  "table (v10.4/v10.9). Populates after ~3 months of runs."),
     "DII %": (">10% domestic confidence",
               "Rising DII + FII = dual institutional accumulation = bullish."),
     "DII QoQ Δ": (">0.5% domestic accumulation",
@@ -328,7 +336,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "Sentiment score impact:\n"
                   "  >+0.5%: Strong DII accumulation → +6\n"
                   "  +0.3–0.5%: Moderate accumulation → +4\n"
-                  "  <−0.3%: DII distribution → −3"),
+                  "  <−0.3%: DII distribution → −3.\n"
+                  "Display: '—' when DII % source unavailable (NSE corp-info\n"
+                  "API often blocked on cloud IPs) OR no ≥90-day history."),
     "Public Float %": (">50% good liquidity | <20% manipulation risk",
                        "<20%: Volatile, easier to manipulate."),
 
