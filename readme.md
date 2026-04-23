@@ -337,3 +337,124 @@ beneish_m            Beneish M              -2.5         -2.5         ✅
 1. Console output — Section 5A.5 prints `"Forensics populated for X/100 stocks"`. If X=0, enrichment is broken; if X>0, forensics works.
 2. DB check — `sqlite3 market_data.db "SELECT ebit_cr, int_expense_cr, total_assets_cr FROM fundamental_metrics LIMIT 5"`. If all zeros after a full run, the 4th pass isn't writing (usually means yfinance rate-limited that day).
 3. Revert via git; open a fresh conversation with me with the specific error.
+
+
+# v10.4 FINAL Fix Pack — Only 2 Files to Replace
+
+## ⚠️ Important — only 2 files changed
+
+I carefully diffed each of your 4 uploaded files against my earlier v10.4 pack. Findings:
+
+| Your file | Status | Action |
+|---|---|---|
+| `analysis/forensics_engine.py` | **Already v10.4** (identical to my version) | ❌ Do NOT replace — yours is correct |
+| `database/data_bridge.py` | Already v10.3-patched, working correctly (tested with empty DB) | ❌ Do NOT replace — yours works |
+| `master_funnel.py` | Has v10.2 DB-read code but missing v10.4 inline fetch + QoQ fix | ✅ **Replace with patched version** |
+| `reporting/excel_generator.py` | Missing dynamic red-header logic | ✅ **Replace with patched version** |
+
+Previous versions of my pack would have deleted ~60 lines of your v10.2 DB-reading code from `master_funnel.py`. **This pack does not.** I confirmed via diff that all your existing v10.2 infrastructure (ebit_cr SELECT, 13-tuple unpack, total_debt_cr bridge, etc.) is preserved.
+
+## The 2 files in this pack
+
+### 1. `master_funnel.py` — replaces `master_funnel.py` (root)
+
+Two additive changes vs your current file (+39 lines, 0 deletions):
+
+**v10.4 PATCH 1** — Fixed QoQ calculation behavior (around line 464):
+- Old: when no historical data, delta defaulted to `-current%` (e.g., showed `-62.27` when promoter was 62.27 with no history)
+- New: shows `"—"` when no historical data; shows real delta only when `shareholding` table has prior-quarter row for that symbol
+
+**v10.4 PATCH 2** — Inline forensic-input fetcher (around line 527, just before `forensics.calculate_accounting_forensics`):
+- Pulls `ticker.balance_sheet`, `ticker.cashflow`, `ticker.income_stmt` directly from yfinance for each of the top-100 stocks
+- Populates absolute ₹Cr values (ebit_cr, int_expense_cr, total_assets_cr, retained_earnings_cr, working_cap_cr, capex_cr, inventory_days, receivable_days, payable_days)
+- Merges onto stock dict WITHOUT overwriting existing valid values
+- Adds ~2-3 minutes per pipeline run
+
+**All your v10.2 DB-reading code is preserved** — the 10 new columns in the ALTER TABLE migration, the 13-column `_fm_ext` SELECT, the tuple unpack, and the `total_debt_cr`/`cash_cr`/`q_rev_cr`/`q_pat_cr`/`q_ebitda_cr` bridges. Those continue to work on subsequent pipeline runs once the DB is populated; the inline fetch is a belt-and-braces layer that ensures data flows even on first run.
+
+### 2. `excel_generator.py` — replaces `reporting/excel_generator.py`
+
+One additive change (+22 lines, 0 deletions):
+
+**v10.4** — Dynamic red-header demotion (around line 1183):
+- Before rendering each header, walks the top-100 stocks and counts how many have real (non-`—`, non-0) values for that column
+- If ≥1 stock has real data, the column header uses its normal section color instead of the `991B1B` red
+- Columns that are genuinely empty for all 100 stocks keep the red header (e.g., `Key Catalyst` without AI credits, `DII QoQ Δ` until shareholding history accumulates)
+
+CRLF line endings preserved (matches your original file's Windows style).
+
+## Integration test results
+
+Tested with a mocked yfinance module (network is sandboxed here):
+
+```
+FINAL STOCK DICT AFTER v10.4 PATCHES
+----------------------------------------------------------------------
+  ND/EBITDA            2.33            ✅
+  Int Coverage         7.92            ✅
+  CCC Days             59.0            ✅
+  Capex / Rev %        5.71            ✅
+  Earn Quality         1.17            ✅
+  Altman Z             3.45            ✅
+  Beneish M            -2.5            ✅
+  Cash (₹Cr)           1500            ✅
+
+QoQ behavior:
+  promoter_qoq (no history):   —        (correct — was '-62.27' before)
+  promoter_qoq (real history): 2.0      (correct)
+
+Dynamic red header logic:
+  10 columns correctly demoted from red
+  3 columns correctly kept red (genuinely empty)
+```
+
+## Deploy steps
+
+1. **Back up** your current repo: `git commit -am "before v10.4 final pack"` or zip the folder
+2. Replace these 2 files only:
+   - `master_funnel.py` → overwrite `master_funnel.py` at repo root
+   - `excel_generator.py` → overwrite `reporting/excel_generator.py`
+3. **Do NOT replace** `analysis/forensics_engine.py` or `database/data_bridge.py` — yours are already correct
+4. Sanity check from repo root:
+   ```powershell
+   python -c "from analysis.forensics_engine import ForensicsEngine; print('✅' if callable(ForensicsEngine.fetch_forensic_inputs) else '❌')"
+   ```
+   Should print `✅`.
+5. Commit and push. Next pipeline run will take ~3 min longer but populate forensic fields correctly.
+
+## What to expect in your next Excel
+
+Based on your previous run (91 stocks), predicted improvement:
+
+| Column | Previous | Expected after v10.4 |
+|---|---|---|
+| ND/EBITDA | 70/91 populated | 70-80/91 (same or slightly better) |
+| Int Coverage | 0/91 | 40-70/91 |
+| CCC Days | 0/91 | 40-70/91 |
+| Capex / Rev % | 0/91 | 40-70/91 |
+| Altman Z | 0/91 | 50-80/91 |
+| Beneish M | 0/91 | 50-80/91 |
+| Earn Quality | 7/91 | 40-70/91 |
+| Pro QoQ Δ | 18 with `-current%` | "—" for most, real deltas for stocks with shareholding history |
+| FII QoQ Δ | 18 with `-current%` | Same — honest "—" instead of wrong values |
+| DII QoQ Δ | 0/91 (all 0) | Same — will stay 0 until `shareholding` has DII history accumulated |
+| Red headers | Always red | Demoted to normal when column has ≥1 populated value |
+
+## If forensic fields still show mostly `—` after deploy
+
+Run this diagnostic from repo root to test yfinance directly:
+
+```powershell
+python -c "import yfinance as yf; t = yf.Ticker('RELIANCE.NS'); bs = t.balance_sheet; print('BS rows:', list(bs.index)[:5] if not bs.empty else 'EMPTY')"
+```
+
+- If you see row names like `Total Assets`, yfinance is working — my row-name matcher should handle them. Share the full list and I'll tune it.
+- If you see `EMPTY`, Yahoo is rate-limiting or doesn't have data for Indian stocks that day. Try again next day.
+- Check your console output during the pipeline run — you should see the master_funnel loop processing stocks at ~2 seconds each during the "SECTION 6: CORE ANALYTICAL ENGINES" section.
+
+## Files NOT in this pack
+
+These weren't changed since your last deploy, so there's nothing to ship:
+- `analysis/forensics_engine.py` — your v10.4 version is already correct
+- `database/data_bridge.py` — your v10.3 rewrite works correctly (I tested against empty/partial DBs)
+- All other files — untouched

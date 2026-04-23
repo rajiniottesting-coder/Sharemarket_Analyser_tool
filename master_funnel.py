@@ -462,17 +462,39 @@ def run_master_pipeline():
         for stock in final_100_list:
             sym = stock.get("symbol", "")
             h_data = historical_map.get(sym) or {}   # None-safe: key exists with None value
-            # NEW: QoQ Delta Calculations
-            stock['promoter_qoq'] = round(stock.get('promoter_pct', 0) - h_data.get('promoter_pct', stock.get('promoter_pct', 0)), 2)
-            stock['fii_qoq'] = round(stock.get('fii_pct', 0) - h_data.get('fii_pct', stock.get('fii_pct', 0)), 2)
-            stock['dii_qoq'] = round(stock.get('dii_pct', 0) - h_data.get('dii_pct', stock.get('dii_pct', 0)), 2)
-            
-            # NEW: Pledge Direction
-            curr_p = stock.get('pledge_pct', 0)
-            prev_p = h_data.get('pledge_pct', curr_p)
-            if curr_p < prev_p: stock['pledge_dir'] = "IMPROVING"
-            elif curr_p > prev_p: stock['pledge_dir'] = "DETERIORATING"
-            else: stock['pledge_dir'] = "STABLE"
+
+            # v10.4: QoQ deltas show "—" when no historical data, rather than
+            # returning -current% (the bug caused by default=0). Only compute
+            # a real delta when the shareholding table has a prior-quarter row.
+            def _qoq(curr_key, hist_key):
+                cv = stock.get(curr_key, 0)
+                if h_data and hist_key in h_data and h_data[hist_key] is not None:
+                    try:
+                        pv = float(h_data[hist_key])
+                        if pv > 0:   # real historical value available
+                            return round(float(cv) - pv, 2)
+                    except (ValueError, TypeError):
+                        pass
+                return "—"   # no history → can't compute delta
+
+            stock['promoter_qoq'] = _qoq('promoter_pct', 'promoter_pct')
+            stock['fii_qoq']      = _qoq('fii_pct',      'fii_pct')
+            stock['dii_qoq']      = _qoq('dii_pct',      'dii_pct')
+
+            # Pledge Direction — only declare IMPROVING/DETERIORATING when
+            # we have real historical pledge_pct to compare against
+            curr_p = stock.get('pledge_pct', 0) or 0
+            prev_p_raw = h_data.get('pledge_pct') if h_data else None
+            if prev_p_raw is not None:
+                try:
+                    prev_p = float(prev_p_raw)
+                    if curr_p < prev_p: stock['pledge_dir'] = "IMPROVING"
+                    elif curr_p > prev_p: stock['pledge_dir'] = "DETERIORATING"
+                    else: stock['pledge_dir'] = "STABLE"
+                except (ValueError, TypeError):
+                    stock['pledge_dir'] = "—"
+            else:
+                stock['pledge_dir'] = "—"
 
             # Section 2: Latest Intelligence
             stock["intel_queries"] = fetch_latest_intelligence(
@@ -503,6 +525,23 @@ def run_master_pipeline():
             # Section 3A/3C: Valuation & Growth
             stock.update(v7_engine.apply_section_3A_valuation(stock))
             stock.update(v7_engine.apply_section_3C_growth(stock))
+
+            # v10.4: Inline forensic-input fetch — pulls ticker.balance_sheet,
+            # ticker.cashflow, ticker.income_stmt directly from yfinance for
+            # THIS symbol (~2s per stock, ~3-4 min total for top-100). Populates
+            # the absolute ₹Cr values (ebit_cr, int_expense_cr, total_assets_cr,
+            # retained_earnings_cr, working_cap_cr, capex_cr, inventory_days,
+            # receivable_days, payable_days) that Altman Z / Beneish M / CCC /
+            # Int Coverage need. Without this, those columns show '—'.
+            try:
+                _forensic_inputs = ForensicsEngine.fetch_forensic_inputs(sym)
+                if _forensic_inputs:
+                    # Merge but don't overwrite existing valid values
+                    for _fk, _fv in _forensic_inputs.items():
+                        if _fk not in stock or stock[_fk] in (None, "", "—", 0, 0.0):
+                            stock[_fk] = _fv
+            except Exception:
+                pass   # never block pipeline on a single stock's fetch
 
             # Section 3B/3D/3G: Forensics
             stock.update(forensics.calculate_accounting_forensics(stock))

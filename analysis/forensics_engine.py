@@ -1,16 +1,30 @@
 """
-forensics_engine.py — v10.3
+forensics_engine.py — v10.4
 
-Consolidated forensic & solvency engine.
+Consolidated forensic & solvency engine with INLINE balance-sheet fetcher.
 
-Changes vs v10.2:
-- Bug D fix: removed 'total_debt' from return dict (master_funnel has its own
-  3-tier fallback for this key that we must not overwrite). Legacy callers
-  that want it can read 'total_debt_cr' directly from the input row.
-- Bug B fix: results['cash'] aliased to cash_cr value so Excel's "Cash (₹Cr)"
-  column (which reads stock["cash"]) populates whenever balance sheet data
-  is available — not only when yfinance .info had totalCash.
-- 'cash_equivalents' preserved for any legacy callers.
+v10.4 key change (vs v10.3):
+- Added fetch_forensic_inputs(symbol) static method that pulls
+  ticker.balance_sheet / ticker.cashflow / ticker.income_stmt / ticker.info
+  ON DEMAND for a single symbol, returning a dict of the 10 forensic inputs
+  the calculation needs (ebit_cr, int_expense_cr, capex_cr, total_assets_cr,
+  total_liab_cr, retained_earnings_cr, working_cap_cr, inventory_days,
+  receivable_days, payable_days, plus total_debt_cr, cash_cr, q_ebitda_cr,
+  q_rev_cr, q_pat_cr, operating_cf_cr as fallbacks).
+- This removes the dependency on backfill_history.py's 4th pass being run
+  first. master_funnel can call this inline for the top-100 stocks.
+- Robust keyword matching: tries multiple row-name variants that yfinance
+  uses across versions (Retained Earnings / RetainedEarnings, Total Assets /
+  TotalAssets, EBIT / OperatingIncome, InterestExpense / InterestPaid, etc.).
+- Safe: never raises. Returns empty dict if Yahoo is unreachable.
+
+v10.3 changes (preserved):
+- Returns '—' for metrics whose inputs are missing (was returning 0 or 1.0).
+- Does NOT return 'total_debt' in the result dict (would overwrite
+  master_funnel's own 3-tier derivation at line 1169-1173).
+- Sets 'cash' when balance-sheet cash is present AND existing value missing.
+- Accepts both yfinance-style ('total_debt', 'cash', 'ebitda') and our
+  DB-canonical ('total_debt_cr', 'cash_cr', 'q_ebitda_cr') key names.
 """
 
 
@@ -29,9 +43,213 @@ def _num(row, *keys, default=0.0):
 
 
 class ForensicsEngine:
+
+    # ──────────────────────────────────────────────────────────────────────
+    # v10.4 INLINE FETCHER
+    # ──────────────────────────────────────────────────────────────────────
+    @staticmethod
+    def fetch_forensic_inputs(symbol, timeout_sec=15):
+        """
+        Pulls forensic inputs DIRECTLY from yfinance for ONE symbol.
+        Returns a dict that can be .update()'d onto a stock dict before
+        calling calculate_accounting_forensics(stock).
+
+        Fetched keys:
+            total_assets_cr, total_liab_cr, retained_earnings_cr, working_cap_cr
+            ebit_cr, int_expense_cr, capex_cr
+            inventory_days, receivable_days, payable_days
+            total_debt_cr, cash_cr (fallback if .info didn't provide)
+            operating_cf_cr, q_ebitda_cr, q_rev_cr, q_pat_cr
+
+        Returns {} if the symbol can't be fetched.
+        Never raises — swallows all Yahoo errors.
+        """
+        try:
+            import yfinance as yf
+        except ImportError:
+            return {}
+
+        _INR_CR = 1e7
+        out = {}
+
+        def _find_row(df_idx, keywords, excludes=()):
+            """Find a DataFrame row label matching ALL keywords (case-insensitive)."""
+            if df_idx is None:
+                return None
+            for r in df_idx:
+                rs = str(r).lower().strip()
+                if all(k.lower() in rs for k in keywords) and \
+                   not any(e.lower() in rs for e in excludes):
+                    return r
+            return None
+
+        def _val_cr(df, row_label):
+            """Return the most recent column's value in ₹Cr. 0 if missing."""
+            if df is None or row_label is None:
+                return 0.0
+            try:
+                if hasattr(df, 'empty') and df.empty:
+                    return 0.0
+                cols = list(df.columns)
+                if not cols:
+                    return 0.0
+                v = df.loc[row_label].iloc[0]
+                if v is None or str(v) == "nan":
+                    return 0.0
+                return round(float(v) / _INR_CR, 2)
+            except Exception:
+                return 0.0
+
+        try:
+            # Try .NS first, fall back to .BO if nothing
+            tk = None
+            bs = cf = inc = None
+            info = {}
+            for suffix in (".NS", ".BO"):
+                try:
+                    tk = yf.Ticker(symbol + suffix)
+                    bs = getattr(tk, "balance_sheet", None)
+                    cf = getattr(tk, "cashflow", None)
+                    inc = getattr(tk, "income_stmt", None)
+                    if inc is None or (hasattr(inc, 'empty') and inc.empty):
+                        inc = getattr(tk, "financials", None)
+                    info = tk.info if hasattr(tk, 'info') else {}
+                    # If we got ANY data, stop trying suffixes
+                    if (bs is not None and hasattr(bs, 'empty') and not bs.empty) or \
+                       (info and info.get('marketCap')):
+                        break
+                except Exception:
+                    continue
+
+            # ── BALANCE SHEET ────────────────────────────────────────────
+            if bs is not None and hasattr(bs, 'empty') and not bs.empty:
+                # Total Assets (many variants)
+                ta_row = _find_row(bs.index, ["total", "assets"],
+                                   excludes=["current", "non", "intangible"]) or \
+                         _find_row(bs.index, ["totalassets"])
+                ta = _val_cr(bs, ta_row)
+                if ta > 0: out["total_assets_cr"] = ta
+
+                # Total Liabilities
+                tl_row = _find_row(bs.index, ["total", "liab"],
+                                   excludes=["current", "non current"]) or \
+                         _find_row(bs.index, ["totalliab"])
+                tl = _val_cr(bs, tl_row)
+                if tl > 0: out["total_liab_cr"] = tl
+
+                # Retained Earnings
+                re_row = _find_row(bs.index, ["retained", "earning"]) or \
+                         _find_row(bs.index, ["retainedearning"])
+                re_v = _val_cr(bs, re_row)
+                if re_v != 0: out["retained_earnings_cr"] = re_v
+
+                # Working Capital = Current Assets - Current Liabilities
+                ca_row = _find_row(bs.index, ["current", "assets"],
+                                   excludes=["non current", "noncurrent", "other"])
+                cl_row = _find_row(bs.index, ["current", "liab"],
+                                   excludes=["non current", "noncurrent",
+                                             "deferred", "other"])
+                ca = _val_cr(bs, ca_row)
+                cl = _val_cr(bs, cl_row)
+                if ca > 0 and cl > 0:
+                    out["working_cap_cr"] = round(ca - cl, 2)
+                    out["curr_assets_cr"] = ca
+                    out["curr_liab_cr"]   = cl
+
+                # Total Debt (fallback)
+                td_row = _find_row(bs.index, ["total", "debt"]) or \
+                         _find_row(bs.index, ["longterm", "debt"]) or \
+                         _find_row(bs.index, ["totaldebt"])
+                td = _val_cr(bs, td_row)
+                if td > 0: out["total_debt_cr"] = td
+
+                # Cash (fallback)
+                cash_row = _find_row(bs.index, ["cash", "equivalent"]) or \
+                           _find_row(bs.index, ["cashandcashequivalents"]) or \
+                           _find_row(bs.index, ["cash"], excludes=["flow", "operating"])
+                cash = _val_cr(bs, cash_row)
+                if cash > 0: out["cash_cr"] = cash
+
+                # Day-count ratios (need revenue)
+                inv_row = _find_row(bs.index, ["inventor"], excludes=["non"])
+                rec_row = _find_row(bs.index, ["receivable"], excludes=["non"])
+                pay_row = _find_row(bs.index, ["payable"], excludes=["non"]) or \
+                          _find_row(bs.index, ["accounts", "payable"])
+                inv_cr = _val_cr(bs, inv_row)
+                rec_cr = _val_cr(bs, rec_row)
+                pay_cr = _val_cr(bs, pay_row)
+
+                rev_raw = float(info.get("totalRevenue", 0) or 0)
+                rev_cr = rev_raw / _INR_CR if rev_raw > 0 else 0
+                if rev_cr > 0:
+                    if inv_cr > 0:
+                        out["inventory_days"]  = round(inv_cr / rev_cr * 365, 1)
+                    if rec_cr > 0:
+                        out["receivable_days"] = round(rec_cr / rev_cr * 365, 1)
+                    if pay_cr > 0:
+                        out["payable_days"]    = round(pay_cr / rev_cr * 365, 1)
+
+            # ── CASH FLOW STATEMENT ──────────────────────────────────────
+            if cf is not None and hasattr(cf, 'empty') and not cf.empty:
+                capex_row = _find_row(cf.index, ["capital", "expenditure"]) or \
+                            _find_row(cf.index, ["capitalexpenditure"]) or \
+                            _find_row(cf.index, ["purchase", "ppe"]) or \
+                            _find_row(cf.index, ["investmentinppe"])
+                capex = abs(_val_cr(cf, capex_row))
+                if capex > 0: out["capex_cr"] = capex
+
+                # Operating CF fallback
+                ocf_row = _find_row(cf.index, ["operating", "cash"]) or \
+                          _find_row(cf.index, ["cashflowfromcontinuingoperatingactivities"]) or \
+                          _find_row(cf.index, ["operatingcashflow"])
+                ocf = _val_cr(cf, ocf_row)
+                if ocf != 0: out["operating_cf_cr"] = ocf
+
+            # ── INCOME STATEMENT ─────────────────────────────────────────
+            if inc is not None and hasattr(inc, 'empty') and not inc.empty:
+                # EBIT
+                ebit_row = _find_row(inc.index, ["ebit"], excludes=["ebitda"]) or \
+                           _find_row(inc.index, ["operating", "income"]) or \
+                           _find_row(inc.index, ["operatingincome"])
+                ebit = _val_cr(inc, ebit_row)
+                if ebit != 0: out["ebit_cr"] = ebit
+
+                # Interest Expense
+                int_row = _find_row(inc.index, ["interest", "expense"]) or \
+                          _find_row(inc.index, ["interestexpense"]) or \
+                          _find_row(inc.index, ["interest", "paid"])
+                intx = abs(_val_cr(inc, int_row))
+                if intx > 0: out["int_expense_cr"] = intx
+
+                # Revenue, EBITDA, Net Income in ₹Cr (quarterly latest proxy)
+                rev_row = _find_row(inc.index, ["total", "revenue"]) or \
+                          _find_row(inc.index, ["revenue"])
+                rev = _val_cr(inc, rev_row)
+                if rev > 0: out["q_rev_cr"] = rev
+
+                ebitda_row = _find_row(inc.index, ["ebitda"],
+                                       excludes=["normalized", "adjusted"]) or \
+                             _find_row(inc.index, ["ebitda"])
+                ebitda = _val_cr(inc, ebitda_row)
+                if ebitda > 0: out["q_ebitda_cr"] = ebitda
+
+                ni_row = _find_row(inc.index, ["net", "income"],
+                                   excludes=["non controlling", "minority"]) or \
+                         _find_row(inc.index, ["netincome"])
+                ni = _val_cr(inc, ni_row)
+                if ni != 0: out["q_pat_cr"] = ni
+
+            return out
+
+        except Exception:
+            return out   # return whatever we got, never raise
+
+    # ──────────────────────────────────────────────────────────────────────
+    # CORE CALCULATIONS (v10.3, unchanged)
+    # ──────────────────────────────────────────────────────────────────────
     @staticmethod
     def calculate_altman_z(data):
-        """Altman Z-Score (5-variable manufacturing model). 0.0 = insufficient data."""
+        """Altman Z-Score (5-variable). 0.0 = insufficient data."""
         ta = _num(data, 'total_assets', 'total_assets_cr')
         tl = _num(data, 'total_liabilities', 'total_liab_cr', 'total_liabilities_cr')
         if ta <= 0 or tl <= 0:
@@ -96,15 +314,12 @@ class ForensicsEngine:
     def check_wealth_creation(roce, cost_of_capital=11.5):
         return roce > cost_of_capital
 
+    # ──────────────────────────────────────────────────────────────────────
+    # MAIN CONSOLIDATED CALCULATOR
+    # ──────────────────────────────────────────────────────────────────────
     @staticmethod
     def calculate_accounting_forensics(row):
-        """
-        v10.3 consolidated forensic & solvency calculator.
-
-        Does NOT return 'total_debt' (master_funnel manages that with its own
-        3-tier fallback). Returns 'cash' when balance-sheet cash is present
-        so Excel's Cash column populates.
-        """
+        """v10.4 consolidated forensic & solvency calculator."""
         results = {}
 
         # 1. CASH CONVERSION CYCLE
@@ -163,16 +378,13 @@ class ForensicsEngine:
         )
         results['is_wealth_creator'] = _num(row, 'roce') > 11.5
 
-        # 7. BACKWARD-COMPAT KEYS (read-only passthroughs — no overwrites)
+        # 7. BACKWARD-COMPAT KEYS (no total_debt — master_funnel owns that key)
         results['contingent_liabilities'] = _num(row, 'contingent_liabilities')
         results['networth']               = _num(row, 'networth', default=1)
         results['cash_equivalents']       = cash + _num(row, 'bank_balance')
 
-        # Bug B fix: expose 'cash' so Excel's "Cash (₹Cr)" column populates.
-        # Only set if balance sheet had a value AND row doesn't already carry
-        # a non-numeric placeholder — we don't want to override master_funnel's
-        # yfinance-sourced stock["cash"] if it was already set. But if that
-        # upstream value is "—" or 0, we fill from balance sheet cash.
+        # Expose 'cash' for Excel's "Cash (₹Cr)" column when balance-sheet
+        # cash is available AND row doesn't already carry a valid value.
         _existing = row.get('cash')
         _existing_num = _num(row, 'cash')
         if _existing is None or _existing == "" or str(_existing) in ("—", "--", "N/A") \

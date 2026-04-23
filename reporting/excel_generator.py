@@ -1180,11 +1180,34 @@ class ExcelGeneratorV6:
                 _col_color[_ci] = _col
 
         ws.row_dimensions[4].height=40
+
+        # v10.4: Dynamically detect which NO_FREE_SOURCE_COLS actually have
+        # populated data in this run. If a column has >=1 real value across
+        # the top-100, remove the red header — the data IS populated.
+        _stks_preview = self.df.to_dict("records")
+        _header_has_data = {}   # header_name → True if any row has real data
+        for (_h, _w, _key) in FULL_COLS:
+            if _h not in NO_FREE_SOURCE_COLS:
+                continue
+            _real_count = 0
+            for _stk in _stks_preview:
+                _v = _stk.get(_key)
+                if _v is None:
+                    continue
+                if _v in ("", "—", "--", "N/A", "STABLE"):
+                    continue
+                if _v in (0, 0.0, "0", "0.0"):
+                    continue
+                _real_count += 1
+                if _real_count >= 1:
+                    break   # just need one populated value to demote from red
+            _header_has_data[_h] = (_real_count >= 1)
+
         for i,(h,w,_) in enumerate(FULL_COLS,1):
             ws.column_dimensions[get_column_letter(i)].width=w
             hdr_bg = _col_color.get(i, NAVY)
-            if h in NO_FREE_SOURCE_COLS:
-                # Bold red — permanently blank, no free data source
+            if h in NO_FREE_SOURCE_COLS and not _header_has_data.get(h, False):
+                # Bold red — column has no real data in this run
                 c=ws.cell(4,i,h); c.fill=_f("991B1B"); c.font=_ft(True,"FEE2E2",8)
                 c.alignment=_al("center","center",True); c.border=_border()
             elif h in NEEDS_AI_CREDITS:
@@ -1192,6 +1215,7 @@ class ExcelGeneratorV6:
                 c=ws.cell(4,i,h); c.fill=_f("92400E"); c.font=_ft(True,"FEF3C7",8)
                 c.alignment=_al("center","center",True); c.border=_border()
             else:
+                # Normal section color — includes previously-red cols that NOW have data
                 c=ws.cell(4,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
                 c.alignment=_al("center","center",True); c.border=_border()
         # Session 16: polished tooltips + ⓘ cue + reference-sheet hyperlinks
