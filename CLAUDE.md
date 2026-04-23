@@ -14,7 +14,7 @@ A fully automated, cloud-hosted daily pipeline that:
 3. Runs deep fundamental + technical + forensic + AI analysis on those 100
 4. Delivers a colour-coded 7-sheet Excel research dashboard by **06:00–06:30 AM IST**
 5. Sends an optional WhatsApp summary of top picks via Twilio
-6. Maintains its own SQLite history with a 90-day circular queue
+6. Maintains its own SQLite history with a 400-day rolling circular queue
 
 **Single-user tool.** Pre-market preparation. Zero manual intervention on trading days.
 
@@ -54,7 +54,7 @@ Sharemarket_Analyser_tool/
 ├── database/
 │   ├── data_bridge.py            ~920 lines — DB consolidation + helpers
 │   ├── database_manager.py       Connection + schema management
-│   └── db_maintenance.py         90-day rolling circular queue
+│   └── db_maintenance.py         400-day rolling circular queue
 ├── ai/
 │   └── ai_analyst.py             Google Gemini batch analysis (migrated from Anthropic in v10.1)
 ├── reporting/
@@ -169,7 +169,7 @@ Section 9/10 7-sheet Excel dashboard (reporting.excel_generator.ExcelGeneratorV6
              + dynamic red-header demotion (v10.4): columns with ≥1 real value
                get their normal section colour instead of red
 Section 12   Email delivery (reporting.email_service)
-Section 13   DB maintenance — 90-day circular queue (database.db_maintenance)
+Section 13   DB maintenance — 400-day rolling window (database.db_maintenance)
 ```
 
 **CRITICAL ORDER RULES:**
@@ -769,7 +769,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 | AI investor cards | `ai/ai_analyst.py` | `get_ai_analysis` (Gemini) |
 | Email delivery | `reporting/email_service.py` | `send_analysis_email` |
 | Historical QoQ lookup (v10.3) | `database/data_bridge.py` | `get_historical_quarter_data` |
-| 90-day DB queue | `database/db_maintenance.py` | `enforce_circular_queue` |
+| 400-day rolling window | `database/db_maintenance.py` | `enforce_circular_queue` (KEEP_DAYS=400) |
 
 ---
 
