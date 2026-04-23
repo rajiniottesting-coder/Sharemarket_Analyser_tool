@@ -232,21 +232,35 @@ class ScoringEngine:
     def calculate_storm_score(self, data, market_vix, market_off_peak):
         """
         Section 7: Defensive quality score. Always calculated; critical above VIX 18.
+        v10.10: guarded against '—' string for fields that may now be non-numeric
+        (div_yield non-dividend stocks, etc.) — reuse the _fnum helper pattern.
         """
+        # v10.10 safe numeric coercion — returns None for '—', '', None, etc.
+        def _safe_num(v, default=None):
+            if v in (None, "", "—", "--", "N/A"):
+                return default
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return default
+
         score = 0
         # Scoring Logic (Section 7)
-        if data.get('beta', 1.0) < 0.8: score += 2
+        _beta = _safe_num(data.get('beta'), 1.0)
+        if _beta is not None and _beta < 0.8: score += 2
         # de_ratio_num is the normalised key set in master_funnel;
         # fall back to debt_equity then 1.0 so D/E<0.3 stocks correctly get +2 pts
-        _de_val = float(data.get('de_ratio',
+        _de_val = _safe_num(data.get('de_ratio',
                         data.get('de_ratio_num',
-                        data.get('debt_equity', 1.0))) or 1.0)
-        if _de_val < 0.3: score += 2
-        if data.get('fcf_positive_4q', False): score += 2 
+                        data.get('debt_equity', 1.0))), 1.0)
+        if _de_val is not None and _de_val < 0.3: score += 2
+        if data.get('fcf_positive_4q', False): score += 2
         if data.get('promoter_q_increase', False): score += 1
-        if data.get('div_yield', 0) > 2.0: score += 1 
-        if data.get('fii_buy_3q', False): score += 1 
-        if data.get('rev_growth_yoy', 0) > 10.0: score += 1
+        _dy = _safe_num(data.get('div_yield'))
+        if _dy is not None and _dy > 2.0: score += 1
+        if data.get('fii_buy_3q', False): score += 1
+        _rg = _safe_num(data.get('rev_growth_yoy'))
+        if _rg is not None and _rg > 10.0: score += 1
         # Margin expansion = earnings quality improving = more storm-resistant
         if str(data.get('margin_expansion', 'NO') or 'NO').upper() == 'YES': score += 1
         

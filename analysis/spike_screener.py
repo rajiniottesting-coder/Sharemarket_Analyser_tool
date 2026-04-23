@@ -2,12 +2,27 @@ class SpikeScreener:
     def check_anti_trigger_guard(self, data):
         """
         SECTION 3H: Check FIRST - Suppress all spikes if risk flags active.
+        v10.10: guarded against '—' string for fields that may now be non-numeric
+        (altman_z, beneish_m can be '—' when forensic inputs missing).
         """
+        def _safe_num(v, default=None):
+            if v in (None, "", "—", "--", "N/A"):
+                return default
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return default
+
         guards = []
-        if data.get('pledge_pct', 0) > 20: guards.append("HIGH PLEDGE > 20%")
-        if data.get('altman_z', 5) < 1.81: guards.append("ALTMAN Z-SCORE DISTRESS")
-        if data.get('beneish_m', -5) > -2.22: guards.append("BENEISH M-SCORE MANIPULATION")
-        if data.get('cfo_pat_ratio', 1) < 0.5: guards.append("CFO/PAT DIVERGENCE")
+        _pledge  = _safe_num(data.get('pledge_pct'), 0)
+        _altman  = _safe_num(data.get('altman_z'),  5)    # default safe if missing
+        _beneish = _safe_num(data.get('beneish_m'), -5)   # default clean if missing
+        _cfo_pat = _safe_num(data.get('cfo_pat_ratio'), 1)
+
+        if _pledge  is not None and _pledge  > 20:    guards.append("HIGH PLEDGE > 20%")
+        if _altman  is not None and _altman  < 1.81:  guards.append("ALTMAN Z-SCORE DISTRESS")
+        if _beneish is not None and _beneish > -2.22: guards.append("BENEISH M-SCORE MANIPULATION")
+        if _cfo_pat is not None and _cfo_pat < 0.5:   guards.append("CFO/PAT DIVERGENCE")
 
         return {"suppressed": len(guards) > 0, "reasons": guards}
 

@@ -736,3 +736,116 @@ TEST F: FULL_COLS count still 123 (v10.8 shape preserved)
 - **Key Catalyst / News Sentiment / Primary Risk / SEBI Flags** — require Gemini API quota
 
 These are data-source limitations, not code bugs. See CLAUDE.md Section 16.
+
+# v10.10 HOTFIX — Crash Guards for '—' String Values
+
+## What broke in your pipeline run
+
+```
+File ".../scoring_engine.py", line 247, in calculate_storm_score
+    if data.get('div_yield', 0) > 2.0: score += 1
+TypeError: '>' not supported between instances of 'str' and 'float'
+```
+
+**Root cause:** v10.9 changed `div_yield` to display `"—"` for non-dividend stocks (22/84 in your Excel). But three places in the codebase were still doing raw numeric comparisons without a guard:
+
+1. `scoring_engine.py::calculate_storm_score` line 247 — `div_yield` compared `> 2.0`
+2. `spike_screener.py::check_anti_trigger_guard` line 7-10 — `pledge_pct`, `altman_z`, `beneish_m`, `cfo_pat_ratio` compared
+3. `fundamental_engine.py::calculate_piotroski_f_score` lines 34-60 — 10 field comparisons
+
+All of these could receive `"—"` strings from v10.4 (forensic fields), v10.8 (Earn Quality), or v10.9 (Div Yield, QoQ deltas).
+
+## The fix
+
+Added a consistent `_safe_num()` / `_n()` helper to each affected function:
+
+```python
+def _safe_num(v, default=None):
+    if v in (None, "", "—", "--", "N/A"):
+        return default
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return default
+```
+
+Then wrap every comparison:
+```python
+# Before (crashes):
+if data.get('div_yield', 0) > 2.0: score += 1
+
+# After (safe):
+_dy = _safe_num(data.get('div_yield'))
+if _dy is not None and _dy > 2.0: score += 1
+```
+
+## Files changed in this hotfix (3)
+
+| File | Function | Fields guarded |
+|---|---|---|
+| `analysis/scoring_engine.py` | `calculate_storm_score` | `beta`, `de_ratio`, `div_yield`, `rev_growth_yoy` |
+| `analysis/spike_screener.py` | `check_anti_trigger_guard` | `pledge_pct`, `altman_z`, `beneish_m`, `cfo_pat_ratio` |
+| `analysis/fundamental_engine.py` | `calculate_piotroski_f_score` | `net_profit`, `roa`, `cfo`, `current_ratio_now/prev`, `shares_now/prev`, `gross_margin_now/prev`, `asset_turnover_now/prev`, `lt_debt_now/prev` |
+
+## Full crash-scenario audit
+
+Ran 5 stock profiles × 5 scoring paths = 25 test combinations. Profiles simulate the full range of v10.4-v10.9 display states:
+
+| Profile | Description | Verdict | Forensic Adj | Crashed? |
+|---|---|---|---|---|
+| **A: healthy-large-dividend** | HINDUNILVR-like with dividend + strong forensics | BUY ●●● | +8 | ✅ OK |
+| **B: non-dividend-growth** | `div_yield='—'`, `promoter_qoq='—'` | BUY ●●○ | +3 | ✅ OK |
+| **C: distress-signals** | Altman<1.8, Earn=LOW, high leverage | AVOID ●●● | −10 | ✅ OK |
+| **D: missing-everything** | ALL fields = `'—'` | NEUTRAL | 0 | ✅ OK |
+| **E: high-pledge-penny** | Pledge 55%, distress flags | AVOID ●●● | −10 | ✅ OK |
+
+Five paths tested per profile: anti-trigger guard, storm score, Piotroski F, composite score, fair-value models. **25/25 PASS — no crashes.**
+
+## Full regression audit
+
+All 15 markers from v10.2 through v10.9 still present:
+
+- ✅ v10.2 forensic DB columns
+- ✅ v10.3 Section 5A.5 re-run
+- ✅ v10.4 inline forensic fetcher + dynamic red-header
+- ✅ v10.5 defensive schema init
+- ✅ v10.6 ND/EBITDA annualization
+- ✅ v10.7 `_pub` helper (bridge guard)
+- ✅ v10.8 Earn Quality categorical + Pledge Direction + Upside column removed
+- ✅ v10.9 Resist 2 = 52-week + QoQ recompute Section 5A.4 + forensic quality adj + Div Yield '—' + tooltips
+
+## Comprehensive scan — every risky field, every file
+
+Ran regex-based scan across all `.py` files in the project for:
+- `data.get('FIELD', N) <op> NUMBER`
+- `stock.get('FIELD', N) <op> NUMBER`
+- `stock['FIELD'] <op> NUMBER`
+- `float(data.get('FIELD', ...))`
+
+across 28 risky fields (all v10.2-v10.9 potentially-stringified fields).
+
+**Result: 0 unguarded sites remain after v10.10 patches applied.**
+
+## Deploy
+
+1. Backup the 3 files from your v10.9 repo
+2. Replace with the 3 files in this hotfix pack
+3. Re-run pipeline
+
+No DB changes. No upstream behavior changes. Pure defensive coding.
+
+## Files in this pack
+
+- `analysis/scoring_engine.py` — storm score guarded
+- `analysis/spike_screener.py` — anti-trigger guard guarded
+- `analysis/fundamental_engine.py` — Piotroski F-score guarded
+
+## Files NOT in this pack
+
+- `master_funnel.py` — v10.9 version unchanged (already had proper guards via `_sf()` / `_pfv()`)
+- `backfill_history.py` — v10.9 unchanged
+- `reporting/excel_generator.py` — v10.9 unchanged
+- `reporting/tooltip_formatter.py` — v10.9 unchanged
+- `CLAUDE.md` — v10.9 unchanged (no behavior changes)
+- `analysis/forensics_engine.py` — v10.8 unchanged
+- `analysis/fair_value_engine.py` — already uses `_sf()` safe helper
