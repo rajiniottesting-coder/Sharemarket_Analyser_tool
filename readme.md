@@ -156,7 +156,8 @@ Gate check (6 conditions)  ──►  all pass?  ──►  if no: email + halt
          ▼
 Section 1   Harvest        NSE bhav + delivery + BSE (pip) + SME + F&O + bulk deals + insider
 Section 1.2 DB sync        5,150 rows  →  daily_prices
-Section 0   Three-stage funnel
+Section 0   Three-stage funnel 
+#------------REFER scoring_logic_3Stagefunnel_explained.md SHEET FOR DETAILED EXPLAINATIONS---------------#  
              Stage 1 — ETF/penny/suspended filter       5,150 → ~600
              Stage 2 — Quality score /35                ~600  → ~400
              Stage 3 — Priority ranker + cap mix        ~400  → 100
