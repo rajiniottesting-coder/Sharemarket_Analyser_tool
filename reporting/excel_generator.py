@@ -40,14 +40,16 @@ _DS = {"bg":"F8FAFC","text":"1E293B"}
 FULL_GROUPS = [
     (1,  "IDENTITY",        "1E293B",7),(8, "SCORES",         "7C3AED",4),
     (12, "PRICE & MARKET",  "0369A1",7),(19,"WEEKLY CHANGE %", "0F766E",4),
-    (23, "FAIR VALUE",      "B45309",13),(36,"VALUATION",      "0891B2",7),
-    (43, "PROFITABILITY",   "059669",10),(53,"GROWTH",         "047857",10),
-    (63, "FIN HEALTH",      "DC2626",10),(73,"CAP ALLOC",      "6D28D9",3),
-    (76, "SHAREHOLDING",    "EA580C",9),(85,"QUALITY SCORES",  "0D9488",4),
-    (89, "PIPELINE / OB",   "1D4ED8",5),(94,"EARLY DETECTION", "B45309",3),
-    (97, "TECHNICAL",       "6D28D9",14),(111,"BALANCE SHEET", "D97706",2),
-    (113,"TRADE PLAN",      "059669",7),(120,"NEWS & RISK",    "475569",4),
-    (124,"ANALYSIS SUMMARY","0F172A",1),
+    # v10.8: FAIR VALUE span reduced 13→12 after removing duplicate 'Upside to FV %' column.
+    # All subsequent group starts shift left by 1 (36→35, 43→42, 53→52, ...).
+    (23, "FAIR VALUE",      "B45309",12),(35,"VALUATION",      "0891B2",7),
+    (42, "PROFITABILITY",   "059669",10),(52,"GROWTH",         "047857",10),
+    (62, "FIN HEALTH",      "DC2626",10),(72,"CAP ALLOC",      "6D28D9",3),
+    (75, "SHAREHOLDING",    "EA580C",9),(84,"QUALITY SCORES",  "0D9488",4),
+    (88, "PIPELINE / OB",   "1D4ED8",5),(93,"EARLY DETECTION", "B45309",3),
+    (96, "TECHNICAL",       "6D28D9",14),(110,"BALANCE SHEET", "D97706",2),
+    (112,"TRADE PLAN",      "059669",7),(119,"NEWS & RISK",    "475569",4),
+    (123,"ANALYSIS SUMMARY","0F172A",1),
 ]
 
 FULL_COLS = [
@@ -63,7 +65,7 @@ FULL_COLS = [
     ("Beta",8,"beta"),("Chg% [2-Weekly]",14,"2w_chg"),("Chg% [4-Weekly]",14,"4w_chg"),
     ("Chg% [6-Weekly]",14,"6w_chg"),("Chg% [8-Weekly]",14,"8w_chg"),
     ("CFV (₹)",11,"cfv"),("FV Low (₹)",11,"cfv_low"),("FV High (₹)",11,"cfv_high"),
-    ("MoS %",10,"mos_pct"),("Upside to FV %",14,"upside"),("MoS Label",22,"mos_label"),
+    ("MoS %",10,"mos_pct"),("MoS Label",22,"mos_label"),
     ("M1: DCF FV (₹)",14,"M1_DCF"),("M2: Graham FV (₹)",16,"M2_Graham"),
     ("M3: PE FV (₹)",14,"M3_PE"),("M4: PB FV (₹)",14,"M4_PB"),
     ("M5: EV FV (₹)",14,"M5_EV"),("M6: DDM FV (₹)",14,"M6_DDM"),("M7: PEG FV (₹)",14,"M7_PEG"),
@@ -666,16 +668,9 @@ GLOSSARY_DATA = [
     ("WEEKLY CHANGE %","Chg% [8-Wk]",
      "Price return over last 8 weeks. Confirms whether trend is sustained.","Full Dashboard"),
 
-    # ── FAIR VALUE ─────────────────────────────────────────────────────────────
-    ("FAIR VALUE","Upside to FV %",
-     "Upside to Fair Value = (CFV − CMP) ÷ CMP × 100. "
-     "Identical to MoS % (same formula, same number — just different label). "
-     "Positive=stock below fair value (buying opportunity) | "
-     "Negative=stock above fair value (overpriced). "
-     "Session 23: the redundant 'Upside %' column was removed from Gold and "
-     "Trade Summary sheets to avoid confusion — MoS % is the single source of truth.","Full Dashboard"),
-
     # ── GOLD-TIER FILTER (Session 19) ─────────────────────────────────────────
+    # v10.8: The 'FAIR VALUE / Upside to FV %' glossary entry was removed alongside
+    # the duplicate column itself (MoS % is the single source of truth).
     # Documents why the Gold sheet only shows a small number of stocks per day.
     # Any user looking at the Gold sheet with few or zero stocks can reference
     # this to understand the strict 8-condition filter.
@@ -802,9 +797,7 @@ _HDR_TIPS = {
     "FV Low (\u20b9)":("Conservative FV = CFV x0.85","CMP below FV Low=very deeply undervalued"),
     "FV High (\u20b9)":("Optimistic FV = CFV x1.15","CMP above FV High=significantly overvalued"),
     "MoS %":(">25% strong buy | <-15% overvalued","(CFV-CMP)/CMP*100\n>40%:Exceptional(+12) | >25%:Strong(+8) | 10-25%:Adequate(+4)\n-15 to -30%:Overvalued(-5) | <-30%:Significant premium(-10)"),
-    "MoS Label":("Valuation summary","EXCEPTIONAL>40%|STRONG>25%|ADEQUATE>10%|THIN 0-10%|PREMIUM<0%"),
-    "Upside to FV %":(">20% = meaningful upside remaining","% price can rise to reach fair value"),
-    "P/E TTM":("<20 cheap | 20-40 fair | >40 expensive","Score: <=20=+12 | <=40=+7 | >60=-8"),
+    "MoS Label":("Valuation summary","EXCEPTIONAL>40%|STRONG>25%|ADEQUATE>10%|THIN 0-10%|PREMIUM<0%"),    "P/E TTM":("<20 cheap | 20-40 fair | >40 expensive","Score: <=20=+12 | <=40=+7 | >60=-8"),
     "Earn Yield %":(">6% undervalued vs bonds","EPS/CMP*100. >6%:Cheap. Compare to 10Y bond yield"),
     "P/CF":("<15 value | >25 expensive","More reliable than P/E(cash harder to fake)"),
     "PEG Ratio":("<1 undervalued | >2 expensive","P/E / Growth. <1:Undervalued(Peter Lynch favourite)"),

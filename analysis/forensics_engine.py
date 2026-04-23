@@ -375,11 +375,22 @@ class ForensicsEngine:
         else:
             results['capex_rev'] = "—"
 
-        # 4. EARNINGS QUALITY (CFO / PAT)
+        # 4. EARNINGS QUALITY — v10.8: CATEGORICAL HIGH / LOW / MODERATE / —
+        # The tooltip already says "HIGH = cash-backed earnings", so output
+        # should match. Raw CFO/PAT ratio was misleading (negative PAT gave
+        # nonsensical -246 values; users couldn't interpret a raw ratio
+        # without context). Accounting convention:
+        #   CFO/PAT ≥ 0.8  → HIGH     (cash flow matches profits)
+        #   CFO/PAT < 0.5  → LOW      (accounting concern — profits aren't cash)
+        #   0.5 ≤ x < 0.8  → MODERATE
+        #   PAT ≤ 0        → "—"     (ratio undefined with zero/negative PAT)
         cfo = _num(row, 'operating_cf_cr', 'cfo', 'operating_cf')
         pat = _num(row, 'q_pat_cr', 'net_profit', 'net_income')
-        if pat != 0 and cfo != 0:
-            results['earnings_quality'] = round(cfo / pat, 2)
+        if pat > 0 and cfo != 0:
+            _eq_ratio = cfo / pat
+            if   _eq_ratio >= 0.8: results['earnings_quality'] = "HIGH"
+            elif _eq_ratio <  0.5: results['earnings_quality'] = "LOW"
+            else:                  results['earnings_quality'] = "MODERATE"
         else:
             results['earnings_quality'] = "—"
 

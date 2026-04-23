@@ -396,3 +396,156 @@ All 149 keys in `TIPS` dict match the column headers. **No code changes needed.*
 | **DII %** | **0/91 in pre-v10.6** | ✅ **Fixed in v10.6** (NSE API enrichment) |
 | DII QoQ Δ | 0/91 | ⚠️ Needs 90d of DII history (from v10.6 onward) |
 | Public Float % | 87/91 | ✅ Working |
+
+# v10.8 Fix Pack — 3 Issues Resolved
+
+## TL;DR — 4 files to replace
+
+Built on v10.7. Fixes the 3 issues you reported from your latest Excel:
+
+| File | What changed |
+|---|---|
+| `analysis/forensics_engine.py` | Earn Quality: raw `cfo/pat` ratio → categorical **HIGH / MODERATE / LOW / —** |
+| `master_funnel.py` | Pledge Direction: shows **—** when no pledge data (was "STABLE") |
+| `reporting/excel_generator.py` | Removed duplicate **Upside to FV %** column (was mathematically identical to MoS %) |
+| `reporting/tooltip_formatter.py` | Updated Earn Quality + Pledge Direction tooltips to match new behavior; removed Upside TIPS entries |
+
+## The 3 issues fixed
+
+### Issue 1 — Earn Quality showed raw numbers instead of HIGH/LOW
+
+**Your observation:** "cash quality field should have only values high/low but instead it displays some numbers"
+
+**Root cause:** `forensics_engine.py` line 382 output `round(cfo / pat, 2)` — a raw ratio. Your Excel showed values like `4.82`, `-73.64`, `-246.24`. But the tooltip said "HIGH = cash-backed earnings" — so the output format didn't match the intent.
+
+**Fix (v10.8):** convert ratio to category using standard accounting thresholds:
+
+| CFO / PAT ratio | Output | Meaning |
+|---|---|---|
+| ≥ 0.8 | **HIGH** | Cash flow matches profits — healthy earnings |
+| 0.5 – 0.8 | **MODERATE** | Some divergence — worth monitoring |
+| < 0.5 | **LOW** | Accounting concern — profits aren't cash-backed |
+| PAT ≤ 0 | **—** | Ratio undefined with zero/negative PAT |
+
+All 8 test cases pass (HIGH boundary, MODERATE, LOW, negative PAT, zero PAT, missing CFO).
+
+### Issue 2 — Pledge Direction showed "STABLE" for every stock
+
+**Your observation:** "same value displayed for all stocks"
+
+**Root cause:** `master_funnel.py` line 557 had `else: stock['pledge_dir'] = "STABLE"`. Since yfinance has no free source for pledge %, `pledge_pct` is permanently 0 for all stocks. When both current and historical are 0, the comparison `curr < prev` and `curr > prev` are both False → falls through to "STABLE". But "STABLE" should mean "we measured it and it didn't change" — not "we have no data".
+
+**Fix (v10.8):** explicit case for `curr == 0 AND prev == 0 → "—"`:
+
+```python
+if prev_p_num is None:
+    stock['pledge_dir'] = "—"           # no history at all
+elif curr_p == 0 and prev_p_num == 0:
+    stock['pledge_dir'] = "—"           # no pledge data from any source
+elif curr_p < prev_p_num:
+    stock['pledge_dir'] = "IMPROVING"
+elif curr_p > prev_p_num:
+    stock['pledge_dir'] = "DETERIORATING"
+else:
+    stock['pledge_dir'] = "STABLE"      # real non-zero pledge, unchanged
+```
+
+All 6 test cases pass.
+
+### Issue 3 — MoS % and Upside to FV % were duplicate columns
+
+**Your observation:** "both displays same value, duplicate? if you are removing, adjust the column headers accordingly"
+
+**Root cause:** `analysis/fair_value_engine.py` computes both with the **literally identical** formula:
+
+```python
+mos    = round(((cfv - cmp) / cmp * 100), 2)   # line 196
+upside = round(((cfv - cmp) / cmp * 100), 2)   # line 209
+```
+
+Your Excel confirms 84/84 rows had identical values. Even the code comments acknowledged this ("Session 23: Upside % removed from Gold/Trade Summary because it was always identical to MoS %") — but the main Full Dashboard still had both.
+
+**Fix (v10.8):** removed "Upside to FV %" column from Full Dashboard:
+- `FULL_COLS`: removed the `("Upside to FV %", 14, "upside")` tuple
+- `FULL_GROUPS`: FAIR VALUE span 13 → 12
+- All subsequent group start-columns shifted left by 1 (VALUATION 36→35, PROFITABILITY 43→42, etc.)
+- Total columns: 124 → 123
+- Removed "Upside to FV %" and "Upside %" entries from TIPS dict
+- Removed "Upside to FV %" from glossary tuple
+- Removed from `_ICON_FAMILIES` dict
+
+**`upside` key is still in the stock dict** for backward compat — AI analyst, command_parser, report_formatter still read it. Only the Excel COLUMN is gone.
+
+## Integration test results (5/5 passed)
+
+```
+TEST A: FULL_COLS ↔ FULL_GROUPS consistency
+  FULL_COLS: 123 columns
+  FULL_GROUPS: 19 sections
+  Sum of spans: 123   ✅ matches column count, no gaps
+
+TEST B: Earn Quality categorical output
+  8/8 test cases pass (HIGH at 0.8 boundary, LOW at -0.1 ratio,
+  — for PAT≤0, missing inputs)
+
+TEST C: Pledge Direction behavior
+  6/6 test cases pass (no history, both 0, increase, decrease,
+  unchanged non-zero)
+
+TEST D: No 'Upside to FV %' references remaining
+  FULL_COLS: clean ✅
+  TIPS dict: clean ✅
+  _ICON_FAMILIES: clean ✅
+
+TEST E: Regression — forensic pipeline
+  HEALTHY stock produces: nd_ebitda=0.58, int_coverage=7.92,
+  ccc_days=59.0, capex_rev=1.43, altman_z=3.45, beneish_m=-2.5,
+  earnings_quality=HIGH  ← note: now categorical, not 1.17
+```
+
+## What your next Excel will show
+
+| Column | Before v10.8 | After v10.8 |
+|---|---|---|
+| Earn Quality | 4.82, -73.64, 31.4 (raw ratios) | HIGH / MODERATE / LOW / — |
+| Pledge Direction | "STABLE" for all 81 stocks (misleading) | "—" for stocks with no pledge data |
+| Pledge % | 0 for all (unchanged — needs BSE filings) | 0 for all (still no free source) |
+| MoS % | Shows correctly | Unchanged |
+| Upside to FV % | Shows same values as MoS % | **COLUMN REMOVED** |
+| Column count | 124 | 123 |
+
+## Deploy
+
+1. Backup: `copy master_funnel.py master_funnel.py.v107.bak`
+2. Replace these 4 files:
+   - `analysis/forensics_engine.py`
+   - `master_funnel.py`
+   - `reporting/excel_generator.py`
+   - `reporting/tooltip_formatter.py`
+3. Run pipeline
+
+## Files NOT changed
+
+- `backfill_history.py` — v10.6 version is correct
+- `database/data_bridge.py` — v10.3 version is correct
+- `analysis/fair_value_engine.py` — the duplicate `upside` computation stays there for backward compat (AI analyst reads it). Excel just doesn't display it as a separate column anymore.
+- All other files — untouched
+
+## Regression protection
+
+All preceding version patches (v10.2 → v10.7) are preserved:
+
+| Version | Feature | Verified still present |
+|---|---|---|
+| v10.2 | 18 forensic DB columns | ✅ in master_funnel.py |
+| v10.3 | Section 5A.5 forensic re-run | ✅ in master_funnel.py |
+| v10.4 | Inline yfinance forensic fetcher | ✅ in forensics_engine.py |
+| v10.4 | Dynamic red-header demotion | ✅ in excel_generator.py |
+| v10.5 | Defensive schema init | ✅ in master_funnel.py |
+| v10.6 | ND/EBITDA annualization | ✅ in forensics_engine.py |
+| v10.6 | NSE DII enrichment | ✅ in backfill_history.py (unchanged in v10.8) |
+| v10.7 | Bridge code guard (`_pub` helper) | ✅ in master_funnel.py |
+
+## Why I didn't also update the section headers dict
+
+`excel_generator.py` has a glossary-tuple list around line 670 that documents each column. I found and removed the old `("FAIR VALUE", "Upside to FV %", ...)` tuple from that list. The FULL_GROUPS section-header tooltip for "FAIR VALUE" was also trimmed to say "Composite Fair Value (CFV) from 7 models + Margin of Safety (MoS %)" instead of the old "+ Upside" reference.

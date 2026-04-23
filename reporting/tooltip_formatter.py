@@ -164,15 +164,8 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "MoS Label": ("Valuation summary",
                   "EXCEPTIONAL >40% | STRONG >25% | ADEQUATE >10% | THIN 0-10%\n"
                   "SLIGHT PREMIUM −10% to 0% | SIGNIFICANT PREMIUM <−10%"),
-    "Upside to FV %": (">20% = meaningful upside remaining",
-                       "Percentage price can rise to reach fair value.\n"
-                       "Identical to MoS % (same formula, different label).\n"
-                       "Session 23: removed from Gold/Trade Summary to avoid\n"
-                       "duplication; kept on Full Dashboard for trader-style\n"
-                       "interpretation. MoS % is the single source of truth."),
-    # 'Upside %' kept for backward compat in case any old cell still references it
-    "Upside %": ("Same as MoS % (removed from Gold/Trade Summary)",
-                 "Identical to MoS %. Column removed in Session 23 to avoid duplication."),
+    # v10.8: 'Upside to FV %' and 'Upside %' removed entirely — duplicated MoS %
+    # (same formula, same number). MoS % is the single source of truth now.
     "M1: DCF FV (₹)": ("Discounted Cash Flow fair value — 30% weight in CFV",
                        "Projects 10 years of free cash flow and discounts at WACC.\n"
                        "Best for mature, cash-generating businesses.\n\n"
@@ -311,11 +304,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "  10–20%: Watch → −7\n"
                  "  >20%: RED FLAG → −15, plus suppresses ALL spike signals"),
     "Pledge Direction": ("FALLING = positive | RISING = risk",
-                         "Trend in promoter pledge levels.\n"
-                         "Sentiment score impact:\n"
-                         "  FALLING: Promoters deleveraging → +3\n"
-                         "  RISING: More pledging / stress → −5\n"
-                         "  STABLE: No change → 0"),
+                          "Trend in promoter share pledge over time.\n"
+                          "IMPROVING: Pledge dropped — promoters repaying loans (positive).\n"
+                          "DETERIORATING: Pledge rose — more shares pledged (risk).\n"
+                          "STABLE: Pledge unchanged at a non-zero level.\n"
+                          "— : No pledge data (yfinance has no free source; needs BSE filings)."),
     "FII %": (">15% institutional backed",
               ">25%: High global interest | Rising FII = strong signal."),
     "FII QoQ Δ": (">1% accumulation | <−1% selling",
@@ -351,7 +344,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "provide these. Column displays '—' (em-dash) for stocks\n"
                   "without the required BS feed."),
     "Earn Quality": ("HIGH = cash-backed earnings",
-                     "HIGH: Cash flow matches profits | LOW: Accounting concern."),
+                     "CFO / PAT ratio bucketed into HIGH / MODERATE / LOW.\n"
+                     "HIGH (≥0.8): Cash flow matches profits — healthy earnings.\n"
+                     "MODERATE (0.5-0.8): Some divergence — worth monitoring.\n"
+                     "LOW (<0.5): Accounting concern — profits aren't backed by cash.\n"
+                     "— : PAT is zero/negative (ratio undefined)."),
 
     # ── Catalysts ───────────────────────────────────────────────────────────
     "OB/Bill Ratio": (">1 strong pipeline | >3 excellent visibility",
@@ -572,7 +569,7 @@ GROUP_TIPS: Dict[str, Tuple[str, str]] = {
                         "2/4/6/8-week returns. 2W>4W = accelerating (bullish).\n"
                         "All positive + rising = sustained uptrend."),
     "FAIR VALUE": ("What the stock SHOULD be worth",
-                   "Composite Fair Value (CFV) from 7 models + MoS % + Upside.\n"
+                   "Composite Fair Value (CFV) from 7 models + Margin of Safety (MoS %).\n"
                    "Individual models: M1 DCF (30%), M2 Graham (15%), M3 PE (20%),\n"
                    "M4 PB (15%), M5 EV/EBITDA (10%), M6 DDM (5%), M7 PEG (5%).\n"
                    "CMP < CFV → undervalued (buying opportunity)."),
@@ -635,7 +632,7 @@ _ICON_FAMILIES = {
            "Storm Score /10", "Storm /10", "F-Score /9", "Action Required",
            "Gold-Tier Filter"},
     "💰": {"CFV (₹)", "FV Low (₹)", "FV High (₹)", "MoS %", "MoS Label",
-           "Upside to FV %", "Upside %", "P/E TTM", "P/E", "Earn Yield %",
+           "P/E TTM", "P/E", "Earn Yield %",
            "P/CF", "PEG Ratio", "PEG", "P/B", "P/S", "EV/EBITDA",
            "Div Yield %", "Payout Ratio %",
            "M1: DCF FV (₹)", "M2: Graham FV (₹)", "M3: PE FV (₹)",

@@ -545,20 +545,30 @@ def run_master_pipeline():
             stock['fii_qoq']      = _qoq('fii_pct',      'fii_pct')
             stock['dii_qoq']      = _qoq('dii_pct',      'dii_pct')
 
-            # Pledge Direction — only declare IMPROVING/DETERIORATING when
-            # we have real historical pledge_pct to compare against
+            # v10.8: Pledge Direction logic corrected for no-pledge-data case.
+            # Pledge % is always 0 without BSE corporate filings (no free source).
+            # When BOTH current and historical pledge are 0, we have no data to
+            # compare — must show "—" not "STABLE" (which implies measured = no change).
+            # "STABLE" only applies when there's REAL non-zero pledge data that didn't move.
             curr_p = stock.get('pledge_pct', 0) or 0
             prev_p_raw = h_data.get('pledge_pct') if h_data else None
-            if prev_p_raw is not None:
-                try:
-                    prev_p = float(prev_p_raw)
-                    if curr_p < prev_p: stock['pledge_dir'] = "IMPROVING"
-                    elif curr_p > prev_p: stock['pledge_dir'] = "DETERIORATING"
-                    else: stock['pledge_dir'] = "STABLE"
-                except (ValueError, TypeError):
-                    stock['pledge_dir'] = "—"
-            else:
+            try:
+                prev_p_num = float(prev_p_raw) if prev_p_raw is not None else None
+            except (ValueError, TypeError):
+                prev_p_num = None
+
+            if prev_p_num is None:
+                # No historical data at all
                 stock['pledge_dir'] = "—"
+            elif curr_p == 0 and prev_p_num == 0:
+                # No pledge data from any source (yfinance returns 0 permanently)
+                stock['pledge_dir'] = "—"
+            elif curr_p < prev_p_num:
+                stock['pledge_dir'] = "IMPROVING"
+            elif curr_p > prev_p_num:
+                stock['pledge_dir'] = "DETERIORATING"
+            else:
+                stock['pledge_dir'] = "STABLE"
 
             # Section 2: Latest Intelligence
             stock["intel_queries"] = fetch_latest_intelligence(
