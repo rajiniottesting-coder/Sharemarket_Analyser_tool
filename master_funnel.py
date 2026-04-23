@@ -2576,13 +2576,49 @@ def run_master_pipeline():
         # SECTION 7 & 8: AI INVESTOR CARDS
         # ─────────────────────────────────────────────────────────────────────
         print("🤖 [Section 7/8] Generating AI Cards...")
-        investor_cards_text = get_ai_analysis(pd.DataFrame(final_100_list))
 
-        # Map AI analysis back to each stock's Block H summary
+        # v10.13 FIX #1 — Skip AI calls for AVOID-verdict stocks.
+        # Saves Gemini quota (observed ~8-10% waste on stocks the scoring
+        # engine already flagged below the 38 AVOID floor). The skipped stocks
+        # receive a fixed placeholder message for Block H instead of a blank.
+        _AVOID_PLACEHOLDER = (
+            "[AI Skipped — verdict=AVOID: composite score below 38 floor. "
+            "Stock failed the universal quality bar — no research value in "
+            "generating a Block H narrative. See the Verdict, Score, and "
+            "forensic columns for the drop reasons.]"
+        )
+        _ai_input_stocks = []   # stocks that will be sent to Gemini
+        _avoid_indices   = set()  # positions in final_100_list to patch post-call
+        for _idx, _stock in enumerate(final_100_list):
+            _v = str(_stock.get("verdict", "") or "").upper()
+            if _v.startswith("AVOID"):
+                _avoid_indices.add(_idx)
+            else:
+                _ai_input_stocks.append(_stock)
+
+        if _avoid_indices:
+            print(
+                f"   ⏭  Skipping AI for {len(_avoid_indices)} AVOID-verdict stocks "
+                f"(quota saver). Analysing {len(_ai_input_stocks)} remaining."
+            )
+
+        if _ai_input_stocks:
+            investor_cards_text = get_ai_analysis(pd.DataFrame(_ai_input_stocks))
+        else:
+            investor_cards_text = ""
+
+        # Map AI analysis back — skipped stocks keep placeholder, rest read
+        # positionally from the Gemini output (same behavior as pre-v10.13
+        # for non-AVOID stocks, so no regression in mapping quality).
         ai_lines = investor_cards_text.split("\n\n") if investor_cards_text else []
+        _ai_cursor = 0
         for i, stock in enumerate(final_100_list):
-            if i < len(ai_lines):
-                stock["Analysis_Summary_Block_H"] = ai_lines[i]
+            if i in _avoid_indices:
+                stock["Analysis_Summary_Block_H"] = _AVOID_PLACEHOLDER
+                continue
+            if _ai_cursor < len(ai_lines):
+                stock["Analysis_Summary_Block_H"] = ai_lines[_ai_cursor]
+                _ai_cursor += 1
             else:
                 stock["Analysis_Summary_Block_H"] = "Analysis pending."
 

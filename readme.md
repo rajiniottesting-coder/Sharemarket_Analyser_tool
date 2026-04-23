@@ -1,4 +1,4 @@
-# NSE / BSE Stock Analyser — v10.12
+# NSE / BSE Stock Analyser — v10.13
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
 > 5,000+ stocks → AI-scored Excel dashboard → your inbox by 6:00 AM IST.
@@ -11,14 +11,14 @@ Single-user personal tool. No UI, no server to manage. Runs free on GitHub Actio
 
 ## Highlights
 
-- **Three-stage funnel** — 5,150 raw rows → ~600 (Stage 1 ETF/junk filter) → ~400 (Stage 2 quality score) → **100 candidates** (Stage 3 priority ranker with cap diversification).
+- **Three-stage funnel** — 5,150 raw rows → ~1,800 (Stage 1 ETF/junk filter) → ~1,500 (Stage 2 quality score /35) → **100 candidates** (Stage 3 priority ranker with cap diversification + 5 override rules: watchlist / announcements / spike pre-trigger / score deterioration / 7-day expiry re-check).
 - **7 Fair-Value models** per stock — DCF, Graham, PE, PB, EV/EBITDA, DDM, PEG — weighted into a Composite Fair Value with Margin-of-Safety gate.
 - **Composite score /100** with cap-adjusted verdict thresholds, **confidence dots** (●●● HIGH / ●●○ MEDIUM / ●○○ LOW), and a distinct **OVERVALUED** verdict for quality businesses trading above fair value.
 - **Forensic guards** — Altman Z, Beneish M, promoter pledge, Piotroski F /9, BS Health status — automatically suppress alerts on distressed names.
 - **Forensic quality scoring** (v10.9+) — Altman Z, Earn Quality, ND/EBITDA, Int Coverage feed into the composite score (+8 bonus / −10 penalty cap).
 - **Gold-Tier filter** — 11 conditions ensure only genuinely healthy stocks with patient upside reach the Gold sheet.
 - **7-sheet Excel dashboard** — Full Dashboard, Gold (Early Movers), Trade Summary, Alert Log, Delivery Preview, Glossary, Tooltip Reference — with Indian currency formatting, right-sized hover tooltips on every metric.
-- **AI investor cards** — Google Gemini generates a 150–250 word research note per stock, batched 10–15 per API call, grounded with the engine's pre-computed Graham/PEG/CFV values.
+- **AI investor cards** — Google Gemini generates a 150–250 word research note per stock, batched 10–15 per API call, grounded with the engine's pre-computed Graham/PEG/CFV values. AVOID-verdict stocks (score<38) are skipped to save free-tier quota (v10.13).
 - **Gate-checked execution** — 6 pre-conditions (weekday, holiday calendar, NSE bhav availability, data integrity, DB freshness, minimum rows) must pass before any download or analysis.
 - **BSE resilience** — uses the `bse` pip package (Akamai auth handled internally) and falls back to a curated `DUAL_LISTED_ALLOWLIST` of 206 Nifty-100/mid-cap names when BSE downloads fail from cloud IPs.
 
@@ -320,6 +320,7 @@ Full fix-pack notes are preserved in the accompanying `README_v10_*.md` files in
 
 | Version | Key change |
 |---|---|
+| **v10.13** | Stage 3 optimization trilogy — **FIX #1** AVOID-verdict stocks now skip the Gemini AI call (saves ~8-10% quota/run; stocks get a fixed placeholder in Block H). **FIX #2** Override rules O4 (score deterioration) and O5 (7+ day expiry re-check) activated — `last_claude_score` + `days_since_analysis` are now populated from `latest_analysis_results` at Stage 3 entry. **FIX #3** 20-day vol-average is now batch-fetched in one windowed SQL query (107× faster than the ~1,500 per-symbol SQL round-trips that happened before). First-run (empty prior map) behavior unchanged. |
 | **v10.12** | Dynamic tooltip sizing — per-tooltip height computed from content (was hardcoded 420×380 box). Gold row 2 criteria text updated to 11 conditions. |
 | **v10.11** | Gold-Tier filter expanded 8 → 11 conditions (added Altman Z ≥ 1.8, Earn Quality ≠ LOW, Int Coverage ≥ 1.5× gates). Missing forensic data passes these gates. |
 | **v10.10** | Crash-guard hotfix — `_safe_num()` helper in `scoring_engine.py::calculate_storm_score`, `spike_screener.py::check_anti_trigger_guard`, `fundamental_engine.py::calculate_piotroski_f_score` — fixes `TypeError: '>' not supported between str and float` after v10.9 Div Yield = `"—"` change. |

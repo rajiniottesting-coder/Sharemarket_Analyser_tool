@@ -6,13 +6,23 @@ Fixes:
 - All key lookups lowercase (symbol, volume, delivery_pct, stage2_score)
 - Override rules O1–O5 fully implemented
 - Cap management: overrides fill first, remainder by priority score
+
+v10.13 changes:
+- Batch-fetch 20d avg vol via get_20d_avg_vol_batch (1 SQL vs ~1,500)
+- Prior-analysis enrichment: populates last_claude_score + days_since_analysis
+  from the latest_analysis_results table, which activates override rules O4
+  (score deterioration) and O5 (7+ day expiry re-check) that were dormant.
 """
 
 import pandas as pd
-from database.data_bridge import get_20d_avg_vol
+from database.data_bridge import (
+    get_20d_avg_vol,
+    get_20d_avg_vol_batch,     # v10.13: batch lookup
+    get_prior_analysis_map,    # v10.13: O4/O5 activation
+)
 
 
-def calculate_priority_score(row: dict) -> float:
+def calculate_priority_score(row: dict, avg_vol_cache: dict = None) -> float:
     """
     SECTION 0C: Priority Score Formula (v2).
     P = (vol_spike×25) + (stage2_score/35×30) + (delivery_pct/100×20)
@@ -23,11 +33,19 @@ def calculate_priority_score(row: dict) -> float:
     - cap_bonus added: LARGE_CAP=15, MID_CAP=10, SMALL_CAP=5, MICRO=0
     - turnover_bonus: rewards real liquidity (not just vol spike)
     - recency removed: always 0 so it added nothing
+
+    v10.13: avg_vol_cache (optional dict) lets callers pass pre-fetched
+    20-day averages, avoiding per-row SQLite round-trips. When None, falls
+    back to the per-symbol lookup for backward compat with any direct caller.
     """
     # 1. Volume Spike Ratio (capped at 5× — was 10×)
     current_vol = float(row.get("volume", 0) or 0)
     symbol      = str(row.get("symbol", row.get("final_symbol", "")) or "")
-    avg_vol     = get_20d_avg_vol(symbol) if symbol else 0
+
+    if avg_vol_cache is not None:
+        avg_vol = float(avg_vol_cache.get(symbol, 0) or 0)
+    else:
+        avg_vol = get_20d_avg_vol(symbol) if symbol else 0
 
     if avg_vol > 0 and current_vol > 0:
         vol_spike_ratio = min(current_vol / avg_vol, 5)  # cap at 5× not 10×
@@ -82,15 +100,39 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
 
-    # ── Compute priority scores ───────────────────────────────────────────────
+    # ── v10.13: batch-fetch 20d avg vol + prior analysis data ───────────────
+    # Before v10.13 each get_20d_avg_vol() call opened a new SQLite connection;
+    # for 1,500 Stage-2 survivors that's 1,500 round-trips. Now: one windowed
+    # SQL query fetches all averages up-front. Typical savings: 3-5 seconds.
+    _all_syms_for_batch = df.get("symbol", pd.Series(dtype=str)).astype(str).tolist()
+    _avg_vol_cache = get_20d_avg_vol_batch(_all_syms_for_batch)
+
+    # Prior-analysis enrichment: activates O4 (score deterioration) and O5
+    # (7+ day expiry re-check). On first-ever run, map is empty and both
+    # overrides simply don't fire — behavior identical to pre-v10.13.
+    _prior_map = get_prior_analysis_map()
+    if _prior_map:
+        def _prior_col(col_name, default):
+            return df["symbol"].astype(str).map(
+                lambda s: _prior_map.get(s, {}).get(col_name, default)
+            )
+        df["last_claude_score"]    = _prior_col("last_score",   0.0)
+        df["last_claude_verdict"]  = _prior_col("last_verdict", "")
+        df["days_since_analysis"]  = _prior_col("days_since",   99)
+        print(f"   📚 Prior-analysis map loaded: {len(_prior_map)} symbols")
+
+    # ── Compute priority scores (pass cache to avoid per-row SQL) ─────────────
     df["priority_score"] = df.apply(
-        lambda row: calculate_priority_score(row.to_dict()), axis=1
+        lambda row: calculate_priority_score(row.to_dict(), avg_vol_cache=_avg_vol_cache),
+        axis=1,
     )
 
     # ── Identify override stocks ──────────────────────────────────────────────
     def _get_vol_ratio(row):
+        """v10.13: uses pre-fetched cache instead of per-symbol SQL."""
         vol = float(row.get("volume", 0) or 0)
-        avg = get_20d_avg_vol(str(row.get("symbol", "") or ""))
+        sym = str(row.get("symbol", "") or "")
+        avg = float(_avg_vol_cache.get(sym, 0) or 0)
         return (vol / avg) if avg > 0 else 1.0
 
     # O1: Watchlist
@@ -114,7 +156,10 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
                      else pd.Series([0.0] * len(df), index=df.index))
     o3_mask = (vol_ratios >= 3.0) & (delivery_vals >= 60.0)
 
-    # O4: Score deterioration
+    # O4: Score deterioration — v10.13 activated now that last_claude_score
+    #     is populated from latest_analysis_results.
+    #     Triggers when: previous composite ≥ 60 (was BUY/WATCHLIST material)
+    #     AND today's Stage 2 < 15 (significant quality drop today).
     last_score_col = "last_claude_score"
     if last_score_col in df.columns:
         o4_mask = (
@@ -124,10 +169,18 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
     else:
         o4_mask = pd.Series([False] * len(df), index=df.index)
 
-    # O5: Expiry — disabled: days_since_analysis is never populated
-    # so it would default to 99 for ALL stocks → 1914 overrides → alphabetical
-    # The real priority ranking below handles freshness via recency component
-    o5_mask = pd.Series([False] * len(df), index=df.index)
+    # O5: Expiry re-check — v10.13 activated now that days_since_analysis
+    #     is populated from latest_analysis_results.
+    #     Triggers on stocks that PREVIOUSLY passed Stage 3 (exist in the
+    #     table) AND haven't been re-analysed in ≥7 days. This catches
+    #     stocks that dropped off the priority ranking but deserve periodic
+    #     re-check — prevents long-tail stocks from being abandoned.
+    #     Guarded: only fires when stock has history (days_since < 99 sentinel).
+    if "days_since_analysis" in df.columns:
+        _dsa = df["days_since_analysis"].fillna(99).astype(float)
+        o5_mask = (_dsa >= 7) & (_dsa < 99)
+    else:
+        o5_mask = pd.Series([False] * len(df), index=df.index)
 
     override_mask = o1_mask | o2_mask | o3_mask | o4_mask | o5_mask
     override_df   = df[override_mask].copy()

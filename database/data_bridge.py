@@ -873,6 +873,59 @@ def get_20d_avg_vol(symbol: str) -> float:
         conn.close()
 
 
+def get_20d_avg_vol_batch(symbols) -> dict:
+    """
+    v10.13: Batch-fetch 20-day average volume for many symbols in ONE query.
+    Replaces N round-trips to SQLite (~1,500 in a typical Stage 3 run) with a
+    single grouped query. Returns dict: {symbol: avg_volume}.
+
+    Preserves the same "last 20 trading days" semantics as get_20d_avg_vol
+    by using a ROW_NUMBER() window inside a CTE. Missing symbols get 0.0.
+    """
+    if not symbols:
+        return {}
+    # Deduplicate + normalise
+    syms = sorted({str(s).strip() for s in symbols if s and str(s).strip()})
+    if not syms:
+        return {}
+
+    conn = sqlite3.connect("market_data.db")
+    try:
+        # One SQL using window function: for each symbol, keep only the 20
+        # most-recent rows, then AVG(volume). This matches get_20d_avg_vol's
+        # semantics exactly (most-recent 20 by date per symbol).
+        placeholders = ",".join("?" for _ in syms)
+        sql = f"""
+            WITH ranked AS (
+                SELECT symbol, volume,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY symbol ORDER BY date DESC
+                       ) AS rn
+                FROM daily_prices
+                WHERE symbol IN ({placeholders})
+            )
+            SELECT symbol, AVG(volume) AS avg_vol
+            FROM ranked
+            WHERE rn <= 20
+            GROUP BY symbol
+        """
+        df = pd.read_sql_query(sql, conn, params=syms)
+        result = {}
+        for _, row in df.iterrows():
+            v = row["avg_vol"]
+            if v is not None and v > 0:
+                result[row["symbol"]] = float(v)
+        # Missing symbols implicitly return 0.0 via dict.get default
+        return result
+    except Exception as e:
+        # Fall back to per-symbol calls so pipeline doesn't hard-fail
+        # (matches the pre-v10.13 behavior if the window-function path breaks)
+        print(f"⚠️ get_20d_avg_vol_batch failed ({e}); falling back to per-symbol lookups")
+        return {s: get_20d_avg_vol(s) for s in syms}
+    finally:
+        conn.close()
+
+
 def get_symbol_history(symbol: str, limit: int = 250) -> pd.DataFrame:
     """Historical OHLCV for a symbol, ascending by date."""
     if not symbol:
@@ -921,3 +974,61 @@ def load_latest_analysis_results() -> list:
         return df.to_dict("records") if not df.empty else []
     except Exception:
         return []
+
+
+def get_prior_analysis_map() -> dict:
+    """
+    v10.13: Returns dict {symbol: {last_score, last_verdict, date, days_since}}
+    sourced from the latest_analysis_results table.
+
+    Used by priority_ranker to:
+      (a) populate `last_claude_score` so override rule O4 (score deterioration —
+          last≥60 + today's Stage2<15) can actually fire.
+      (b) populate `days_since_analysis` so override rule O5 (expiry re-check,
+          not analysed in 7+ days) can fire. Both were dormant pre-v10.13.
+
+    Free-tier friendly: one small SELECT on an in-process SQLite table; no
+    external calls.
+    """
+    import datetime as _dt
+    out = {}
+    try:
+        conn = sqlite3.connect("market_data.db")
+        df = pd.read_sql(
+            "SELECT symbol, date, composite_score, verdict "
+            "FROM latest_analysis_results", conn,
+        )
+        conn.close()
+    except Exception:
+        return out
+
+    if df.empty:
+        return out
+
+    today = _dt.date.today()
+    for _, row in df.iterrows():
+        sym = str(row.get("symbol", "") or "").strip()
+        if not sym:
+            continue
+        try:
+            score = float(row.get("composite_score") or 0)
+        except (ValueError, TypeError):
+            score = 0.0
+        verdict = str(row.get("verdict") or "").strip()
+
+        days_since = 99   # default: very stale
+        d_raw = row.get("date")
+        if d_raw:
+            try:
+                dt_obj = _dt.datetime.strptime(str(d_raw)[:10], "%Y-%m-%d").date()
+                days_since = max(0, (today - dt_obj).days)
+            except (ValueError, TypeError):
+                pass
+
+        out[sym] = {
+            "last_score":   score,
+            "last_verdict": verdict,
+            "date":         str(d_raw)[:10] if d_raw else "",
+            "days_since":   days_since,
+        }
+    return out

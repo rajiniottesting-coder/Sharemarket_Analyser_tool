@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · Version 10.11 · April 2026
+## AI Context File · Version 10.13 · April 2026
 
 This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. **Read it first** before making any change.
 
@@ -570,8 +570,18 @@ PRIORITY_W_DELIVERY      = 20
 PRIORITY_W_CAP           = 15
 PRIORITY_W_TURNOVER      = 10
 
+# Stage 3 override rules (v10.13 — O4/O5 now active)
+OVERRIDE_MAX              = 20       # total override cap
+O3_VOL_RATIO_MIN          = 3.0      # spike pre-trigger: today's vol / 20d avg
+O3_DELIVERY_MIN           = 60       # %, paired with O3_VOL_RATIO_MIN
+O4_PREV_SCORE_MIN         = 60       # previous run's composite_score
+O4_CURRENT_S2_MAX         = 15       # today's stage2_score (deterioration signal)
+O5_DAYS_SINCE_MIN         = 7        # re-check stale analyses
+O5_DAYS_SINCE_SENTINEL    = 99       # guard: skip stocks never analysed (first-run)
+
 # AI batching
 AI_BATCH_SIZE            = 12
+AVOID_SKIP_AI            = True      # v10.13 FIX #1 — AVOID verdict → placeholder, not Gemini call
 ```
 
 ---
@@ -668,6 +678,40 @@ Sessions 1–24 (v7 era + reorg). Core data fixes, Excel + Alert Log, Early Dete
   - Missing forensic data passes these gates — small caps without forensic feeds aren't unfairly excluded.
 - **Composite score overlap disclosure:** `ND/EBITDA` and `Int Coverage` contribute to both `safety_score` (at 10% weight) AND v10.9 forensic quality adjustment. Net effect is mild (~+1 extra composite for high-quality names) and directionally correct — it slightly rewards genuinely safe businesses. `Altman Z` and `Earn Quality` are unique to forensic adj and add genuinely new signal.
 - **Updated glossary + tooltip for "Gold-Tier Definition" / "Gold-Tier Filter"** to document all 11 conditions.
+
+### v10.12 — Dynamic tooltip sizing + Gold row 2 text
+
+- **`reporting/excel_generator.py::_patch_tooltip_vml()`** now parses `xl/comments/comment*.xml`, maps each comment to its VML shape by `(row, col)` anchor, and sizes each box dynamically with `max(85, min(17 × line_count + 36, 380))`. Previously hardcoded to 420×380 for every tooltip → short Stop-Loss-style tips wasted ~295px of empty yellow space.
+- **`reporting/tooltip_formatter.py::_comment()`** height formula now matches the VML patch (was forcing a 260px floor regardless of content).
+- **Gold sheet row 2 criteria text** updated from 8-condition (v10.10 artifact) to 11-condition (v10.11 logic): adds `Altman Z≥1.8 · EQ≠LOW · Int Coverage≥1.5×` to the displayed list.
+- **4 tooltip entries updated** with `"—"` display semantics (Div Yield, Pro QoQ Δ, FII QoQ Δ, DII QoQ Δ) — explains when a dash means "no data source" vs "no history accumulated yet".
+- Pure presentation fix — no analytical behavior change.
+
+### v10.13 — Stage 3 optimization trilogy
+
+Three fixes addressing observed Stage 3 inefficiencies from production Excel audit:
+
+**FIX #1 — AVOID-verdict stocks skip Gemini AI (`master_funnel.py` Section 7/8)**
+- Pre-filters `final_100_list` before the Gemini batch call: any stock whose verdict starts with `"AVOID"` is extracted into a `_avoid_indices` set and given a fixed `_AVOID_PLACEHOLDER` string for `Analysis_Summary_Block_H`.
+- Only non-AVOID stocks are sent to Gemini; cursor-based positional mapping stitches the results back together.
+- **Saves Gemini quota:** observed waste was 8 AVOID stocks out of 88 (9%) per run. Placeholder message explains why the stock got skipped so users aren't confused by a blank.
+- Zero risk of breaking existing AI output mapping — for non-AVOID stocks the flow is identical to pre-v10.13.
+
+**FIX #2 — Override rules O4 + O5 activated (`priority_ranker.py` + `data_bridge.py`)**
+- **Root cause:** O4 (score deterioration) required `last_claude_score`, and O5 (expiry re-check) required `days_since_analysis` — neither was ever populated on the Stage 3 input df. O5 was explicitly disabled with a comment warning about "99-day default → 1914-override flood bug".
+- **Fix:** New helper `data_bridge.get_prior_analysis_map()` reads `latest_analysis_results` and returns `{sym: {last_score, last_verdict, date, days_since}}`. Uses the `date` field to compute real `days_since` (not a sentinel).
+- `priority_ranker.get_top_100_candidates()` calls this at entry, attaches `last_claude_score` / `last_claude_verdict` / `days_since_analysis` columns to the df.
+- O4 now fires when: previous score ≥ 60 AND today's Stage 2 < 15.
+- O5 now fires when: `7 ≤ days_since < 99`. The `<99` guard prevents first-run explosion: on day 1 the `latest_analysis_results` table is empty, `get_prior_analysis_map()` returns `{}`, and the `if _prior_map:` block doesn't add the columns at all — so `days_since_analysis` is absent and O5 correctly does nothing.
+- Impact: closes long-tail intelligence gap where stocks that had BUY verdicts previously but dropped off the priority ranking were forgotten. Now they get re-checked at least every 7 days.
+
+**FIX #3 — Batch SQL for 20d vol average (`data_bridge.py` + `priority_ranker.py`)**
+- **Root cause:** `_get_vol_ratio` inside `get_top_100_candidates` called `get_20d_avg_vol(symbol)` inside `df.apply` — opened a fresh SQLite connection per row. With ~1,500 Stage-2 survivors this was ~1,500 round-trips to the DB, ~3-5 seconds wasted per run.
+- **Fix:** New helper `get_20d_avg_vol_batch(symbols)` uses a CTE with `ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC)` to get the last 20 rows per symbol in ONE query. Falls back to per-symbol calls on any SQL error so pipeline doesn't hard-fail.
+- `calculate_priority_score()` accepts an optional `avg_vol_cache` dict parameter — backward compat preserved (old callers pass nothing, still get per-symbol fetch).
+- **Measured speedup: 107×** in integration test (258ms → 2.4ms for 100 calls). Real Stage 3 with ~1,500 symbols should see ~3-5 second savings.
+
+Integration tests: 7/7 passed (parity / performance / prior map correctness / Stage 3 e2e with O4+O5 / first-run safety / AVOID-skip logic / import chain).
 
 ---
 
