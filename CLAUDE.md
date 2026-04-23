@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · Version 10.9 · April 2026
+## AI Context File · Version 10.11 · April 2026
 
 This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. **Read it first** before making any change.
 
@@ -650,6 +650,25 @@ Sessions 1–24 (v7 era + reorg). Core data fixes, Excel + Alert Log, Early Dete
 - **Div Yield = 0 → `"—"`:** non-dividend stocks now display `"—"` instead of `0` to distinguish "no dividend policy" from a genuine 0% yield. Both the primary (line ~1481) and failsafe (line ~1668) branches guarded.
 - **Tooltip + glossary updates:** `Score /100`, `Verdict`, `Resist 2 (₹)`, `Support 2 (₹)` tooltips all updated to document the new logic and thresholds. Glossary entries for Support/Resist 1/2 explain the 20d vs 52w distinction.
 
+### v10.10 — Crash guard hotfix
+
+- **Critical bug:** v10.9's `div_yield = "—"` for non-dividend stocks broke three code paths that still did raw numeric comparisons without guards:
+  - `scoring_engine.py::calculate_storm_score` line 247 — `if data.get('div_yield', 0) > 2.0`  (crashed on string)
+  - `spike_screener.py::check_anti_trigger_guard` — `pledge_pct`, `altman_z`, `beneish_m`, `cfo_pat_ratio` compared unguarded
+  - `fundamental_engine.py::calculate_piotroski_f_score` — 10 fields compared unguarded
+- **Fix:** All 3 functions now use a `_safe_num()` / `_n()` helper that coerces `'—'`, `''`, `None`, `'N/A'` to a safe default before comparison. Pattern: `_v = _safe_num(data.get('fld')); if _v is not None and _v > threshold: ...`
+- **Regression scan:** ran regex scan across 28 risky fields × every `.py` file. Confirmed 0 unguarded sites remain.
+
+### v10.11 — Gold-Tier filter tightened + composite clarity
+
+- **Gold-Tier filter expanded 8 → 11 conditions** using fields populated by v10.8+v10.9:
+  - NEW #9: Altman Z ≥ 1.8 or missing (exclude distress zone)
+  - NEW #10: Earn Quality ≠ LOW (exclude accounting concern)
+  - NEW #11: Int Coverage ≥ 1.5× or missing (can service interest)
+  - Missing forensic data passes these gates — small caps without forensic feeds aren't unfairly excluded.
+- **Composite score overlap disclosure:** `ND/EBITDA` and `Int Coverage` contribute to both `safety_score` (at 10% weight) AND v10.9 forensic quality adjustment. Net effect is mild (~+1 extra composite for high-quality names) and directionally correct — it slightly rewards genuinely safe businesses. `Altman Z` and `Earn Quality` are unique to forensic adj and add genuinely new signal.
+- **Updated glossary + tooltip for "Gold-Tier Definition" / "Gold-Tier Filter"** to document all 11 conditions.
+
 ---
 
 ## 16. KNOWN LIMITATIONS
@@ -788,4 +807,4 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 
 ---
 
-*Last updated: April 2026 · v10.9 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: April 2026 · v10.11 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

@@ -849,3 +849,125 @@ No DB changes. No upstream behavior changes. Pure defensive coding.
 - `CLAUDE.md` — v10.9 unchanged (no behavior changes)
 - `analysis/forensics_engine.py` — v10.8 unchanged
 - `analysis/fair_value_engine.py` — already uses `_sf()` safe helper
+
+# v10.11 — Gold-Tier Filter Expansion (8 → 11 Conditions)
+
+## TL;DR — 3 files to replace
+
+| File | Change |
+|---|---|
+| `reporting/excel_generator.py` | `_get_gold()` filter expanded 8 → 11 conditions + glossary entries updated |
+| `reporting/tooltip_formatter.py` | "Gold-Tier Filter" tooltip rewrites the 11-condition list |
+| `CLAUDE.md` | Version bumped to v10.11; v10.10 + v10.11 history appended |
+
+Built on v10.9 + v10.10. All previous fixes preserved.
+
+## What problem this solves
+
+After v10.8 made Earn Quality categorical (HIGH / MODERATE / LOW) and v10.9 added the forensic quality adjustment to scoring, the **Gold-Tier sheet filter was still on 8 conditions from Session 19** and didn't use any of those new fields.
+
+That meant a stock could theoretically pass all 8 Gold conditions yet still have:
+- Altman Z < 1.8 (distress zone, bankruptcy risk)
+- Earn Quality = LOW (accounting concern — profits not cash-backed)
+- Int Coverage < 1.5× (can't service interest comfortably)
+
+The old filter would accept such stocks as Gold-tier if their composite score + MoS looked fine. The v10.9 forensic quality adjustment would penalise them in the composite (−10 floor), but that penalty alone couldn't always drop the score below the 70 Gold bar, especially for stocks with otherwise strong fundamentals/technicals.
+
+## The fix — 3 new gates
+
+The filter now enforces **all 11 conditions** before admitting a stock to the Gold sheet:
+
+| # | Condition | Source | Rationale |
+|---|---|---|---|
+| 1 | Verdict = BUY | Session 19 | System-confident, not WATCHLIST |
+| 2 | Composite Score ≥ 70 | Session 19 | Uniform Gold bar |
+| 3 | 15 ≤ MoS ≤ 100 | Session 19 | Patient upside, not phantom |
+| 4 | Storm Score ≥ 5 | Session 19 | Defensively sound |
+| 5 | RSI ≤ 70 | Session 19 | Not already overbought |
+| 6 | BS Health Flag ≠ ALERT | Session 19 | No balance-sheet red flags |
+| 7 | Pledge % ≤ 10 | Session 19 | Clean cap structure |
+| 8 | Not spike-suppressed | Session 19 | Anti-trigger guard clear |
+| **9** | **Altman Z ≥ 1.8 or missing** | **v10.11 NEW** | **Not in distress zone** |
+| **10** | **Earn Quality ≠ LOW** | **v10.11 NEW** | **No accounting concern** |
+| **11** | **Int Coverage ≥ 1.5× or missing** | **v10.11 NEW** | **Can service interest** |
+
+## Important: missing forensic data passes the new gates
+
+Small caps without forensic feeds (Altman Z = `'—'`, Int Coverage = `'—'`) **still qualify** for Gold if they pass all other gates. The filter rejects only stocks where forensic data is **present AND signals risk**. This avoids penalising micro-caps that yfinance doesn't cover well — the existing 8 gates (BS Health, Pledge, anti-trigger) already cover such stocks.
+
+## Integration test (passed)
+
+7 synthetic stocks tested against the new filter:
+
+| Stock | Expected | Got | Reason |
+|---|---|---|---|
+| PERFECT (clean) | PASS | ✅ PASS | All 11 gates clean |
+| NOFORENSIC (all `'—'`) | PASS | ✅ PASS | Missing data passes gates 9/10/11 |
+| DISTRESS (Altman=1.2) | FAIL | ❌ Rejected | Gate 9: Altman<1.8 |
+| ACCTCONCERN (EQ=LOW) | FAIL | ❌ Rejected | Gate 10: EQ=LOW |
+| WEAKIC (IC=0.8) | FAIL | ❌ Rejected | Gate 11: IC<1.5 |
+| WATCH (verdict=WATCHLIST) | FAIL | ❌ Rejected | Gate 1 (existing) |
+| TOOPRICEY (MoS=10) | FAIL | ❌ Rejected | Gate 3 (existing) |
+
+All 7/7 outcomes match expected behavior.
+
+## How the composite score flows into all of this
+
+For clarity on the end-to-end pipeline — here's exactly how a stock becomes Gold-tier:
+
+```
+Raw inputs
+  ↓
+Sub-scores (master_funnel Section 6)
+  • fundamental_score  (PE, ROE, D/E, margins, CAGR, FCF Yield, PAT/Rev YoY, ...)
+  • technical_score    (RSI, MACD, Supertrend, ADX, MFI, Stoch K, SMA 200, ...)
+  • early_entry_score  (12 signals for pre-consensus momentum)
+  • sentiment_score    (FII trend, insider, promoter/DII QoQ, news, pledge dir)
+  • safety_score       (Pledge, Beta, D/E, FCF, BS Health, Int Coverage, ND/EBITDA, Piotroski)
+  ↓
+ScoringEngine.calculate_composite_score()
+  Stage A: base = Fund×0.35 + Tech×0.30 + EE×0.15 + Sent×0.10 + Safe×0.10
+           (redistributed to 0.389/0.333/0.167/0.111 if no informed sentiment)
+  Stage B: + MoS adj (−10 to +12)
+           + Spike bonus (max +10, capped at +3 if Fund<55)
+           + Early Mover +5 (if EE≥50)
+           − Anti-trigger penalty (−10 if risk_flag)
+  Stage C: + v10.9 Forensic Quality Adjustment (−10 floor / +8 cap)
+             • Altman Z     ≥3.0: +3  |  <1.8: −5
+             • Earn Quality HIGH: +2  |  LOW:  −3
+             • ND/EBITDA   <1.0: +1  |  >5.0: −2
+             • Int Coverage >5x: +2  |  <1.5x: −3
+  Stage D: Verdict derivation — cap-aware thresholds + MoS gate
+           Returns: BUY / OVERVALUED / WATCHLIST / NEUTRAL / AVOID
+           with confidence dots ●●●/●●○/●○○
+  ↓
+_get_gold() filter (v10.11 — 11 conditions)
+  Verdict=BUY + Score≥70 + MoS 15-100 + Storm≥5 + RSI≤70 + BS≠ALERT
+  + Pledge≤10 + not spike-suppressed + Altman≥1.8 + EQ≠LOW + IC≥1.5×
+  ↓
+⭐ Gold – Early Movers sheet
+```
+
+## Deploy
+
+1. Backup your current 3 files
+2. Replace with the files in this pack
+3. Re-run pipeline — the Gold sheet will now be stricter about forensic quality
+
+## Expected impact
+
+Based on typical top-100 distributions:
+- **Before v10.11:** 8-condition filter typically admitted 3-10 stocks/day to Gold
+- **After v10.11:** 11-condition filter will typically admit 2-8 stocks/day
+- **Most days the set will be similar** — the 3 new gates mainly exclude edge-case distressed stocks that would have slipped through
+
+When Gold count drops to 0-2 on a given day, the tooltip + glossary make it clear this reflects genuine market caution, not a bug.
+
+## Files NOT in this pack
+
+- `analysis/scoring_engine.py` — v10.10 version correct (crash guards + forensic adj)
+- `analysis/spike_screener.py` — v10.10 version correct
+- `analysis/fundamental_engine.py` — v10.10 version correct
+- `master_funnel.py` — v10.9 version correct
+- `backfill_history.py` — v10.9 version correct
+- `analysis/forensics_engine.py` — v10.8 version correct

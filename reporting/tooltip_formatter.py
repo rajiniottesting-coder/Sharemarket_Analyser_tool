@@ -536,14 +536,22 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # Keeping Glossary + Tooltip Reference sheet in sync matters — both are
     # discovery surfaces for the same knowledge.
     "Gold-Tier Filter": (
-        "8-condition filter for Gold – Early Movers sheet",
-        "ALL 8 conditions must be true for Gold qualification:\n"
-        "1. Verdict = BUY. 2. Composite Score ≥ 70.\n"
+        "11-condition filter for Gold – Early Movers sheet (v10.11)",
+        "ALL 11 conditions must be true for Gold qualification:\n"
+        "1. Verdict = BUY (not WATCHLIST).\n"
+        "2. Composite Score ≥ 70.\n"
         "3. 15% ≤ MoS ≤ 100% (real upside, not phantom).\n"
-        "4. Storm Score ≥ 5. 5. RSI ≤ 70.\n"
-        "6. BS Health Flag ≠ ALERT. 7. Pledge % ≤ 10.\n"
-        "8. Not spike-suppressed (no anti-trigger guard fire).\n"
-        "Daily count varies: some days 0–3 stocks, some days 8+."),
+        "4. Storm Score ≥ 5 (defensively sound).\n"
+        "5. RSI ≤ 70 (not already overbought).\n"
+        "6. BS Health Flag ≠ ALERT.\n"
+        "7. Pledge % ≤ 10 (clean capital structure).\n"
+        "8. Not spike-suppressed (anti-trigger guard clear).\n"
+        "v10.11 forensic quality gates (3 new):\n"
+        "9. Altman Z ≥ 1.8 or missing (not in distress zone).\n"
+        "10. Earn Quality ≠ LOW (no accounting concern).\n"
+        "11. Int Coverage ≥ 1.5× or missing (can service interest).\n"
+        "Missing forensic data passes the v10.11 gates — small caps without\n"
+        "forensic feeds aren't unfairly excluded. Daily count varies 0-10+."),
     "CFV Safety Cap": (
         "Composite Fair Value capped at 3× CMP",
         "CFV is capped at 3× Current Market Price as a safety net, which\n"

@@ -677,20 +677,25 @@ GLOSSARY_DATA = [
     # Any user looking at the Gold sheet with few or zero stocks can reference
     # this to understand the strict 8-condition filter.
     ("GOLD FILTER","Gold-Tier Definition",
-     "A stock qualifies for the Gold – Early Movers sheet only if ALL 8 "
+     "A stock qualifies for the Gold – Early Movers sheet only if ALL 11 "
      "conditions are met: (1) Verdict = BUY (not WATCHLIST), (2) Composite "
      "Score ≥ 70, (3) Margin of Safety between 15% and 100%, (4) Storm Score "
      "≥ 5 (defensively sound), (5) RSI ≤ 70 (not overbought), (6) BS Health "
-     "Flag ≠ ALERT, (7) Pledge % ≤ 10, (8) not spike-suppressed. Some days "
-     "may show 0-3 stocks; other days 8-12. This is by design — the filter "
-     "reflects market reality, not a fixed daily quota.","Gold Sheet"),
+     "Flag ≠ ALERT, (7) Pledge % ≤ 10, (8) not spike-suppressed, "
+     "(9) Altman Z ≥ 1.8 or missing (v10.11 — not in distress zone), "
+     "(10) Earn Quality ≠ LOW (v10.11 — no accounting concern), "
+     "(11) Int Coverage ≥ 1.5× or missing (v10.11 — can service interest). "
+     "Some days may show 0-3 stocks; other days 8-12. This is by design — the "
+     "filter reflects market reality, not a fixed daily quota.","Gold Sheet"),
     ("GOLD FILTER","Why so few Gold stocks?",
      "The Gold filter is strict by design: 'patient upside, healthy stocks "
      "only'. It rejects (a) stocks the system isn't confident enough to BUY, "
      "(b) stocks already overbought (RSI > 70), (c) stocks with inflated or "
      "shallow margins of safety, (d) anything with balance-sheet red flags "
-     "or high pledge. Most days the top 3-8 stocks by score will also pass "
-     "this filter; days with broad overbought conditions will produce fewer.","Gold Sheet"),
+     "or high pledge, (e) v10.11: stocks in Altman distress zone, with LOW "
+     "earnings quality, or with weak interest coverage. Most days the top "
+     "3-8 stocks by score will also pass; days with broad distress signals "
+     "will produce fewer.","Gold Sheet"),
 
     # ── FAIR VALUE SAFETY CAP (Session 19) ────────────────────────────────────
     ("FAIR VALUE","CFV Cap (3× CMP)",
@@ -1571,15 +1576,18 @@ class ExcelGeneratorV6:
     def _get_gold(self):
         if self.df.empty: return pd.DataFrame()
         try:
-            # Session 19: strict Gold-tier filter. Previous filter was
-            # ((EE>=50) | (MoS>=25 & Score>=70)) & verdict NOT AVOID & NOT suppressed.
-            # That produced ~26 candidates but most were either overbought,
-            # WATCHLIST-verdict with negative MoS, or carrying implausible
-            # MoS>100% (which was itself masking a DCF bug, now fixed in
-            # fair_value_engine.py). New definition enforces "patient upside,
-            # healthy stocks only" — see README / user request.
+            # Session 19 + v10.11 strict Gold-tier filter.
+            # Session 19 (8 conditions): Verdict=BUY, Score>=70, 15<=MoS<=100,
+            #   Storm>=5, RSI<=70, BS!=ALERT, Pledge<=10, not suppressed.
+            # v10.11 (3 new forensic gates using v10.8+v10.9 populated fields):
+            #   9. Altman Z >= 1.8  (not in distress zone — if field populated)
+            #   10. Earn Quality != "LOW"  (no accounting concern)
+            #   11. Int Coverage >= 1.5x  (can service interest — if populated)
+            # Fields populated as "—" (missing data) PASS these gates so small
+            # caps without forensic data aren't unfairly excluded — the existing
+            # 8 gates already cover them via BS Health + Pledge.
             #
-            # All 8 conditions must be true for Gold-tier:
+            # All 11 conditions must be true for Gold-tier:
             #  1. Verdict = BUY                 — system-confident, not WATCHLIST
             #  2. Score >= 70                   — uniform Gold bar, not cap-adjusted
             #  3. 15 <= MoS <= 100              — real upside, not phantom inflation
@@ -1588,6 +1596,9 @@ class ExcelGeneratorV6:
             #  6. BS Health Flag != ALERT       — no balance-sheet red flags
             #  7. Pledge % <= 10                — Gold = clean, not just "not awful"
             #  8. spike_suppressed == False     — Altman/Beneish/pledge all clear
+            #  9. Altman Z >= 1.8 OR "—"         — v10.11: not in distress zone
+            # 10. Earn Quality != "LOW"         — v10.11: no accounting concern
+            # 11. Int Coverage >= 1.5 OR "—"    — v10.11: can service interest
             _mos = self.df["mos_pct"]
             _rsi = self.df.get("rsi", pd.Series([50]*len(self.df)))
             _storm = self.df.get("storm_score", pd.Series([0]*len(self.df)))
@@ -1596,6 +1607,23 @@ class ExcelGeneratorV6:
                                     errors="coerce").fillna(0)
             _bs = self.df.get("bs_status", pd.Series([""]*len(self.df))) \
                        .astype(str).str.upper()
+
+            # v10.11 new gates — tolerant of "—" (missing data passes)
+            _alt_raw = self.df.get("altman_z", pd.Series(["—"]*len(self.df)))
+            _alt_num = pd.to_numeric(_alt_raw, errors="coerce")
+            # Pass if Altman ≥ 1.8 OR is missing (NaN)
+            _alt_gate = (_alt_num >= 1.8) | _alt_num.isna()
+
+            _eq = self.df.get("earnings_quality",
+                              pd.Series(["—"]*len(self.df))).astype(str).str.upper()
+            # Pass if Earn Quality is NOT "LOW" (HIGH/MODERATE/— all pass)
+            _eq_gate = _eq != "LOW"
+
+            _ic_raw = self.df.get("int_coverage", pd.Series(["—"]*len(self.df)))
+            _ic_num = pd.to_numeric(_ic_raw, errors="coerce")
+            # Pass if Int Coverage ≥ 1.5 OR is missing
+            _ic_gate = (_ic_num >= 1.5) | _ic_num.isna()
+
             mask = (
                 (self.df["verdict"] == "BUY") &
                 (self.df["composite_score"] >= 70) &
@@ -1604,7 +1632,10 @@ class ExcelGeneratorV6:
                 (pd.to_numeric(_rsi, errors="coerce").fillna(50) <= 70) &
                 (~_bs.str.contains("ALERT", na=False)) &
                 (_pledge <= 10) &
-                (self.df["spike_suppressed"] == False)
+                (self.df["spike_suppressed"] == False) &
+                _alt_gate &    # v10.11: not distressed
+                _eq_gate &     # v10.11: not accounting concern
+                _ic_gate       # v10.11: can service interest
             )
             return self.df[mask].copy().reset_index(drop=True)
         except Exception: return pd.DataFrame()
