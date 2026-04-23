@@ -1137,20 +1137,30 @@ def run_master_pipeline():
                 _inv_d      = float(_ext[10]) if _ext[10] else 0   # Inventory days
                 _rec_d      = float(_ext[11]) if _ext[11] else 0   # Receivable days
                 _pay_d      = float(_ext[12]) if _ext[12] else 0   # Payable days
-                # Publish forensic inputs onto stock dict (forensics engine reads these)
-                stock["operating_cf_cr"]      = op_cf_v
-                stock["curr_assets_cr"]       = curr_ass_v
-                stock["curr_liab_cr"]         = curr_liab_v
-                stock["ebit_cr"]              = _ebit_v
-                stock["int_expense_cr"]       = _intx_v
-                stock["capex_cr"]             = _capex_v
-                stock["total_assets_cr"]      = _ta_v
-                stock["total_liab_cr"]        = _tl_v
-                stock["retained_earnings_cr"] = _re_v
-                stock["working_cap_cr"]       = _wc_v
-                stock["inventory_days"]       = _inv_d
-                stock["receivable_days"]      = _rec_d
-                stock["payable_days"]         = _pay_d
+                # v10.7 FIX: Publish forensic inputs WITHOUT clobbering v10.4 inline-fetched values.
+                # The DB columns ebit_cr/int_expense_cr/etc. are never populated by backfill_history
+                # (they only exist in schema). So _ext[3]..[12] are always 0 from DB.
+                # Previously these direct assignments overwrote real values from the v10.4 inline
+                # fetcher at line ~606 with zeros, causing Int Coverage / CCC Days / Altman Z to
+                # show '—' for all stocks. Now we only overwrite if the DB value is actually > 0
+                # (which only happens if a future data source populates these columns).
+                def _pub(key, db_val):
+                    if db_val and db_val != 0:
+                        stock[key] = db_val
+                    # else: leave stock[key] as-is (preserves v10.4 inline fetcher's value)
+                _pub("operating_cf_cr",      op_cf_v)
+                _pub("curr_assets_cr",       curr_ass_v)
+                _pub("curr_liab_cr",         curr_liab_v)
+                _pub("ebit_cr",              _ebit_v)
+                _pub("int_expense_cr",       _intx_v)
+                _pub("capex_cr",             _capex_v)
+                _pub("total_assets_cr",      _ta_v)
+                _pub("total_liab_cr",        _tl_v)
+                _pub("retained_earnings_cr", _re_v)
+                _pub("working_cap_cr",       _wc_v)
+                _pub("inventory_days",       _inv_d)
+                _pub("receivable_days",      _rec_d)
+                _pub("payable_days",         _pay_d)
                 def _fv(v):
                     try:
                         f = float(v) if v is not None else 0.0
