@@ -1,7 +1,7 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · Version 10.0 · April 2026
+## AI Context File · Version 10.6 · April 2026
 
-This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. Read it first before making any change.
+This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. **Read it first** before making any change.
 
 ---
 
@@ -22,12 +22,12 @@ A fully automated, cloud-hosted daily pipeline that:
 
 ## 2. FOLDER STRUCTURE (v10 — proper packages)
 
-The codebase was reorganised in v8 from a flat file layout into proper packages. All cross-module imports now use fully-qualified names (e.g. `from analysis.scoring_engine import ScoringEngine`).
+The codebase was reorganised in v8 from a flat file layout into proper packages. All cross-module imports use fully-qualified names (e.g. `from analysis.scoring_engine import ScoringEngine`).
 
 ```
 Sharemarket_Analyser_tool/
-├── master_funnel.py              ~2,460 lines — Pipeline orchestrator (Sections 0–13)
-├── backfill_history.py           ~1,850 lines — 365-day historical builder
+├── master_funnel.py              ~2,670 lines — Pipeline orchestrator (Sections 0–13)
+├── backfill_history.py           ~1,900 lines — 365-day historical builder
 ├── requirements.txt
 ├── ingestion/
 │   ├── orchestrator.py           Gate check (6 conditions) + NSE holiday calendar 2026
@@ -39,7 +39,7 @@ Sharemarket_Analyser_tool/
 ├── analysis/
 │   ├── fair_value_engine.py      7 FV models + composite FV + MoS
 │   ├── scoring_engine.py         Composite + verdict + confidence + storm
-│   ├── forensics_engine.py       Altman Z + Beneish M (numeric)
+│   ├── forensics_engine.py       Altman Z + Beneish M + ND/EBITDA + CCC + inline yfinance fetcher
 │   ├── fundamental_engine.py     Graham, PEG, 9-point Piotroski F
 │   ├── technical_engine.py       RSI/MACD/Supertrend/ADX/MFI/Stoch
 │   ├── ownership_tracker.py      Promoter/FII/DII QoQ trends
@@ -52,13 +52,13 @@ Sharemarket_Analyser_tool/
 │   ├── market_context.py         Regime detection
 │   └── v7_analysis_engine.py     Sections 3A–3H analytical overlays
 ├── database/
-│   ├── data_bridge.py            ~800 lines — DB consolidation + helpers
+│   ├── data_bridge.py            ~920 lines — DB consolidation + helpers
 │   ├── database_manager.py       Connection + schema management
 │   └── db_maintenance.py         90-day rolling circular queue
 ├── ai/
-│   └── ai_analyst.py             Anthropic Claude batch analysis
+│   └── ai_analyst.py             Google Gemini batch analysis (migrated from Anthropic in v10.1)
 ├── reporting/
-│   ├── excel_generator.py        ~1,530 lines — 7-sheet ExcelGeneratorV6
+│   ├── excel_generator.py        ~1,610 lines — 7-sheet ExcelGeneratorV6
 │   ├── tooltip_formatter.py      ~980 lines — cell/group/reference tooltips
 │   ├── daily_report_generator.py Plain-text research report
 │   ├── report_formatter.py       Investor-card formatter
@@ -66,7 +66,7 @@ Sharemarket_Analyser_tool/
 │   ├── whatsapp_gateway.py       Twilio Flask webhook
 │   └── command_parser.py         `why RELIANCE`, `early movers today`, etc.
 ├── master_prompt/
-│   └── NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt   System prompt for Claude
+│   └── NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt   System prompt for Gemini
 └── utils/
     ├── bse_diagnosis.py          BSE connectivity debug helper
     └── chat_interface.py         Local REPL for command_parser
@@ -79,12 +79,13 @@ Sharemarket_Analyser_tool/
 Tables are created by two files working together:
 - `backfill_history.py::init_all_tables()` — creates the full 15-table set (called once on cold start)
 - `database/data_bridge.py::initialize_v7_tables()` — ensures pipeline-critical tables exist and runs `ALTER TABLE IF NOT EXISTS` migrations for additive schema changes
+- **`master_funnel.py` startup (v10.5)** — defensive `CREATE TABLE IF NOT EXISTS shareholding` + `ALTER TABLE ADD COLUMN` for 18 forensic-input columns, protecting against older DBs created before those columns existed
 
 | Table | Contents | Size |
 |---|---|---|
 | `daily_prices` | OHLCV + delivery % + 52w hi/lo + day chg % | 365d × 5,000 syms |
 | `symbol_master` | Company name, sector, cap category, ISIN, BSE code | ~5,000 symbols |
-| `fundamental_metrics` | PE, PB, EPS, Div Yield, Beta, ROE, D/E, Margins, CAGR | ~5,000 symbols |
+| `fundamental_metrics` | PE, PB, EPS, Div Yield, Beta, ROE, D/E, Margins, CAGR + 18 forensic columns (v10.2) | ~5,000 symbols |
 | `shareholding` | Promoter %, FII %, DII %, Pledge % + QoQ changes | ~3,000 symbols |
 | `technical_indicators` | RSI14, MACD, Supertrend, ADX, Stoch K, MFI, OBV, VWAP | ~5,000 symbols |
 | `weekly_momentum` | 2w / 4w / 6w / 8w price change %, beta_90d | ~5,000 symbols |
@@ -107,6 +108,7 @@ Tables are created by two files working together:
 - `initialize_v7_tables(conn)` — schema creation + migration
 - `check_data_integrity(raw_nse, raw_bse)` — C5 gate condition
 - `get_today_consolidated_data()` — feeds `command_parser`
+- `get_historical_quarter_data(symbols)` — QoQ baseline lookup (v10.3: reads from `shareholding`)
 - `get_nifty_52w_high_from_db()`, `get_latest_fii_net_cash()`, `get_nifty_200_sma()`
 
 ---
@@ -125,9 +127,11 @@ Section 0    Pre-screening funnel:
                Stage 3 (priority_ranker.get_top_100_candidates)   : ~400  → 100
 Section 3    For each of 100 stocks:
                3A  Valuation ratios (EY, PE tag, EV/EBITDA)
-               3B/3D/3G  Forensics (Beneish, Altman, CFO/PAT)
+               3B  Inline forensic-input fetch (v10.4) — pulls ticker.balance_sheet,
+                   .cashflow, .income_stmt for this symbol
+               3B/3D/3G  Forensics (Beneish, Altman, ND/EBITDA, CCC, CFO/PAT)
                3E  Capital allocation (ROCE)
-               3F  Ownership trends (Promoter/FII QoQ)
+               3F  Ownership trends (Promoter/FII/DII QoQ) — shows "—" until history
                3G  Growth quality (CAGR tiers)
                3H  Anti-trigger guard (pledge/Beneish/Altman/CFO)
                3I  Early entry score — DEFERRED to Section 6 (needs real technicals)
@@ -135,10 +139,12 @@ Section 3    For each of 100 stocks:
                3L  Sector rotation stage — PLACEHOLDER (recomputed after tech loads)
 Section 4    Balance Sheet Health — FIRST PASS (pre-FM, mostly placeholder)
 Section 4B   NSE fundamentals refresh via yfinance (top-100 only)
+             + NSE shareholding enrichment for DII (v10.6) — top 100
 Section 5    DB enrichment: technicals + fundamentals + weekly momentum
              → After technical data loads: Sector Stage RECOMPUTED HERE
              → Ghost-key derivation: fcf_positive_4q, promoter_q_increase,
                fii_buy_3q, rev_growth_yoy, fii_3q_trend, promoter_buying_30d
+Section 5A.5 Forensics re-run after DB enrichment (v10.3)
 Section 5B   Fair Value engine — 7 models per stock (analysis.fair_value_engine)
 Section 6    SCORING LOOP for each stock:
                → Technical score (RSI/MACD/ST/ADX/MFI/Stoch)
@@ -157,9 +163,11 @@ Section 6    SCORING LOOP for each stock:
                → F-Score proxy (9-point from available data)
                → Price targets (T1/T2/T3, entry range, stop loss)
                → Blank name+sector filter (removes ETFs that slipped through)
-Section 7/8  AI investor cards (ai.ai_analyst — Anthropic Claude, batches of 10–15)
+Section 7/8  AI investor cards (ai.ai_analyst — Google Gemini, batches of 10–15)
 Section 9/10 7-sheet Excel dashboard (reporting.excel_generator.ExcelGeneratorV6)
              + text research report (reporting.daily_report_generator)
+             + dynamic red-header demotion (v10.4): columns with ≥1 real value
+               get their normal section colour instead of red
 Section 12   Email delivery (reporting.email_service)
 Section 13   DB maintenance — 90-day circular queue (database.db_maintenance)
 ```
@@ -169,6 +177,7 @@ Section 13   DB maintenance — 90-day circular queue (database.db_maintenance)
 - Technical data (RSI/MACD/Supertrend) loads at Section 5. Any code using these must run AFTER that point.
 - `composite_score` and `verdict` are set by `ScoringEngine.calculate_composite_score()`. `horizon` and `risk_level` must run AFTER this call.
 - BS Health runs twice: first pass at Section 4 (pre-enrichment, mostly HEALTHY), second pass after Section 5 (real data).
+- Forensics runs twice (v10.3): first pass in the top-100 loop (Section 3B) with inline yfinance fetch, second pass (Section 5A.5) after DB enrichment catches anything the inline fetch missed.
 - `company_name` and `sector` are only available after Section 4B/5 FM enrichment — never at Stage 1.
 - Alert Log requires `latest_analysis_results` to be **loaded before** today's scores are saved — otherwise Score Δ is always 0.
 
@@ -205,7 +214,6 @@ Priority Score = (vol_spike/5 × 25) + (stage2/35 × 30) + (delivery/100 × 20)
 Cap diversification: LARGE ≥ 20, MID ≥ 15, SMALL+MICRO ≤ 65.
 
 Technical alignment bonus (applied in master_funnel after tech loads):
-
 - Supertrend=BUY + MACD=BUY → +8
 - One BUY → +3
 - Both SELL → −5
@@ -228,12 +236,12 @@ Redistributed: Fund×0.389 + Tech×0.333 + EE×0.167 + Safe×0.111
 − Anti-trigger penalty (−10 if risk_flag_active)
 ```
 
-**Session 24 refinements** (all in `scoring_engine.py`):
+**Session 24 refinements:**
 
 1. **Sentiment informedness check** — if none of the paid/AI sentiment signals fired (FII/Promoter/DII QoQ, insider buy, news sentiment, pledge direction), the 10% sentiment weight **redistributes** proportionally to Fundamental/Technical/Early/Safety. No "free 5 points" for missing data.
-2. **Fundamental-gated spike bonus** — full +10 only when `fundamental_score ≥ 55`. Otherwise capped at +3 so momentum can't rescue genuinely weak stocks.
+2. **Fundamental-gated spike bonus** — full +10 only when `fundamental_score ≥ 55`. Otherwise capped at +3.
 3. **Confidence dots** — HIGH ●●● (≥ 5 points clear of threshold), MEDIUM ●●○ (2–5), LOW ●○○ (< 2; cliff zone).
-4. **OVERVALUED verdict** — new distinct verdict for stocks that clear the BUY score threshold but fail the MoS gate. Reads as "great business, currently expensive". Styled in soft orange (`FED7AA` / `7C2D12`) — not green, not red.
+4. **OVERVALUED verdict** — distinct from WATCHLIST; styled in soft orange (`FED7AA` / `7C2D12`). Stocks that clear BUY score threshold but fail the MoS gate.
 5. Stage-2 inflation fix lives upstream in `master_funnel.py`; scoring receives corrected `fundamental_score` unchanged.
 
 ### Verdict thresholds — `scoring_engine.py::CAP_THRESHOLDS`
@@ -248,19 +256,18 @@ CAP_THRESHOLDS = {
 AVOID_BELOW = 38   # Universal floor
 ```
 
-**MoS gate for BUY** — normally MoS ≤ −10% blocks BUY (becomes OVERVALUED). Relaxed to MoS ≤ −20% if **technically confirmed**: `score ≥ 70 AND Supertrend=BUY AND Sector Stage 2`. See `_get_verdict_with_confidence()`.
+**MoS gate for BUY** — normally MoS ≤ −10% blocks BUY (becomes OVERVALUED). Relaxed to MoS ≤ −20% if **technically confirmed**: `score ≥ 70 AND Supertrend=BUY AND Sector Stage 2`.
 
 ### Score inputs by category
 
-- **Fundamental:** PE, ROE, D/E, Current Ratio, Gross Margin, Net Margin, Earnings Yield, Promoter %, **PAT YoY** (+8/+4/+2/−7), **Rev YoY** (+5/+3/+1/−4), **FCF Yield** (+6/+3/−5)
-- **Technical:** RSI, ADX, MACD, Supertrend, VWAP, OBV, **Stochastic K** (oversold zone 20–40 = +5), **MFI** (>60 = +4, <30 = −3)
-- **Safety:** Pledge %, Beta, D/E, **FCF** (negative = −8, positive = +3), **BS Health** (ALERT = −15, WATCH = −5, HEALTHY+FCF = +3)
-- **Sentiment:** `fii_3q_trend` (derived from `fii_qoq`: >1% = UP, <−1% = DOWN), `smart_money_sentiment`, `insider_buy_alert`, `news_sentiment`, `pledge_direction`
+- **Fundamental:** PE, ROE, D/E, Current Ratio, Gross Margin, Net Margin, Earnings Yield, Promoter %, PAT YoY, Rev YoY, FCF Yield
+- **Technical:** RSI, ADX, MACD, Supertrend, VWAP, OBV, Stochastic K, MFI
+- **Safety:** Pledge %, Beta, D/E, FCF, BS Health
+- **Sentiment:** `fii_3q_trend`, `smart_money_sentiment`, `insider_buy_alert`, `news_sentiment`, `pledge_direction`
 
 ### Ghost keys (derived before storm/sentiment scoring)
 
 Populated in `master_funnel.py` just before the composite-score call:
-
 - `fcf_positive_4q` ← `fcf > 0`
 - `promoter_q_increase` ← `promoter_qoq > 0.3`
 - `fii_buy_3q` ← `fii_qoq > 0.3`
@@ -268,18 +275,9 @@ Populated in `master_funnel.py` just before the composite-score call:
 - `fii_3q_trend` ← derived from `fii_qoq`
 - `promoter_buying_30d` ← `promoter_qoq > 0.5`
 
-### Quick-pick labels — `_assign_quick_pick`
-
-Used on the Gold sheet and for badges:
-
-- `DEEP VALUE EARLY MOVER` — MoS > 25 AND score > 70 AND early ≥ 60
-- `DEEP VALUE` — MoS > 25 AND score > 70
-- `EARLY MOVER` — early ≥ 70 AND score > 55
-- `AVOID / EXIT` — score < 38 OR (score < 45 AND MoS < −30)
-
 ---
 
-## 7. FAIR VALUE ENGINE (`analysis/fair_value_engine.py`) — Session 19 guards
+## 7. FAIR VALUE ENGINE — Session 19 guards
 
 7 models, weighted and normalised to active (non-zero) models only:
 
@@ -294,23 +292,61 @@ Used on the Gold sheet and for badges:
 | M7 PEG | 5% | EPS × min(growth, 30%) | Growth available |
 
 **MoS** = (CFV − CMP) / CMP × 100
-**Score adjustment** on `mos_pct`: > 40 = +12, > 25 = +8, > 10 = +4, < −30 = −10, < −15 = −5
 
-### Session 19 DCF guards (critical — prevents absurd valuations)
+### Session 19 DCF guards (non-negotiable)
 
-Real bug observed: SBIN (beta 0.2) came out at ₹12,126 vs CMP ₹1,108 (10.9×) before guards. Fix applied in three layers:
-
-- **WACC floor at 10%** — `wacc = max(gsec + beta × 5.5, 0.10)`. With gsec=6.8% + beta=0.2, raw WACC is 7.9%, giving `wacc − gt = 3.4%` and producing nonsense. Floored WACC avoids this. Indian equity discount rates below 10% are unrealistic.
-- **M1 cap at 4× CMP** — even with WACC floored, aggressive growth assumptions can still blow up for outliers. Hard cap.
-- **Composite CFV cap at 3× CMP** — belt-and-suspenders for when other models (Graham, EV/EBITDA) occasionally spike. 3× CMP = 200% MoS, already the extreme edge of plausible.
-
-### DDM guard — strict
-
-`0.1 < div_yield_pct < 15.0` only. Values outside this range indicate unit mismatch or no dividend. Do NOT relax.
+- **WACC floor at 10%** — `wacc = max(gsec + beta × 5.5, 0.10)`. Prevents SBIN-style ₹12k fair-value bug.
+- **M1 cap at 4× CMP**
+- **Composite CFV cap at 3× CMP** (200% MoS ceiling)
+- **DDM guard:** `0.1 < div_yield_pct < 15.0` only. Do NOT relax.
 
 ---
 
-## 8. EXCEL DASHBOARD (`reporting/excel_generator.py`) — 7 sheets
+## 8. FORENSICS ENGINE (v10.4+ consolidated)
+
+`analysis/forensics_engine.py` is the single source of truth for forensic calculations. As of v10.4 it has an inline yfinance fetcher that removes the dependency on backfill-populated DB columns.
+
+### Key method: `ForensicsEngine.fetch_forensic_inputs(symbol)` (v10.4)
+
+Pulls live from yfinance for ONE symbol and returns a dict:
+- From `ticker.balance_sheet`: `total_assets_cr`, `total_liab_cr`, `retained_earnings_cr`, `working_cap_cr`, `curr_assets_cr`, `curr_liab_cr`, `total_debt_cr`, `cash_cr`, `inventory_days`, `receivable_days`, `payable_days`
+- From `ticker.cashflow`: `capex_cr`, `operating_cf_cr`
+- From `ticker.income_stmt`: `ebit_cr`, `int_expense_cr`, `q_rev_cr`, `q_ebitda_cr`, `q_pat_cr`
+
+Called inline by `master_funnel.py` for each of the top-100 stocks before `calculate_accounting_forensics()`. Never raises — swallows all Yahoo errors and returns `{}` if unreachable. Takes ~2 seconds per stock (~3 min total).
+
+### `ForensicsEngine.calculate_accounting_forensics(row)` — output fields
+
+Returns a dict merged onto the stock dict. All fields return `"—"` when inputs are missing (not 0 or 1.0):
+
+| Output key | Excel column | Formula |
+|---|---|---|
+| `ccc_days` | CCC Days | inventory_days + receivable_days − payable_days |
+| `nd_ebitda` | ND/EBITDA | (total_debt − cash) / ebitda_annual |
+| `int_coverage` | Int Coverage | ebit / int_expense |
+| `capex_rev` | Capex / Rev % | (capex / rev_annual) × 100 |
+| `earnings_quality` | Earn Quality | cfo / pat |
+| `altman_z` | Altman Z | 1.2·x1 + 1.4·x2 + 3.3·x3 + 0.6·x4 + 1.0·x5 |
+| `beneish_m` | Beneish M | Accrual-quality proxy (TATA-based tiers) |
+| `pledge_direction` | Pledge Direction | Passthrough from master_funnel |
+
+### Important v10.6 annualization fix (ND/EBITDA)
+
+The DB column `q_ebitda_cr` (written by `backfill_history.py`) is **QUARTERLY** — one quarter's EBITDA. Using it in an annual ND/EBITDA ratio inflates the ratio by ~4×. The v10.6 fix at line 340:
+
+```python
+ebitda_annual = _num(row, 'ebitda', 'ebitda_cr')           # prefer annual from yfinance .info
+if ebitda_annual <= 0:
+    _q_ebitda = _num(row, 'q_ebitda_cr')
+    if _q_ebitda > 0:
+        ebitda_annual = _q_ebitda * 4                       # annualize fallback
+```
+
+Same annualization applied to Capex/Rev (capex is annual; uses `revenue` first, fallback to `q_rev_cr × 4`).
+
+---
+
+## 9. EXCEL DASHBOARD (`reporting/excel_generator.py`) — 7 sheets
 
 **Class:** `ExcelGeneratorV6(data, date_str, run_time=None, prev_scores=None, gap_days=None)`
 
@@ -322,21 +358,11 @@ Real bug observed: SBIN (beta 0.2) came out at ₹12,126 vs CMP ₹1,108 (10.9×
 4. **🔔 Alert Log** — daily score changes, 8-way Action Required logic
 5. **📱 Delivery Preview** — WhatsApp + Email text preview
 6. **📖 Glossary** — 80+ column definitions
-7. **💡 Tooltip Reference** — Session 16 cell/group tooltips (`reporting/tooltip_formatter.py`)
+7. **💡 Tooltip Reference** — Polished hover + ⓘ cue (Session 16)
 
-### Key design constants
+### Dynamic red-header demotion (v10.4)
 
-- `NAVY = "1E293B"`, `WHITE = "FFFFFF"`, `LG = "F8FAFC"`
-- `VERDICT_STYLES` — includes new `OVERVALUED` (bg `FED7AA` / text `7C2D12`)
-- `FV_MODEL_KEYS` — M1–M7 + cfv/cfv_low/cfv_high → 0 values shown as `—`
-- `NO_FREE_SOURCE_COLS` — red headers (Piotroski F /9, Altman Z, Rev CAGR etc.)
-- `REQUIRED_COLS` — default values for all expected keys
-- `GOLD_COLS` — 41-column definition for Gold sheet
-- `GOLD_GROUPS` — section headers for Gold sheet
-
-### `self.run_time`
-
-Actual IST pipeline time (passed from master_funnel). Used in ALL time-sensitive headers. No hardcoded "20:30 IST" anywhere.
+Before rendering row-4 headers, walks the top-100 stocks and counts non-`"—"`, non-zero values per column. Columns in `NO_FREE_SOURCE_COLS` with ≥1 real value get their **normal section colour** instead of red. Columns that are genuinely empty for all 100 stocks keep the red `991B1B` header.
 
 ### Alert Log 8-way Action Required logic
 
@@ -353,28 +379,40 @@ Actual IST pipeline time (passed from master_funnel). Used in ALL time-sensitive
 ### Tooltip system (Session 16)
 
 `reporting/tooltip_formatter.py` (~980 lines). Three public helpers used by `excel_generator.py`:
-
 - `apply_tooltips(ws, row, col_map)` — per-cell hover + ⓘ indicator
 - `apply_group_tooltips(ws, row, group_cols)` — group-header tooltips
 - `build_reference_sheet(wb)` — populates the Tooltip Reference sheet
 
 ---
 
-## 9. BACKFILL (`backfill_history.py`)
+## 10. BACKFILL (`backfill_history.py`)
 
 Auto-runs when `daily_prices` has fewer than 50,000 rows (fresh DB).
 
 **Tables populated:**
-
 - `daily_prices` — 365 days of OHLCV per symbol
 - `symbol_master` — company names, sectors, cap categories
 - `technical_indicators` — all indicators per symbol (latest date)
 - `weekly_momentum` — 2w/4w/6w/8w changes + beta_90d
 - `delivery_stats` — daily delivery %
-- `fundamental_metrics` — PE, PB, ROE, EPS, etc. via yfinance
-- `shareholding` — Promoter/FII/DII/Pledge via yfinance
+- `fundamental_metrics` — PE, PB, ROE, EPS, + 18 forensic input columns (v10.2)
+- `shareholding` — Promoter/FII/DII/Pledge via yfinance + NSE corp-info API (v10.6)
 
-### Supertrend formula (corrected — was inverted)
+### NSE shareholding enrichment (v10.6)
+
+yfinance only provides `heldPercentInstitutions` (FII+DII combined), which is why `dii_pct` was hardcoded to 0.0 in line 1793. v10.6 adds an enrichment loop after the yfinance pass:
+
+```
+for each sh_row in sh_rows[:100] where dii_pct == 0:
+    _nse_sh = _nse_shareholding(symbol, session)     # returns diisTotal separately
+    if _nse_sh.get('dii_pct', 0) > 0:
+        update row with real DII, recompute public_float
+        time.sleep(0.3)   # NSE rate-limit guard
+```
+
+Console output: `NSE shareholding: enriched DII for N/M symbols`. On GitHub Actions runners, NSE API is often blocked by Akamai; on local Windows it usually works.
+
+### Supertrend formula (corrected)
 
 ```python
 sma20_st   = c.rolling(20).mean()
@@ -385,60 +423,58 @@ _sell_mask = c < (sma20_st - 0.5 * atr14)   # SELL
 
 Old formula had `c > st_up = BUY` which was inverted → always NEUTRAL. Fixed.
 
-### Current Ratio / Quick Ratio — 6 bug fixes
+### Current Ratio / Quick Ratio fixes
 
 - `_get_bs_row()` helper — keyword search without requiring "Total" prefix
 - Excludes "non current", "noncurrent", "other" from CA/CL row matching
 - Tries both `.NS` and `.BO` suffixes
 - Tries quarterly `balance_sheet` as fallback
-- Cap raised from 30 → **100 stocks per run**
+- Cap 100 stocks per run
 - Quick Ratio now `(CA − Inventory) / CL` (was `CR × 0.75`)
 
 ---
 
-## 10. INGESTION LAYER (Session 22 BSE resilience)
+## 11. INGESTION LAYER
 
 ### Gate check — `ingestion/orchestrator.py::gate_check`
 
-Six conditions, all must pass:
-
+Six conditions:
 - **C1** Weekday (Mon–Fri)
-- **C2** Not an NSE holiday (static `HOLIDAYS_2026` dict in the file)
-- **C3** NSE bhav copy URL available (HEAD request to nsearchives CDN)
-- **C4** BSE URL check — **IGNORED by master_funnel** (cloud/GitHub IPs can't reach the BSE HEAD endpoint; the `bse` pip package handles Akamai auth internally)
-- **C5** Data integrity — run in `master_funnel` AFTER download (`check_data_integrity`)
+- **C2** Not an NSE holiday (static `HOLIDAYS_2026`)
+- **C3** NSE bhav copy URL available (HEAD request)
+- **C4** BSE URL check — **IGNORED by master_funnel** (cloud IPs can't reach it; `bse` pip pkg handles internally)
+- **C5** Data integrity — run in `master_funnel` AFTER download
 - **C6** Minimum DB rows
 
 ### BSE downloads — `bse` pip package (singleton)
 
-`master_funnel` opens one `BSE()` client at pipeline start, reuses it for bhav + delivery + SME, closes it in the `finally` block. `_parse_bse_df` standardises column names to match the NSE schema.
+`master_funnel` opens one `BSE()` client at pipeline start, reuses it for bhav + delivery + SME, closes it in the `finally` block. `_parse_bse_df` standardises column names.
 
-### Reconciler — `ingestion/reconciler.py::reconcile_exchanges` (Session 22)
+### Reconciler — Session 22
 
 Merges NSE + BSE bhav on `isin`. `final_symbol` prefers NSE ticker, `final_close` prefers NSE close.
 
-**`DUAL_LISTED_ALLOWLIST`** — curated frozenset of 206 Nifty-100 + widely-traded mid-cap NSE tickers confirmed to trade on both exchanges. Used as a fallback: when BSE download fails (Cloudflare blocks, pip package missing, cloud IP issues), the reconciler would otherwise tag every stock as `NSE_ONLY`, including SBIN, TITAN, M&M. Instead it tags names from the allowlist as `DUAL_LISTED`. Non-listed stocks still default to `NSE_ONLY` — correct for ~95% of small/mid caps.
-
-Maintenance: rarely changes. New IPOs usually list on both. Removals happen only on delisting.
+**`DUAL_LISTED_ALLOWLIST`** — 206 Nifty-100/mid-cap NSE tickers. Fallback used when BSE download fails. Maintenance: rarely changes.
 
 ---
 
-## 11. AI LAYER (`ai/ai_analyst.py`)
+## 12. AI LAYER (`ai/ai_analyst.py`) — Gemini (migrated v10.1)
 
-- Uses `anthropic` SDK (migrated from deprecated `google-generativeai` in v7).
-- `ANTHROPIC_API_KEY` required — raises `ValueError` at import time if missing.
-- Master prompt loaded from `master_prompt/NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt` and passed as the `system` parameter. Batch stock data goes into the `user` message.
+- Uses `google-genai` SDK (migrated from `anthropic` in v10.1).
+- `GEMINI_API_KEY` or `GOOGLE_API_KEY` required — raises `ValueError` at import time if missing.
+- Model: `gemini-2.5-pro` (configurable via `GEMINI_MODEL` env var).
+- Master prompt loaded from `master_prompt/NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt`, passed as `system_instruction`. Batch stock data goes into the `contents` parameter.
 - `AI_BATCH_SIZE = 12` (10–15 per Section 0D).
 - `FundamentalEngine` pre-computes Graham number, PEG, and CFV so the model uses our values instead of estimating.
 
 ---
 
-## 12. INFRASTRUCTURE
+## 13. INFRASTRUCTURE
 
 ### GitHub Actions (`.github/workflows/market_run.yml`)
 
 - Cron: `0 0 * * 2-6` = 00:00 UTC = **05:30 IST**, Tue–Sat
-- Expected delivery: 06:00–06:30 IST (30–60 min GitHub queue delay)
+- Expected delivery: 06:00–06:30 IST
 - Runner: `ubuntu-latest`, Python 3.11
 - DB persistence: SQLite artifact `market-data-db`, 7-day retention, `overwrite: true`
 - Auto-backfill: if `daily_prices < 50,000` rows → run `backfill_history.py 365`
@@ -446,7 +482,7 @@ Maintenance: rarely changes. New IPOs usually list on both. Removals happen only
 ### Required GitHub Secrets
 
 ```
-ANTHROPIC_API_KEY        — Claude API for AI investor cards
+GEMINI_API_KEY           — Google Gemini API for AI investor cards (or GOOGLE_API_KEY)
 SENDER_EMAIL             — Gmail sender address
 SENDER_APP_PASSWORD      — Gmail 16-char App Password
 USER_EMAIL_ID            — Recipient email
@@ -456,143 +492,178 @@ TWILIO_AUTH_TOKEN        — WhatsApp delivery (optional)
 
 ---
 
-## 13. KEY CONSTANTS & THRESHOLDS
+## 14. KEY CONSTANTS & THRESHOLDS
 
 ```python
 # Screening
 STAGE1_MIN_DELIVERY      = 40      # %
 STAGE1_MIN_PRICE         = 10      # ₹
 STAGE1_CIRCUIT_THRESHOLD = 19.9    # %
-STAGE3_MAX_OVERRIDES     = 20
-STAGE3_MIN_LARGE         = 20      # guaranteed large caps
-STAGE3_MIN_MID           = 15      # guaranteed mid caps
-STAGE3_MAX_SMALL_MICRO   = 65      # cap on small+micro
+STAGE3_MIN_LARGE         = 20
+STAGE3_MIN_MID           = 15
+STAGE3_MAX_SMALL_MICRO   = 65
 
 # Scoring
 AVOID_BELOW              = 38
 BUY_MIN                  = {LARGE:60, MID:63, SMALL:66, MICRO:70}
 WATCH_MIN                = {LARGE:50, MID:53, SMALL:56, MICRO:60}
-MOS_GATE_FOR_BUY         = -10     # normal
-MOS_GATE_TECH_CONFIRMED  = -20     # if score≥70 + Supertrend=BUY + Stage 2
+MOS_GATE_FOR_BUY         = -10
+MOS_GATE_TECH_CONFIRMED  = -20
 MAX_SPIKE_BONUS_STRONG   = 10      # fundamental ≥ 55
-MAX_SPIKE_BONUS_WEAK     = 3       # fundamental < 55 (Session 24 cap)
-EARLY_MOVER_BONUS_FLOOR  = 50      # early_entry_score ≥ 50 → +5
+MAX_SPIKE_BONUS_WEAK     = 3       # fundamental < 55
+EARLY_MOVER_BONUS_FLOOR  = 50
 ANTI_TRIGGER_PENALTY     = -10
 
 # Fair Value (Session 19 guards)
-DCF_WACC_FLOOR           = 0.10    # 10% minimum WACC
-DCF_M1_CAP_MULTIPLE      = 4       # cap M1 at 4× CMP
-CFV_CAP_MULTIPLE         = 3       # cap composite CFV at 3× CMP
-DDM_DIV_YIELD_MIN        = 0.1     # % (below = no dividend)
-DDM_DIV_YIELD_MAX        = 15.0    # % (above = unit mismatch)
-DCF_GROWTH_CAP           = 30      # % max growth assumption
-DDM_DIV_GROWTH_CAP       = 6       # % max dividend growth
-GSEC_RATE                = 6.0     # % 10Y benchmark
-EQUITY_PREMIUM           = 5.5     # % added to Gsec for req. return
+DCF_WACC_FLOOR           = 0.10
+DCF_M1_CAP_MULTIPLE      = 4
+CFV_CAP_MULTIPLE         = 3
+DDM_DIV_YIELD_MIN        = 0.1
+DDM_DIV_YIELD_MAX        = 15.0
+DCF_GROWTH_CAP           = 30
+DDM_DIV_GROWTH_CAP       = 6
+GSEC_RATE                = 6.0
+EQUITY_PREMIUM           = 5.5
 
 # Backfill
-CR_SECOND_PASS_CAP       = 100     # stocks per run for balance_sheet fetch
-SUPERTREND_ATR_MULT      = 0.5     # SMA20 ± 0.5×ATR14
+CR_SECOND_PASS_CAP       = 100
+SUPERTREND_ATR_MULT      = 0.5
 BACKFILL_DAYS            = 365
+NSE_SHAREHOLDING_CAP     = 100     # v10.6 — top stocks for DII enrichment
+NSE_RATE_LIMIT_SEC       = 0.3     # v10.6 — sleep between NSE calls
 
 # Priority ranker
-VOL_SPIKE_CAP            = 5       # ×average (prevents ETF arb domination)
+VOL_SPIKE_CAP            = 5
 PRIORITY_W_VOL           = 25
 PRIORITY_W_QUALITY       = 30
 PRIORITY_W_DELIVERY      = 20
 PRIORITY_W_CAP           = 15
 PRIORITY_W_TURNOVER      = 10
 
-# Div yield normalisation (master_funnel)
-DIV_YIELD_BAD_THRESHOLD  = 12      # >12% = unit mismatch (store as pct/100)
-
 # AI batching
-AI_BATCH_SIZE            = 12      # stocks per Claude API call
+AI_BATCH_SIZE            = 12
 ```
 
 ---
 
-## 14. SESSION HISTORY — fixes applied
+## 15. VERSION HISTORY
 
-### Sessions 1–8 (v7 era, retained)
+### v10.0 (baseline — April 2026)
 
-Core data fixes, Excel + Alert Log, Early Detection fixes, Supertrend/Horizon/Risk, BS Health detailed flags, Current Ratio 3-bug fix, Cron + Glossary, ETF filter + Scoring improvements + Ghost keys. See earlier revisions of this file for details.
+Sessions 1–24 (v7 era + reorg). Core data fixes, Excel + Alert Log, Early Detection, Supertrend/Horizon/Risk, BS Health flags, Current Ratio 3-bug fix, Piotroski F wire-up, forensics numerics, tooltip system, DCF guards, BSE resilience, Gold archetype docs, Session 24 scoring polish (sentiment informedness, spike gate, confidence dots, OVERVALUED verdict).
 
-### Session 14 — Piotroski F wire-up
+### v10.1 — AI provider migration
 
-- `FundamentalEngine.calculate_piotroski_f_score()` — canonical 9 criteria (Profitability 4 + Leverage/Liquidity 3 + Efficiency 2)
-- Exported and called during Section 6 scoring loop
-- Realistic distribution on free data: 4–8 range (full 9 needs YoY comparisons)
+- `ai/ai_analyst.py` switched from `anthropic` SDK to `google-genai`
+- Uses `GEMINI_API_KEY` / `GOOGLE_API_KEY` env var
+- Model: `gemini-2.5-pro` (configurable via `GEMINI_MODEL`)
+- `requirements.txt` updated, GitHub workflow secret renamed
+- Master prompt now passed via `system_instruction` parameter
 
-### Session 15 — Forensics numerics + anti-trigger guard
+### v10.2 — Forensic columns DB infrastructure
 
-- `forensics_engine.calculate_altman_z()` — numeric float (was missing-data crash)
-- `forensics_engine.calculate_beneish_m()` — returns numeric M-score (was string "MANIPULATION_RISK"/"CLEAN")
-- Section 3H anti-trigger enforcement when displaying verdicts
+- Added 10 forensic-input columns to `fundamental_metrics` schema (ebit_cr, int_expense_cr, capex_cr, total_assets_cr, total_liab_cr, retained_earnings_cr, working_cap_cr, inventory_days, receivable_days, payable_days)
+- Expanded `_fm_ext` SELECT from 3 cols → 13 cols in master_funnel
+- Publishes `total_debt_cr`, `cash_cr`, `q_rev_cr`, `q_pat_cr`, `q_ebitda_cr` to stock dict
 
-### Session 16 — Tooltip system
+### v10.3 — QoQ historical lookup rewrite
 
-- `reporting/tooltip_formatter.py` with `TIPS`, `apply_tooltips`, `apply_group_tooltips`, `build_reference_sheet`
-- Cell-level ⓘ indicator + hover definition for every metric
-- New Tooltip Reference sheet (7th Excel sheet)
+- `get_historical_quarter_data` now reads from `shareholding` table (has `dii_pct`, unlike `v7_intelligence`)
+- Graceful fallback: oldest available row, then v7_intelligence legacy
+- Section 5A.5 forensics re-run added after DB enrichment (catches data missed by first pass)
 
-### Session 19 — DCF guards
+### v10.4 — Inline forensic fetcher + QoQ fix + dynamic headers
 
-- WACC floor at 10% (was producing ₹12k fair values on low-beta stocks)
-- M1 DCF capped at 4× CMP
-- Composite CFV capped at 3× CMP (200% MoS ceiling)
+- `forensics_engine.fetch_forensic_inputs(symbol)` — inline yfinance pull for balance_sheet/cashflow/income_stmt
+- Called from master_funnel for each top-100 stock before `calculate_accounting_forensics`
+- Fixed DataFrame `or`-chain ValueError bug (`inc = A or B` raises on DataFrames)
+- Removed `total_debt` from forensics return dict (was overwriting master_funnel's 3-tier fallback)
+- `cash` alias added so Excel's "Cash (₹Cr)" populates from balance sheet
+- **QoQ deltas**: now show `"—"` when no historical data (was returning `-current%` due to default=0)
+- `excel_generator.py`: dynamic red-header demotion when column has ≥1 real value
 
-### Session 22 — BSE resilience
+### v10.5 — Defensive schema init
 
-- Migrated to `bse` pip package (singleton client, one-open-many-uses)
-- Direct-URL BSE harvester calls removed
-- Gate check C4 ignored (cloud IPs can't HEAD the BSE URL)
-- `DUAL_LISTED_ALLOWLIST` of 206 Nifty-100 / mid-cap names — tagged as `DUAL_LISTED` when BSE bhav is empty
+- Added defensive `CREATE TABLE IF NOT EXISTS shareholding` + `ALTER TABLE ADD COLUMN` for 18 forensic columns at master_funnel startup
+- Reason: user's existing DB was missing `shareholding` table (created before it was added to `init_all_tables`)
+- Console output: `✅ v10.5: Defensive schema check passed`
 
-### Session 23 — Gold archetype documentation
+### v10.6 — ND/EBITDA annualization + DII separation + pledge default
 
-- Gold sheet admits two archetypes: MOMENTUM (high Early Entry) and VALUE (low EE but high Score + MoS + clean safety)
-- Tooltip copy updated to explain low-EE-on-Gold is correct, not a bug
-
-### Session 24 — Scoring polish (current)
-
-- **Sentiment informedness check** — redistribute 10% weight when no paid/AI signals fired
-- **Spike bonus gated** on fundamental quality — full +10 only if fund ≥ 55
-- **Confidence dots** — HIGH ●●● / MEDIUM ●●○ / LOW ●○○
-- **OVERVALUED verdict** — distinct from WATCHLIST, soft orange styling
-- Stage-2 inflation fix in master_funnel (upstream of scoring)
+- **Bug #1:** `forensics_engine.py` line 340 was using `q_ebitda_cr` (quarterly) in annual ND/EBITDA ratio, inflating by ~4×. Fix: prefer annual `ebitda` from yfinance `.info`; fallback to `q_ebitda_cr × 4`. Same annualization applied to Capex/Rev.
+- **Bug #2:** `forensics_engine.py` line 397 had default `"STABLE"` when no pledge data — misleading. Changed to `"—"`.
+- **Bug #3:** `backfill_history.py` line 1793 hardcoded `dii_pct = 0.0`. `_nse_shareholding()` existed but was never called. Wired in as an enrichment loop for top 100 stocks. Real DII values when NSE API responds.
 
 ---
 
-## 15. KNOWN ISSUES & LIMITATIONS
+## 16. KNOWN LIMITATIONS
 
 | Column | Limitation | Status |
 |---|---|---|
-| Current Ratio / Quick Ratio | yfinance missing for ~25–40% of Indian stocks | Fixed 2nd-pass balance_sheet; ~60–75% coverage |
-| Piotroski F-Score | No free source for true 9-point YoY comparisons | Proxy from available data (Session 14 wire-up) |
+| Current Ratio / Quick Ratio | yfinance missing for ~25–40% of Indian stocks | 2nd-pass balance_sheet; ~60–75% coverage |
+| Piotroski F-Score | No free source for true 9-point YoY comparisons | Proxy from available data |
 | PAT CAGR 3Y / Rev CAGR 3Y | Not in yfinance for Indian stocks | Red headers (no free source) |
 | Alert Log Prev Score | Blank on first run | Populates from run 2 onwards |
-| Smart Money FII/Promoter | QoQ depends on shareholding backfill | Improves after 2–3 runs |
-| Altman Z / Beneish M | Require paid balance-sheet feed | Display `—` when inputs missing |
+| Pledge % | Only in BSE corporate filings | Always 0 until paid source added |
+| DII % | NSE API may be blocked on cloud IPs | Real values when API responds, 0 otherwise (v10.6) |
+| QoQ deltas (Pro/FII/DII) | Need ≥ 90 days of `shareholding` history | Show `"—"` until accumulation (~3 months) |
 | BSE SME delivery % | Not available from BSE API | NSE delivery used as primary |
 | BSE downloads from cloud | Akamai blocks cloud IPs | Handled via `bse` pip pkg + allowlist fallback |
 
 ---
 
-## 16. PENDING / NEXT ACTIONS
+## 17. DIAGNOSTICS
 
-- [ ] Add retry logic for yfinance (currently single attempt per symbol)
-- [ ] Add Screener.in scraping for PAT CAGR / Rev CAGR data
-- [ ] WhatsApp bot: end-to-end test of ngrok + Twilio integration
-- [ ] Reduce AI batch size 12 → 8 if response truncation observed
-- [ ] FCF-yield based FV model (M8) for capital-light businesses
-- [ ] PAT CAGR in fundamental score (needs data source)
-- [ ] Verify ETFs = 0 in output after pipeline run
-- [ ] Expand DUAL_LISTED_ALLOWLIST as new IPOs confirm dual-listing
+### After deploying v10.5+
+
+Verify schema is correct:
+```powershell
+python -c "import sqlite3; c=sqlite3.connect('market_data.db'); print(c.execute('SELECT COUNT(*),MIN(date),MAX(date) FROM shareholding').fetchone())"
+```
+
+Verify forensic columns exist in `fundamental_metrics`:
+```powershell
+python -c "import sqlite3; c=sqlite3.connect('market_data.db'); print([r[1] for r in c.execute('PRAGMA table_info(fundamental_metrics)').fetchall() if r[1].endswith('_cr') or r[1].endswith('_days')])"
+```
+
+Test yfinance balance sheet for Indian tickers:
+```powershell
+python -c "import yfinance as yf; t=yf.Ticker('RELIANCE.NS'); print('BS rows:', list(t.balance_sheet.index)[:5] if not t.balance_sheet.empty else 'EMPTY')"
+```
+
+Check if forensics engine has the inline fetcher:
+```powershell
+python -c "from analysis.forensics_engine import ForensicsEngine; print('OK' if callable(ForensicsEngine.fetch_forensic_inputs) else 'MISSING')"
+```
+
+### After deploying v10.6
+
+Verify DII enrichment in DB:
+```powershell
+python -c "import sqlite3; c=sqlite3.connect('market_data.db'); print(c.execute('SELECT symbol, fii_pct, dii_pct FROM shareholding WHERE dii_pct > 0 LIMIT 10').fetchall())"
+```
+
+Console should show during pipeline run:
+```
+NSE shareholding: enriched DII for N/M symbols
+```
+If N is 0, NSE API is being blocked (common on GitHub Actions, typically works on local Windows).
+
+### Expected field population rates
+
+| Column | Typical (large-cap) | Typical (mid-cap) | Typical (small/micro) |
+|---|---|---|---|
+| ND/EBITDA | 70-85% | 50-70% | 20-40% |
+| Int Coverage | 40-70% | 30-50% | 15-30% |
+| CCC Days | 40-70% | 30-50% | 15-30% |
+| Altman Z | 50-80% | 40-60% | 20-40% |
+| Beneish M | 50-80% | 40-60% | 20-40% |
+| DII % | 60-90% (if NSE works) | 50-80% | 30-60% |
+| QoQ deltas | 0% initially, ~80% after 90 days | 0% → ~70% | 0% → ~50% |
 
 ---
 
-## 17. QUICK REFERENCE — KEY FUNCTION LOCATIONS
+## 18. QUICK REFERENCE — KEY FUNCTION LOCATIONS
 
 | Function / Block | File | Notes |
 |---|---|---|
@@ -604,58 +675,61 @@ Core data fixes, Excel + Alert Log, Early Detection fixes, Supertrend/Horizon/Ri
 | Stage 1 filter | `screening/pre_screener.py` | `stage_1_filter` |
 | Stage 2 quality | `screening/pre_screener.py` | `stage_2_fundamental_scorer` |
 | Stage 3 ranker | `screening/priority_ranker.py` | `get_top_100_candidates` |
-| Technical score | `master_funnel.py` | Section 6 scoring loop |
-| Fundamental score | `master_funnel.py` | Section 6 scoring loop |
-| Safety score | `master_funnel.py` | Section 6 scoring loop |
-| Sentiment score | `master_funnel.py` | Section 6 scoring loop |
-| Ghost-key derivation | `master_funnel.py` | Before storm-score call |
-| Sector Stage (2nd pass) | `master_funnel.py` | After Section 5 tech enrichment |
-| BS Health (2nd pass) | `master_funnel.py` | Before composite score |
-| Composite score + verdict + confidence | `analysis/scoring_engine.py` | `calculate_composite_score` + `_get_verdict_with_confidence` |
-| Storm score | `analysis/scoring_engine.py` | `calculate_storm_score` |
-| Fair Value engine | `analysis/fair_value_engine.py` | `calculate_all_models` + `get_composite_fair_value` |
-| DCF guards (WACC/M1/CFV caps) | `analysis/fair_value_engine.py` | Session 19 |
+| Defensive schema init (v10.5) | `master_funnel.py` | startup block ~line 251 |
+| Inline forensic fetch (v10.4) | `master_funnel.py` | in top-100 loop ~line 600 |
+| QoQ `"—"` fix (v10.4) | `master_funnel.py` | `_qoq()` helper ~line 530 |
+| Forensic re-run (v10.3) | `master_funnel.py` | Section 5A.5 ~line 1450 |
+| Forensic inline fetcher | `analysis/forensics_engine.py` | `fetch_forensic_inputs(symbol)` |
+| ND/EBITDA annualization (v10.6) | `analysis/forensics_engine.py` | ~line 340 |
+| Pledge default `"—"` (v10.6) | `analysis/forensics_engine.py` | ~line 397 |
+| NSE DII enrichment (v10.6) | `backfill_history.py` | after yfinance pass ~line 1800 |
+| NSE corp-info API | `backfill_history.py` | `_nse_shareholding()` |
+| Composite score + verdict | `analysis/scoring_engine.py` | `calculate_composite_score` |
+| DCF guards | `analysis/fair_value_engine.py` | Session 19 |
 | Piotroski F-Score | `analysis/fundamental_engine.py` | `calculate_piotroski_f_score` |
 | Altman Z / Beneish M | `analysis/forensics_engine.py` | `calculate_altman_z` / `calculate_beneish_m` |
-| Horizon + Risk Level | `master_funnel.py` | AFTER storm score |
-| Blank name/sector filter | `master_funnel.py` | Before Excel generation |
 | Excel generator (7 sheets) | `reporting/excel_generator.py` | `class ExcelGeneratorV6` |
-| Tooltip system | `reporting/tooltip_formatter.py` | `TIPS`, `apply_tooltips`, `build_reference_sheet` |
+| Dynamic red-header (v10.4) | `reporting/excel_generator.py` | ~line 1183 |
 | Alert Log | `reporting/excel_generator.py` | `_alert_log()` |
-| AI investor cards | `ai/ai_analyst.py` | `get_ai_analysis` (Anthropic) |
+| AI investor cards | `ai/ai_analyst.py` | `get_ai_analysis` (Gemini) |
 | Email delivery | `reporting/email_service.py` | `send_analysis_email` |
-| Supertrend formula | `backfill_history.py` | SMA+ATR approach |
-| CR/QR 2nd pass | `backfill_history.py` | `_get_bs_row` + 2nd-pass block |
+| Historical QoQ lookup (v10.3) | `database/data_bridge.py` | `get_historical_quarter_data` |
 | 90-day DB queue | `database/db_maintenance.py` | `enforce_circular_queue` |
 
 ---
 
-## 18. IMPORTANT DO-NOT-TOUCH RULES
+## 19. IMPORTANT DO-NOT-TOUCH RULES
 
-1. **Never add filters based on `company_name` or `sector` in Stage 1** — these fields are empty at Stage 1 time (FM enrichment hasn't run yet). Add such filters only after Section 5.
-
+1. **Never add filters based on `company_name` or `sector` in Stage 1** — these fields are empty at Stage 1 time. Add such filters only after Section 5.
 2. **Never compute `horizon` or `risk_level` before `calculate_composite_score()`** — `verdict` doesn't exist before that call.
-
-3. **Never recompute `Sector Stage` before technical data loads** — RSI/MACD/Supertrend are loaded at Section 5. Earlier computation uses 0/NEUTRAL defaults.
-
+3. **Never recompute `Sector Stage` before technical data loads** — RSI/MACD/Supertrend are loaded at Section 5.
 4. **Never change `FV_MODEL_KEYS`** — controls which zero values get shown as `—` in Excel.
-
-5. **DDM guard: `0.1 < div_yield_pct < 15.0`** — values outside this range indicate unit mismatch or no dividend. Do not relax.
-
-6. **DCF guards are non-negotiable** — WACC floor 10%, M1 cap 4× CMP, composite CFV cap 3× CMP. These prevent the SBIN-style ₹12k fair-value bug.
-
+5. **DDM guard: `0.1 < div_yield_pct < 15.0`** — values outside indicate unit mismatch. Do not relax.
+6. **DCF guards are non-negotiable** — WACC floor 10%, M1 cap 4× CMP, composite CFV cap 3× CMP.
 7. **`run_time` not hardcoded times** — all time-sensitive strings in excel_generator use `self.run_time`.
-
-8. **Backfill runs on GitHub Actions** — yfinance rate limits apply. CR second pass capped at 100/run for safety. Do not raise significantly.
-
-9. **Load `latest_analysis_results` BEFORE saving today's scores** — otherwise Alert Log's Score Δ is always 0. Two-step pattern enforced in master_funnel Section 10.
-
-10. **Gate check C4 (BSE URL HEAD) is intentionally ignored by master_funnel** — cloud IPs can't reach it. BSE always routes through the `bse` pip package. Don't re-enable the C4 halt.
-
-11. **Do not quote song lyrics, poems, or paid articles in AI cards** — the master prompt enforces paraphrase-only output.
-
-12. **OVERVALUED is NOT the same as WATCHLIST** — keep verdict categories distinct in both scoring and Excel styling.
+8. **Backfill runs on GitHub Actions** — yfinance rate limits apply. CR second pass capped at 100/run.
+9. **Load `latest_analysis_results` BEFORE saving today's scores** — otherwise Alert Log's Score Δ is always 0.
+10. **Gate check C4 (BSE URL HEAD) is intentionally ignored** — cloud IPs can't reach it. BSE routes through `bse` pip package.
+11. **Do not quote song lyrics, poems, or paid articles in AI cards** — master prompt enforces paraphrase-only output.
+12. **OVERVALUED is NOT the same as WATCHLIST** — keep verdict categories distinct.
+13. **`q_ebitda_cr` and `q_rev_cr` are QUARTERLY** — the DB column names are misleading. Always annualize (×4) when computing annual ratios.
+14. **forensics_engine must NEVER set `total_debt`** — master_funnel has a 3-tier fallback that would be overwritten. Use `total_debt_cr` only.
+15. **Forensics default fields must be `"—"` not 0 or "STABLE"** — misleading placeholders inflate composite scores and confuse Alert Log.
 
 ---
 
-*Last updated: April 2026 · v10.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 20. PENDING / NEXT ACTIONS
+
+- [ ] Add retry logic for yfinance (currently single attempt per symbol)
+- [ ] Add Screener.in scraping for PAT CAGR / Rev CAGR data
+- [ ] WhatsApp bot: end-to-end test of ngrok + Twilio integration
+- [ ] Reduce AI batch size 12 → 8 if response truncation observed
+- [ ] FCF-yield based FV model (M8) for capital-light businesses
+- [ ] PAT CAGR in fundamental score (needs data source)
+- [ ] Verify ETFs = 0 in output after pipeline run
+- [ ] Expand DUAL_LISTED_ALLOWLIST as new IPOs confirm dual-listing
+- [ ] Investigate BSE corporate filings API for Pledge % and separate DII (paid)
+
+---
+
+*Last updated: April 2026 · v10.6 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
