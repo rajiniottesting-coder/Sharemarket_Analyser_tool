@@ -744,10 +744,15 @@ def compute_technicals(hist):
     _sell_mask = c < (sma20_st - 0.5 * atr14)
     supertr[_buy_mask]  = 'BUY'
     supertr[_sell_mask] = 'SELL'
+    # v10.9: Resist/Support 1 = short-term swing (20d), Resist/Support 2 = 52-week.
+    # Pre-v10.9 used 20d vs 40d which produced R1==R2 for 87% of stocks (any stock
+    # at/near 40-day high has the same 20-day high too — common in trending stocks).
+    # 52-week provides a genuinely separate "major ceiling / floor" reference.
+    _lb2 = min(252, len(h))   # 252 trading days = 52 weeks; degrade gracefully
     sup1    = l.rolling(20).min()
-    sup2    = l.rolling(40).min()
+    sup2    = l.rolling(_lb2).min() if _lb2 >= 60 else l.rolling(max(40, len(h))).min()
     res1    = h.rolling(20).max()
-    res2    = h.rolling(40).max()
+    res2    = h.rolling(_lb2).max() if _lb2 >= 60 else h.rolling(max(40, len(h))).max()
 
     def _v(s):
         val = s.iloc[-1]

@@ -1469,16 +1469,19 @@ def run_master_pipeline():
                 stock.setdefault("earn_yield",    _fvn(ey))
                 # Normalise div_yield to % regardless of how it was stored:
                 # DB stores fraction (0.0224), old rows may store % (2.24) or bad (224)
+                # v10.9: Non-dividend stocks (raw=0) show '—' instead of 0 — clearer
+                # distinction between "no dividend" and "0% yield".
                 _dy_raw = _fvn(dy)
                 if _dy_raw <= 0:
-                    _dy_pct = 0.0
-                elif _dy_raw > 12:
-                    _dy_pct = round(_dy_raw / 100, 4)   # 22→0.22%, 224→2.24%
-                elif _dy_raw < 1.0:
-                    _dy_pct = round(_dy_raw * 100, 4)   # 0.0224 → 2.24%
+                    stock["div_yield"] = "—"   # v10.9: non-dividend → dash
                 else:
-                    _dy_pct = round(_dy_raw, 4)          # 2.24 already %
-                stock["div_yield"] = _dy_pct   # direct assignment: always normalise
+                    if _dy_raw > 12:
+                        _dy_pct = round(_dy_raw / 100, 4)   # 22→0.22%, 224→2.24%
+                    elif _dy_raw < 1.0:
+                        _dy_pct = round(_dy_raw * 100, 4)   # 0.0224 → 2.24%
+                    else:
+                        _dy_pct = round(_dy_raw, 4)          # 2.24 already %
+                    stock["div_yield"] = _dy_pct
                 stock.setdefault("payout_ratio",  _fv(payout_v) if _fvn(payout_v) > 0 else "—")
 
             # Enrich from shareholding
@@ -1559,6 +1562,64 @@ def run_master_pipeline():
                 stock["rotation_stage"] = "NEUTRAL"
 
         # ─────────────────────────────────────────────────────────────────────
+        # SECTION 5A.4: QoQ RECOMPUTE (v10.9)
+        # The first _qoq() pass at line ~544 runs BEFORE Section 5 shareholding
+        # enrichment. At that point stock['promoter_pct']=0 (not yet populated),
+        # so delta = 0 - historical = -historical, producing the "-current%" bug.
+        # Now that Section 5 has loaded real promoter_pct / fii_pct / dii_pct
+        # values, recompute QoQ deltas honestly. historical_map is still in scope.
+        # ─────────────────────────────────────────────────────────────────────
+        print("🔄 [Section 5A.4] Recomputing Pro/FII/DII QoQ deltas with enriched current values...")
+        _qoq_fixed = 0
+        for stock in final_100_list:
+            _sym = stock.get("symbol", "")
+            _hd = historical_map.get(_sym) or {}
+            if not _hd:
+                continue
+
+            def _qoq_v109(curr_key, hist_key):
+                cv_raw = stock.get(curr_key, 0)
+                try:
+                    cv = float(cv_raw) if cv_raw not in (None, "", "—") else 0.0
+                except (ValueError, TypeError):
+                    cv = 0.0
+                if hist_key in _hd and _hd[hist_key] is not None:
+                    try:
+                        pv = float(_hd[hist_key])
+                        if pv > 0 and cv > 0:
+                            return round(cv - pv, 2)
+                    except (ValueError, TypeError):
+                        pass
+                return "—"
+
+            _new_pqoq = _qoq_v109("promoter_pct", "promoter_pct")
+            _new_fqoq = _qoq_v109("fii_pct",      "fii_pct")
+            _new_dqoq = _qoq_v109("dii_pct",      "dii_pct")
+
+            # Only overwrite if new value is a real number or the old one was clearly wrong
+            _old_pqoq = stock.get("promoter_qoq")
+            if _new_pqoq != "—":
+                stock["promoter_qoq"] = _new_pqoq
+                _qoq_fixed += 1
+            elif isinstance(_old_pqoq, (int, float)) and abs(float(_old_pqoq)) > 10:
+                # Old value was the -current bug; correct to "—"
+                stock["promoter_qoq"] = "—"
+
+            _old_fqoq = stock.get("fii_qoq")
+            if _new_fqoq != "—":
+                stock["fii_qoq"] = _new_fqoq
+            elif isinstance(_old_fqoq, (int, float)) and abs(float(_old_fqoq)) > 10:
+                stock["fii_qoq"] = "—"
+
+            _old_dqoq = stock.get("dii_qoq")
+            if _new_dqoq != "—":
+                stock["dii_qoq"] = _new_dqoq
+            elif isinstance(_old_dqoq, (int, float)) and abs(float(_old_dqoq)) > 10:
+                stock["dii_qoq"] = "—"
+        print(f"   ✅ QoQ recompute: {_qoq_fixed} stocks got real deltas "
+              f"(others show '—' — no history in shareholding table yet)")
+
+        # ─────────────────────────────────────────────────────────────────────
         # SECTION 5A.5: FORENSICS RE-RUN (v10.2)
         # After Section 5 enrichment, stock dicts now carry the forensic
         # inputs (ebit_cr, int_expense_cr, total_assets_cr, etc.) pulled from
@@ -1607,7 +1668,16 @@ def run_master_pipeline():
             # ── Failsafe: normalise div_yield right before FV engine call ──
             # Ensures correct % regardless of which path set stock["div_yield"]
             # Handles all DB formats: fraction (0.022), % (2.2), bad unit (220)
-            _dy_pre = float(stock.get("div_yield", 0) or 0)
+            # v10.9: guard against '—' string set by the non-dividend branch
+            # at line ~1481 — without this guard, float('—') crashes the loop.
+            _dy_raw_fs = stock.get("div_yield", 0)
+            if _dy_raw_fs in (None, "", "—", "--"):
+                _dy_pre = 0.0
+            else:
+                try:
+                    _dy_pre = float(_dy_raw_fs)
+                except (ValueError, TypeError):
+                    _dy_pre = 0.0
             if _dy_pre > 12:
                 stock["div_yield"] = round(_dy_pre / 100, 4)   # 220 → 2.2%
             elif 0 < _dy_pre < 1.0:

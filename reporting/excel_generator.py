@@ -549,16 +549,18 @@ GLOSSARY_DATA = [
      "'—' when OHLC data incomplete. "
      "Candlestick patterns are more reliable near key support/resistance levels.","Full Dashboard"),
     ("TECHNICAL","Support 1 (₹)",
-     "Nearest support level below CMP — price where buying is historically strong. "
-     "Stop loss should be placed slightly below Support 1.","Full Dashboard"),
+     "Short-term support = 20-day rolling low. Nearest price floor — "
+     "place stop loss slightly below Support 1.","Full Dashboard"),
     ("TECHNICAL","Support 2 (₹)",
-     "Second support level — deeper pullback zone. "
-     "If price breaks Support 1 with volume, next target is Support 2.","Full Dashboard"),
+     "Major long-term support = 52-week low (v10.9; was 40d before). "
+     "If price breaks Support 1 with volume, next target is Support 2. "
+     "Meaningful distance from Support 1 for most stocks now.","Full Dashboard"),
     ("TECHNICAL","Resist 1 (₹)",
-     "Nearest resistance level above CMP — price where selling pressure is historically strong. "
+     "Short-term resistance = 20-day rolling high. Nearest price ceiling — "
      "Target 1 is typically set at Resist 1.","Full Dashboard"),
     ("TECHNICAL","Resist 2 (₹)",
-     "Second resistance level. Target 2 / Target 3 set at Resist 2.","Full Dashboard"),
+     "Major long-term resistance = 52-week high (v10.9; was 40d before, "
+     "which caused R1==R2 for 87% of stocks). Target 2/T3 set at Resist 2.","Full Dashboard"),
 
     # ── BALANCE SHEET ─────────────────────────────────────────────────────────
     ("BALANCE SHEET","BS Health Note",

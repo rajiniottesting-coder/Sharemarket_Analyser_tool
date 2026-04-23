@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · Version 10.6 · April 2026
+## AI Context File · Version 10.9 · April 2026
 
 This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. **Read it first** before making any change.
 
@@ -234,6 +234,12 @@ Redistributed: Fund×0.389 + Tech×0.333 + EE×0.167 + Safe×0.111
 + Spike bonus (+2 per trigger, max +10 if fund ≥ 55, else max +3)
 + Early Mover bonus (+5 if early_entry_score ≥ 50)
 − Anti-trigger penalty (−10 if risk_flag_active)
++ v10.9 Forensic Quality Adjustment (−10 min to +8 max)
+    Altman Z      ≥ 3.0  → +3   |  < 1.8  → −5
+    Earn Quality  HIGH   → +2   |  LOW    → −3
+    ND / EBITDA   < 1.0  → +1   |  > 5.0  → −2
+    Int Coverage  > 5×   → +2   |  < 1.5× → −3
+    Missing data → no adjustment (doesn't penalise stocks without forensics)
 ```
 
 **Session 24 refinements:**
@@ -412,6 +418,18 @@ for each sh_row in sh_rows[:100] where dii_pct == 0:
 
 Console output: `NSE shareholding: enriched DII for N/M symbols`. On GitHub Actions runners, NSE API is often blocked by Akamai; on local Windows it usually works.
 
+### Resistance / Support formula (v10.9 corrected)
+
+```python
+_lb2  = min(252, len(h))               # 52 weeks, with graceful degradation
+sup1  = l.rolling(20).min()            # short-term swing low
+sup2  = l.rolling(_lb2).min()          # 52-week low (major floor)
+res1  = h.rolling(20).max()            # short-term swing high
+res2  = h.rolling(_lb2).max()          # 52-week high (major ceiling)
+```
+
+Pre-v10.9 had `sup2 = rolling(40).min()` / `res2 = rolling(40).max()`. Because the screener targets momentum stocks near highs, 87% of stocks had `res1 == res2` — the 20-day high WAS the 40-day high. Now R2 is a genuinely different long-term reference level.
+
 ### Supertrend formula (corrected)
 
 ```python
@@ -514,6 +532,18 @@ MAX_SPIKE_BONUS_WEAK     = 3       # fundamental < 55
 EARLY_MOVER_BONUS_FLOOR  = 50
 ANTI_TRIGGER_PENALTY     = -10
 
+# v10.9 Forensic Quality Adjustment thresholds (cap: +8 max / −10 min)
+FORENSIC_ALTMAN_Z_SAFE      = 3.0    # ≥ this → +3 (safe zone)
+FORENSIC_ALTMAN_Z_DISTRESS  = 1.8    # < this → −5 (distress zone)
+FORENSIC_EQ_HIGH_BONUS      = 2      # Earn Quality = HIGH → +2
+FORENSIC_EQ_LOW_PENALTY     = -3     # Earn Quality = LOW → −3
+FORENSIC_NDE_SAFE           = 1.0    # ND/EBITDA < this → +1
+FORENSIC_NDE_HIGH           = 5.0    # ND/EBITDA > this → −2
+FORENSIC_IC_STRONG          = 5.0    # Int Coverage > this → +2
+FORENSIC_IC_WEAK            = 1.5    # Int Coverage < this → −3
+FORENSIC_ADJ_MAX_BONUS      = 8      # cap on total positive adjustment
+FORENSIC_ADJ_MAX_PENALTY    = -10    # cap on total negative adjustment
+
 # Fair Value (Session 19 guards)
 DCF_WACC_FLOOR           = 0.10
 DCF_M1_CAP_MULTIPLE      = 4
@@ -593,6 +623,32 @@ Sessions 1–24 (v7 era + reorg). Core data fixes, Excel + Alert Log, Early Dete
 - **Bug #1:** `forensics_engine.py` line 340 was using `q_ebitda_cr` (quarterly) in annual ND/EBITDA ratio, inflating by ~4×. Fix: prefer annual `ebitda` from yfinance `.info`; fallback to `q_ebitda_cr × 4`. Same annualization applied to Capex/Rev.
 - **Bug #2:** `forensics_engine.py` line 397 had default `"STABLE"` when no pledge data — misleading. Changed to `"—"`.
 - **Bug #3:** `backfill_history.py` line 1793 hardcoded `dii_pct = 0.0`. `_nse_shareholding()` existed but was never called. Wired in as an enrichment loop for top 100 stocks. Real DII values when NSE API responds.
+
+### v10.7 — Bridge code guard (critical)
+
+- **Critical bug:** `master_funnel.py` lines 1141-1153 did direct assignments of DB-read forensic inputs onto `stock` dict. Because `backfill_history.py` never writes to those DB columns (schema-only), the DB tuple was always `(0, 0, 0, ...)`. The direct assignment **clobbered** valid values the v10.4 inline fetcher had placed. Consequence: Int Coverage / CCC Days / Altman Z / Beneish M all showed `—` for every stock.
+- **Fix:** replaced 13 direct assignments with a `_pub(key, db_val)` helper that only overwrites when `db_val > 0`. Now when the DB is empty, v10.4 inline-fetched values are preserved.
+
+### v10.8 — Three display fixes
+
+- **Earn Quality:** raw `cfo/pat` ratio → categorical **HIGH / MODERATE / LOW / —** in `forensics_engine.py`. Thresholds: ≥0.8 HIGH, 0.5-0.8 MODERATE, <0.5 LOW, PAT≤0 shows `—`. (Tooltip already promised HIGH/LOW — output now matches.)
+- **Pledge Direction:** explicit case for `curr==0 AND prev==0 → "—"` in `master_funnel.py`. Previously defaulted to `"STABLE"` when both were zero (misleading — implied measured no-change when really there was no data at all).
+- **Upside to FV % column removed** from Full Dashboard — was mathematically identical to MoS % (both use `(CFV-CMP)/CMP*100`). FAIR VALUE span reduced 13→12, all subsequent group starts shifted left by 1. Total columns: 124→123. The `upside` key remains in stock dict for AI analyst / command_parser backward compat.
+
+### v10.9 — QoQ placement fix + Resist/Support 2 + forensic scoring
+
+- **Critical bug — QoQ placement:** the `_qoq()` call at master_funnel line ~544 ran in Section 3 BEFORE Section 5 shareholding enrichment. At that point `stock['promoter_pct']` was 0, so delta = `0 - historical = -historical`, producing the `-current%` bug for 81/84 stocks (e.g., HINDUNILVR promoter=62.27, ΔQoQ=-62.27). Fix: added **Section 5A.4 QoQ recompute block** after line 1485 shareholding enrichment. Uses now-populated current values; falls back to `"—"` when no real history (same honest-display semantics as v10.4).
+- **Resist 2 / Support 2:** was `h.rolling(40).max()` / `l.rolling(40).min()`. For stocks at or near 40-day highs/lows (common in the screener's top-100), R1 and R2 returned the same number (87% of stocks had R1==R2). Now uses a **52-week window** (252 trading days, with graceful degradation for newer stocks) so R2 is genuinely a major long-term resistance distinct from R1's 20-day swing high. Same for Support 2.
+- **Forensic quality adjustment in scoring:** `ND/EBITDA`, `Int Coverage`, `Altman Z`, `Earn Quality` were populated end-to-end through v10.2-v10.8 but **never used in composite score**. Added a new adjustment block in `ScoringEngine.calculate_composite_score()` that caps at +8 bonus / −10 penalty:
+  - Altman Z ≥3.0: +3 (safe zone) | <1.8: −5 (distress)
+  - Earn Quality HIGH: +2 | LOW: −3
+  - ND/EBITDA <1.0: +1 (strong solvency) | >5.0: −2 (high leverage)
+  - Int Coverage >5×: +2 | <1.5×: −3 (distress)
+  - Absent data → no adjustment (doesn't penalise stocks with missing forensics)
+  - Missing data guards use `_fnum()` helper that returns None for `'—'`, `''`, None, etc.
+  - Output dict now includes `forensic_adj` (signed int) and `forensic_factors` (pipe-separated string like `"AltmanZ≥3:+3|EQ=HIGH:+2|IC>5x:+2"`) for debugging / display.
+- **Div Yield = 0 → `"—"`:** non-dividend stocks now display `"—"` instead of `0` to distinguish "no dividend policy" from a genuine 0% yield. Both the primary (line ~1481) and failsafe (line ~1668) branches guarded.
+- **Tooltip + glossary updates:** `Score /100`, `Verdict`, `Resist 2 (₹)`, `Support 2 (₹)` tooltips all updated to document the new logic and thresholds. Glossary entries for Support/Resist 1/2 explain the 20d vs 52w distinction.
 
 ---
 
@@ -732,4 +788,4 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 
 ---
 
-*Last updated: April 2026 · v10.6 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: April 2026 · v10.9 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

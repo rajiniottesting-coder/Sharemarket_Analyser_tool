@@ -137,6 +137,73 @@ class ScoringEngine:
         if data.get('risk_flag_active', False):
             final_score -= 10
 
+        # ────────────────────────────────────────────────────────────────────
+        # v10.9 FORENSIC QUALITY ADJUSTMENT
+        # ────────────────────────────────────────────────────────────────────
+        # The v10.2-v10.8 work populated forensic fields (Altman Z, ND/EBITDA,
+        # Int Coverage, Earn Quality) but these were never used in scoring.
+        # Now they act as a quality gate: +8 max bonus for genuinely safe
+        # businesses, -10 max penalty for distress signals. Keeps fundamental
+        # and technical as the primary drivers — forensic is the tiebreaker.
+        #
+        # All contributions are guarded against missing data ("—", None, "")
+        # so absent forensics don't penalise a stock.
+        def _fnum(v):
+            try:
+                if v in (None, "", "—", "--", "N/A"): return None
+                return float(v)
+            except (ValueError, TypeError): return None
+
+        forensic_adj = 0
+        _contributors = []
+
+        # 1. ALTMAN Z — bankruptcy risk
+        #    > 3.0: "safe zone"  (+3)
+        #    1.8–3.0: "grey zone" (no adjustment)
+        #    < 1.8: "distress zone" (-5)
+        _alt = _fnum(data.get('altman_z'))
+        if _alt is not None:
+            if _alt >= 3.0:
+                forensic_adj += 3; _contributors.append(f"AltmanZ≥3:+3")
+            elif _alt < 1.8:
+                forensic_adj -= 5; _contributors.append(f"AltmanZ<1.8:-5")
+
+        # 2. EARN QUALITY — categorical v10.8 output
+        #    HIGH: cash flow matches profits (+2)
+        #    MODERATE: (no adjustment)
+        #    LOW: accounting concern (-3)
+        _eq = str(data.get('earnings_quality', '') or '').upper()
+        if _eq == "HIGH":
+            forensic_adj += 2; _contributors.append("EQ=HIGH:+2")
+        elif _eq == "LOW":
+            forensic_adj -= 3; _contributors.append("EQ=LOW:-3")
+
+        # 3. ND/EBITDA — leverage solvency
+        #    < 1.0: strong solvency (+1)
+        #    1.0–3.0: healthy (no adjustment)
+        #    > 5.0: high leverage warning (-2)
+        _nde = _fnum(data.get('nd_ebitda'))
+        if _nde is not None:
+            if _nde < 1.0:
+                forensic_adj += 1; _contributors.append("ND/EBITDA<1:+1")
+            elif _nde > 5.0:
+                forensic_adj -= 2; _contributors.append("ND/EBITDA>5:-2")
+
+        # 4. INT COVERAGE — can the company service interest?
+        #    > 5x: comfortable (+2)
+        #    2x–5x: OK (no adjustment)
+        #    < 1.5x: distress warning (-3)
+        _ic = _fnum(data.get('int_coverage'))
+        if _ic is not None:
+            if _ic > 5.0:
+                forensic_adj += 2; _contributors.append("IC>5x:+2")
+            elif _ic < 1.5:
+                forensic_adj -= 3; _contributors.append("IC<1.5x:-3")
+
+        # Cap contributions: +8 max bonus, -10 max penalty
+        forensic_adj = max(-10, min(8, forensic_adj))
+        final_score += forensic_adj
+
         final_score = max(0, min(100, final_score))  # Clamp 0-100
 
         # C. Verdict derivation with confidence + OVERVALUED (fixes #4, #5)
@@ -158,6 +225,8 @@ class ScoringEngine:
             "verdict_display":    verdict_info["display"],
             "label":              self._assign_quick_pick(data, final_score),
             "weights_used":       _weights_used,
+            "forensic_adj":       forensic_adj,               # v10.9
+            "forensic_factors":   "|".join(_contributors) if _contributors else "",  # v10.9
         }
 
     def calculate_storm_score(self, data, market_vix, market_off_peak):

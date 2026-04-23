@@ -66,12 +66,20 @@ TIPS: Dict[str, Tuple[str, str]] = {
                 "NEUTRAL: above AVOID floor but below WATCHLIST min.\n"
                 "AVOID: Score<38. Cutoffs: LARGE≥60, MID≥63, SMALL≥66, MICRO≥70.\n"
                 "Tech Override: MoS relaxes to −20% if Score≥70+ST=BUY+Stage 2.\n"
-                "Confidence dots (Session 24): ●●●HIGH ●●○MED ●○○LOW."),
+                "Confidence dots (Session 24): ●●●HIGH ●●○MED ●○○LOW.\n"
+                "v10.9: Score also carries a forensic quality adjustment\n"
+                "from Altman Z / Earn Quality / ND-EBITDA / Int Coverage\n"
+                "(max +8 / min −10) — see Score /100 tooltip for detail."),
     "Score /100": ("≥70 strong · ≥60 watch · <38 avoid",
                    "Weighted composite (0-100):\n"
                    "Fundamental 35% + Technical 30% + EarlyEntry 15%\n"
                    "+ Sentiment 10% + Safety 10% + MoS adj (−10 to +12)\n"
                    "+ Spike bonus (max +10) + Early Mover +5 − Risk −10.\n"
+                   "v10.9 Forensic Quality Adjustment (max +8, min −10):\n"
+                   "  Altman Z ≥3: +3 | <1.8: −5\n"
+                   "  Earn Quality HIGH: +2 | LOW: −3\n"
+                   "  ND/EBITDA <1: +1 | >5: −2\n"
+                   "  Int Coverage >5x: +2 | <1.5x: −3\n"
                    "BUY cutoffs by cap: LARGE≥60, MID≥63, SMALL≥66, MICRO≥70.\n"
                    "Session 24: sentiment redistributes when no paid signals;\n"
                    "spike bonus capped at +3 if fundamental<55."),
@@ -429,12 +437,18 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # ── Support / resistance ────────────────────────────────────────────────
     "Support 1 (₹)": ("Nearest support = buy zone floor",
                       "20-day rolling low. Breach = bearish. Used for Stop Loss."),
-    "Support 2 (₹)": ("Deeper support level",
-                      "40-day rolling low. Next level if Support 1 breaks."),
+    "Support 2 (₹)": ("Major floor — 52-week low",
+                      "Lowest price in the last 252 trading days (~52 weeks).\n"
+                      "v10.9: was 40-day min; now a genuine long-term support\n"
+                      "level, distinct from Support 1 (20d swing low)."),
     "Resist 1 (₹)": ("First resistance = Target 1",
                      "20-day rolling high. Breakout with volume = bullish."),
-    "Resist 2 (₹)": ("Stronger resistance = Target 2",
-                     "40-day rolling high. Used as Target 2."),
+    "Resist 2 (₹)": ("Major supply ceiling — 52-week high",
+                     "Highest price in the last 252 trading days (~52 weeks).\n"
+                     "v10.9: was 40-day max in prior versions; 87% of stocks\n"
+                     "had R1=R2 because a 40d max often coincides with 20d.\n"
+                     "Now a genuine long-term resistance level, meaningfully\n"
+                     "distinct from Resist 1 (20d swing high)."),
 
     # ── Balance sheet health ────────────────────────────────────────────────
     "BS Health Flag": ("HEALTHY = safe | WATCH = monitor | ALERT = danger",
@@ -559,7 +573,11 @@ GROUP_TIPS: Dict[str, Tuple[str, str]] = {
                  "Identifies the stock and its segment — not scored."),
     "SCORES": ("Core conviction scores — read this first",
                "Verdict • Composite /100 • Early Entry /100 • Spike /6 • Storm /10.\n"
-               "Summarises the whole analysis in one strip."),
+               "Summarises the whole analysis in one strip.\n"
+               "v10.9: Composite /100 includes forensic quality adjustment\n"
+               "(Altman Z, Earn Quality, ND/EBITDA, Int Coverage) capped at\n"
+               "+8 bonus / −10 penalty. See 'Score /100' cell tooltip for\n"
+               "specific thresholds."),
     "PRICE & MARKET": ("Current price, volume, liquidity, volatility",
                        "CMP, Day Chg, 52W range, volume spike, delivery %, beta.\n"
                        "What the market is doing with this stock TODAY."),
