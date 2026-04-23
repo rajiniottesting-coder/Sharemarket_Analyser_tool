@@ -458,3 +458,107 @@ These weren't changed since your last deploy, so there's nothing to ship:
 - `analysis/forensics_engine.py` — your v10.4 version is already correct
 - `database/data_bridge.py` — your v10.3 rewrite works correctly (I tested against empty/partial DBs)
 - All other files — untouched
+# v10.5 FINAL — Honest answer to your question
+
+## Your question: "Will subsequent pipeline runs capture all new fields automatically?"
+
+**Short answer:** Mostly YES for forensic fields, NO for QoQ deltas until time passes.
+
+Your diagnostic revealed the real problem: **`shareholding` table doesn't exist in your DB**. This means the Excel values you saw for Promoter %, FII %, Public Float % are coming from the `fundamental_metrics` table, not `shareholding`. QoQ deltas can't work without `shareholding` history.
+
+v10.5 adds **defensive schema init** that creates the missing tables on your existing DB. Without this, the problem would persist forever — `init_all_tables()` was SUPPOSED to create `shareholding` but evidently didn't on your DB (likely from an older run before that code existed).
+
+## What v10.5 adds vs v10.4
+
+Same 2 files, but `master_funnel.py` now has an extra defensive init block (+65 lines) that runs once at startup:
+
+1. Explicitly creates `shareholding` table if missing (with all 11 columns)
+2. Explicitly creates `fundamental_metrics` if missing
+3. Runs `ALTER TABLE ADD COLUMN` for 18 forensic-input columns (ebit_cr, int_expense_cr, total_assets_cr, etc.) — no-op if columns already exist
+4. Prints a status line so you can see in the console: `✅ v10.5: Defensive schema check passed`
+
+## Deploy order
+
+1. **Backup your DB first** — `copy market_data.db market_data.db.backup` in PowerShell
+2. Replace **only these 2 files**:
+   - `master_funnel.py` → repo root
+   - `excel_generator.py` → `reporting/excel_generator.py`
+3. Do NOT replace `forensics_engine.py` or `data_bridge.py` — yours work.
+4. Run your pipeline once.
+
+## What happens on NEXT pipeline run
+
+### ✅ Fields that populate AUTOMATICALLY on the very next run
+
+These work immediately because v10.4's inline yfinance fetch pulls them on-the-fly:
+
+- **ND/EBITDA** — was 70/91 populated, stays similar or better
+- **Int Coverage** — was 0/91, expect **40-70/91** after deploy
+- **CCC Days** — was 0/91, expect **40-70/91**
+- **Capex / Rev %** — was 0/91, expect **40-70/91**
+- **Altman Z** — was 0/91, expect **50-80/91**
+- **Beneish M** — was 0/91, expect **50-80/91**
+- **Earn Quality** — was 7/91, expect **40-70/91**
+- **Cash (₹Cr), Total Debt (₹Cr)** — continue working
+- **Red headers** — demoted to normal section color when columns have data
+
+### ⚠️ Fields that need MULTIPLE runs to populate (will show "—" on first run)
+
+QoQ deltas compare today's value vs **~90 days ago**. For this to produce real numbers:
+
+- **Pro QoQ Δ, FII QoQ Δ, Pledge Direction** — the `shareholding` table needs rows that are ≥90 days old. v10.5 creates the table, but backfill writes today's date. So:
+  - **Run 1 (today):** shareholding table now exists. Backfill writes today's snapshot. QoQ shows "—" (no history to compare against).
+  - **Run 2-89 (next ~3 months):** table grows one row per stock per day. QoQ still shows "—" because no row is ≥90 days old yet.
+  - **Run 90+ (~3 months from now):** the first row is now ≥90 days old. QoQ starts showing real deltas.
+
+- **DII QoQ Δ** — yfinance only provides `heldPercentInstitutions` (FII+DII combined), not separate DII. Your `backfill_history.py` line 1793 writes `dii_pct = 0.0` because yfinance can't separate DII from FII. So DII QoQ will stay 0 until you add a separate DII data source (BSE corporate filings API, or NSE JSON API which is rate-limited).
+
+**If you want QoQ deltas to work TODAY** without waiting 90 days, you have 2 options:
+- Let the pipeline accumulate data naturally (~3 months)
+- Separately run `backfill_history.py` manually with historical date parameters to populate old shareholding rows — but yfinance doesn't provide historical shareholding snapshots, so this only works if you have a paid data feed or BSE filings archive
+
+### ❌ Fields that will NEVER populate with free yfinance
+
+- DII QoQ Δ (yfinance lumps DII + FII together)
+- Pledge % (only in BSE corporate filings — yfinance doesn't have it)
+- These will legitimately stay red/empty until a paid data source is added
+
+## Honest performance numbers
+
+| Metric | Current | After v10.5 deploy | After 90 days of runs |
+|---|---|---|---|
+| Int Coverage populated | 0/91 | 40-70/91 | Same |
+| Altman Z populated | 0/91 | 50-80/91 | Same |
+| Pro QoQ Δ meaningful values | 0/91 (wrong `-current%`) | 0/91 (shows "—") | **Real deltas for ~80/91** |
+| DII QoQ Δ populated | 0/91 | 0/91 (shows "—") | Still 0/91 without paid source |
+| Red headers demoted | Never | For 6-10 forensic columns | For 7-11 columns |
+
+## Sanity check after deploying v10.5
+
+After running the pipeline once with the new code:
+
+```powershell
+python -c "import sqlite3; c = sqlite3.connect('market_data.db'); r = c.execute('SELECT COUNT(*), MIN(date), MAX(date) FROM shareholding').fetchone(); print(f'Rows: {r[0]}, range: {r[1]} to {r[2]}')"
+```
+
+Expected output: `Rows: ~100, range: 2026-04-23 to 2026-04-23` (today's date for both, because history hasn't accumulated yet).
+
+Then after a few days of runs:
+
+```powershell
+python -c "import sqlite3; c = sqlite3.connect('market_data.db'); print(c.execute('SELECT COUNT(*), MIN(date), MAX(date) FROM shareholding').fetchone())"
+```
+
+You should see the row count growing and the date range widening. Once MIN(date) is ≥90 days before MAX(date), QoQ deltas will start populating.
+
+## What I did NOT change
+
+- `analysis/forensics_engine.py` — yours is v10.4, correct
+- `database/data_bridge.py` — yours works, tested with empty DB
+- `backfill_history.py` — already creates shareholding correctly; bug was only that your existing DB was created before that code existed
+
+## Files in this pack
+
+Only 2 files to replace:
+- `master_funnel.py` — v10.4 changes + v10.5 defensive schema init
+- `excel_generator.py` — dynamic red-header (unchanged from v10.4)

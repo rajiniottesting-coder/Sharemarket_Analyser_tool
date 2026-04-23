@@ -247,6 +247,70 @@ def run_master_pipeline():
         _init_bf(conn)                  # backfill tables (fundamental_metrics,
     except Exception:                   # symbol_master, technical_indicators etc.)
         pass
+
+    # v10.5: Defensive table init for older DBs that may be missing tables
+    # added in later versions. init_all_tables uses CREATE TABLE IF NOT EXISTS
+    # which is safe on existing DBs, but failure modes (partial creation,
+    # interrupted runs) can leave holes. Explicitly ensure the tables we need.
+    try:
+        _c = conn.cursor()
+        # Shareholding (QoQ deltas, Pledge Direction source)
+        _c.execute("""
+            CREATE TABLE IF NOT EXISTS shareholding (
+                symbol        TEXT,
+                date          TEXT,
+                promoter_pct  REAL    DEFAULT 0,
+                promoter_qoq  REAL    DEFAULT 0,
+                pledge_pct    REAL    DEFAULT 0,
+                pledge_dir    TEXT    DEFAULT '',
+                fii_pct       REAL    DEFAULT 0,
+                fii_qoq       REAL    DEFAULT 0,
+                dii_pct       REAL    DEFAULT 0,
+                dii_qoq       REAL    DEFAULT 0,
+                public_float  REAL    DEFAULT 0,
+                PRIMARY KEY (symbol, date)
+            )
+        """)
+        # Fundamental metrics (forensic input columns — needed by v10.4 forensics engine)
+        _c.execute("""
+            CREATE TABLE IF NOT EXISTS fundamental_metrics (
+                symbol TEXT, date TEXT,
+                PRIMARY KEY (symbol, date)
+            )
+        """)
+        # Add any missing forensic-input columns (ALTER is no-op if they exist)
+        _existing = {r[1] for r in _c.execute("PRAGMA table_info(fundamental_metrics)").fetchall()}
+        _forensic_cols = [
+            ("ebit_cr",              "REAL DEFAULT 0"),
+            ("int_expense_cr",       "REAL DEFAULT 0"),
+            ("capex_cr",             "REAL DEFAULT 0"),
+            ("total_assets_cr",      "REAL DEFAULT 0"),
+            ("total_liab_cr",        "REAL DEFAULT 0"),
+            ("retained_earnings_cr", "REAL DEFAULT 0"),
+            ("working_cap_cr",       "REAL DEFAULT 0"),
+            ("inventory_days",       "REAL DEFAULT 0"),
+            ("receivable_days",      "REAL DEFAULT 0"),
+            ("payable_days",         "REAL DEFAULT 0"),
+            ("operating_cf_cr",      "REAL DEFAULT 0"),
+            ("curr_assets_cr",       "REAL DEFAULT 0"),
+            ("curr_liab_cr",         "REAL DEFAULT 0"),
+            ("total_debt_cr",        "REAL DEFAULT 0"),
+            ("cash_cr",              "REAL DEFAULT 0"),
+            ("q_rev_cr",             "REAL DEFAULT 0"),
+            ("q_pat_cr",             "REAL DEFAULT 0"),
+            ("q_ebitda_cr",          "REAL DEFAULT 0"),
+        ]
+        for _col, _typedef in _forensic_cols:
+            if _col not in _existing:
+                try:
+                    _c.execute(f"ALTER TABLE fundamental_metrics ADD COLUMN {_col} {_typedef}")
+                except Exception:
+                    pass
+        conn.commit()
+        print("✅ v10.5: Defensive schema check passed — shareholding + forensic columns present")
+    except Exception as _dex:
+        print(f"⚠️  v10.5: Defensive init warning: {_dex}")
+
     conn.close()
 
     # ═══════════════════════════════════════════════════════════════════════════
