@@ -792,17 +792,22 @@ def format_tooltip(header: str, short: str, full: str) -> str:
 _CUE = " ⓘ"
 
 
-def _comment(text: str, width: int = 420, height: int = 260) -> Comment:
+def _comment(text: str, width: int = 420, height: int = None) -> Comment:
     c = Comment(text, "NSE/BSE Analyser")
     line_count = text.count("\n") + 1
     c.width = width
-    # Session 28: height ceiling raised 320→380 to match the post-process
-    # VML patch in excel_generator._patch_tooltip_vml(). openpyxl drops these
-    # dimensions when writing VML, so the actual on-screen box is set by
-    # _patch_tooltip_vml. Keeping the in-memory ceiling in sync with the VML
-    # patch value prevents divergence if a future Excel version ever stops
-    # overriding the openpyxl dimensions.
-    c.height = max(height, min(18 * line_count + 40, 380))
+    # v10.12: height is now per-tooltip dynamic. Pre-v10.12 this was hardcoded
+    # to max(260, min(18*lines+40, 380)) which forced a 260px floor onto every
+    # tooltip — short ones (2-3 lines like Stop Loss) ended up with massive
+    # empty vertical space. Now:
+    #   - if caller passed an explicit height, honour it
+    #   - otherwise compute: max(85, min(17*lines+36, 380))
+    # The actual on-screen box is set by excel_generator._patch_tooltip_vml()
+    # which uses the same formula per-shape from comments{N}.xml text.
+    if height is not None:
+        c.height = height
+    else:
+        c.height = max(85, min(17 * line_count + 36, 380))
     return c
 
 

@@ -899,13 +899,21 @@ _HDR_TIPS = {
 
 
 def _patch_tooltip_vml(xlsx_path):
-    """Session 27+28+29: Post-process .xlsx to fix tooltip VML shapes.
+    """Session 27+28+29+v10.12: Post-process .xlsx to fix tooltip VML shapes.
 
-    Three things this function does that openpyxl won't:
+    Four things this function does that openpyxl won't:
 
-    1. Box dimensions. openpyxl writes VML shapes with hardcoded 144×79px
-       regardless of what Comment.width/height are set to. We rewrite every
-       shape to 420×380 px so 15-line tooltips render fully.
+    1. Box dimensions, per-tooltip (v10.12 dynamic sizing).
+       openpyxl writes VML shapes with hardcoded 144×79px regardless of what
+       Comment.width/height are set to. Pre-v10.12 we rewrote every shape to
+       a fixed 420×380 px — which caused short tooltips (e.g., Stop Loss:
+       2 short lines) to show with 60-70% empty space below. Now we parse
+       xl/comments1.xml to get the text of each comment, map it to its shape
+       via (row, col) anchor, and size the box to fit the actual content:
+         width  = 420px  (standard)
+         height = clamp(17 * line_count + 36, min=85, max=380)
+       Line heuristic: tooltip text uses \\n separators; each line ~17px high
+       with ~36px chrome (title bar + padding).
 
     2. Anchor direction for right-side columns (Session 29). openpyxl sets
        `margin-left:59.25pt` on every shape, which pushes the comment box
@@ -926,6 +934,7 @@ def _patch_tooltip_vml(xlsx_path):
     import zipfile
     import os as _os
     import tempfile
+    import xml.etree.ElementTree as ET
 
     tmpdir = tempfile.mkdtemp(prefix="xlsx_patch_")
     try:
@@ -936,15 +945,76 @@ def _patch_tooltip_vml(xlsx_path):
         if not _os.path.isdir(vml_dir):
             return  # no comments; nothing to patch
 
-        # ---- Session 28 box size: 420×380 ----------------------------------
-        # Fits every tooltip in TIPS (max natural 310px) with ~40px headroom.
-        dim_re = re.compile(
-            r'width\s*:\s*\d+px\s*;\s*height\s*:\s*\d+px',
-            re.IGNORECASE
-        )
-        BOX_W_PX   = 420
-        BOX_H_PX   = 380
-        dim_replacement = f"width:{BOX_W_PX}px;height:{BOX_H_PX}px"
+        # ---- v10.12: parse comments*.xml to get per-cell line counts --------
+        # Build dict: (sheet_idx, row, col) → line_count
+        # VML commentsdrawingN.vml corresponds to xl/comments{N}.xml
+        def _excel_ref_to_rc(ref: str):
+            """Convert 'B7' → (row=7, col=2). Col header letters 1-based."""
+            m = re.match(r'^([A-Z]+)(\d+)$', ref.strip())
+            if not m: return None, None
+            letters, rownum = m.group(1), int(m.group(2))
+            col = 0
+            for ch in letters:
+                col = col * 26 + (ord(ch) - ord('A') + 1)
+            return rownum, col
+
+        def _extract_text(elem):
+            """Concatenate all <t> text under a <comment> element."""
+            parts = []
+            # namespace-agnostic search
+            for sub in elem.iter():
+                if sub.tag.endswith('}t') or sub.tag == 't':
+                    if sub.text:
+                        parts.append(sub.text)
+            return ''.join(parts)
+
+        # comments_dir lookup: map each comments{N}.xml → {(row,col): line_count}
+        comments_dir_map = {}   # key: 'N' (e.g., '1', '2'), val: dict[(r,c)] → lc
+        # openpyxl writes to xl/comments/commentN.xml (newer) or xl/commentsN.xml
+        # (older path). Scan both locations.
+        comments_search_dirs = [
+            _os.path.join(tmpdir, "xl"),
+            _os.path.join(tmpdir, "xl", "comments"),
+        ]
+        for comments_root in comments_search_dirs:
+            if not _os.path.isdir(comments_root): continue
+            for fn in _os.listdir(comments_root):
+                # Match: comments1.xml, comment1.xml, Comments1.xml, Comment1.xml
+                m_id = re.match(r'comments?(\d+)\.xml$', fn, re.IGNORECASE)
+                if not m_id: continue
+                cid = m_id.group(1)
+                line_map = {}
+                try:
+                    tree = ET.parse(_os.path.join(comments_root, fn))
+                    # Walk through <comment ref="X7"> elements
+                    for comment_el in tree.iter():
+                        tag = comment_el.tag
+                        local_tag = tag.split('}', 1)[1] if '}' in tag else tag
+                        if local_tag != 'comment':
+                            continue
+                        ref = comment_el.get('ref')
+                        if not ref: continue
+                        r, c = _excel_ref_to_rc(ref)
+                        if r is None: continue
+                        text = _extract_text(comment_el)
+                        # openpyxl joins lines with \n internally; in XML it
+                        # appears as literal newlines within <t xml:space="preserve">
+                        line_count = text.count('\n') + 1 if text else 1
+                        line_map[(r, c)] = line_count
+                except Exception:
+                    pass
+                if line_map:
+                    comments_dir_map[cid] = line_map
+
+        # ---- v10.12 dynamic dimensions + Session 28 bounds ------------------
+        BOX_W_PX = 420
+        LINE_PX  = 17
+        CHROME_PX = 36    # title bar + vertical padding
+        MIN_H_PX = 85     # short 2-line tooltips still need title bar room
+        MAX_H_PX = 380    # safety cap for very long tooltips
+
+        def _height_for_lines(lc: int) -> int:
+            return max(MIN_H_PX, min(LINE_PX * lc + CHROME_PX, MAX_H_PX))
 
         # ---- Session 29 per-shape margin flip ------------------------------
         # Default openpyxl emits: margin-left:59.25pt (positive → box opens
@@ -953,17 +1023,20 @@ def _patch_tooltip_vml(xlsx_path):
         # left of the cell instead. 420px box + a small buffer → flip value
         # pushes the box left-of-cell with a 15pt gap.
         LEFT_FLIP_MARGIN_PT = -(BOX_W_PX * 0.75 + 15)  # ≈ -330pt (420px ≈ 315pt)
-        DEFAULT_MARGIN_PT   = 59.25
         # "Right portion" threshold: any column ≥ 70% of max-tooltipped-col
-        # gets flipped to the left side. Picks 3-4 right-most columns on
-        # typical sheets, and none on very wide sheets where even col 40
-        # isn't near the viewport edge.
+        # gets flipped to the left side.
         FLIP_THRESHOLD = 0.70
 
-        shape_re = re.compile(
+        # Regex components
+        style_re = re.compile(
             r'(<[^:]*:shape\b[^>]*\bstyle=")([^"]+)("[^>]*>.*?</[^:]*:shape>)',
             re.DOTALL
         )
+        dim_re = re.compile(
+            r'width\s*:\s*\d+px\s*;\s*height\s*:\s*\d+px',
+            re.IGNORECASE
+        )
+        row_re = re.compile(r'<[^:]*:Row>\s*(\d+)\s*</[^:]*:Row>')
         col_re = re.compile(r'<[^:]*:Column>\s*(\d+)\s*</[^:]*:Column>')
         margin_left_re = re.compile(r'margin-left\s*:\s*[^;"]+')
 
@@ -972,13 +1045,19 @@ def _patch_tooltip_vml(xlsx_path):
         for fn in _os.listdir(vml_dir):
             if not fn.lower().startswith("commentsdrawing") or not fn.lower().endswith(".vml"):
                 continue
+
+            # Extract drawing number and match to comments{N}.xml line map
+            m_id = re.match(r'commentsDrawing(\d+)\.vml', fn, re.IGNORECASE)
+            cid = m_id.group(1) if m_id else None
+            line_map = comments_dir_map.get(cid, {}) if cid else {}
+
             fpath = _os.path.join(vml_dir, fn)
             with open(fpath, "r", encoding="utf-8") as f:
                 content = f.read()
 
             # Pass 1: find max anchor column across all shapes in this file
             max_col = 0
-            for shape_m in shape_re.finditer(content):
+            for shape_m in style_re.finditer(content):
                 col_m = col_re.search(shape_m.group(0))
                 if col_m:
                     max_col = max(max_col, int(col_m.group(1)))
@@ -989,12 +1068,34 @@ def _patch_tooltip_vml(xlsx_path):
                 nonlocal patched_count, flipped_count
                 full_shape = m.group(0)
                 style = m.group(2)
+
+                # v10.12: look up this shape's (row, col) and comments line count
+                row_m = row_re.search(full_shape)
+                col_m = col_re.search(full_shape)
+                # VML Row/Column are 0-indexed; openpyxl writes 0-based here.
+                # Spreadsheet refs use 1-based rows and columns. Convert:
+                if row_m and col_m:
+                    vml_row_0 = int(row_m.group(1))
+                    vml_col_0 = int(col_m.group(1))
+                    row_1based = vml_row_0 + 1
+                    col_1based = vml_col_0 + 1
+                    line_count = line_map.get((row_1based, col_1based), 0)
+                else:
+                    line_count = 0
+
+                # Compute dynamic height; fallback to MAX_H_PX if we couldn't
+                # locate the text (preserves previous behavior for edge cases)
+                if line_count > 0:
+                    box_h = _height_for_lines(line_count)
+                else:
+                    box_h = MAX_H_PX
+                dim_replacement = f"width:{BOX_W_PX}px;height:{box_h}px"
+
                 # Fix dimensions
                 new_style, n_dim = dim_re.subn(dim_replacement, style)
                 if n_dim > 0:
                     patched_count += n_dim
                 # Decide if margin should be flipped
-                col_m = col_re.search(full_shape)
                 if col_m:
                     col_idx = int(col_m.group(1))
                     if col_idx >= flip_col_threshold and col_idx > 0:
@@ -1005,7 +1106,7 @@ def _patch_tooltip_vml(xlsx_path):
                         flipped_count += 1
                 return m.group(1) + new_style + m.group(3)
 
-            new_content = shape_re.sub(_fix_shape, content)
+            new_content = style_re.sub(_fix_shape, content)
             if new_content != content:
                 with open(fpath, "w", encoding="utf-8") as f:
                     f.write(new_content)
@@ -1277,7 +1378,9 @@ class ExcelGeneratorV6:
         ws.row_dimensions[1].height=30
         # R2
         ws.merge_cells(start_row=2,start_column=1,end_row=2,end_column=N)
-        c2=ws.cell(2,1,f"Gold-Tier Criteria (ALL must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed  ·  {gc} stocks qualify")
+        # v10.11: criteria text expanded from 8 → 11 conditions to match the
+        # _get_gold() filter. New gates: Altman Z≥1.8 | EQ≠LOW | IntCov≥1.5×.
+        c2=ws.cell(2,1,f"Gold-Tier Criteria (ALL 11 must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed · Altman Z≥1.8 · EQ≠LOW · Int Coverage≥1.5×  ·  {gc} stocks qualify")
         c2.fill=_f("FEF3C7"); c2.font=_ft(False,"92400E",8,True); c2.alignment=_al("left","center")
         ws.row_dimensions[2].height=14
         # R3 summary strip

@@ -1,4 +1,4 @@
-# NSE / BSE Stock Analyser — v10.6
+# NSE / BSE Stock Analyser — v10.11
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
 > 5,000+ stocks → AI-scored Excel dashboard → your inbox by 6:00 AM IST.
@@ -27,7 +27,7 @@ Single-user personal tool. No UI, no server to manage. Runs free on GitHub Actio
 ```
 Sharemarket_Analyser_tool/
 ├── master_funnel.py              Core pipeline orchestrator (Sections 0–13)
-├── backfill_history.py           365-day historical builder + yfinance enrichment
+├── backfill_history.py           365-day initial backfill + yfinance enrichment
 ├── requirements.txt
 ├── .env                          (local only — secrets go into GitHub Secrets in prod)
 │
@@ -59,7 +59,7 @@ Sharemarket_Analyser_tool/
 ├── database/
 │   ├── data_bridge.py            DB consolidation + all query helpers
 │   ├── database_manager.py       Connection + schema management
-│   └── db_maintenance.py         90-day rolling circular queue
+│   └── db_maintenance.py         400-day rolling circular queue
 │
 ├── ai/
 │   └── ai_analyst.py             Google Gemini batch analysis
@@ -182,7 +182,7 @@ Section 6   Scoring loop per stock
 Section 7/8 AI investor cards (Gemini, batches of 10–15)
 Section 9/10 7-sheet Excel dashboard + text research report
 Section 12  Gmail SMTP delivery
-Section 13  DB maintenance — 90-day circular queue
+Section 13  DB maintenance — 400-day rolling window
 ```
 
 ---
@@ -971,3 +971,127 @@ When Gold count drops to 0-2 on a given day, the tooltip + glossary make it clea
 - `master_funnel.py` — v10.9 version correct
 - `backfill_history.py` — v10.9 version correct
 - `analysis/forensics_engine.py` — v10.8 version correct
+
+---
+
+## DB retention — 365 vs 400 clarification
+
+A reasonable question: "we backfill 365 days, so why does maintenance keep 400?" Two distinct day-counts in the pipeline, serving different purposes:
+
+| Thing | Where | Value | Purpose |
+|---|---|---|---|
+| Initial backfill | `backfill_history.py` (`DAYS_TO_BACKFILL`) | **365 calendar days** | One-time cold-start hydration when DB is empty |
+| Rolling window | `database/db_maintenance.py` (`KEEP_DAYS`) | **400 calendar days ≈ 275 trading days** | Daily pruning + VACUUM, runs as Section 13 after each pipeline |
+
+**Why 400 rather than 365?** The docstring inside `db_maintenance.py` explains:
+
+- 200-day SMA → needs 200 days
+- **52-week high/low → needs 250 trading days**
+- 8-week momentum → needs 41 days
+
+400 calendar days ≈ 275 trading days (after weekends + NSE holidays) — comfortably above the 250-trading-day floor that 52-week high/low computation needs. If only 365 calendar days were kept, we'd be at ~250 trading days, right on the edge. 400 gives safe headroom.
+
+Earlier versions of this doc had a stale "90-day DB queue" reference in the folder-tree and Quick Reference — corrected in v10.11.
+
+# v10.12 — Tooltip Dynamic Sizing + Gold Row 2 Criteria
+
+## TL;DR — 2 files to replace
+
+| File | Change |
+|---|---|
+| `reporting/excel_generator.py` | VML patch now sizes each tooltip box to its actual content (was hardcoded 420×380) + Gold sheet row 2 criteria text updated to 11 conditions |
+| `reporting/tooltip_formatter.py` | `_comment()` height is now per-tooltip dynamic (was a flat 260px floor) |
+
+Built on v10.11. All v10.2 → v10.11 fixes preserved.
+
+## Issue 1 — Tooltip box had massive empty vertical space
+
+Your screenshot showed the Stop Loss tooltip with ~2 lines of content inside a box that was ~4× taller than needed — 60-70% of the frame was empty yellow space.
+
+### Root cause
+
+Two separate sizing bugs compounded:
+
+**A.** `tooltip_formatter._comment()` set `c.height = max(260, min(18 × line_count + 40, 380))`. The `max(260, ...)` forces a 260px floor onto every tooltip, even short ones.
+
+**B.** `excel_generator._patch_tooltip_vml()` (the post-process that rewrites the `.xlsx` VML because openpyxl writes the wrong dimensions) hardcoded **every** shape to 420×380px, overriding `_comment()`'s in-memory height entirely.
+
+Net effect: every tooltip in every sheet rendered in a 420×380 box regardless of content. A 2-line tip like `"Exit if CMP closes below this level"` showed with ~295px of empty yellow space below it.
+
+### Fix
+
+**A. `_comment()` now computes height from text:**
+
+```python
+# v10.12
+c.height = max(85, min(17 * line_count + 36, 380))
+# where:
+#   85px   = minimum (2-line tooltip with title bar)
+#   17×lc  = per-line height
+#   36px   = chrome (title bar + vertical padding)
+#   380px  = cap for the longest tooltips
+```
+
+**B. `_patch_tooltip_vml()` now reads per-tooltip line count:**
+
+The patch now:
+1. Parses `xl/comments/comment*.xml` to get the text of each comment
+2. Maps each `<comment ref="B7">` to its VML `<x:Row>6</x:Row><x:Column>1</x:Column>` anchor (VML uses 0-based; Excel refs 1-based — conversion applied)
+3. Sizes each shape using the same formula as `_comment()`
+
+Comment-file detection searches both `xl/` (older openpyxl) and `xl/comments/` (newer) so the patch works regardless of the openpyxl version in use.
+
+### Verified by end-to-end test
+
+```
+Cell   TextLines   OldH (v10.11)  NewH (v10.12)  Saved
+─────────────────────────────────────────────────────
+A1     2 lines     380px          85px           295px
+B1     8 lines     380px          172px          208px
+C1     16 lines    380px          308px          72px
+```
+
+The Stop Loss tooltip in your screenshot (2 content lines + 4 structural lines ≈ 6 lines) will now render at ~138px instead of 380px — the yellow empty space is gone.
+
+## Issue 2 — Gold sheet row 2 still showed old 8-condition criteria
+
+After v10.11 expanded the Gold filter to 11 conditions in `_get_gold()`, the **visual criteria text** in row 2 of the Gold sheet was not updated. It still said:
+
+> `Gold-Tier Criteria (ALL must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed · 5 stocks qualify`
+
+That was inconsistent with the actual 11-condition filter.
+
+### Fix
+
+Row 2 now reads:
+
+> `Gold-Tier Criteria (ALL 11 must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed · Altman Z≥1.8 · EQ≠LOW · Int Coverage≥1.5× · {N} stocks qualify`
+
+Single-line update in `_gold_ws()` around line 1383. If the row ever feels too long at default 14px height, bump `ws.row_dimensions[2].height` to 18 — but testing showed it fits fine on standard laptop widths.
+
+## Deploy
+
+1. Back up the 2 current files
+2. Replace with the files in this pack
+3. Re-run pipeline
+
+No DB changes. No other files need updating. The next Excel output will have:
+- Right-sized tooltips across all 7 sheets (Full Dashboard, Gold, Trade Summary, Alert Log, Delivery Preview, Glossary, Tooltip Reference)
+- Gold sheet row 2 criteria line matching the 11-condition `_get_gold()` filter
+
+## Files NOT in this pack
+
+- All `analysis/*.py` — v10.10 versions still correct
+- `master_funnel.py` — v10.9 version still correct
+- `backfill_history.py` — v10.9 version still correct
+- `CLAUDE.md` — v10.11 version still correct (tooltip sizing is a pure rendering fix; no AI-context changes needed)
+- `readme.md` — v10.11 version still correct (same reasoning)
+
+## What v10.12 does NOT change
+
+- Tooltip text content (identical to v10.11)
+- Gold filter logic in `_get_gold()` (same 11 conditions as v10.11)
+- Scoring engine (same v10.10 crash guards + v10.9 forensic adjustment)
+- Any analysis or calculation
+
+This is purely a presentation fix: right-size what was already correct and sync the visible criteria line with the invisible filter logic.
