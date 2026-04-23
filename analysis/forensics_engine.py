@@ -337,9 +337,20 @@ class ForensicsEngine:
         # 2. SOLVENCY & COVERAGE
         total_debt = _num(row, 'total_debt_cr', 'total_debt')
         cash       = _num(row, 'cash_cr', 'cash', 'total_cash')
-        ebitda     = _num(row, 'q_ebitda_cr', 'ebitda')
-        if ebitda > 0:
-            results['nd_ebitda'] = round((total_debt - cash) / ebitda, 2)
+
+        # v10.6 FIX (Bug #1): ND/EBITDA must use ANNUAL EBITDA, not quarterly.
+        # Source priority:
+        #   1. 'ebitda' key — TTM annual from yfinance .info (correct annual scale)
+        #   2. 'ebitda_cr' — annual figure if explicitly named
+        #   3. 'q_ebitda_cr' × 4 — quarterly DB value annualized as fallback
+        # Without ×4, ND/EBITDA was inflating by ~4× (showing 33 instead of 8).
+        ebitda_annual = _num(row, 'ebitda', 'ebitda_cr')
+        if ebitda_annual <= 0:
+            _q_ebitda = _num(row, 'q_ebitda_cr')
+            if _q_ebitda > 0:
+                ebitda_annual = _q_ebitda * 4   # annualize from quarterly
+        if ebitda_annual > 0:
+            results['nd_ebitda'] = round((total_debt - cash) / ebitda_annual, 2)
         else:
             results['nd_ebitda'] = "—"
 
@@ -351,10 +362,16 @@ class ForensicsEngine:
             results['int_coverage'] = "—"
 
         # 3. CAPITAL EFFICIENCY
+        # v10.6 FIX: use ANNUAL revenue for Capex/Rev ratio (capex is annual, so
+        # denominator must match). Same annualization fallback as ND/EBITDA.
         capex = abs(_num(row, 'capex_cr', 'capex'))
-        rev   = _num(row, 'q_rev_cr', 'revenue', 'total_revenue')
-        if capex > 0 and rev > 0:
-            results['capex_rev'] = round((capex / rev) * 100, 2)
+        rev_annual = _num(row, 'revenue', 'total_revenue', 'revenue_cr')
+        if rev_annual <= 0:
+            _q_rev = _num(row, 'q_rev_cr')
+            if _q_rev > 0:
+                rev_annual = _q_rev * 4
+        if capex > 0 and rev_annual > 0:
+            results['capex_rev'] = round((capex / rev_annual) * 100, 2)
         else:
             results['capex_rev'] = "—"
 
@@ -394,7 +411,10 @@ class ForensicsEngine:
 
         # 8. SHAREHOLDING DIRECTION (passthrough)
         results['promoter_qoq']     = row.get('promoter_qoq', 0)
-        results['pledge_direction'] = row.get('pledge_dir', row.get('pledge_direction', "STABLE"))
+        # v10.6 FIX (Bug #2): default to '—' instead of 'STABLE' when no pledge
+        # history exists. 'STABLE' is misleading because it implies the value was
+        # measured and didn't change — but here it just means we have no comparison.
+        results['pledge_direction'] = row.get('pledge_dir', row.get('pledge_direction', "—"))
         results['fii_qoq']          = row.get('fii_qoq', 0)
         results['dii_qoq']          = row.get('dii_qoq', 0)
 

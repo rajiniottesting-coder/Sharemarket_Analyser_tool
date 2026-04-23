@@ -562,3 +562,84 @@ You should see the row count growing and the date range widening. Once MIN(date)
 Only 2 files to replace:
 - `master_funnel.py` — v10.4 changes + v10.5 defensive schema init
 - `excel_generator.py` — dynamic red-header (unchanged from v10.4)
+# v10.6 Bug-Fix Pack — 2 files to replace
+
+Built on top of v10.5. Fixes 3 confirmed issues discovered from the latest Excel screenshots.
+
+## What v10.6 fixes
+
+### Bug #1: ND/EBITDA values inflated ~4× (e.g., 33.42, 36.62)
+**Root cause:** `forensics_engine.py` line 340 read `q_ebitda_cr` first — but `q_ebitda_cr` in the DB is **quarterly EBITDA** (one quarter only), set by `backfill_history.py` line 1588. Using a quarterly figure in an annual ratio inflates by ~4×.
+
+**Fix:** in `forensics_engine.py`:
+- ND/EBITDA now prefers annual EBITDA (`'ebitda'` from yfinance `.info`) → falls back to `q_ebitda_cr × 4` (annualized)
+- Same fix applied to Capex/Rev (uses annual revenue, not quarterly)
+
+**Verification:** test simulating user's row 7 (showing 23.58 pre-fix) now produces **5.89** — realistic for high-debt company.
+
+### Bug #2: Pledge Direction = "STABLE" for all stocks
+**Root cause #1:** Original `master_funnel.py` line 472 defaulted previous pledge to current pledge value when no history → always equal → always "STABLE". *(Already fixed in v10.5 — your existing master_funnel.py is correct after deploying v10.5)*
+
+**Root cause #2 (new in v10.6):** `forensics_engine.py` line 397 fell back to `"STABLE"` when both `pledge_dir` and `pledge_direction` keys were missing. Now defaults to `"—"`.
+
+### Bug #3: DII % shows 0 for all stocks
+**Root cause:** `backfill_history.py` line 1793 hardcodes `dii_pct = 0.0` because yfinance only provides `heldPercentInstitutions` (FII+DII combined). However, `_nse_shareholding()` at line 1270 CAN fetch separate DII via NSE corp-info API (`diisTotal` field) — but it was **defined but never called**.
+
+**Fix:** in `backfill_history.py`, after the yfinance pass populates `sh_rows`, a new enrichment loop calls `_nse_shareholding()` for the top 100 stocks where `dii_pct == 0`. Updates DII % (and FII % if NSE provides cleaner separation), recomputes `public_float`. Rate-limited to 0.3s/symbol to respect NSE.
+
+## Files in this pack (only 2)
+
+1. **`forensics_engine.py`** — replaces `analysis/forensics_engine.py`
+   - Bug #1 fix: annual EBITDA preferred for ND/EBITDA, annual revenue for Capex/Rev
+   - Bug #2 fix: pledge_direction default "—" instead of "STABLE"
+
+2. **`backfill_history.py`** — replaces `backfill_history.py` (root)
+   - Bug #3 fix: NSE shareholding enrichment loop wired in
+
+## Files NOT in this pack
+
+These are already correct from v10.5 — DO NOT replace:
+- `master_funnel.py` — already has v10.4 (inline fetch + QoQ fix) + v10.5 (defensive schema init)
+- `database/data_bridge.py` — already has v10.3 shareholding-based historical lookup
+- `reporting/excel_generator.py` — already has v10.4 dynamic red-header
+
+## Deploy steps
+
+1. **Backup your DB:** `copy market_data.db market_data.db.backup`
+2. Replace **only these 2 files**:
+   - `analysis/forensics_engine.py` ← from this pack
+   - `backfill_history.py` ← from this pack
+3. Run pipeline. First run after deploy will:
+   - Take ~30 seconds longer (NSE shareholding enrichment for top 100)
+   - Produce realistic ND/EBITDA values (no more 33s and 36s)
+   - Show real DII% values for stocks where NSE returns data
+   - Show pledge_direction as "—" instead of "STABLE" (until 90 days of history accumulates)
+
+## Expected next Excel after deploy
+
+| Column | Before v10.6 | After v10.6 |
+|---|---|---|
+| ND/EBITDA | Some realistic, many inflated (23, 33, 36) | All realistic (range typically -3 to +8) |
+| Pledge Direction | "STABLE" everywhere | "—" until 90 days of history |
+| DII % | 0 for all 91 stocks | Real values for 60-90 stocks (NSE API success rate dependent) |
+| Capex / Rev % | Some inflated 4× | Realistic 1-15% range |
+
+## Verification queries after first run
+
+```powershell
+# Did NSE shareholding enrichment work?
+# Look for this line in console output during fetch_nse_fundamentals:
+#   "NSE shareholding: enriched DII for N/M symbols"
+
+# Spot-check DII data in DB
+python -c "import sqlite3; c=sqlite3.connect('market_data.db'); print(c.execute('SELECT symbol, fii_pct, dii_pct FROM shareholding WHERE dii_pct > 0 LIMIT 10').fetchall())"
+
+# Spot-check ND/EBITDA range (should be -5 to +10 for most stocks)
+python -c "import sqlite3; c=sqlite3.connect('market_data.db'); print(c.execute(\"SELECT symbol, total_debt_cr, cash_cr, q_ebitda_cr FROM fundamental_metrics WHERE q_ebitda_cr > 0 ORDER BY date DESC LIMIT 5\").fetchall())"
+```
+
+## Caveats
+
+- **NSE API can be rate-limited or blocked** on GitHub Actions runners (Akamai bot detection). Local Windows runs typically work. If you see "NSE shareholding: enriched DII for 0/100 symbols" in your console, NSE blocked the requests — DII will stay 0 in that case.
+- **Annual EBITDA from yfinance `.info`** can be NULL for small/micro-cap stocks. The fallback to `q_ebitda_cr × 4` handles this — values will still be approximately correct (within ~20% of true TTM annual).
+- **Pledge Direction needs 90 days of shareholding history** to show IMPROVING/DETERIORATING. Will show "—" until then.

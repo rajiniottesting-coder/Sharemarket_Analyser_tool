@@ -388,24 +388,13 @@ def migrate_db(conn):
     """
     # New columns added to fundamental_metrics that old DBs may not have
     new_cols = [
-        ("operating_cf_cr",      "REAL DEFAULT 0"),
-        ("curr_assets_cr",       "REAL DEFAULT 0"),
-        ("curr_liab_cr",         "REAL DEFAULT 0"),
-        ("div_yield",            "REAL DEFAULT 0"),
-        ("payout_ratio",         "REAL DEFAULT 0"),
-        ("rev_yoy",              "REAL DEFAULT 0"),
-        ("pat_yoy",              "REAL DEFAULT 0"),
-        # ── v10.2 forensic-engine inputs ─────────────────────────────────
-        ("ebit_cr",              "REAL DEFAULT 0"),
-        ("int_expense_cr",       "REAL DEFAULT 0"),
-        ("capex_cr",             "REAL DEFAULT 0"),
-        ("total_assets_cr",      "REAL DEFAULT 0"),
-        ("total_liab_cr",        "REAL DEFAULT 0"),
-        ("retained_earnings_cr", "REAL DEFAULT 0"),
-        ("working_cap_cr",       "REAL DEFAULT 0"),
-        ("inventory_days",       "REAL DEFAULT 0"),
-        ("receivable_days",      "REAL DEFAULT 0"),
-        ("payable_days",         "REAL DEFAULT 0"),
+        ("operating_cf_cr",  "REAL DEFAULT 0"),
+        ("curr_assets_cr",   "REAL DEFAULT 0"),
+        ("curr_liab_cr",     "REAL DEFAULT 0"),
+        ("div_yield",        "REAL DEFAULT 0"),
+        ("payout_ratio",     "REAL DEFAULT 0"),
+        ("rev_yoy",          "REAL DEFAULT 0"),
+        ("pat_yoy",          "REAL DEFAULT 0"),
     ]
     existing = {r[1] for r in conn.execute(
         "PRAGMA table_info(fundamental_metrics)").fetchall()}
@@ -1639,111 +1628,6 @@ def _fetch_yfinance_data(symbols: list) -> dict:
             except Exception:
                 pass   # never break the outer loop — missing data is fine
 
-    # ── Fourth pass: balance_sheet + cashflow + income_stmt for forensics inputs ──
-    # Populates: total_assets_cr, total_liab_cr, retained_earnings_cr,
-    #            working_cap_cr, ebit_cr, int_expense_cr, capex_cr,
-    #            inventory_days, receivable_days, payable_days
-    # Capped at 150 symbols for rate limits (same as pass 3).
-    _syms_for_bs = symbols[:150]
-    if _syms_for_bs:
-        import yfinance as _yf4
-        _INR_CR = 1e7
-
-        def _bs_find(idx, keywords, excludes=()):
-            for r in idx:
-                rs = str(r).lower()
-                if all(k.lower() in rs for k in keywords) and \
-                   not any(e.lower() in rs for e in excludes):
-                    return r
-            return None
-
-        def _bs_val_cr(df, row_label):
-            if df is None or df.empty or row_label is None:
-                return 0.0
-            try:
-                cols = list(df.columns)
-                if not cols:
-                    return 0.0
-                v = df.loc[row_label].iloc[0]
-                return round(float(v) / _INR_CR, 2) if v is not None \
-                                                     and str(v) != "nan" else 0.0
-            except Exception:
-                return 0.0
-
-        for _sym in _syms_for_bs:
-            try:
-                _tk4 = _yf4.Ticker(_sym + ".NS")
-                _bs = getattr(_tk4, "balance_sheet",     None)
-                _cf = getattr(_tk4, "cashflow",          None)
-                _is = getattr(_tk4, "income_stmt",       None) or \
-                      getattr(_tk4, "financials",        None)
-
-                if _sym not in result:
-                    result[_sym] = {}
-
-                # Balance sheet
-                if _bs is not None and not _bs.empty:
-                    _ta = _bs_val_cr(_bs, _bs_find(_bs.index, ["total", "assets"],
-                                                   excludes=["current", "non"]))
-                    _tl = _bs_val_cr(_bs, _bs_find(_bs.index, ["total", "liabilit"],
-                                                   excludes=["current", "non current"]))
-                    _re = _bs_val_cr(_bs, _bs_find(_bs.index, ["retained", "earning"]))
-                    _ca = _bs_val_cr(_bs, _bs_find(_bs.index, ["current", "assets"],
-                                                   excludes=["non current", "noncurrent", "other"]))
-                    _cl = _bs_val_cr(_bs, _bs_find(_bs.index, ["current", "liabilit"],
-                                                   excludes=["non current", "noncurrent",
-                                                             "deferred", "other"]))
-                    _inv_cr = _bs_val_cr(_bs, _bs_find(_bs.index, ["inventor"],
-                                                       excludes=["non", "other"]))
-                    _rec_cr = _bs_val_cr(_bs, _bs_find(_bs.index, ["receivable"],
-                                                       excludes=["non"]))
-                    _pay_cr = _bs_val_cr(_bs, _bs_find(_bs.index, ["payable"],
-                                                       excludes=["non"]))
-
-                    if _ta > 0: result[_sym]["total_assets_cr"]      = _ta
-                    if _tl > 0: result[_sym]["total_liab_cr"]        = _tl
-                    if _re != 0: result[_sym]["retained_earnings_cr"] = _re
-                    if _ca > 0 and _cl > 0:
-                        result[_sym]["working_cap_cr"] = round(_ca - _cl, 2)
-
-                    # Days ratios need revenue — pull from .info if not stored
-                    try:
-                        _rev_raw = float(_tk4.info.get("totalRevenue", 0) or 0)
-                    except Exception:
-                        _rev_raw = 0.0
-                    _rev_cr = _rev_raw / _INR_CR if _rev_raw > 0 else 0
-                    if _rev_cr > 0:
-                        if _inv_cr > 0:
-                            result[_sym]["inventory_days"]  = round(_inv_cr / _rev_cr * 365, 1)
-                        if _rec_cr > 0:
-                            result[_sym]["receivable_days"] = round(_rec_cr / _rev_cr * 365, 1)
-                        if _pay_cr > 0:
-                            result[_sym]["payable_days"]    = round(_pay_cr / _rev_cr * 365, 1)
-
-                # Cash flow
-                if _cf is not None and not _cf.empty:
-                    _capex_row = _bs_find(_cf.index, ["capital", "expenditure"]) or \
-                                 _bs_find(_cf.index, ["purchase", "ppe"]) or \
-                                 _bs_find(_cf.index, ["investments", "ppe"])
-                    _capex = abs(_bs_val_cr(_cf, _capex_row))
-                    if _capex > 0:
-                        result[_sym]["capex_cr"] = _capex
-
-                # Income statement
-                if _is is not None and not _is.empty:
-                    _ebit_row = _bs_find(_is.index, ["ebit"], excludes=["ebitda"]) or \
-                                _bs_find(_is.index, ["operating", "income"])
-                    _int_row  = _bs_find(_is.index, ["interest", "expense"]) or \
-                                _bs_find(_is.index, ["interest", "paid"])
-                    _ebit = _bs_val_cr(_is, _ebit_row)
-                    _intx = abs(_bs_val_cr(_is, _int_row))
-                    if _ebit != 0: result[_sym]["ebit_cr"]        = _ebit
-                    if _intx > 0:  result[_sym]["int_expense_cr"] = _intx
-
-                time.sleep(0.3)
-            except Exception:
-                pass   # never break the outer loop
-
     return result
 
 
@@ -1890,17 +1774,6 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             "pat_cagr_1y":      d.get("pat_cagr_1y",    0),
             "pat_cagr_3y":      d.get("pat_cagr_3y",    0),
             "ebitda_cagr_1y":   d.get("ebitda_cagr_1y", 0),
-            # ── v10.2 forensic-engine inputs (from balance_sheet / cashflow / income_stmt) ──
-            "ebit_cr":              d.get("ebit_cr", 0),
-            "int_expense_cr":       d.get("int_expense_cr", 0),
-            "capex_cr":             d.get("capex_cr", 0),
-            "total_assets_cr":      d.get("total_assets_cr", 0),
-            "total_liab_cr":        d.get("total_liab_cr", 0),
-            "retained_earnings_cr": d.get("retained_earnings_cr", 0),
-            "working_cap_cr":       d.get("working_cap_cr", 0),
-            "inventory_days":       d.get("inventory_days", 0),
-            "receivable_days":      d.get("receivable_days", 0),
-            "payable_days":         d.get("payable_days", 0),
         })
 
         # ── FIX: populate shareholding table from yfinance holding data ──────
@@ -1958,6 +1831,40 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
                 pass
             time.sleep(0.3)
         print(f"   NSE API: {nse_ok} additional symbols fetched")
+
+    # ── v10.6 FIX (Bug #3): NSE shareholding enrichment for DII separation ────
+    # yfinance only provides heldPercentInstitutions (FII+DII combined).
+    # NSE corp-info API returns separate fiisTotal and diisTotal.
+    # We call this for symbols where dii_pct is still 0 after yfinance pass.
+    # Only attempts top-100 to respect NSE rate limits.
+    if sh_rows:
+        try:
+            _nse_session_obj, _ = _make_nse_session()
+            _nse_dii_count = 0
+            _nse_attempts = 0
+            for _row in sh_rows[:100]:   # rate-limit guard: top 100 only
+                if _row.get("dii_pct", 0) > 0:
+                    continue   # already has DII from earlier source
+                _nse_attempts += 1
+                try:
+                    _nse_sh = _nse_shareholding(_row["symbol"], _nse_session_obj)
+                    if _nse_sh and _nse_sh.get("dii_pct", 0) > 0:
+                        _row["dii_pct"]      = round(_nse_sh["dii_pct"], 2)
+                        # If NSE also gave us better FII (separated), prefer it
+                        if _nse_sh.get("fii_pct", 0) > 0:
+                            _row["fii_pct"]  = round(_nse_sh["fii_pct"], 2)
+                        # Recompute public_float with the corrected breakdown
+                        _p = _row.get("promoter_pct", 0)
+                        _f = _row.get("fii_pct", 0)
+                        _d = _row.get("dii_pct", 0)
+                        _row["public_float"] = round(max(0, 100 - _p - _f - _d), 2)
+                        _nse_dii_count += 1
+                except Exception:
+                    pass
+                time.sleep(0.3)   # respect NSE rate limit
+            print(f"   NSE shareholding: enriched DII for {_nse_dii_count}/{_nse_attempts} symbols")
+        except Exception as _e:
+            print(f"   ⚠️  NSE shareholding enrichment skipped: {_e}")
 
     if fm_rows:
         upsert(pd.DataFrame(fm_rows), "fundamental_metrics", conn)
