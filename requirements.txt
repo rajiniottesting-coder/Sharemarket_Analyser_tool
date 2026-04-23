@@ -3,7 +3,7 @@ numpy
 openpyxl
 requests
 pytz
-anthropic
+google-genai
 twilio
 python-dotenv
 flask

@@ -2,14 +2,16 @@
 ai_analyst.py
 SECTION 0D & 7 — AI Batch Analysis Engine (v7 FINAL)
 
-Switched from deprecated google-generativeai (Gemini) to Anthropic Claude.
-Master prompt v7 goes into the system parameter.
-Batch data goes into the user message.
+Switched from Anthropic Claude to Google Gemini (google-genai SDK).
+Master prompt v7 goes into the system_instruction parameter.
+Batch data goes into the `contents` parameter.
 """
 
 import os
 import time
-import anthropic
+from google import genai
+from google.genai import types
+from google.genai import errors as genai_errors
 from dotenv import load_dotenv
 from analysis.fundamental_engine import FundamentalEngine
 
@@ -25,14 +27,23 @@ def _sf(val, default=0.0):
 
 load_dotenv()
 
-_anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-if not _anthropic_key:
+# ── Gemini API key resolution ─────────────────────────────────────────────────
+# The google-genai SDK auto-picks up GEMINI_API_KEY or GOOGLE_API_KEY from env.
+# We still validate explicitly so we fail fast with a clear error message.
+_gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+if not _gemini_key:
     raise ValueError(
-        "CRITICAL ERROR: ANTHROPIC_API_KEY is missing from environment secrets. "
-        "Add it to GitHub Secrets or your .env file."
+        "CRITICAL ERROR: GEMINI_API_KEY (or GOOGLE_API_KEY) is missing from "
+        "environment secrets. Add it to GitHub Secrets or your .env file. "
+        "Get a key at https://aistudio.google.com/apikey"
     )
 
-client = anthropic.Anthropic(api_key=_anthropic_key)
+client = genai.Client(api_key=_gemini_key)
+
+# Gemini model — 2.5 Pro is the strongest reasoning model for equity analysis.
+# Swap to "gemini-2.5-flash" if you want faster/cheaper runs at some quality cost.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+
 MASTER_PROMPT_PATH = "master_prompt/NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt"
 
 
@@ -50,9 +61,23 @@ def _load_master_prompt() -> str:
         )
 
 
+def _is_quota_error(err: Exception) -> bool:
+    """Detect Gemini quota/billing exhaustion — no point retrying these."""
+    err_str = str(err).lower()
+    quota_markers = (
+        "resource_exhausted",
+        "quota",
+        "billing",
+        "insufficient",
+        "permission_denied",
+        "429",
+    )
+    return any(m in err_str for m in quota_markers)
+
+
 def get_ai_analysis(stock_list_df) -> str:
     """
-    SECTION 0D & 3: Grounded Batch Processing via Anthropic Claude.
+    SECTION 0D & 3: Grounded Batch Processing via Google Gemini.
 
     Pre-calculates Graham Number, PEG Ratio, and CFV using FundamentalEngine
     so the AI uses our computed values rather than estimating them.
@@ -210,19 +235,27 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
         "   'View Analysis Summary' — make it worth reading."
     )
 
-    credit_exhausted = False   # flag to abort all batches on credit error
+    # Gemini generation config — master prompt goes into system_instruction.
+    # max_output_tokens is the Gemini equivalent of Anthropic's max_tokens.
+    gen_config = types.GenerateContentConfig(
+        system_instruction=master_prompt,
+        max_output_tokens=4096,
+        temperature=0.7,
+    )
+
+    quota_exhausted = False   # flag to abort all batches on quota error
 
     for idx, batch in enumerate(batches):
-        # Skip remaining batches if credits exhausted
-        if credit_exhausted:
+        # Skip remaining batches if quota exhausted
+        if quota_exhausted:
             all_investor_cards.append(
-                f"[Batch {idx + 1} skipped — Anthropic credits exhausted. "
-                f"Top up at console.anthropic.com/settings/billing]"
+                f"[Batch {idx + 1} skipped — Gemini quota exhausted. "
+                f"Check quota/billing at https://aistudio.google.com/apikey]"
             )
             continue
 
         print(f"🤖 Processing batch {idx + 1}/{total_batches} "
-              f"({len(batch)} stocks)...")
+              f"({len(batch)} stocks) via {GEMINI_MODEL}...")
 
         # Build rich per-stock cards instead of raw DataFrame dump
         cards = []
@@ -236,44 +269,54 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
             f"{stock_data_text}"
         )
 
-        # Try once; NO retry on credit errors (pointless — credits won't refill mid-run)
+        # Try once; NO retry on quota errors (pointless — quota won't refill mid-run)
         try:
-            response = client.messages.create(
-                model="claude-sonnet-4-5",
-                max_tokens=4096,
-                system=master_prompt,
-                messages=[{"role": "user", "content": user_message}],
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=user_message,
+                config=gen_config,
             )
-            card_text = response.content[0].text
+            card_text = response.text or ""
+            if not card_text.strip():
+                # Gemini occasionally returns empty text if output was blocked by
+                # safety filters or the finish reason is MAX_TOKENS with no parts.
+                finish = getattr(
+                    getattr(response, "candidates", [None])[0], "finish_reason", "UNKNOWN"
+                ) if getattr(response, "candidates", None) else "UNKNOWN"
+                card_text = (
+                    f"[Batch {idx + 1}: Gemini returned empty response "
+                    f"(finish_reason={finish}). The batch may have been blocked "
+                    f"by safety filters or truncated.]"
+                )
             all_investor_cards.append(card_text)
             print(f"   ✅ Batch {idx + 1} complete.")
             # Section 0D: Rate limiting — 2s between successful batches
             if idx < total_batches - 1:
                 time.sleep(2)
         except Exception as e:
-            err_str = str(e)
-            # Detect credit exhaustion — no point retrying
-            if "credit balance is too low" in err_str or "insufficient_balance" in err_str:
-                credit_exhausted = True
-                print(f"   ⚠️  Anthropic credits exhausted — skipping all remaining batches.")
-                print(f"      Top up at: https://console.anthropic.com/settings/billing")
+            # Detect quota exhaustion — no point retrying
+            if _is_quota_error(e):
+                quota_exhausted = True
+                print(f"   ⚠️  Gemini quota exhausted — skipping all remaining batches.")
+                print(f"      Check quota at: https://aistudio.google.com/apikey")
                 all_investor_cards.append(
-                    f"[AI analysis unavailable — Anthropic credit balance too low. "
-                    f"Please top up at console.anthropic.com/settings/billing. "
+                    f"[AI analysis unavailable — Gemini quota exhausted. "
+                    f"Please check your quota/billing at aistudio.google.com/apikey. "
                     f"All other Excel data is complete and accurate.]"
                 )
             else:
-                # Non-credit error — retry once
+                # Non-quota error — retry once
                 print(f"   ⚠️  Batch {idx + 1} attempt 1 failed: {e}. Retrying in 5s...")
                 time.sleep(5)
                 try:
-                    response = client.messages.create(
-                        model="claude-sonnet-4-5",
-                        max_tokens=4096,
-                        system=master_prompt,
-                        messages=[{"role": "user", "content": user_message}],
+                    response = client.models.generate_content(
+                        model=GEMINI_MODEL,
+                        contents=user_message,
+                        config=gen_config,
                     )
-                    card_text = response.content[0].text
+                    card_text = response.text or ""
+                    if not card_text.strip():
+                        card_text = f"[Batch {idx + 1}: empty response after retry]"
                     all_investor_cards.append(card_text)
                     print(f"   ✅ Batch {idx + 1} complete (retry).")
                     if idx < total_batches - 1:

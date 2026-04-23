@@ -17,7 +17,7 @@ INSTALL (one-time):
 BSE: uses `bse` pip package — handles Akamai bot-detection internally.
 NSE: uses direct archive URL with session warm-up.
 """
-
+import yfinance as yf
 import sqlite3
 import zipfile
 import io
@@ -388,13 +388,24 @@ def migrate_db(conn):
     """
     # New columns added to fundamental_metrics that old DBs may not have
     new_cols = [
-        ("operating_cf_cr",  "REAL DEFAULT 0"),
-        ("curr_assets_cr",   "REAL DEFAULT 0"),
-        ("curr_liab_cr",     "REAL DEFAULT 0"),
-        ("div_yield",        "REAL DEFAULT 0"),
-        ("payout_ratio",     "REAL DEFAULT 0"),
-        ("rev_yoy",          "REAL DEFAULT 0"),
-        ("pat_yoy",          "REAL DEFAULT 0"),
+        ("operating_cf_cr",      "REAL DEFAULT 0"),
+        ("curr_assets_cr",       "REAL DEFAULT 0"),
+        ("curr_liab_cr",         "REAL DEFAULT 0"),
+        ("div_yield",            "REAL DEFAULT 0"),
+        ("payout_ratio",         "REAL DEFAULT 0"),
+        ("rev_yoy",              "REAL DEFAULT 0"),
+        ("pat_yoy",              "REAL DEFAULT 0"),
+        # ── v10.2 forensic-engine inputs ─────────────────────────────────
+        ("ebit_cr",              "REAL DEFAULT 0"),
+        ("int_expense_cr",       "REAL DEFAULT 0"),
+        ("capex_cr",             "REAL DEFAULT 0"),
+        ("total_assets_cr",      "REAL DEFAULT 0"),
+        ("total_liab_cr",        "REAL DEFAULT 0"),
+        ("retained_earnings_cr", "REAL DEFAULT 0"),
+        ("working_cap_cr",       "REAL DEFAULT 0"),
+        ("inventory_days",       "REAL DEFAULT 0"),
+        ("receivable_days",      "REAL DEFAULT 0"),
+        ("payable_days",         "REAL DEFAULT 0"),
     ]
     existing = {r[1] for r in conn.execute(
         "PRAGMA table_info(fundamental_metrics)").fetchall()}
@@ -1628,6 +1639,111 @@ def _fetch_yfinance_data(symbols: list) -> dict:
             except Exception:
                 pass   # never break the outer loop — missing data is fine
 
+    # ── Fourth pass: balance_sheet + cashflow + income_stmt for forensics inputs ──
+    # Populates: total_assets_cr, total_liab_cr, retained_earnings_cr,
+    #            working_cap_cr, ebit_cr, int_expense_cr, capex_cr,
+    #            inventory_days, receivable_days, payable_days
+    # Capped at 150 symbols for rate limits (same as pass 3).
+    _syms_for_bs = symbols[:150]
+    if _syms_for_bs:
+        import yfinance as _yf4
+        _INR_CR = 1e7
+
+        def _bs_find(idx, keywords, excludes=()):
+            for r in idx:
+                rs = str(r).lower()
+                if all(k.lower() in rs for k in keywords) and \
+                   not any(e.lower() in rs for e in excludes):
+                    return r
+            return None
+
+        def _bs_val_cr(df, row_label):
+            if df is None or df.empty or row_label is None:
+                return 0.0
+            try:
+                cols = list(df.columns)
+                if not cols:
+                    return 0.0
+                v = df.loc[row_label].iloc[0]
+                return round(float(v) / _INR_CR, 2) if v is not None \
+                                                     and str(v) != "nan" else 0.0
+            except Exception:
+                return 0.0
+
+        for _sym in _syms_for_bs:
+            try:
+                _tk4 = _yf4.Ticker(_sym + ".NS")
+                _bs = getattr(_tk4, "balance_sheet",     None)
+                _cf = getattr(_tk4, "cashflow",          None)
+                _is = getattr(_tk4, "income_stmt",       None) or \
+                      getattr(_tk4, "financials",        None)
+
+                if _sym not in result:
+                    result[_sym] = {}
+
+                # Balance sheet
+                if _bs is not None and not _bs.empty:
+                    _ta = _bs_val_cr(_bs, _bs_find(_bs.index, ["total", "assets"],
+                                                   excludes=["current", "non"]))
+                    _tl = _bs_val_cr(_bs, _bs_find(_bs.index, ["total", "liabilit"],
+                                                   excludes=["current", "non current"]))
+                    _re = _bs_val_cr(_bs, _bs_find(_bs.index, ["retained", "earning"]))
+                    _ca = _bs_val_cr(_bs, _bs_find(_bs.index, ["current", "assets"],
+                                                   excludes=["non current", "noncurrent", "other"]))
+                    _cl = _bs_val_cr(_bs, _bs_find(_bs.index, ["current", "liabilit"],
+                                                   excludes=["non current", "noncurrent",
+                                                             "deferred", "other"]))
+                    _inv_cr = _bs_val_cr(_bs, _bs_find(_bs.index, ["inventor"],
+                                                       excludes=["non", "other"]))
+                    _rec_cr = _bs_val_cr(_bs, _bs_find(_bs.index, ["receivable"],
+                                                       excludes=["non"]))
+                    _pay_cr = _bs_val_cr(_bs, _bs_find(_bs.index, ["payable"],
+                                                       excludes=["non"]))
+
+                    if _ta > 0: result[_sym]["total_assets_cr"]      = _ta
+                    if _tl > 0: result[_sym]["total_liab_cr"]        = _tl
+                    if _re != 0: result[_sym]["retained_earnings_cr"] = _re
+                    if _ca > 0 and _cl > 0:
+                        result[_sym]["working_cap_cr"] = round(_ca - _cl, 2)
+
+                    # Days ratios need revenue — pull from .info if not stored
+                    try:
+                        _rev_raw = float(_tk4.info.get("totalRevenue", 0) or 0)
+                    except Exception:
+                        _rev_raw = 0.0
+                    _rev_cr = _rev_raw / _INR_CR if _rev_raw > 0 else 0
+                    if _rev_cr > 0:
+                        if _inv_cr > 0:
+                            result[_sym]["inventory_days"]  = round(_inv_cr / _rev_cr * 365, 1)
+                        if _rec_cr > 0:
+                            result[_sym]["receivable_days"] = round(_rec_cr / _rev_cr * 365, 1)
+                        if _pay_cr > 0:
+                            result[_sym]["payable_days"]    = round(_pay_cr / _rev_cr * 365, 1)
+
+                # Cash flow
+                if _cf is not None and not _cf.empty:
+                    _capex_row = _bs_find(_cf.index, ["capital", "expenditure"]) or \
+                                 _bs_find(_cf.index, ["purchase", "ppe"]) or \
+                                 _bs_find(_cf.index, ["investments", "ppe"])
+                    _capex = abs(_bs_val_cr(_cf, _capex_row))
+                    if _capex > 0:
+                        result[_sym]["capex_cr"] = _capex
+
+                # Income statement
+                if _is is not None and not _is.empty:
+                    _ebit_row = _bs_find(_is.index, ["ebit"], excludes=["ebitda"]) or \
+                                _bs_find(_is.index, ["operating", "income"])
+                    _int_row  = _bs_find(_is.index, ["interest", "expense"]) or \
+                                _bs_find(_is.index, ["interest", "paid"])
+                    _ebit = _bs_val_cr(_is, _ebit_row)
+                    _intx = abs(_bs_val_cr(_is, _int_row))
+                    if _ebit != 0: result[_sym]["ebit_cr"]        = _ebit
+                    if _intx > 0:  result[_sym]["int_expense_cr"] = _intx
+
+                time.sleep(0.3)
+            except Exception:
+                pass   # never break the outer loop
+
     return result
 
 
@@ -1774,6 +1890,17 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             "pat_cagr_1y":      d.get("pat_cagr_1y",    0),
             "pat_cagr_3y":      d.get("pat_cagr_3y",    0),
             "ebitda_cagr_1y":   d.get("ebitda_cagr_1y", 0),
+            # ── v10.2 forensic-engine inputs (from balance_sheet / cashflow / income_stmt) ──
+            "ebit_cr":              d.get("ebit_cr", 0),
+            "int_expense_cr":       d.get("int_expense_cr", 0),
+            "capex_cr":             d.get("capex_cr", 0),
+            "total_assets_cr":      d.get("total_assets_cr", 0),
+            "total_liab_cr":        d.get("total_liab_cr", 0),
+            "retained_earnings_cr": d.get("retained_earnings_cr", 0),
+            "working_cap_cr":       d.get("working_cap_cr", 0),
+            "inventory_days":       d.get("inventory_days", 0),
+            "receivable_days":      d.get("receivable_days", 0),
+            "payable_days":         d.get("payable_days", 0),
         })
 
         # ── FIX: populate shareholding table from yfinance holding data ──────
@@ -1839,6 +1966,28 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
 
     print(f"   Fundamentals: {ok + nse_ok} fetched, {fail - nse_ok} failed → "
           f"fundamental_metrics: {len(fm_rows)} rows, shareholding: {len(sh_rows)} rows")
+
+def fetch_deep_fundamentals(symbol):
+    ticker = yf.Ticker(f"{symbol}.NS")
+    bs = ticker.balance_sheet
+    cf = ticker.cashflow
+    
+    data = {}
+    try:
+        # Extracting specific rows for CCC and Coverage
+        data['inventory'] = bs.loc['Inventory'].iloc[0] if 'Inventory' in bs.index else 0
+        data['receivables'] = bs.loc['Receivables'].iloc[0] if 'Receivables' in bs.index else 0
+        data['payables'] = bs.loc['Accounts Payable'].iloc[0] if 'Accounts Payable' in bs.index else 0
+        data['ebitda'] = ticker.info.get('ebitda', 0)
+        data['int_expense'] = ticker.info.get('interestExpense', 1)
+        
+        # Calculate CCC (Simplified)
+        # DIO = (Inv / COGS) * 365 | DSO = (Rec / Rev) * 365
+        # For free tier, we proxy with Rev as COGS is often missing
+        rev = ticker.info.get('totalRevenue', 1)
+        data['ccc_days'] = round(((data['inventory'] + data['receivables'] - data['payables']) / rev) * 365, 0)
+    except:
+        pass
 
 if __name__ == "__main__":
     run_backfill()

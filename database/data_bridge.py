@@ -149,7 +149,18 @@ def initialize_v7_tables(conn):
             PRIMARY KEY (symbol, date, name, mode)
         )
     """)
-
+    # NEW: Historical Shareholding Table for QoQ Delta
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS shareholding_history (
+            symbol TEXT,
+            date TEXT,
+            promoter_pct REAL,
+            fii_pct REAL,
+            dii_pct REAL,
+            pledge_pct REAL,
+            PRIMARY KEY (symbol, date)
+        )
+    """)
     conn.commit()
 
 
@@ -216,7 +227,21 @@ REQUIRED_COLS  = ["symbol", "open", "high", "low", "close", "volume"]
 OPTIONAL_COLS  = ["isin", "bse_code", "prev_close", "turnover",
                   "delivery_pct", "sc_group", "exchange", "exchange_tag"]
 
-
+def get_qoq_delta(symbol, current_val, field_name):
+    """Calculates change vs approx 90 days ago."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        # Look back 80-100 days to find the previous quarter's data
+        query = f"SELECT {field_name} FROM shareholding_history WHERE symbol = ? AND date < date('now', '-80 days') ORDER BY date DESC LIMIT 1"
+        prev_val = conn.execute(query, (symbol,)).fetchone()
+        conn.close()
+        
+        if prev_val and prev_val[0] is not None:
+            delta = current_val - prev_val[0]
+            return round(delta, 2)
+    except Exception:
+        pass
+    return 0.0
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 3 — SCHEMA NORMALISATION
 # ─────────────────────────────────────────────────────────────────────────────
@@ -663,38 +688,140 @@ def save_fo_data(df: pd.DataFrame, target_date) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_historical_quarter_data(symbols: list) -> dict:
-    """Sections 3F, 3K & 4: Quarterly baseline trends per symbol."""
+    """
+    Sections 3F, 3K & 4: Quarterly baseline per symbol for QoQ-Δ computation.
+
+    Returns the shareholding snapshot closest to 90 days old for each symbol.
+    If no row exists older than 90 days, returns the oldest available row for
+    that symbol (better than None — at least gives a baseline to compare to).
+    """
+    import sqlite3
+    import pandas as pd
+
     if not symbols:
         return {}
+
     conn = sqlite3.connect("market_data.db")
     try:
         placeholders = ", ".join(["?"] * len(symbols))
-        df = pd.read_sql_query(
-            f"""SELECT * FROM v7_intelligence
-                WHERE symbol IN ({placeholders})
-                  AND timestamp <= datetime('now', '-90 days')
-                GROUP BY symbol""",
-            conn, params=symbols,
-        )
-        if df.empty:
-            return {s: None for s in symbols}
-        hist = df.set_index("symbol").to_dict("index")
-        return {
-            s: {
-                "fii_holding": hist[s].get("fii_holding", 0),
-                "pledge_pct":  hist[s].get("pledge_pct",  0),
-                "total_debt":  hist[s].get("total_debt",  0),
-                "dio":         hist[s].get("dio",         0),
-                "dso":         hist[s].get("dso",         0),
-                "roe":         hist[s].get("roe",         0),
-                "networth":    hist[s].get("networth",    1),
-            } if s in hist else None
-            for s in symbols
-        }
-    except Exception:
+
+        # Primary source: shareholding table (has all 4 holding categories)
+        try:
+            df = pd.read_sql_query(
+                f"""
+                SELECT sh.symbol, sh.date,
+                       sh.promoter_pct, sh.fii_pct, sh.dii_pct, sh.pledge_pct
+                FROM shareholding sh
+                INNER JOIN (
+                    SELECT symbol, MAX(date) AS md
+                    FROM shareholding
+                    WHERE symbol IN ({placeholders})
+                      AND date <= date('now', '-90 days')
+                    GROUP BY symbol
+                ) lt
+                  ON sh.symbol = lt.symbol AND sh.date = lt.md
+                """,
+                conn, params=symbols,
+            )
+        except Exception:
+            df = pd.DataFrame()
+
+        # Fallback: if no 90-day-old row exists, take the oldest available row
+        # per symbol. This gives SOME baseline even for recently-added stocks.
+        missing = [s for s in symbols if s not in set(df["symbol"]) if not df.empty] \
+                  if not df.empty else list(symbols)
+        if missing:
+            try:
+                placeholders2 = ", ".join(["?"] * len(missing))
+                fallback_df = pd.read_sql_query(
+                    f"""
+                    SELECT sh.symbol, sh.date,
+                           sh.promoter_pct, sh.fii_pct, sh.dii_pct, sh.pledge_pct
+                    FROM shareholding sh
+                    INNER JOIN (
+                        SELECT symbol, MIN(date) AS md
+                        FROM shareholding
+                        WHERE symbol IN ({placeholders2})
+                        GROUP BY symbol
+                    ) lt
+                      ON sh.symbol = lt.symbol AND sh.date = lt.md
+                    """,
+                    conn, params=missing,
+                )
+                if not fallback_df.empty:
+                    df = pd.concat([df, fallback_df], ignore_index=True) \
+                         if not df.empty else fallback_df
+            except Exception:
+                pass
+
+        # Final fallback: v7_intelligence (legacy; no dii_pct so dii_qoq stays 0)
+        still_missing = [s for s in symbols
+                         if df.empty or s not in set(df.get("symbol", []))]
+        v7_df = pd.DataFrame()
+        if still_missing:
+            try:
+                placeholders3 = ", ".join(["?"] * len(still_missing))
+                v7_df = pd.read_sql_query(
+                    f"""
+                    SELECT symbol,
+                           promoter_pct,
+                           fii_holding AS fii_pct,
+                           0          AS dii_pct,
+                           pledge_pct,
+                           total_debt,
+                           networth,
+                           dio, dso, roe
+                    FROM v7_intelligence
+                    WHERE symbol IN ({placeholders3})
+                      AND timestamp <= datetime('now', '-90 days')
+                    GROUP BY symbol
+                    """,
+                    conn, params=still_missing,
+                )
+            except Exception:
+                v7_df = pd.DataFrame()
+
+        # Build output dict
+        out = {}
+        if not df.empty:
+            for _, r in df.iterrows():
+                out[r["symbol"]] = {
+                    "promoter_pct": float(r.get("promoter_pct", 0) or 0),
+                    "fii_pct":      float(r.get("fii_pct", 0)      or 0),
+                    "dii_pct":      float(r.get("dii_pct", 0)      or 0),
+                    "pledge_pct":   float(r.get("pledge_pct", 0)   or 0),
+                    "fii_holding":  float(r.get("fii_pct", 0)      or 0),  # legacy alias
+                    "total_debt":   0.0,
+                    "networth":     1.0,
+                }
+        if not v7_df.empty:
+            for _, r in v7_df.iterrows():
+                sym = r["symbol"]
+                if sym in out:
+                    continue
+                out[sym] = {
+                    "promoter_pct": float(r.get("promoter_pct", 0) or 0),
+                    "fii_pct":      float(r.get("fii_pct", 0)      or 0),
+                    "dii_pct":      0.0,
+                    "pledge_pct":   float(r.get("pledge_pct", 0)   or 0),
+                    "fii_holding":  float(r.get("fii_pct", 0)      or 0),
+                    "total_debt":   float(r.get("total_debt", 0)   or 0),
+                    "networth":     float(r.get("networth", 1)     or 1),
+                    "dio":          float(r.get("dio", 0)          or 0),
+                    "dso":          float(r.get("dso", 0)          or 0),
+                    "roe":          float(r.get("roe", 0)          or 0),
+                }
+
+        # Any symbol still not found → None (caller handles this — existing behaviour)
+        return {s: out.get(s) for s in symbols}
+
+    except Exception as e:
+        print(f"   ⚠️  get_historical_quarter_data failed: {e}")
         return {s: None for s in symbols}
     finally:
         conn.close()
+
+
 
 
 def get_latest_fii_net_cash() -> float:

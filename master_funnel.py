@@ -461,6 +461,18 @@ def run_master_pipeline():
 
         for stock in final_100_list:
             sym = stock.get("symbol", "")
+            h_data = historical_map.get(sym) or {}   # None-safe: key exists with None value
+            # NEW: QoQ Delta Calculations
+            stock['promoter_qoq'] = round(stock.get('promoter_pct', 0) - h_data.get('promoter_pct', stock.get('promoter_pct', 0)), 2)
+            stock['fii_qoq'] = round(stock.get('fii_pct', 0) - h_data.get('fii_pct', stock.get('fii_pct', 0)), 2)
+            stock['dii_qoq'] = round(stock.get('dii_pct', 0) - h_data.get('dii_pct', stock.get('dii_pct', 0)), 2)
+            
+            # NEW: Pledge Direction
+            curr_p = stock.get('pledge_pct', 0)
+            prev_p = h_data.get('pledge_pct', curr_p)
+            if curr_p < prev_p: stock['pledge_dir'] = "IMPROVING"
+            elif curr_p > prev_p: stock['pledge_dir'] = "DETERIORATING"
+            else: stock['pledge_dir'] = "STABLE"
 
             # Section 2: Latest Intelligence
             stock["intel_queries"] = fetch_latest_intelligence(
@@ -683,6 +695,17 @@ def run_master_pipeline():
                 ("rev_cagr_3y",      "REAL DEFAULT 0"),
                 ("pat_cagr_1y",      "REAL DEFAULT 0"),
                 ("pat_cagr_3y",      "REAL DEFAULT 0"),
+                # ── v10.2 FORENSIC INPUTS ────────────────────────────────────
+                ("ebit_cr",              "REAL DEFAULT 0"),
+                ("int_expense_cr",       "REAL DEFAULT 0"),
+                ("capex_cr",             "REAL DEFAULT 0"),
+                ("total_assets_cr",      "REAL DEFAULT 0"),
+                ("total_liab_cr",        "REAL DEFAULT 0"),
+                ("retained_earnings_cr", "REAL DEFAULT 0"),
+                ("working_cap_cr",       "REAL DEFAULT 0"),
+                ("inventory_days",       "REAL DEFAULT 0"),
+                ("receivable_days",      "REAL DEFAULT 0"),
+                ("payable_days",         "REAL DEFAULT 0"),
             ]:
                 if _col not in _existing_cols:
                     _mc.execute(
@@ -743,13 +766,23 @@ def run_master_pipeline():
 
             # Optional extended columns — separate query so a missing DB column
             # never breaks the main SELECT above (safe, degrades gracefully)
-            _fm_ext = {}   # symbol → (op_cf_cr, curr_assets_cr, curr_liab_cr)
+            _fm_ext = {}   # symbol → 13-tuple of forensic-input columns (v10.2)
             try:
                 _ext_rows = _conn.execute(
                     f"""SELECT fm.symbol,
-                        COALESCE(fm.operating_cf_cr, 0),
-                        COALESCE(fm.curr_assets_cr,  0),
-                        COALESCE(fm.curr_liab_cr,    0)
+                        COALESCE(fm.operating_cf_cr,      0),
+                        COALESCE(fm.curr_assets_cr,       0),
+                        COALESCE(fm.curr_liab_cr,         0),
+                        COALESCE(fm.ebit_cr,              0),
+                        COALESCE(fm.int_expense_cr,       0),
+                        COALESCE(fm.capex_cr,             0),
+                        COALESCE(fm.total_assets_cr,      0),
+                        COALESCE(fm.total_liab_cr,        0),
+                        COALESCE(fm.retained_earnings_cr, 0),
+                        COALESCE(fm.working_cap_cr,       0),
+                        COALESCE(fm.inventory_days,       0),
+                        COALESCE(fm.receivable_days,      0),
+                        COALESCE(fm.payable_days,         0)
                         FROM fundamental_metrics fm
                         INNER JOIN (
                             SELECT symbol, MAX(date) as md FROM fundamental_metrics
@@ -956,11 +989,65 @@ def run_master_pipeline():
                 q_pat_v      = _fmv[37] if len(_fmv) > 37 else 0
                 q_ebitda_v   = _fmv[38] if len(_fmv) > 38 else 0
                 ebitda_c1_v  = _fmv[39] if len(_fmv) > 39 else 0
+                # ── v10.2 bridge: publish main-SELECT fields to forensic-engine keys ──
+                # These go on the stock dict BEFORE forensics.calculate_accounting_forensics()
+                # runs (which it does on line ~508, earlier in the pipeline). Since this
+                # enrichment block runs in its own loop over final_100_list AFTER the
+                # forensics call, we need to ALSO expose them for any downstream readers
+                # (scoring, excel columns). Forensics engine accepts both _cr and non-_cr
+                # names, so having total_debt_cr here is sufficient.
+                try:
+                    _td_n = float(td) if td not in (None, "", "—") else 0
+                    if _td_n > 0: stock["total_debt_cr"] = _td_n
+                except (ValueError, TypeError): pass
+                try:
+                    _cash_n = float(cash_v) if cash_v not in (None, "", "—") else 0
+                    if _cash_n > 0: stock["cash_cr"] = _cash_n
+                except (ValueError, TypeError): pass
+                try:
+                    _qr_n = float(q_rev_v) if q_rev_v not in (None, "", "—") else 0
+                    if _qr_n > 0: stock["q_rev_cr"] = _qr_n
+                except (ValueError, TypeError): pass
+                try:
+                    _qp_n = float(q_pat_v) if q_pat_v not in (None, "", "—") else 0
+                    if _qp_n != 0: stock["q_pat_cr"] = _qp_n
+                except (ValueError, TypeError): pass
+                try:
+                    _qe_n = float(q_ebitda_v) if q_ebitda_v not in (None, "", "—") else 0
+                    if _qe_n > 0: stock["q_ebitda_cr"] = _qe_n
+                except (ValueError, TypeError): pass
                 # Extended fields from secondary safe query (0 if DB column missing)
-                _ext = _fm_ext.get(sym, (0, 0, 0))
-                op_cf_v     = float(_ext[0]) if _ext[0] else 0   # operating cash flow ₹Cr
-                curr_ass_v  = float(_ext[1]) if _ext[1] else 0   # current assets ₹Cr
-                curr_liab_v = float(_ext[2]) if _ext[2] else 0   # current liabilities ₹Cr
+                # v10.2: tuple now has 13 columns (forensic-engine inputs added)
+                _ext = _fm_ext.get(sym, (0,)*13)
+                if len(_ext) < 13:
+                    _ext = tuple(list(_ext) + [0]*(13-len(_ext)))
+                op_cf_v     = float(_ext[0])  if _ext[0]  else 0   # operating cash flow ₹Cr
+                curr_ass_v  = float(_ext[1])  if _ext[1]  else 0   # current assets ₹Cr
+                curr_liab_v = float(_ext[2])  if _ext[2]  else 0   # current liabilities ₹Cr
+                _ebit_v     = float(_ext[3])  if _ext[3]  else 0   # EBIT ₹Cr
+                _intx_v     = float(_ext[4])  if _ext[4]  else 0   # Interest expense ₹Cr
+                _capex_v    = float(_ext[5])  if _ext[5]  else 0   # Capex ₹Cr
+                _ta_v       = float(_ext[6])  if _ext[6]  else 0   # Total assets ₹Cr
+                _tl_v       = float(_ext[7])  if _ext[7]  else 0   # Total liabilities ₹Cr
+                _re_v       = float(_ext[8])  if _ext[8]  else 0   # Retained earnings ₹Cr
+                _wc_v       = float(_ext[9])  if _ext[9]  else 0   # Working capital ₹Cr
+                _inv_d      = float(_ext[10]) if _ext[10] else 0   # Inventory days
+                _rec_d      = float(_ext[11]) if _ext[11] else 0   # Receivable days
+                _pay_d      = float(_ext[12]) if _ext[12] else 0   # Payable days
+                # Publish forensic inputs onto stock dict (forensics engine reads these)
+                stock["operating_cf_cr"]      = op_cf_v
+                stock["curr_assets_cr"]       = curr_ass_v
+                stock["curr_liab_cr"]         = curr_liab_v
+                stock["ebit_cr"]              = _ebit_v
+                stock["int_expense_cr"]       = _intx_v
+                stock["capex_cr"]             = _capex_v
+                stock["total_assets_cr"]      = _ta_v
+                stock["total_liab_cr"]        = _tl_v
+                stock["retained_earnings_cr"] = _re_v
+                stock["working_cap_cr"]       = _wc_v
+                stock["inventory_days"]       = _inv_d
+                stock["receivable_days"]      = _rec_d
+                stock["payable_days"]         = _pay_d
                 def _fv(v):
                     try:
                         f = float(v) if v is not None else 0.0
@@ -1347,6 +1434,28 @@ def run_master_pipeline():
                 stock["rotation_stage"] = "STAGE 1 — EARLY ACCUMULATION"
             else:
                 stock["rotation_stage"] = "NEUTRAL"
+
+        # ─────────────────────────────────────────────────────────────────────
+        # SECTION 5A.5: FORENSICS RE-RUN (v10.2)
+        # After Section 5 enrichment, stock dicts now carry the forensic
+        # inputs (ebit_cr, int_expense_cr, total_assets_cr, etc.) pulled from
+        # fundamental_metrics. Re-run the engine here so Altman Z, Beneish M,
+        # ND/EBITDA, Int Coverage, Capex/Rev, Earn Quality, CCC Days have
+        # actual computed values (not the "—" placeholders from the first
+        # Section 3 pass where the DB hadn't been read yet).
+        # ─────────────────────────────────────────────────────────────────────
+        print("🔬 [Section 5A.5] Re-running Forensics with enriched DB data...")
+        _forensics_populated = 0
+        for stock in final_100_list:
+            try:
+                _before = stock.get("altman_z", "—")
+                stock.update(forensics.calculate_accounting_forensics(stock))
+                if stock.get("altman_z", "—") not in ("—", 0, 0.0):
+                    _forensics_populated += 1
+            except Exception as _fe:
+                # Never crash the pipeline on forensic errors — log and continue
+                print(f"   ⚠️  Forensics re-run failed for {stock.get('symbol','?')}: {_fe}")
+        print(f"   ✅ Forensics populated for {_forensics_populated}/{len(final_100_list)} stocks")
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 5B: FAIR VALUE ENGINE
