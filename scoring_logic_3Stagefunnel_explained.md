@@ -638,8 +638,8 @@ v10.15 is another **pure display-layer cleanup** — extending v10.14's clamp di
 | ROE % / ROA % storage | Quoted strings `'12.47'` (Excel text) | **Floats** `12.47` — sort/filter/formatting work |
 | NPM Q1/Q2/Q3 clamp | Unbounded (EMAMIREAL −845%) | **±500%** — tiny-revenue noise filtered |
 | CCC Days clamp | Unbounded + `rev.get(.., 1)` fallback | **±500 days**, rev<₹0.1 Cr short-circuits to 0 |
-| P/E TTM / EV/EBITDA / P/B / P/S | Unbounded (AMAGI 1,981) | **±1000** via `_yf_ratio()` |
-| PEG Ratio | Unbounded | **±100** (tighter — PEG > 100 is pure noise) |
+| P/E TTM / EV/EBITDA / P/B / P/S | Unbounded (AMAGI 1,981) | **±1000** via `_yf_ratio()` *(superseded by v10.16 — now "—" display at threshold 500)* |
+| PEG Ratio | Unbounded | **±100** (tighter — PEG > 100 is pure noise) *(superseded by v10.16 — now "—" display at threshold 50)* |
 | Pro QoQ Δ display | `0` for 83/86 stocks indistinguishably | **`"—"`** when no real delta computable |
 | Pledge % / DII % display | `0` silently (free-tier unavailable) | **`"—"`** — honest about "unknown" |
 | Downstream numeric guards | Would crash `'>' on str/int` if pledge became "—" | **Defensive coerce** via `float(str(v or 0).replace("—","0"))` |
@@ -652,7 +652,7 @@ v10.15 is another **pure display-layer cleanup** — extending v10.14's clamp di
 
 **Why Pro QoQ Δ specifically showed 0 for 83/86 stocks:** The shareholding table's backfill writes a literal `promoter_qoq = 0.0` as the default when yfinance can't supply real QoQ (which it never can — it's not in the `.info` dict). Section 5A.4's post-recompute cleanup had a threshold `abs(old_value) > 10` that only caught "obvious bug values" (large numbers from the old `-current` v10.4 bug) — the literal 0 slipped through. v10.15 removes that threshold: any residual number when the recompute produces `"—"` is cleaned to `"—"`. Three states are now clearly distinguished: real computed number (genuine delta, may be 0 if truly no change), absence of real number → `"—"`.
 
-**The tiny-base pattern unified across v10.14 + v10.15:** Every clamp in both releases addresses the same mathematical issue: when a denominator approaches zero, the resulting ratio approaches infinity but carries zero signal. CAGR with v_old near 0 (v10.14), NPM with rev near 0 (v10.15), CCC with rev near 0 (v10.15), PE with EPS near 0 (v10.15), EV/EBITDA with EBITDA near 0 (v10.15). The thresholds differ by field type (500% for margins/growth, 500 days for CCC, 1000 for valuation ratios, 100 for PEG) but the philosophy is the same: preserve every plausible real extreme, filter the arithmetic noise.
+**The tiny-base pattern unified across v10.14 + v10.15 + v10.16:** Every clamp in these releases addresses the same mathematical issue: when a denominator approaches zero, the resulting ratio approaches infinity but carries zero signal. CAGR with v_old near 0 (v10.14), NPM with rev near 0 (v10.15), CCC with rev near 0 (v10.15), PE with EPS near 0 (v10.15 → v10.16), EV/EBITDA with EBITDA near 0 (v10.15 → v10.16). The thresholds differ by field type (500% for margins/growth, 500 days for CCC, 500 for valuation ratios, 50 for PEG) but the philosophy is the same: preserve every plausible real extreme, filter the arithmetic noise. v10.16 further refined the valuation clamps from "numeric cap" to **honest `"—"` display** — because a clamped number like 1000 could be misread as "this stock is 1000× overvalued" when it actually means "valuation not meaningful here".
 
 ### What v10.16 specifically changed
 
@@ -691,6 +691,28 @@ Real expensive stocks in the PE 60-499 range (e.g., a growth stock at PE=80) sti
 - `pe` key = display value, may be `"—"`, used only for Excel output
 - `pe_num` key = scoring value, always numeric (0 or clamped at 500 max), used by all scoring code
 - Separation clean and intentional — same pattern already used for `roe` vs `roe_num`, `de_ratio` vs `de_ratio_num`
+
+**Downstream safe-guards added in v10.16:**
+
+Full audit of every reader of the 11 dash-capable fields (v10.15 pledge_pct, dii_pct, promoter_qoq, fii_qoq, dii_qoq + v10.16 pe, pb, ps, ev_ebitda, peg + roe, roa from v10.15 FIX #1) across the entire codebase identified 2 additional sites that needed defensive coercion:
+
+1. **`analysis/v7_analysis_engine.py::apply_section_3A_valuation`** (line ~26) — direct `pe < (pe_5yr * 0.85)` comparison would crash `TypeError` on `pe="—"`. Fixed with local `_pe_num()` helper.
+
+2. **`analysis/bs_engine.py::analyze_bs_health`** (line ~45) — direct `current_bs.get('roe', 0) < prev_bs_4q.get('roe', 0)` would crash on `roe="—"` (which v10.15 FIX #1 can produce when neither direct nor derivable ROE available). Fixed with local `_roe_num()` helper.
+
+3. **`reporting/excel_generator.py::_is_exceptional_neutral`** (line ~1371) — `float(row.get("pe_num", row.get("pe", 99)) or 99)` would crash `ValueError` in edge case where `pe_num` absent and fallback reached `pe="—"`. Fixed with local `_fs()` coerce helper applied to all 5 fields (roe, pe, mos_pct, technical_score, composite_score).
+
+**Already-safe sites confirmed during audit (no change needed):**
+- `analysis/scoring_engine.py::_nonzero_qoq` — already does `replace("—", "0")` + `try/except`
+- `analysis/fundamental_engine.py::_n` — already does `in (None, "", "—", "--", "N/A")` check
+- `analysis/spike_screener.py::_safe_num` — already does explicit `"—"` check (v10.10)
+- `analysis/fair_value_engine.py` — uses `_sf()` + `> 0` gate for `pb` / `ev_ebitda`
+- `analysis/ownership_tracker.py::_pledge_num` — v10.15 defensive helper
+- `analysis/v7_analysis_engine.py::apply_section_3H_guards` — v10.15 `_pledge_val` coerce
+- `analysis/forensics_engine.py` — doesn't read the dash-capable valuation fields
+- `database/data_bridge.py` — reads from SQLite REAL columns, never sees string `"—"`
+
+**Integration test coverage:** 198/198 tests pass across 27 test groups — includes behavioural-equivalence verification (display "—" does not change composite score when pe_num identical), boundary conditions at 499/500/501 (PEG 49/50), 6-shape defensive-coerce stress tests on v7/bs/spike/ownership modules, and full v10.12/v10.13/v10.14/v10.15 regression.
 
 Zero behavioural change for stocks with real valuations; arithmetic-noise outliers now displayed and scored honestly.
 

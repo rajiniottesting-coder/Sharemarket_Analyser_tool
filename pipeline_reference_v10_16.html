@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>NSE/BSE Stock Analyser — Pipeline Reference (v10.16)</title>
+<style>
+  :root {
+    --bg-primary:#fff;--bg-secondary:#f8f7f3;--bg-tertiary:#f1efe8;
+    --text-primary:#1a1a18;--text-secondary:#5f5e5a;--text-tertiary:#888780;
+    --text-info:#185fa5;--border:rgba(0,0,0,0.12);--border-info:#378ADD;
+    --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --c-blue-50:#E6F1FB;--c-blue-200:#85B7EB;--c-blue-600:#185FA5;--c-blue-800:#0C447C;--c-blue-900:#042C53;
+    --c-teal-50:#E1F5EE;--c-teal-200:#5DCAA5;--c-teal-600:#0F6E56;--c-teal-800:#085041;--c-teal-900:#04342C;
+    --c-amber-50:#FAEEDA;--c-amber-200:#EF9F27;--c-amber-600:#854F0B;--c-amber-800:#633806;--c-amber-900:#412402;
+    --c-gray-50:#F1EFE8;--c-gray-200:#B4B2A9;--c-gray-600:#5F5E5A;--c-gray-800:#444441;--c-gray-900:#2C2C2A;
+    --c-purple-50:#EEEDFE;--c-purple-200:#AFA9EC;--c-purple-600:#534AB7;--c-purple-800:#3C3489;--c-purple-900:#26215C;
+    --c-pink-50:#FBEAF0;--c-pink-200:#ED93B1;--c-pink-600:#993556;--c-pink-800:#72243E;--c-pink-900:#4B1528;
+  }
+  @media (prefers-color-scheme:dark){:root{--bg-primary:#1f1f1d;--bg-secondary:#2c2c2a;--bg-tertiary:#1a1a18;--text-primary:#ebe9e0;--text-secondary:#b4b2a9;--text-tertiary:#888780;--text-info:#85B7EB;--border:rgba(255,255,255,0.15);}}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:var(--font-sans);color:var(--text-primary);background:var(--bg-tertiary);line-height:1.6}
+  .wrap{max-width:980px;margin:0 auto;padding:32px 24px}
+  h1{font-size:28px;font-weight:500;margin:0 0 8px}
+  h2{font-size:20px;font-weight:500;margin:32px 0 8px;padding-top:16px;border-top:1px solid var(--border)}
+  h2:first-of-type{border-top:none;padding-top:0}
+  h3{font-size:16px;font-weight:500;margin:20px 0 4px;color:var(--text-info)}
+  p{font-size:14px;color:var(--text-secondary);margin:8px 0 16px}
+  .meta{color:var(--text-tertiary);font-size:13px;margin-bottom:24px}
+  .toc{background:var(--bg-secondary);border-radius:8px;padding:16px 20px;margin-bottom:32px;border:1px solid var(--border)}
+  .toc h3{margin:0 0 8px;color:var(--text-primary);font-size:14px}
+  .toc ol{margin:0;padding-left:20px;font-size:13px;line-height:1.9}
+  .toc a{color:var(--text-info);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  .nav{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--bg-secondary);padding:10px 14px;border-radius:8px;margin:12px 0;border:1px solid var(--border)}
+  .nav span.label{font-size:13px;color:var(--text-secondary);margin-right:4px}
+  .nav button{font-family:inherit;font-size:13px;padding:6px 12px;background:transparent;color:var(--text-primary);border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all .15s}
+  .nav button:hover{background:var(--bg-tertiary)}
+  .nav button.active{border-color:var(--border-info);color:var(--text-info)}
+  .panel{display:none;padding:8px 0}
+  .panel.active{display:block}
+  svg{width:100%;height:auto;display:block}
+  .section{background:var(--bg-primary);border-radius:8px;padding:20px;margin:16px 0;border:1px solid var(--border)}
+  code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px;background:var(--bg-secondary);padding:1px 5px;border-radius:3px}
+  .footer{margin-top:48px;padding-top:24px;border-top:1px solid var(--border);color:var(--text-tertiary);font-size:12px}
+  text.t{font:400 14px var(--font-sans);fill:var(--text-primary)}
+  text.ts{font:400 12px var(--font-sans);fill:var(--text-secondary)}
+  text.th{font:500 14px var(--font-sans);fill:var(--text-primary)}
+  .arr{stroke:var(--text-tertiary);stroke-width:1.5;fill:none}
+  .c-blue rect,.c-blue ellipse,.c-blue circle{fill:var(--c-blue-50);stroke:var(--c-blue-600)}
+  .c-blue text{fill:var(--c-blue-900)} .c-blue text.ts{fill:var(--c-blue-800)}
+  .c-teal rect,.c-teal ellipse,.c-teal circle{fill:var(--c-teal-50);stroke:var(--c-teal-600)}
+  .c-teal text{fill:var(--c-teal-900)} .c-teal text.ts{fill:var(--c-teal-800)}
+  .c-amber rect,.c-amber ellipse,.c-amber circle{fill:var(--c-amber-50);stroke:var(--c-amber-600)}
+  .c-amber text{fill:var(--c-amber-900)} .c-amber text.ts{fill:var(--c-amber-800)}
+  .c-gray rect,.c-gray ellipse,.c-gray circle{fill:var(--c-gray-50);stroke:var(--c-gray-600)}
+  .c-gray text{fill:var(--c-gray-900)} .c-gray text.ts{fill:var(--c-gray-800)}
+  .c-purple rect,.c-purple ellipse,.c-purple circle{fill:var(--c-purple-50);stroke:var(--c-purple-600)}
+  .c-purple text{fill:var(--c-purple-900)} .c-purple text.ts{fill:var(--c-purple-800)}
+  .c-pink rect,.c-pink ellipse,.c-pink circle{fill:var(--c-pink-50);stroke:var(--c-pink-600)}
+  .c-pink text{fill:var(--c-pink-900)} .c-pink text.ts{fill:var(--c-pink-800)}
+  @media (prefers-color-scheme:dark){
+    .c-blue rect,.c-blue ellipse,.c-blue circle{fill:var(--c-blue-800);stroke:var(--c-blue-200)}
+    .c-blue text{fill:var(--c-blue-50)} .c-blue text.ts{fill:var(--c-blue-200)}
+    .c-teal rect,.c-teal ellipse,.c-teal circle{fill:var(--c-teal-800);stroke:var(--c-teal-200)}
+    .c-teal text{fill:var(--c-teal-50)} .c-teal text.ts{fill:var(--c-teal-200)}
+    .c-amber rect,.c-amber ellipse,.c-amber circle{fill:var(--c-amber-800);stroke:var(--c-amber-200)}
+    .c-amber text{fill:var(--c-amber-50)} .c-amber text.ts{fill:var(--c-amber-200)}
+    .c-gray rect,.c-gray ellipse,.c-gray circle{fill:var(--c-gray-800);stroke:var(--c-gray-200)}
+    .c-gray text{fill:var(--c-gray-50)} .c-gray text.ts{fill:var(--c-gray-200)}
+    .c-purple rect,.c-purple ellipse,.c-purple circle{fill:var(--c-purple-800);stroke:var(--c-purple-200)}
+    .c-purple text{fill:var(--c-purple-50)} .c-purple text.ts{fill:var(--c-purple-200)}
+    .c-pink rect,.c-pink ellipse,.c-pink circle{fill:var(--c-pink-800);stroke:var(--c-pink-200)}
+    .c-pink text{fill:var(--c-pink-50)} .c-pink text.ts{fill:var(--c-pink-200)}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
+<div class="meta">v10.16 Option B · Daily pre-market intelligence pipeline · Single source of truth for end-to-end logic</div>
+<div class="toc">
+  <h3>Contents</h3>
+  <ol>
+    <li><a href="#part1">Part 1 — End-to-end pipeline (Stage 1 → Verdict)</a></li>
+    <li><a href="#part2">Part 2 — Stage 3 overrides (O1–O5) deep-dive</a></li>
+    <li><a href="#part3">Part 3 — Sub-score derivation deep-dive (f/t/e/safe/sent)</a></li>
+    <li><a href="#notes">Implementation notes &amp; code references</a></li>
+  </ol>
+</div>
+<h2 id="part1">Part 1 — End-to-end pipeline</h2>
+<p>From ~5,150 daily NSE bhav rows to top 100 stocks with verdicts. All values verified against actual code in <code>screening/pre_screener.py</code>, <code>screening/priority_ranker.py</code>, and <code>analysis/scoring_engine.py</code>.</p>
+<div class="nav">
+  <span class="label">Pipeline stage:</span>
+  <button onclick="showA(0)" class="active" data-grp="a">Overview</button>
+  <button onclick="showA(1)" data-grp="a">1. Eligibility</button>
+  <button onclick="showA(2)" data-grp="a">2. Quality /35</button>
+  <button onclick="showA(3)" data-grp="a">3. Priority /100</button>
+  <button onclick="showA(4)" data-grp="a">4. Composite /100</button>
+  <button onclick="showA(5)" data-grp="a">5. Verdict</button>
+  <button onclick="showA(6)" data-grp="a">6. Storm + Quick-Pick</button>
+  <button onclick="showA(7)" data-grp="a">7. AMAGI ex.</button>
+</div>
+<div class="section">
+
+<div id="a0" class="panel active">
+<svg viewBox="0 0 680 504">
+<defs><marker id="arrA0" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">From 5,150 tickers to 100 conviction-ranked picks — the daily pipeline</text>
+<g class="c-gray"><rect x="40" y="60" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="60" y="80" dominant-baseline="central">INPUT · NSE/BSE bhav copy + yfinance + history DB</text><text class="ts" x="60" y="100" dominant-baseline="central">~5,150 daily rows · all listed equities</text></g>
+<line x1="340" y1="116" x2="340" y2="128" class="arr" marker-end="url(#arrA0)"/>
+<g class="c-blue"><rect x="40" y="138" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="158" dominant-baseline="central">STAGE 1 · Eligibility filter (V0–V9 hard drops)</text><text class="ts" x="60" y="180" dominant-baseline="central">9 filters · ETF/MF group · vol&gt;0 · price≥₹10 · delivery≥40%</text><text class="ts" x="60" y="200" dominant-baseline="central">circuit · suspended · SME liquidity → ~3,500 pass</text></g>
+<line x1="340" y1="218" x2="340" y2="230" class="arr" marker-end="url(#arrA0)"/>
+<g class="c-blue"><rect x="40" y="240" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="60" y="260" dominant-baseline="central">STAGE 2 · Bhav-quality scorer /35 (B1–B7 binary criteria, +5 each)</text><text class="ts" x="60" y="280" dominant-baseline="central">Delivery · turnover · price zone · dual-listing · 3 hard drops · gate ≥15 → ~600 pass</text></g>
+<line x1="340" y1="296" x2="340" y2="308" class="arr" marker-end="url(#arrA0)"/>
+<g class="c-teal"><rect x="40" y="318" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="60" y="338" dominant-baseline="central">STAGE 3 · Priority ranker /100 + 5 overrides (O1–O5) → top 100</text><text class="ts" x="60" y="358" dominant-baseline="central">vol_spike(25)+s2(30)+delivery(20)+cap(15)+turnover(10) · cap-mix LARGE≥20, MID≥15</text></g>
+<line x1="340" y1="374" x2="340" y2="386" class="arr" marker-end="url(#arrA0)"/>
+<g class="c-amber"><rect x="40" y="396" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="416" dominant-baseline="central">SECTION 6 · Composite /100 + Forensic adj + Verdict + Storm + Quick-pick</text><text class="ts" x="60" y="438" dominant-baseline="central">F×0.35 + T×0.30 + E×0.15 + Sent×0.10 + Safety×0.10 → ±forensic</text><text class="ts" x="60" y="456" dominant-baseline="central">Verdict ∈ {BUY ●●● · WATCHLIST · NEUTRAL · OVERVALUED · AVOID} + storm + quick-pick label</text></g>
+<text class="ts" x="340" y="496" text-anchor="middle">Use buttons above to drill into params, weights, and decision rules per stage</text>
+</svg>
+</div>
+
+<div id="a1" class="panel">
+<svg viewBox="0 0 680 716">
+<defs><marker id="arrA1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Stage 1 · screening/pre_screener.stage_1_filter (V0–V9)</text>
+<text class="ts" x="340" y="48" text-anchor="middle">All 9 hard-drop filters · sequential AND-gates · ~5,150 → ~3,500 pass</text>
+<g class="c-gray"><rect x="40" y="76" width="600" height="64" rx="8" stroke-width="0.5"/><text class="th" x="340" y="96" text-anchor="middle" dominant-baseline="central">INPUT · daily bhav row</text><text class="ts" x="340" y="120" text-anchor="middle" dominant-baseline="central">{symbol, sc_group, close, prev_close, volume, turnover, delivery_pct, exchange_tag}</text></g>
+<g class="c-blue"><rect x="40" y="148" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="168" dominant-baseline="central">V0 · sc_group filter</text><text class="ts" x="60" y="188" dominant-baseline="central">drops EF/MF/IF/IR/BE</text></g>
+<g class="c-blue"><rect x="350" y="148" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="370" y="168" dominant-baseline="central">V0b · ETF symbol patterns</text><text class="ts" x="370" y="188" dominant-baseline="central">~70 keywords · ends-with ETF/BEES</text></g>
+<g class="c-blue"><rect x="40" y="216" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="236" dominant-baseline="central">V0c · Liquid fund NAV trap</text><text class="ts" x="60" y="256" dominant-baseline="central">CMP ≈ ₹1000 + LIQUID/CASH name</text></g>
+<g class="c-blue"><rect x="350" y="216" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="370" y="236" dominant-baseline="central">V1 · Must trade today</text><text class="ts" x="370" y="256" dominant-baseline="central">volume &gt; 0</text></g>
+<g class="c-blue"><rect x="40" y="284" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="304" dominant-baseline="central">V7 · Circuit-hit exclusion</text><text class="ts" x="60" y="324" dominant-baseline="central">|pct_change| &lt; 19.9%</text></g>
+<g class="c-blue"><rect x="350" y="284" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="370" y="304" dominant-baseline="central">V4 · Min price floor</text><text class="ts" x="370" y="324" dominant-baseline="central">close ≥ ₹10 (drops penny)</text></g>
+<g class="c-blue"><rect x="40" y="352" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="372" dominant-baseline="central">V8 · Suspension check</text><text class="ts" x="60" y="392" dominant-baseline="central">drops suspended=True or status</text></g>
+<g class="c-blue"><rect x="350" y="352" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="370" y="372" dominant-baseline="central">V3 · Delivery floor</text><text class="ts" x="370" y="392" dominant-baseline="central">delivery_pct ≥ 40%</text></g>
+<g class="c-blue"><rect x="40" y="420" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="440" dominant-baseline="central">V9 · BSE SME liquidity floor</text><text class="ts" x="60" y="460" dominant-baseline="central">if "SME" in exchange_tag → turnover ≥ ₹5L (else dropped)</text></g>
+<line x1="340" y1="480" x2="340" y2="494" class="arr" marker-end="url(#arrA1)"/>
+<g class="c-teal"><rect x="40" y="504" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="526" text-anchor="middle">PASS · ~3,500 stocks proceed to Stage 2</text><text class="ts" x="340" y="546" text-anchor="middle">All 9 gates AND'd — must pass every check</text></g>
+<g class="c-amber"><rect x="40" y="584" width="600" height="116" rx="8" stroke-width="0.5"/><text class="th" x="60" y="604" dominant-baseline="central">DROP COUNTERS (printed at end of Stage 1)</text><text class="ts" x="60" y="626" dominant-baseline="central">no_volume · penny · low_delivery · circuit · etf_mf · suspended · illiquid_sme</text><text class="ts" x="60" y="646" dominant-baseline="central">Watchlist override: stocks with watchlist_override=True bypass V3 (delivery)</text><text class="ts" x="60" y="666" dominant-baseline="central">but NOT V0/V1/V4/V7/V8 — even watchlist stocks must trade and be priced normally</text><text class="ts" x="60" y="686" dominant-baseline="central">Example print: "Stage 1 Complete: 5150 → 3489 candidates"</text></g>
+</svg>
+</div>
+
+
+<div id="a2" class="panel">
+<svg viewBox="0 0 680 720">
+<defs><marker id="arrA2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Stage 2 · screening/pre_screener.stage_2_fundamental_scorer</text>
+<text class="ts" x="340" y="48" text-anchor="middle">7 binary criteria (B1–B7) · each +5 · max 35 · gate ≥ 15 · uses ONLY bhav data</text>
+<g class="c-gray"><rect x="40" y="68" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="90" text-anchor="middle">INPUT · ~3,500 stocks + {close, volume, turnover, delivery_pct, exchange_tag}</text></g>
+<g class="c-amber"><rect x="40" y="124" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="144" dominant-baseline="central">HARD DROPS (run BEFORE scoring — auto-disqualify)</text><text class="ts" x="60" y="166" dominant-baseline="central">HD1 · turnover &lt; ₹2 Lakh (illiquid)</text><text class="ts" x="60" y="184" dominant-baseline="central">HD2 · delivery &lt; 30% (purely speculative) · HD3 · price &lt; ₹20 (excludes nano)</text></g>
+<line x1="340" y1="204" x2="340" y2="214" class="arr" marker-end="url(#arrA2)"/>
+<g class="c-teal"><rect x="40" y="224" width="290" height="56" rx="8" stroke-width="0.5"/><text class="th" x="60" y="244" dominant-baseline="central">B1 · +5 if delivery ≥ 50%</text><text class="ts" x="60" y="264" dominant-baseline="central">basic institutional interest</text></g>
+<g class="c-teal"><rect x="350" y="224" width="290" height="56" rx="8" stroke-width="0.5"/><text class="th" x="370" y="244" dominant-baseline="central">B2 · +5 if delivery ≥ 65%</text><text class="ts" x="370" y="264" dominant-baseline="central">strong institutional conviction</text></g>
+<g class="c-teal"><rect x="40" y="292" width="290" height="56" rx="8" stroke-width="0.5"/><text class="th" x="60" y="312" dominant-baseline="central">B3 · +5 if turnover ≥ ₹10L</text><text class="ts" x="60" y="332" dominant-baseline="central">minimum meaningful liquidity</text></g>
+<g class="c-teal"><rect x="350" y="292" width="290" height="56" rx="8" stroke-width="0.5"/><text class="th" x="370" y="312" dominant-baseline="central">B4 · +5 if turnover ≥ ₹50L</text><text class="ts" x="370" y="332" dominant-baseline="central">good trading liquidity</text></g>
+<g class="c-teal"><rect x="40" y="360" width="290" height="56" rx="8" stroke-width="0.5"/><text class="th" x="60" y="380" dominant-baseline="central">B5 · +5 if close ≥ ₹50</text><text class="ts" x="60" y="400" dominant-baseline="central">avoids nano/micro speculative</text></g>
+<g class="c-teal"><rect x="350" y="360" width="290" height="56" rx="8" stroke-width="0.5"/><text class="th" x="370" y="380" dominant-baseline="central">B6 · +5 if close ≥ ₹200</text><text class="ts" x="370" y="400" dominant-baseline="central">mid-to-large quality zone</text></g>
+<g class="c-teal"><rect x="40" y="428" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="60" y="448" dominant-baseline="central">B7 · +5 if "DUAL" in exchange_tag (NSE+BSE listing)</text><text class="ts" x="60" y="468" dominant-baseline="central">broader institutional access · max possible total = 35</text></g>
+<line x1="340" y1="484" x2="340" y2="498" class="arr" marker-end="url(#arrA2)"/>
+<g class="c-amber"><rect x="40" y="508" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="528" text-anchor="middle">GATE · stage2_score ≥ 15/35 (must clear at least 3 criteria)</text><text class="ts" x="340" y="546" text-anchor="middle">Below 15 → dropped · Above 15 → proceed to Stage 3 priority ranker</text></g>
+<g class="c-blue"><rect x="40" y="584" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="604" dominant-baseline="central">CAP_CATEGORY assigned here from turnover (proxy until yfinance enrichment)</text><text class="ts" x="60" y="626" dominant-baseline="central">≥₹50Cr=LARGE · ≥₹10Cr=MID · ≥₹1Cr=SMALL · else MICRO</text><text class="ts" x="60" y="644" dominant-baseline="central">Used by Stage 3 cap-mix safety guarantee + verdict cap-aware thresholds</text></g>
+<g class="c-gray"><rect x="40" y="676" width="600" height="36" rx="8" stroke-width="0.5"/><text class="ts" x="340" y="696" text-anchor="middle">Note: ROE/D/E/PE etc. are NOT used at Stage 2 — those come later in Section 6 fundamental_score</text></g>
+</svg>
+</div>
+
+<div id="a3" class="panel">
+<svg viewBox="0 0 680 660">
+<defs><marker id="arrA3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Stage 3 · screening/priority_ranker.calculate_priority_score</text>
+<text class="ts" x="340" y="48" text-anchor="middle">~600 candidates → priority_score /100 + 5 overrides + cap-mix → top 100</text>
+<g class="c-gray"><rect x="40" y="76" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="96" text-anchor="middle">PRIORITY SCORE = vol_spike(25) + stage2(30) + delivery(20)</text><text class="ts" x="340" y="116" text-anchor="middle">+ cap(15) + turnover(10) · all 5 components SCALED so max = 100</text></g>
+<g class="c-teal"><rect x="40" y="148" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="168" dominant-baseline="central">25% · Volume spike</text><text class="ts" x="60" y="188" dominant-baseline="central">today/20d_avg, capped 5× → /5×25</text></g>
+<g class="c-teal"><rect x="350" y="148" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="370" y="168" dominant-baseline="central">30% · Stage 2 score</text><text class="ts" x="370" y="188" dominant-baseline="central">(stage2_score / 35) × 30</text></g>
+<g class="c-teal"><rect x="40" y="216" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="236" dominant-baseline="central">20% · Delivery percent</text><text class="ts" x="60" y="256" dominant-baseline="central">(min(deliv,100) / 100) × 20</text></g>
+<g class="c-teal"><rect x="350" y="216" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="370" y="236" dominant-baseline="central">15% · Cap bonus</text><text class="ts" x="370" y="256" dominant-baseline="central">L=15 · M=10.05 · S=4.95 · μ=0</text></g>
+<g class="c-teal"><rect x="40" y="284" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="304" dominant-baseline="central">10% · Turnover bonus</text><text class="ts" x="60" y="324" dominant-baseline="central">≥₹5Cr → 10 · ≥₹1Cr → 6 · ≥₹10L → 3 · else 0</text></g>
+<line x1="340" y1="344" x2="340" y2="358" class="arr" marker-end="url(#arrA3)"/>
+<g class="c-amber"><rect x="40" y="368" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="390" text-anchor="middle">5 OVERRIDES applied AFTER ranking · cap MAX_OVERRIDES = 20</text></g>
+<g class="c-amber"><rect x="40" y="416" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="60" y="430" dominant-baseline="central">O1 · Personal watchlist (highest priority)</text><text class="ts" x="60" y="446" dominant-baseline="central">stock["watchlist_override"] = True</text></g>
+<g class="c-amber"><rect x="40" y="464" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="60" y="478" dominant-baseline="central">O2 · BSE/NSE announcement today</text><text class="ts" x="60" y="494" dominant-baseline="central">stock["announcement_today"] = True</text></g>
+<g class="c-amber"><rect x="40" y="512" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="60" y="526" dominant-baseline="central">O3 · Spike pre-trigger</text><text class="ts" x="60" y="542" dominant-baseline="central">vol_ratio ≥ 3.0 AND delivery_pct ≥ 60.0 (smart-money accumulation signal)</text></g>
+<g class="c-amber"><rect x="40" y="560" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="60" y="574" dominant-baseline="central">O4 · Score deterioration (v10.13)</text><text class="ts" x="60" y="590" dominant-baseline="central">last_claude_score ≥ 60 AND today's stage2_score &lt; 15 (was BUY-grade, collapsed)</text></g>
+<g class="c-amber"><rect x="40" y="608" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="60" y="622" dominant-baseline="central">O5 · Expiry re-check (v10.13)</text><text class="ts" x="60" y="638" dominant-baseline="central">7 ≤ days_since_analysis &lt; 99 (refresh stale verdicts)</text></g>
+</svg>
+</div>
+
+
+<div id="a4" class="panel">
+<svg viewBox="0 0 680 780">
+<defs><marker id="arrA4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Section 6 · analysis/scoring_engine.calculate_composite_score</text>
+<text class="ts" x="340" y="48" text-anchor="middle">5 sub-scores → weighted blend → forensic adj → clamped 0-100</text>
+<g class="c-gray"><rect x="40" y="76" width="600" height="36" rx="8" stroke-width="0.5"/><text class="th" x="340" y="96" text-anchor="middle">A · Five sub-scores computed (each 0-100, master_funnel.py Section 6 loop)</text></g>
+<g class="c-teal"><rect x="40" y="128" width="120" height="76" rx="8" stroke-width="0.5"/><text class="th" x="100" y="150" text-anchor="middle">f_raw</text><text class="ts" x="100" y="168" text-anchor="middle">FUND</text><text class="ts" x="100" y="184" text-anchor="middle">15 bucket groups</text></g>
+<g class="c-teal"><rect x="170" y="128" width="120" height="76" rx="8" stroke-width="0.5"/><text class="th" x="230" y="150" text-anchor="middle">t_raw</text><text class="ts" x="230" y="168" text-anchor="middle">TECH</text><text class="ts" x="230" y="184" text-anchor="middle">RSI/MA/MACD</text></g>
+<g class="c-teal"><rect x="300" y="128" width="120" height="76" rx="8" stroke-width="0.5"/><text class="th" x="360" y="150" text-anchor="middle">e_raw</text><text class="ts" x="360" y="168" text-anchor="middle">EARLY</text><text class="ts" x="360" y="184" text-anchor="middle">spike screener</text></g>
+<g class="c-teal"><rect x="430" y="128" width="120" height="76" rx="8" stroke-width="0.5"/><text class="th" x="490" y="150" text-anchor="middle">sent_raw</text><text class="ts" x="490" y="168" text-anchor="middle">SENT</text><text class="ts" x="490" y="184" text-anchor="middle">9 contributors</text></g>
+<g class="c-teal"><rect x="560" y="128" width="80" height="76" rx="8" stroke-width="0.5"/><text class="th" x="600" y="150" text-anchor="middle">safe_raw</text><text class="ts" x="600" y="168" text-anchor="middle">SAFE</text><text class="ts" x="600" y="184" text-anchor="middle">11 contribs</text></g>
+<text class="ts" x="340" y="222" text-anchor="middle">See Part 3 below for full sub-score derivation (every bucket, every weight)</text>
+<line x1="340" y1="234" x2="340" y2="246" class="arr" marker-end="url(#arrA4)"/>
+<g class="c-amber"><rect x="40" y="256" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="278" text-anchor="middle">B · Weighted blend (canonical when sentiment informed)</text><text class="ts" x="340" y="300" text-anchor="middle">composite = f×0.35 + t×0.30 + e×0.15 + sent×0.10 + safe×0.10</text><text class="ts" x="340" y="320" text-anchor="middle">redistributed (no paid sentiment): f×0.389 + t×0.333 + e×0.167 + safe×0.111</text></g>
+<line x1="340" y1="336" x2="340" y2="348" class="arr" marker-end="url(#arrA4)"/>
+<g class="c-blue"><rect x="40" y="358" width="600" height="200" rx="8" stroke-width="0.5"/><text class="th" x="340" y="380" text-anchor="middle">C · Forensic adjustment (capped −10 / +8)</text><text class="ts" x="60" y="404" dominant-baseline="central">Altman Z ≥ 3.0 → +3 (safe zone) · Altman Z &lt; 1.8 → −5 (distress)</text><text class="ts" x="60" y="424" dominant-baseline="central">Earnings quality HIGH → +2 · LOW → −3</text><text class="ts" x="60" y="444" dominant-baseline="central">ND/EBITDA &lt; 1.0 → +1 (strong solvency) · &gt; 5.0 → −2 (high leverage warning)</text><text class="ts" x="60" y="464" dominant-baseline="central">Int Coverage &gt; 5x → +2 (comfortable) · &lt; 1.5x → −3 (distress warning)</text><text class="ts" x="60" y="488" dominant-baseline="central">Each contribution guarded against missing data (None, "—" → no penalty)</text><text class="ts" x="60" y="508" dominant-baseline="central">Sum capped: max(-10, min(8, forensic_adj))</text><text class="ts" x="60" y="528" dominant-baseline="central">Final score CLAMPED to [0, 100] after adjustment</text></g>
+<line x1="340" y1="558" x2="340" y2="570" class="arr" marker-end="url(#arrA4)"/>
+<g class="c-purple"><rect x="40" y="580" width="600" height="120" rx="8" stroke-width="0.5"/><text class="th" x="340" y="602" text-anchor="middle">v10.16 PE NEUTRALITY in fundamental_score (master_funnel.py L1852)</text><text class="ts" x="60" y="626" dominant-baseline="central">if pe_num ≥ 500: pass        ← NEW v10.16 NEUTRAL branch (clamped noise)</text><text class="ts" x="60" y="646" dominant-baseline="central">elif 0 &lt; pe_f ≤ 20: +12   elif ≤ 40: +7   elif &gt; 60: −8</text><text class="ts" x="60" y="666" dominant-baseline="central">Real expensive stocks (PE 60-499) STILL get the −8 penalty</text><text class="ts" x="60" y="686" dominant-baseline="central">Only clamped noise (PE ≥ 500) is neutral — honest "valuation unknown"</text></g>
+<g class="c-gray"><rect x="40" y="720" width="600" height="50" rx="8" stroke-width="0.5"/><text class="ts" x="340" y="741" text-anchor="middle">RESULT · final composite_score in [0, 100] · also produces forensic_factors string</text><text class="ts" x="340" y="759" text-anchor="middle">All persist in latest_analysis_results table → drives next-day O4/O5 logic</text></g>
+</svg>
+</div>
+
+
+<div id="a5" class="panel">
+<svg viewBox="0 0 680 760">
+<defs><marker id="arrA5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Verdict derivation · scoring_engine._get_verdict_with_confidence</text>
+<text class="ts" x="340" y="48" text-anchor="middle">Returns: verdict + confidence (HIGH/MED/LOW) + display string with dots</text>
+<g class="c-gray"><rect x="40" y="76" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="96" text-anchor="middle">DECISION 1 · Universal AVOID floor</text><text class="ts" x="340" y="116" text-anchor="middle">if score &lt; AVOID_BELOW (38) → AVOID — no exceptions, regardless of cap</text></g>
+<line x1="340" y1="132" x2="340" y2="142" class="arr" marker-end="url(#arrA5)"/>
+<g class="c-blue"><rect x="40" y="152" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="172" text-anchor="middle">DECISION 2 · Tech-confirmed check (gates the MoS threshold)</text><text class="ts" x="60" y="196" dominant-baseline="central">tech_confirmed = (score ≥ 70) AND (supertrend has "BUY") AND (sector_stage = "STAGE 2")</text><text class="ts" x="60" y="216" dominant-baseline="central">If tech_confirmed: mos_gate = -20 (more permissive)</text><text class="ts" x="60" y="236" dominant-baseline="central">If NOT tech_confirmed: mos_gate = -10 (stricter)</text></g>
+<line x1="340" y1="252" x2="340" y2="262" class="arr" marker-end="url(#arrA5)"/>
+<g class="c-amber"><rect x="40" y="272" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="294" text-anchor="middle">DECISION 3 · Cap-aware BUY/WATCHLIST thresholds (CAP_THRESHOLDS dict)</text></g>
+<g class="c-amber"><rect x="40" y="324" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="344" dominant-baseline="central">LARGE CAP</text><text class="ts" x="60" y="362" dominant-baseline="central">BUY ≥ 60 · WATCHLIST ≥ 50</text></g>
+<g class="c-amber"><rect x="350" y="324" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="370" y="344" dominant-baseline="central">MID CAP</text><text class="ts" x="370" y="362" dominant-baseline="central">BUY ≥ 63 · WATCHLIST ≥ 53</text></g>
+<g class="c-amber"><rect x="40" y="392" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="412" dominant-baseline="central">SMALL CAP</text><text class="ts" x="60" y="430" dominant-baseline="central">BUY ≥ 66 · WATCHLIST ≥ 56</text></g>
+<g class="c-amber"><rect x="350" y="392" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="370" y="412" dominant-baseline="central">MICRO CAP</text><text class="ts" x="370" y="430" dominant-baseline="central">BUY ≥ 70 · WATCHLIST ≥ 60</text></g>
+<line x1="340" y1="452" x2="340" y2="466" class="arr" marker-end="url(#arrA5)"/>
+<g class="c-purple"><rect x="40" y="476" width="600" height="160" rx="8" stroke-width="0.5"/><text class="th" x="340" y="496" text-anchor="middle">DECISION 4 · Verdict assignment (in order)</text><text class="ts" x="60" y="520" dominant-baseline="central">if score ≥ buy_min AND mos &gt; mos_gate → BUY (good business + safe MoS)</text><text class="ts" x="60" y="540" dominant-baseline="central">if score ≥ buy_min AND mos ≤ mos_gate → OVERVALUED (great biz, expensive)</text><text class="ts" x="60" y="560" dominant-baseline="central">elif score ≥ watch_min → WATCHLIST</text><text class="ts" x="60" y="580" dominant-baseline="central">else (score 38 to watch_min) → NEUTRAL</text><text class="ts" x="60" y="604" dominant-baseline="central">Confidence: distance from threshold → ≥5 = HIGH ●●● · 2-5 = MED ●●○ · &lt;2 = LOW ●○○</text><text class="ts" x="60" y="624" dominant-baseline="central">Display string includes dots: "BUY ●●●", "OVERVALUED ●●○", "AVOID ●○○"</text></g>
+<g class="c-teal"><rect x="40" y="660" width="600" height="92" rx="8" stroke-width="0.5"/><text class="th" x="340" y="680" text-anchor="middle">EXCEL OUTPUT (reporting/excel_generator.py)</text><text class="ts" x="60" y="704" dominant-baseline="central">Full Dashboard · 86 columns · all 100 stocks · color-coded verdict cells</text><text class="ts" x="60" y="722" dominant-baseline="central">Gold sheet · top BUY-only filtered (11 conditions) · with confidence dots</text><text class="ts" x="60" y="740" dominant-baseline="central">Tooltip Reference + Glossary · 147 fields documented with v10.16 "—" notes</text></g>
+</svg>
+</div>
+
+<div id="a6" class="panel">
+<svg viewBox="0 0 680 720">
+<defs><marker id="arrA6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Storm score + Quick-pick labels (parallel outputs to verdict)</text>
+<text class="ts" x="340" y="48" text-anchor="middle">scoring_engine.calculate_storm_score · _assign_quick_pick</text>
+<g class="c-gray"><rect x="40" y="76" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="98" text-anchor="middle">STORM SCORE — defensive quality, critical when VIX &gt; 18</text></g>
+<g class="c-blue"><rect x="40" y="132" width="600" height="200" rx="8" stroke-width="0.5"/><text class="th" x="60" y="152" dominant-baseline="central">8 boolean criteria, each +1 or +2 (max 11)</text><text class="ts" x="60" y="174" dominant-baseline="central">+2 · beta &lt; 0.8 (low-volatility stock)</text><text class="ts" x="60" y="192" dominant-baseline="central">+2 · de_ratio &lt; 0.3 (low debt)</text><text class="ts" x="60" y="210" dominant-baseline="central">+2 · fcf_positive_4q (cash-generative for 4 quarters)</text><text class="ts" x="60" y="228" dominant-baseline="central">+1 · promoter_q_increase (promoter buying)</text><text class="ts" x="60" y="246" dominant-baseline="central">+1 · div_yield &gt; 2.0 (income cushion)</text><text class="ts" x="60" y="264" dominant-baseline="central">+1 · fii_buy_3q (FII accumulating for 3 quarters)</text><text class="ts" x="60" y="282" dominant-baseline="central">+1 · rev_growth_yoy &gt; 10 (top-line growth)</text><text class="ts" x="60" y="300" dominant-baseline="central">+1 · margin_expansion = "YES" (improving operating leverage)</text><text class="ts" x="60" y="320" dominant-baseline="central">All inputs guarded by _safe_num() — "—" / None → no contribution</text></g>
+<line x1="340" y1="332" x2="340" y2="344" class="arr" marker-end="url(#arrA6)"/>
+<g class="c-teal"><rect x="40" y="354" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="374" text-anchor="middle">STORM LABEL (storm_label column in Excel)</text><text class="ts" x="60" y="398" dominant-baseline="central">score ≥ 8 → "STORM SAFE" · score ≥ 5 → "MODERATE" · else → "HIGH RISK"</text><text class="ts" x="60" y="418" dominant-baseline="central">Always shown · particularly important when market_vix &gt; 18 or in correction</text></g>
+<line x1="340" y1="434" x2="340" y2="468" class="arr" marker-end="url(#arrA6)"/>
+<g class="c-gray"><rect x="40" y="478" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="500" text-anchor="middle">QUICK-PICK LABELS — Section 6 enrichment</text></g>
+<g class="c-purple"><rect x="40" y="534" width="600" height="160" rx="8" stroke-width="0.5"/><text class="th" x="60" y="554" dominant-baseline="central">Assigned in priority order (first match wins)</text><text class="ts" x="60" y="578" dominant-baseline="central">"DEEP VALUE EARLY MOVER" — mos &gt; 25 AND score &gt; 70 AND early_entry ≥ 60</text><text class="ts" x="60" y="598" dominant-baseline="central">"DEEP VALUE" — mos &gt; 25 AND score &gt; 70 (cheaper than fair value)</text><text class="ts" x="60" y="618" dominant-baseline="central">"EARLY MOVER" — early_entry ≥ 70 AND score &gt; 55 (technical breakout)</text><text class="ts" x="60" y="638" dominant-baseline="central">"AVOID / EXIT" — score &lt; 38 OR (score &lt; 45 AND mos &lt; -30)</text><text class="ts" x="60" y="658" dominant-baseline="central">"WATCHLIST" — fallback for everything else</text><text class="ts" x="60" y="678" dominant-baseline="central">Stored in stock["label"] · separate from "verdict" · used for Gold sheet ranking</text></g>
+</svg>
+</div>
+
+
+<div id="a7" class="panel">
+<svg viewBox="0 0 680 780">
+<defs><marker id="arrA7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">AMAGI · raw PE = 1,981 (near-zero EPS)</text>
+<text class="ts" x="340" y="48" text-anchor="middle">v10.16 Option B end-to-end · how clamped noise becomes honest output</text>
+<g class="c-gray"><rect x="40" y="68" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="92" dominant-baseline="central">RAW · yfinance returns trailingPE = 1981.84</text><text class="ts" x="60" y="112" dominant-baseline="central">EPS = 0.13 · CMP = 250 · arithmetic noise from tiny denominator</text></g>
+<line x1="340" y1="128" x2="340" y2="142" class="arr" marker-end="url(#arrA7)"/>
+<g class="c-blue"><rect x="40" y="152" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="174" dominant-baseline="central">DB write · backfill_history._yf_ratio(cap=500)</text><text class="ts" x="60" y="196" dominant-baseline="central">1981.84 → clamped to 500.0 (REAL column · scoring stays numeric)</text><text class="ts" x="60" y="216" dominant-baseline="central">v10.15 was cap=1000 · v10.16 tightened to cap=500 (matches display threshold)</text></g>
+<line x1="340" y1="232" x2="340" y2="246" class="arr" marker-end="url(#arrA7)"/>
+<g class="c-blue"><rect x="40" y="256" width="290" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="278" dominant-baseline="central">stock["pe_num"] = 500.0</text><text class="ts" x="60" y="298" dominant-baseline="central">used by scoring code</text><text class="ts" x="60" y="316" dominant-baseline="central">always numeric, never "—"</text></g>
+<g class="c-amber"><rect x="350" y="256" width="290" height="80" rx="8" stroke-width="0.5"/><text class="th" x="370" y="278" dominant-baseline="central">stock["pe"] = "—"</text><text class="ts" x="370" y="298" dominant-baseline="central">used by Excel display only</text><text class="ts" x="370" y="316" dominant-baseline="central">v10.16 honest "—" instead of 1000</text></g>
+<line x1="340" y1="336" x2="340" y2="350" class="arr" marker-end="url(#arrA7)"/>
+<g class="c-teal"><rect x="40" y="360" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="382" dominant-baseline="central">SCORING · fundamental_score (master_funnel.py L1852, v10.16)</text><text class="ts" x="60" y="404" dominant-baseline="central">if pe_num ≥ 500: pass     ← NEUTRAL (no penalty applied)</text><text class="ts" x="60" y="424" dominant-baseline="central">PRE-v10.16 hit "elif &gt; 60: −8" → wrong "expensive" penalty (−8 spurious)</text></g>
+<line x1="340" y1="440" x2="340" y2="454" class="arr" marker-end="url(#arrA7)"/>
+<g class="c-teal"><rect x="40" y="464" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="60" y="484" dominant-baseline="central">DOWNSTREAM · v7_analysis_engine.apply_section_3A_valuation</text><text class="ts" x="60" y="506" dominant-baseline="central">_pe_num("—") → 0.0 (defensive coerce, v10.16 FIX #4)</text><text class="ts" x="60" y="524" dominant-baseline="central">"HIST. CHEAP" tag correctly NOT applied (valuation unknown)</text><text class="ts" x="60" y="542" dominant-baseline="central">Pre-v10.16 would have crashed TypeError on string comparison</text></g>
+<line x1="340" y1="564" x2="340" y2="578" class="arr" marker-end="url(#arrA7)"/>
+<g class="c-amber"><rect x="40" y="588" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="60" y="608" dominant-baseline="central">EXCEL OUTPUT · Full Dashboard row for AMAGI</text><text class="ts" x="60" y="630" dominant-baseline="central">P/E TTM = "—"   ·   PEG = "—"   ·   P/B = "—"   ·   EV/EBITDA = "—"</text><text class="ts" x="60" y="648" dominant-baseline="central">ROE = 18.5   ·   D/E = 0.4   ·   fundamental_score = 69.3 (was 61.3 pre-v10.16)</text><text class="ts" x="60" y="666" dominant-baseline="central">composite = 64.2   ·   verdict = BUY ●●○   (was NEUTRAL pre-v10.16, recovered 3.12 pts)</text></g>
+<text class="ts" x="340" y="724" text-anchor="middle">Hover any "—" cell in Excel → tooltip explains the v10.16 Option B threshold (≥500 = noise)</text>
+<text class="ts" x="340" y="752" text-anchor="middle">Glossary sheet · "P/E TTM" row · "—" bucket fully documented</text>
+</svg>
+</div>
+
+</div>
+
+
+<h2 id="part2">Part 2 — Stage 3 overrides (O1–O5) deep-dive</h2>
+<p>Each override answers a question the smooth priority_score formula cannot. All five are evaluated independently then OR'd together.</p>
+<div class="nav">
+  <span class="label">View:</span>
+  <button onclick="showB(0)" class="active" data-grp="b">Big picture</button>
+  <button onclick="showB(1)" data-grp="b">O1 Watchlist</button>
+  <button onclick="showB(2)" data-grp="b">O2 Announcement</button>
+  <button onclick="showB(3)" data-grp="b">O3 Spike</button>
+  <button onclick="showB(4)" data-grp="b">O4 Deterioration</button>
+  <button onclick="showB(5)" data-grp="b">O5 Expiry</button>
+  <button onclick="showB(6)" data-grp="b">Final assembly</button>
+</div>
+<div class="section">
+
+<div id="b0" class="panel active">
+<svg viewBox="0 0 680 600">
+<text class="th" x="340" y="28" text-anchor="middle">What problem do overrides solve?</text>
+<g class="c-gray"><rect x="40" y="60" width="600" height="80" rx="8" stroke-width="0.5"/><text class="ts" x="60" y="82" dominant-baseline="central">Without overrides, Stage 3 would just sort all stocks by priority_score and</text><text class="ts" x="60" y="100" dominant-baseline="central">take the top 100. But priority_score is a smooth blend of vol, fundamentals,</text><text class="ts" x="60" y="118" dominant-baseline="central">delivery, cap, turnover — it can MISS event-driven and historical signals.</text></g>
+<g class="c-blue"><rect x="40" y="160" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="182" text-anchor="middle">Overrides FORCE specific stocks into top 100 regardless of priority_score</text></g>
+<text class="ts" x="340" y="232" text-anchor="middle">Each override answers a question the smooth ranker cannot:</text>
+<g class="c-teal"><rect x="40" y="252" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="60" y="270" dominant-baseline="central">O1 — Watchlist</text><text class="ts" x="60" y="288" dominant-baseline="central">"User explicitly cares about this stock — always include it"</text></g>
+<g class="c-teal"><rect x="40" y="304" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="60" y="322" dominant-baseline="central">O2 — Announcement today</text><text class="ts" x="60" y="340" dominant-baseline="central">"BSE/NSE filing today — material event, MUST analyse"</text></g>
+<g class="c-teal"><rect x="40" y="356" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="60" y="374" dominant-baseline="central">O3 — Spike pre-trigger</text><text class="ts" x="60" y="392" dominant-baseline="central">"Vol &gt; 3× and delivery &gt; 60% — accumulation in progress, catch it early"</text></g>
+<g class="c-teal"><rect x="40" y="408" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="60" y="426" dominant-baseline="central">O4 — Score deterioration</text><text class="ts" x="60" y="444" dominant-baseline="central">"Was a BUY yesterday, fundamentals collapsed today — alert the user"</text></g>
+<g class="c-teal"><rect x="40" y="460" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="60" y="478" dominant-baseline="central">O5 — Expiry re-check</text><text class="ts" x="60" y="496" dominant-baseline="central">"Last analysed 7+ days ago — verdict is stale, refresh it"</text></g>
+<g class="c-amber"><rect x="40" y="516" width="600" height="68" rx="8" stroke-width="0.5"/><text class="th" x="60" y="534" dominant-baseline="central">Cap on overrides: MAX_OVERRIDES = 20 (out of top 100)</text><text class="ts" x="60" y="552" dominant-baseline="central">If &gt;20 stocks match, take the first 20 in priority order O1 &gt; O2 &gt; O3 &gt; O4 &gt; O5</text><text class="ts" x="60" y="570" dominant-baseline="central">Remaining 80 slots go to highest priority_score stocks (with cap-mix rules)</text></g>
+</svg>
+</div>
+
+<div id="b1" class="panel">
+<svg viewBox="0 0 680 540">
+<text class="th" x="340" y="28" text-anchor="middle">O1 — Personal watchlist</text>
+<text class="ts" x="340" y="48" text-anchor="middle">"User has flagged this stock to always be in the top 100"</text>
+<g class="c-gray"><rect x="40" y="76" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="98" text-anchor="middle">TRIGGER condition (priority_ranker.py L139)</text></g>
+<g class="c-blue"><rect x="40" y="136" width="600" height="60" rx="8" stroke-width="0.5"/><text class="ts" x="60" y="158" dominant-baseline="central">o1_mask = df.get("watchlist_override",</text><text class="ts" x="60" y="178" dominant-baseline="central">                  pd.Series([False] * len(df)))</text></g>
+<g class="c-teal"><rect x="40" y="216" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="236" dominant-baseline="central">FIRES WHEN</text><text class="ts" x="60" y="258" dominant-baseline="central">stock has watchlist_override = True (boolean column)</text><text class="ts" x="60" y="276" dominant-baseline="central">Set upstream by user config / personal portfolio file / manual override</text></g>
+<g class="c-amber"><rect x="40" y="316" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="336" dominant-baseline="central">PRIORITY in tie-breaking</text><text class="ts" x="60" y="358" dominant-baseline="central">HIGHEST — O1 evaluated FIRST when assembling override_final</text><text class="ts" x="60" y="376" dominant-baseline="central">If &gt;20 stocks across all overrides, O1 stocks are kept first</text></g>
+<g class="c-amber"><rect x="40" y="416" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="60" y="436" dominant-baseline="central">USE CASE</text><text class="ts" x="60" y="458" dominant-baseline="central">User holds 5 stocks in portfolio they want monitored daily,</text><text class="ts" x="60" y="476" dominant-baseline="central">even if those stocks never qualify on their own merit (low priority_score).</text><text class="ts" x="60" y="494" dominant-baseline="central">O1 guarantees those 5 always appear in tomorrow's Excel.</text></g>
+</svg>
+</div>
+
+<div id="b2" class="panel">
+<svg viewBox="0 0 680 540">
+<text class="th" x="340" y="28" text-anchor="middle">O2 — BSE/NSE announcement today</text>
+<text class="ts" x="340" y="48" text-anchor="middle">"Material event filed today — earnings, M&amp;A, dividend, etc."</text>
+<g class="c-gray"><rect x="40" y="76" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="98" text-anchor="middle">TRIGGER condition (priority_ranker.py L146-149)</text></g>
+<g class="c-blue"><rect x="40" y="136" width="600" height="80" rx="8" stroke-width="0.5"/><text class="ts" x="60" y="158" dominant-baseline="central">o2_col = "announcement_today"</text><text class="ts" x="60" y="178" dominant-baseline="central">o2_mask = df[o2_col].fillna(False).astype(bool)</text><text class="ts" x="60" y="198" dominant-baseline="central">         if o2_col in df.columns else all-False</text></g>
+<g class="c-teal"><rect x="40" y="232" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="252" dominant-baseline="central">FIRES WHEN</text><text class="ts" x="60" y="274" dominant-baseline="central">stock has announcement_today = True for today's date</text><text class="ts" x="60" y="292" dominant-baseline="central">populated by upstream BSE/NSE corporate-actions API</text></g>
+<g class="c-amber"><rect x="40" y="332" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="352" dominant-baseline="central">EXAMPLES of what triggers it</text><text class="ts" x="60" y="374" dominant-baseline="central">Quarterly earnings · M&amp;A announcement · Dividend declaration</text><text class="ts" x="60" y="392" dominant-baseline="central">Bonus/split · Board meeting outcome · Regulatory disclosure</text></g>
+<g class="c-amber"><rect x="40" y="432" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="452" dominant-baseline="central">WHY this is necessary</text><text class="ts" x="60" y="474" dominant-baseline="central">An earnings beat won't show up in priority_score until tomorrow.</text><text class="ts" x="60" y="492" dominant-baseline="central">O2 catches it the same day, lets user act on the news cycle.</text></g>
+</svg>
+</div>
+
+
+<div id="b3" class="panel">
+<svg viewBox="0 0 680 580">
+<text class="th" x="340" y="28" text-anchor="middle">O3 — Spike pre-trigger</text>
+<text class="ts" x="340" y="48" text-anchor="middle">"Smart money accumulating — high volume + high delivery"</text>
+<g class="c-gray"><rect x="40" y="76" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="98" text-anchor="middle">TRIGGER condition (priority_ranker.py L151-157)</text></g>
+<g class="c-blue"><rect x="40" y="136" width="600" height="60" rx="8" stroke-width="0.5"/><text class="ts" x="60" y="158" dominant-baseline="central">vol_ratio = today_volume / 20-day avg volume</text><text class="ts" x="60" y="178" dominant-baseline="central">o3_mask = (vol_ratio &gt;= 3.0) AND (delivery_pct &gt;= 60.0)</text></g>
+<g class="c-teal"><rect x="40" y="216" width="290" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="236" dominant-baseline="central">Component 1 · Volume burst</text><text class="ts" x="60" y="258" dominant-baseline="central">today's volume ≥ 3× the</text><text class="ts" x="60" y="276" dominant-baseline="central">20-day average volume</text></g>
+<g class="c-teal"><rect x="350" y="216" width="290" height="80" rx="8" stroke-width="0.5"/><text class="th" x="370" y="236" dominant-baseline="central">Component 2 · Delivery</text><text class="ts" x="370" y="258" dominant-baseline="central">delivery_pct ≥ 60%</text><text class="ts" x="370" y="276" dominant-baseline="central">(real buyers, not intraday)</text></g>
+<g class="c-amber"><rect x="40" y="316" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="60" y="336" dominant-baseline="central">WHY both conditions matter</text><text class="ts" x="60" y="358" dominant-baseline="central">High volume alone = could be intraday speculation (no conviction)</text><text class="ts" x="60" y="376" dominant-baseline="central">High delivery alone = could be low volume + high delivery on a quiet day</text><text class="ts" x="60" y="394" dominant-baseline="central">High vol AND high delivery = institutional/HNI accumulation signal</text></g>
+<g class="c-amber"><rect x="40" y="436" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="60" y="456" dominant-baseline="central">v10.13 PERFORMANCE OPTIMIZATION</text><text class="ts" x="60" y="478" dominant-baseline="central">vol_ratio uses get_20d_avg_vol_batch() — single windowed SQL fetches</text><text class="ts" x="60" y="496" dominant-baseline="central">all averages up-front (vs ~1,500 per-symbol round-trips pre-v10.13)</text><text class="ts" x="60" y="514" dominant-baseline="central">Saves 3-5 sec per pipeline run</text></g>
+</svg>
+</div>
+
+<div id="b4" class="panel">
+<svg viewBox="0 0 680 600">
+<text class="th" x="340" y="28" text-anchor="middle">O4 — Score deterioration alert</text>
+<text class="ts" x="340" y="48" text-anchor="middle">"Was a BUY yesterday, quality collapsed today — flag the user"</text>
+<g class="c-gray"><rect x="40" y="76" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="98" text-anchor="middle">TRIGGER condition (priority_ranker.py L163-168)</text></g>
+<g class="c-blue"><rect x="40" y="136" width="600" height="80" rx="8" stroke-width="0.5"/><text class="ts" x="60" y="158" dominant-baseline="central">o4_mask = (last_claude_score &gt;= 60)  AND</text><text class="ts" x="60" y="178" dominant-baseline="central">          (today's stage2_score &lt; 15)</text><text class="ts" x="60" y="198" dominant-baseline="central">v10.13: needs prior-analysis map (else mask all-False, no fire)</text></g>
+<g class="c-teal"><rect x="40" y="232" width="290" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="252" dominant-baseline="central">Condition 1</text><text class="ts" x="60" y="274" dominant-baseline="central">last_claude_score ≥ 60</text><text class="ts" x="60" y="292" dominant-baseline="central">(was BUY/WATCHLIST material)</text></g>
+<g class="c-teal"><rect x="350" y="232" width="290" height="80" rx="8" stroke-width="0.5"/><text class="th" x="370" y="252" dominant-baseline="central">Condition 2</text><text class="ts" x="370" y="274" dominant-baseline="central">today's stage2_score &lt; 15</text><text class="ts" x="370" y="292" dominant-baseline="central">(would FAIL Stage 2 gate today)</text></g>
+<g class="c-amber"><rect x="40" y="332" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="60" y="352" dominant-baseline="central">WHY this is important</text><text class="ts" x="60" y="374" dominant-baseline="central">Stage 2 fail (&lt;15) means quality dropped sharply since last analysis.</text><text class="ts" x="60" y="392" dominant-baseline="central">Without O4, this stock would silently disappear from the top 100.</text><text class="ts" x="60" y="410" dominant-baseline="central">User would never know their previous BUY went bad. O4 forces re-inclusion.</text></g>
+<g class="c-blue"><rect x="40" y="452" width="600" height="120" rx="8" stroke-width="0.5"/><text class="th" x="60" y="472" dominant-baseline="central">DATA SOURCE: latest_analysis_results table (v10.13)</text><text class="ts" x="60" y="494" dominant-baseline="central">last_claude_score = composite_score from stock's most recent run</text><text class="ts" x="60" y="512" dominant-baseline="central">Loaded by get_prior_analysis_map() at start of Stage 3</text><text class="ts" x="60" y="530" dominant-baseline="central">First-ever run: map empty → o4_mask all False → identical to pre-v10.13</text><text class="ts" x="60" y="548" dominant-baseline="central">After first run: O4 (and O5) become active</text></g>
+</svg>
+</div>
+
+<div id="b5" class="panel">
+<svg viewBox="0 0 680 580">
+<text class="th" x="340" y="28" text-anchor="middle">O5 — Expiry re-check</text>
+<text class="ts" x="340" y="48" text-anchor="middle">"Last analysed 7+ days ago — verdict is stale, force a refresh"</text>
+<g class="c-gray"><rect x="40" y="76" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="98" text-anchor="middle">TRIGGER condition (priority_ranker.py L179-183)</text></g>
+<g class="c-blue"><rect x="40" y="136" width="600" height="80" rx="8" stroke-width="0.5"/><text class="ts" x="60" y="158" dominant-baseline="central">_dsa = days_since_analysis</text><text class="ts" x="60" y="178" dominant-baseline="central">o5_mask = (_dsa &gt;= 7) AND (_dsa &lt; 99)</text><text class="ts" x="60" y="198" dominant-baseline="central">99 = sentinel for "never analysed" — guard prevents firing on first-ever stocks</text></g>
+<g class="c-teal"><rect x="40" y="232" width="290" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="252" dominant-baseline="central">FIRES WHEN</text><text class="ts" x="60" y="274" dominant-baseline="central">days_since_analysis ≥ 7</text><text class="ts" x="60" y="292" dominant-baseline="central">AND has prior history (&lt;99)</text></g>
+<g class="c-teal"><rect x="350" y="232" width="290" height="80" rx="8" stroke-width="0.5"/><text class="th" x="370" y="252" dominant-baseline="central">DOES NOT FIRE WHEN</text><text class="ts" x="370" y="274" dominant-baseline="central">stock never analysed (=99)</text><text class="ts" x="370" y="292" dominant-baseline="central">or analysed in last 6 days</text></g>
+<g class="c-amber"><rect x="40" y="332" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="60" y="352" dominant-baseline="central">WHY this is needed</text><text class="ts" x="60" y="374" dominant-baseline="central">A stock that previously made the top 100 might fall off the priority ranking</text><text class="ts" x="60" y="392" dominant-baseline="central">on subsequent days. Without O5, it could vanish indefinitely.</text><text class="ts" x="60" y="410" dominant-baseline="central">Stale verdicts become misleading after a week — earnings, news, etc.</text></g>
+<g class="c-blue"><rect x="40" y="452" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="60" y="472" dominant-baseline="central">CONCRETE EXAMPLE</text><text class="ts" x="60" y="494" dominant-baseline="central">Day 1 — TCS analysed, verdict = WATCHLIST, days_since_analysis = 0</text><text class="ts" x="60" y="512" dominant-baseline="central">Days 2-7 — TCS doesn't make priority cut (other stocks rank higher)</text><text class="ts" x="60" y="530" dominant-baseline="central">Day 8 — days_since_analysis = 7 → O5 fires → TCS forced back in</text></g>
+</svg>
+</div>
+
+<div id="b6" class="panel">
+<svg viewBox="0 0 680 660">
+<defs><marker id="arrB6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Final assembly · how overrides + ranking produce top 100</text>
+<g class="c-gray"><rect x="40" y="60" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="82" text-anchor="middle">STEP 1 · Compute priority_score for ALL ~600 Stage 2 survivors</text></g>
+<line x1="340" y1="104" x2="340" y2="114" class="arr" marker-end="url(#arrB6)"/>
+<g class="c-blue"><rect x="40" y="124" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="144" text-anchor="middle">STEP 2 · Evaluate all 5 override masks (boolean per stock)</text><text class="ts" x="340" y="164" text-anchor="middle">override_mask = o1 OR o2 OR o3 OR o4 OR o5</text></g>
+<line x1="340" y1="184" x2="340" y2="194" class="arr" marker-end="url(#arrB6)"/>
+<g class="c-teal"><rect x="40" y="204" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="224" text-anchor="middle">STEP 3 · Dedup overrides in priority order O1 &gt; O2 &gt; O3 &gt; O4 &gt; O5</text><text class="ts" x="60" y="248" dominant-baseline="central">If a stock fires both O2 and O4, it's counted under O2 (kept first).</text><text class="ts" x="60" y="266" dominant-baseline="central">Order matters because of step 4's cap.</text></g>
+<line x1="340" y1="284" x2="340" y2="294" class="arr" marker-end="url(#arrB6)"/>
+<g class="c-amber"><rect x="40" y="304" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="324" text-anchor="middle">STEP 4 · Cap overrides at 20</text><text class="ts" x="340" y="344" text-anchor="middle">if len(override_final) &gt; 20: keep only first 20 in priority order</text></g>
+<line x1="340" y1="364" x2="340" y2="374" class="arr" marker-end="url(#arrB6)"/>
+<g class="c-amber"><rect x="40" y="384" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="404" text-anchor="middle">STEP 5 · Fill remaining ~80 slots from priority_score ranking</text><text class="ts" x="60" y="426" dominant-baseline="central">Cap-mix guarantee: LARGE ≥ 20, MID ≥ 15, SMALL+MICRO ≤ 65</text><text class="ts" x="60" y="446" dominant-baseline="central">Prevents micro-cap junk from flooding the dashboard</text></g>
+<line x1="340" y1="464" x2="340" y2="474" class="arr" marker-end="url(#arrB6)"/>
+<g class="c-teal"><rect x="40" y="484" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="504" text-anchor="middle">RESULT · top 100 = override_final ⊕ guaranteed_caps ⊕ filler</text><text class="ts" x="340" y="524" text-anchor="middle">.drop_duplicates(subset=["symbol"]).head(100)</text></g>
+<g class="c-gray"><rect x="40" y="560" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="580" dominant-baseline="central">First-run safety</text><text class="ts" x="60" y="600" dominant-baseline="central">If latest_analysis_results table empty → O4/O5 masks all False</text><text class="ts" x="60" y="618" dominant-baseline="central">→ pipeline behaves identically to pre-v10.13 (overrides O1/O2/O3 only)</text></g>
+</svg>
+</div>
+
+</div>
+
+
+<h2 id="part3">Part 3 — Sub-score derivation deep-dive</h2>
+<p>The Section 6 composite blends five sub-scores computed in <code>master_funnel.py</code> and <code>analysis/</code>: <strong>fundamental_score</strong> (15 bucket groups), <strong>technical_score</strong> (9 indicators), <strong>early_entry_score</strong> (11 conditions), <strong>safety_score</strong> (11 contributors), and <strong>sentiment_score</strong> (9 contributors). Below are the exact thresholds and weights extracted from the code — every +N and −N that flows into the final composite.</p>
+
+<div class="nav">
+  <span class="label">Sub-score:</span>
+  <button onclick="showC(0)" class="active" data-grp="c">Fundamental (15 buckets)</button>
+  <button onclick="showC(1)" data-grp="c">Technical (9 indicators)</button>
+  <button onclick="showC(2)" data-grp="c">Early Entry (11 conditions)</button>
+  <button onclick="showC(3)" data-grp="c">Safety (11 contribs)</button>
+  <button onclick="showC(4)" data-grp="c">Sentiment (9 contribs)</button>
+</div>
+
+<div class="section">
+
+<div id="c0" class="panel active">
+<svg viewBox="0 0 680 1180">
+<text class="th" x="340" y="28" text-anchor="middle">fundamental_score — 15 bucket groups (master_funnel.py)</text>
+<text class="ts" x="340" y="48" text-anchor="middle">base = 45 + (stage2_score / 30) × 10 → bumped by all 15 buckets below</text>
+
+<g class="c-blue"><rect x="40" y="76" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="96" dominant-baseline="central">1 · PE ratio (v10.16 neutrality)</text><text class="ts" x="60" y="118" dominant-baseline="central">≥500 → pass (NEUTRAL) · 0&lt;x≤20 → +12 · ≤40 → +7 · &gt;60 → −8</text></g>
+
+<g class="c-blue"><rect x="40" y="144" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="164" dominant-baseline="central">2 · ROE (return on equity, %)</text><text class="ts" x="60" y="186" dominant-baseline="central">&gt;20 → +12 · &gt;10 → +6 · 0&lt;x&lt;5 → −5</text></g>
+
+<g class="c-blue"><rect x="40" y="212" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="232" dominant-baseline="central">3 · D/E (debt to equity ratio)</text><text class="ts" x="60" y="254" dominant-baseline="central">0&lt;x&lt;0.3 → +8 · ≤1.0 → +4 · &gt;2.0 → −10</text></g>
+
+<g class="c-blue"><rect x="40" y="280" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="300" dominant-baseline="central">4 · Current Ratio (liquidity)</text><text class="ts" x="60" y="322" dominant-baseline="central">&gt;2.0 → +6 · &gt;1.5 → +3 · 0&lt;x&lt;1.0 → −7</text></g>
+
+<g class="c-blue"><rect x="40" y="348" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="368" dominant-baseline="central">5 · Gross Margin (%)</text><text class="ts" x="60" y="390" dominant-baseline="central">&gt;40 → +8 · &gt;20 → +4</text></g>
+
+<g class="c-blue"><rect x="40" y="416" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="436" dominant-baseline="central">6 · Net Profit Margin (%)</text><text class="ts" x="60" y="458" dominant-baseline="central">&gt;15 → +8 · &gt;5 → +4 · &lt;0 → −8</text></g>
+
+<g class="c-teal"><rect x="40" y="484" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="504" dominant-baseline="central">7 · Earnings Yield (%)</text><text class="ts" x="60" y="526" dominant-baseline="central">&gt;6 → +5 · &gt;4 → +2</text></g>
+
+<g class="c-teal"><rect x="40" y="552" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="572" dominant-baseline="central">8 · Promoter holding (%)</text><text class="ts" x="60" y="594" dominant-baseline="central">&gt;50 → +5 · &gt;35 → +2 · 0&lt;x&lt;20 → −3</text></g>
+
+<g class="c-teal"><rect x="40" y="620" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="640" dominant-baseline="central">9 · PAT growth YoY (%)</text><text class="ts" x="60" y="662" dominant-baseline="central">&gt;20 → +8 · &gt;10 → +4 · &gt;0 → +2 · &lt;-10 → −7</text></g>
+
+<g class="c-teal"><rect x="40" y="688" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="708" dominant-baseline="central">10 · Revenue growth YoY (%)</text><text class="ts" x="60" y="730" dominant-baseline="central">&gt;15 → +5 · &gt;8 → +3 · &gt;0 → +1 · &lt;-5 → −4</text></g>
+
+<g class="c-teal"><rect x="40" y="756" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="776" dominant-baseline="central">11 · FCF Yield (%)</text><text class="ts" x="60" y="798" dominant-baseline="central">&gt;6 → +6 · &gt;3 → +3 · &lt;0 → −5</text></g>
+
+<g class="c-amber"><rect x="40" y="824" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="844" dominant-baseline="central">12 · PAT CAGR 3-year (%)</text><text class="ts" x="60" y="866" dominant-baseline="central">&gt;20 → +8 · &gt;10 → +4</text></g>
+
+<g class="c-amber"><rect x="40" y="892" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="912" dominant-baseline="central">13 · Revenue CAGR 3-year (%)</text><text class="ts" x="60" y="934" dominant-baseline="central">&gt;15 → +5 · &gt;8 → +3</text></g>
+
+<g class="c-amber"><rect x="40" y="960" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="980" dominant-baseline="central">14 · EBITDA CAGR 1-year (%)</text><text class="ts" x="60" y="1002" dominant-baseline="central">&gt;15 → +4 · &gt;8 → +2</text></g>
+
+<g class="c-amber"><rect x="40" y="1028" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="1048" dominant-baseline="central">15 · Margin expansion flag</text><text class="ts" x="60" y="1070" dominant-baseline="central">margin_expansion = "YES" → +5 (operating leverage improving)</text></g>
+
+<g class="c-gray"><rect x="40" y="1100" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="1120" dominant-baseline="central">All buckets clamped to final f_raw ∈ [0, 100] before composite blend</text><text class="ts" x="60" y="1142" dominant-baseline="central">Missing data ("—", None) guarded — no penalty applied when input absent</text></g>
+</svg>
+</div>
+
+
+<div id="c1" class="panel">
+<svg viewBox="0 0 680 1060">
+<text class="th" x="340" y="28" text-anchor="middle">technical_score — 9 indicator groups (master_funnel.py)</text>
+<text class="ts" x="340" y="48" text-anchor="middle">Captures trend strength, momentum, money flow · 30% weight in composite</text>
+
+<g class="c-blue"><rect x="40" y="76" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="60" y="96" dominant-baseline="central">1 · RSI (Relative Strength Index, 14-period)</text><text class="ts" x="60" y="118" dominant-baseline="central">&gt;70 → +8 (capped — overbought no extra bonus)</text><text class="ts" x="60" y="136" dominant-baseline="central">&gt;60 → +10 (sweet spot: strong, not overextended) · &gt;50 → +4</text><text class="ts" x="60" y="156" dominant-baseline="central">&lt;50 → −4 · &lt;40 → −8</text></g>
+
+<g class="c-blue"><rect x="40" y="184" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="60" y="204" dominant-baseline="central">2 · ADX (Average Directional Index — trend strength)</text><text class="ts" x="60" y="226" dominant-baseline="central">&gt;30 → +7 (established trend) · &gt;25 → +5</text><text class="ts" x="60" y="244" dominant-baseline="central">&gt;20 → +2 (weak trend)</text></g>
+
+<g class="c-blue"><rect x="40" y="268" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="288" dominant-baseline="central">3 · MACD signal</text><text class="ts" x="60" y="310" dominant-baseline="central">"BUY" → +6 · "SELL" → −6</text></g>
+
+<g class="c-blue"><rect x="40" y="336" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="356" dominant-baseline="central">4 · Supertrend</text><text class="ts" x="60" y="378" dominant-baseline="central">"BUY" → +8 · "SELL" → −8</text></g>
+
+<g class="c-blue"><rect x="40" y="404" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="424" dominant-baseline="central">5 · VWAP (price vs volume-weighted avg)</text><text class="ts" x="60" y="446" dominant-baseline="central">price above VWAP ("YES") → +4 · below → −2</text></g>
+
+<g class="c-blue"><rect x="40" y="472" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="492" dominant-baseline="central">6 · OBV (On Balance Volume trend)</text><text class="ts" x="60" y="514" dominant-baseline="central">"RISING" → +4 · "FALLING" → −4</text></g>
+
+<g class="c-blue"><rect x="40" y="540" width="600" height="96" rx="8" stroke-width="0.5"/><text class="th" x="60" y="560" dominant-baseline="central">7 · Stochastic K</text><text class="ts" x="60" y="580" dominant-baseline="central">20 &lt; x ≤ 40 → +5 (oversold recovery — bullish)</text><text class="ts" x="60" y="600" dominant-baseline="central">≤ 20 → +2 (deeply oversold — potential reversal) · &gt; 80 → −3 (overbought caution)</text></g>
+
+<g class="c-blue"><rect x="40" y="644" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="664" dominant-baseline="central">8 · MFI (Money Flow Index)</text><text class="ts" x="60" y="686" dominant-baseline="central">&gt;60 → +4 (strong inflow) · &lt;30 → −3 (outflow)</text></g>
+
+<g class="c-blue"><rect x="40" y="712" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="732" dominant-baseline="central">9 · Price vs SMA-200 (long-term trend)</text><text class="ts" x="60" y="754" dominant-baseline="central">CMP &gt; SMA200 × 1.02 → +3 (clearly above) · CMP &lt; SMA200 × 0.98 → −3 (clearly below)</text></g>
+
+<g class="c-gray"><rect x="40" y="800" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="820" dominant-baseline="central">Only computed IF not already set by upstream technical engine</text><text class="ts" x="60" y="842" dominant-baseline="central">Final t_raw clamped [0,100] before composite blend at 30% weight (canonical)</text></g>
+
+<g class="c-amber"><rect x="40" y="880" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="900" dominant-baseline="central">Max theoretical bonus: ~+57 · Max penalty: ~-34</text><text class="ts" x="60" y="922" dominant-baseline="central">Starting base = 50 · clamped to [0,100] at end</text></g>
+
+<g class="c-gray"><rect x="40" y="960" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="980" dominant-baseline="central">How this feeds verdict</text><text class="ts" x="60" y="1002" dominant-baseline="central">t_raw × 0.30 is the single largest NON-fundamental contributor to composite</text><text class="ts" x="60" y="1020" dominant-baseline="central">Tech-confirmed verdict gate requires: t_raw-derived score≥70 AND supertrend BUY AND STAGE 2</text></g>
+</svg>
+</div>
+
+<div id="c2" class="panel">
+<svg viewBox="0 0 680 1100">
+<text class="th" x="340" y="28" text-anchor="middle">early_entry_score — 11 conditions (master_funnel.py)</text>
+<text class="ts" x="340" y="48" text-anchor="middle">Breakout proximity + accumulation patterns · 15% weight in composite</text>
+
+<g class="c-teal"><rect x="40" y="76" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="60" y="96" dominant-baseline="central">1 · Volume burst + healthy RSI</text><text class="ts" x="60" y="118" dominant-baseline="central">vol_ratio ≥ 1.8 AND 50 &lt; RSI ≤ 72 → +15 (biggest single contributor)</text><text class="ts" x="60" y="136" dominant-baseline="central">catches pre-breakout with momentum confirmation</text></g>
+
+<g class="c-teal"><rect x="40" y="160" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="180" dominant-baseline="central">2 · 2-week price surge</text><text class="ts" x="60" y="202" dominant-baseline="central">2-week return &gt; 2.0% → +10</text></g>
+
+<g class="c-teal"><rect x="40" y="228" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="248" dominant-baseline="central">3 · Double technical confirmation</text><text class="ts" x="60" y="270" dominant-baseline="central">supertrend = BUY AND MACD = BUY → +12 (momentum stack)</text></g>
+
+<g class="c-teal"><rect x="40" y="296" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="316" dominant-baseline="central">4 · Delivery + volume combo</text><text class="ts" x="60" y="338" dominant-baseline="central">delivery ≥ 70% AND vol_ratio ≥ 2.0 → +10 (smart money accumulation)</text></g>
+
+<g class="c-teal"><rect x="40" y="364" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="384" dominant-baseline="central">5 · Dual-listed with volume</text><text class="ts" x="60" y="406" dominant-baseline="central">exchange = DUAL_LISTED AND vol_ratio ≥ 1.5 → +8</text></g>
+
+<g class="c-teal"><rect x="40" y="432" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="60" y="452" dominant-baseline="central">6 · Margin of safety + verdict</text><text class="ts" x="60" y="474" dominant-baseline="central">MoS &gt; 25 AND verdict = BUY → +10 (deep value entry)</text><text class="ts" x="60" y="492" dominant-baseline="central">MoS &gt; 10 AND verdict ∈ {BUY, WATCHLIST} → +5 (adequate value)</text></g>
+
+<g class="c-teal"><rect x="40" y="516" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="536" dominant-baseline="central">7 · 52-week high proximity breakout</text><text class="ts" x="60" y="558" dominant-baseline="central">distance to 52w-high ≤ 5% AND vol_ratio &gt; 2.0 AND supertrend = BUY → +10</text></g>
+
+<g class="c-teal"><rect x="40" y="584" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="604" dominant-baseline="central">8 · Score convergence (triple confirmation)</text><text class="ts" x="60" y="626" dominant-baseline="central">composite ≥ 70 AND RSI &gt; 60 AND supertrend = BUY → +8</text></g>
+
+<g class="c-teal"><rect x="40" y="652" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="672" dominant-baseline="central">9 · FII QoQ buying</text><text class="ts" x="60" y="694" dominant-baseline="central">FII QoQ change &gt; 1.0% → +8</text></g>
+
+<g class="c-teal"><rect x="40" y="720" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="740" dominant-baseline="central">10 · Promoter QoQ buying</text><text class="ts" x="60" y="762" dominant-baseline="central">promoter QoQ change &gt; 1.0% → +8</text></g>
+
+<g class="c-teal"><rect x="40" y="788" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="60" y="808" dominant-baseline="central">11 · (reserved — framework supports 11th boolean)</text><text class="ts" x="60" y="830" dominant-baseline="central">10 active contributors in current code · max theoretical total ≈ +99</text><text class="ts" x="60" y="848" dominant-baseline="central">Only additive — no negative contributions from this sub-score</text></g>
+
+<g class="c-gray"><rect x="40" y="892" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="912" dominant-baseline="central">Output labels (separate from numeric score)</text><text class="ts" x="60" y="934" dominant-baseline="central">early_entry_score ≥ 50 → "EARLY MOVER" badge · ≥ 35 → "AHEAD OF CONSENSUS"</text></g>
+
+<g class="c-amber"><rect x="40" y="972" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="60" y="992" dominant-baseline="central">How this feeds verdict</text><text class="ts" x="60" y="1014" dominant-baseline="central">e_raw × 0.15 in composite · also drives quick-pick "EARLY MOVER" label (≥70 + score&gt;55)</text><text class="ts" x="60" y="1032" dominant-baseline="central">Final e_raw clamped [0,100] before composite blend</text></g>
+</svg>
+</div>
+
+<div id="c3" class="panel">
+<svg viewBox="0 0 680 1020">
+<text class="th" x="340" y="28" text-anchor="middle">safety_score — 11 contributors (master_funnel.py)</text>
+<text class="ts" x="340" y="48" text-anchor="middle">Captures leverage + cash-flow + governance risk · safer companies score higher</text>
+
+<g class="c-pink"><rect x="40" y="76" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="60" y="96" dominant-baseline="central">1 · Promoter Pledge (%)</text><text class="ts" x="60" y="118" dominant-baseline="central">&gt;20 → −15 (serious red flag) · &gt;10 → −7 (watch)</text><text class="ts" x="60" y="138" dominant-baseline="central">= 0 → +4 (clean balance sheet, no encumbered shares)</text></g>
+
+<g class="c-pink"><rect x="40" y="160" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="180" dominant-baseline="central">2 · Beta (market volatility)</text><text class="ts" x="60" y="202" dominant-baseline="central">&gt;1.5 → −5 (high volatility) · &lt;0.8 → +5 (defensive stock)</text></g>
+
+<g class="c-pink"><rect x="40" y="228" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="248" dominant-baseline="central">3 · D/E ratio (duplicated from fund with harsher penalty)</text><text class="ts" x="60" y="270" dominant-baseline="central">&gt;2.0 → −10 · 0&lt;x&lt;0.3 → +5 (very low debt = safer)</text></g>
+
+<g class="c-pink"><rect x="40" y="296" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="316" dominant-baseline="central">4 · FCF (free cash flow)</text><text class="ts" x="60" y="338" dominant-baseline="central">&lt;0 → −8 (cash-burning) · &gt;0 → +3 (cash-generative)</text></g>
+
+<g class="c-pink"><rect x="40" y="364" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="60" y="384" dominant-baseline="central">5 · BS status (from bs_engine output)</text><text class="ts" x="60" y="406" dominant-baseline="central">"ALERT" → −15 · "WATCH" → −5</text><text class="ts" x="60" y="426" dominant-baseline="central">"HEALTHY" AND fcf &gt; 0 → +3 (double confirmation)</text></g>
+
+<g class="c-pink"><rect x="40" y="448" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="468" dominant-baseline="central">6 · Margin expansion flag</text><text class="ts" x="60" y="490" dominant-baseline="central">margin_expansion = "YES" → +3 (bonus on top of FCF)</text></g>
+
+<g class="c-pink"><rect x="40" y="516" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="536" dominant-baseline="central">7 · Cash vs Debt position</text><text class="ts" x="60" y="558" dominant-baseline="central">if cash &gt; debt (net cash company) → +6 (rare, very safe)</text></g>
+
+<g class="c-pink"><rect x="40" y="584" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="604" dominant-baseline="central">8 · Interest Coverage (x)</text><text class="ts" x="60" y="626" dominant-baseline="central">&gt;10 → +5 (very comfortable) · &gt;5 → +2 (OK)</text></g>
+
+<g class="c-pink"><rect x="40" y="652" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="672" dominant-baseline="central">9 · ND/EBITDA (net-debt-to-EBITDA)</text><text class="ts" x="60" y="694" dominant-baseline="central">&lt;1.0 (and non-zero) → +5 (strong solvency)</text></g>
+
+<g class="c-pink"><rect x="40" y="720" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="740" dominant-baseline="central">10 · Piotroski F-score (0-9 fundamental strength)</text><text class="ts" x="60" y="762" dominant-baseline="central">≥7 → +6 (excellent quality) · ≥5 → +3 (decent)</text></g>
+
+<g class="c-pink"><rect x="40" y="788" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="808" dominant-baseline="central">11 · Spike not suppressed</text><text class="ts" x="60" y="830" dominant-baseline="central">spike_suppressed = False → +5 (clean technical setup)</text></g>
+
+<g class="c-gray"><rect x="40" y="864" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="884" dominant-baseline="central">Only computed IF not already set by upstream (bs_engine cached result)</text><text class="ts" x="60" y="906" dominant-baseline="central">Final safe_raw clamped [0,100] before composite blend at 10% weight (canonical)</text></g>
+
+<g class="c-amber"><rect x="40" y="944" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="964" dominant-baseline="central">Max theoretical bonus: ~+42 · Max penalty: ~-53</text><text class="ts" x="60" y="986" dominant-baseline="central">Starting base = 50 · clamped to [0,100] at end</text></g>
+</svg>
+</div>
+
+
+<div id="c4" class="panel">
+<svg viewBox="0 0 680 900">
+<text class="th" x="340" y="28" text-anchor="middle">sentiment_score — 9 contributors (master_funnel.py)</text>
+<text class="ts" x="340" y="48" text-anchor="middle">Captures money-flow signals · institutional/retail activity + news tone</text>
+
+<g class="c-purple"><rect x="40" y="76" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="60" y="96" dominant-baseline="central">1 · FII trend (3-quarter direction)</text><text class="ts" x="60" y="118" dominant-baseline="central">"UP" → +10 (FII accumulating) · "DOWN" → −10 (FII exiting)</text><text class="ts" x="60" y="138" dominant-baseline="central">Derived from fii_qoq_change (&gt;1.0 = UP, &lt;-1.0 = DOWN) if trend not set upstream</text></g>
+
+<g class="c-purple"><rect x="40" y="160" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="180" dominant-baseline="central">2 · Smart money sentiment</text><text class="ts" x="60" y="202" dominant-baseline="central">"ACCUMULATION" → +10 (from delivery + volume signals)</text></g>
+
+<g class="c-purple"><rect x="40" y="228" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="248" dominant-baseline="central">3 · Insider buy alert</text><text class="ts" x="60" y="270" dominant-baseline="central">insider_buy_alert = "YES" → +8 (strong bullish signal)</text></g>
+
+<g class="c-purple"><rect x="40" y="296" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="316" dominant-baseline="central">4 · Promoter QoQ change (%)</text><text class="ts" x="60" y="338" dominant-baseline="central">&gt;0.5 → +5 (promoter buying) · &lt;-0.5 → −5 (promoter trimming)</text></g>
+
+<g class="c-purple"><rect x="40" y="364" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="60" y="384" dominant-baseline="central">5 · DII QoQ change (%)</text><text class="ts" x="60" y="406" dominant-baseline="central">&gt;0.5 → +6 (DII strongly buying) · &gt;0.3 → +4 (DII mildly buying)</text><text class="ts" x="60" y="426" dominant-baseline="central">&lt;-0.3 → −3 (DII exiting)</text></g>
+
+<g class="c-purple"><rect x="40" y="448" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="468" dominant-baseline="central">6 · News sentiment</text><text class="ts" x="60" y="490" dominant-baseline="central">"POSITIVE" → +4 · "NEGATIVE" → −5</text></g>
+
+<g class="c-purple"><rect x="40" y="516" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="60" y="536" dominant-baseline="central">7 · Delivery percentage (today)</text><text class="ts" x="60" y="558" dominant-baseline="central">&gt;70 → +4 (strong conviction) · &gt;60 → +2 (decent)</text><text class="ts" x="60" y="578" dominant-baseline="central">0&lt;x&lt;30 → −3 (mostly speculative intraday)</text></g>
+
+<g class="c-purple"><rect x="40" y="600" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="620" dominant-baseline="central">8 · Price direction tag</text><text class="ts" x="60" y="642" dominant-baseline="central">"FALL" → +3 (contrarian buy opportunity) · "RIS(ING)" → −5 (chasing)</text></g>
+
+<g class="c-purple"><rect x="40" y="668" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="688" dominant-baseline="central">9 · (summed from boolean signals above — contribution is additive)</text><text class="ts" x="60" y="710" dominant-baseline="central">Each boolean signal above contributes independently — no mutual exclusivity</text></g>
+
+<g class="c-gray"><rect x="40" y="752" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="772" dominant-baseline="central">Only computed IF not already set by upstream sentiment pipeline</text><text class="ts" x="60" y="794" dominant-baseline="central">Final sent_raw clamped [0,100] before composite blend at 10% weight (canonical)</text></g>
+
+<g class="c-amber"><rect x="40" y="832" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="60" y="852" dominant-baseline="central">Max theoretical bonus: ~+50 · Max penalty: ~-26</text><text class="ts" x="60" y="874" dominant-baseline="central">If sentiment data missing, weights redistribute to F/T/E/Safety (f×0.389 etc.)</text></g>
+</svg>
+</div>
+
+</div>
+
+
+<h2 id="notes">Implementation notes &amp; code references</h2>
+
+<h3>File-level entry points</h3>
+<p style="margin-top:0">
+<strong>Stage 1:</strong> <code>screening/pre_screener.py::stage_1_filter</code> (L20–133) — 9 V-prefix filters<br>
+<strong>Stage 2:</strong> <code>screening/pre_screener.py::stage_2_fundamental_scorer</code> (L138–228) — 7 B-prefix criteria + 3 hard drops<br>
+<strong>Stage 3 priority:</strong> <code>screening/priority_ranker.py::calculate_priority_score</code> (L20–82) — 5-component blend<br>
+<strong>Stage 3 overrides:</strong> <code>screening/priority_ranker.py::get_top_100_candidates</code> (L85–250) — 5 overrides O1–O5 + cap-mix<br>
+<strong>Section 6 composite scoring:</strong> <code>analysis/scoring_engine.py::calculate_composite_score</code> (L60–230)<br>
+<strong>Fundamental sub-score:</strong> <code>master_funnel.py</code> Section 6 loop — 15 bucket groups (weight 0.35)<br>
+<strong>Technical sub-score:</strong> <code>master_funnel.py</code> Section 6 loop (fallback computation) — 9 indicator groups (weight 0.30)<br>
+<strong>Early entry sub-score:</strong> <code>master_funnel.py</code> Section 6 loop — 11 conditions (weight 0.15)<br>
+<strong>Safety sub-score:</strong> <code>master_funnel.py</code> Section 6 loop (fallback computation) — 11 contributors (weight 0.10)<br>
+<strong>Sentiment sub-score:</strong> <code>master_funnel.py</code> Section 6 loop (fallback computation) — 9 contributors (weight 0.10)<br>
+<strong>Verdict derivation:</strong> <code>analysis/scoring_engine.py::_get_verdict_with_confidence</code> (L286–361)<br>
+<strong>Storm score:</strong> <code>analysis/scoring_engine.py::calculate_storm_score</code> (L232–272)<br>
+<strong>Quick-pick label:</strong> <code>analysis/scoring_engine.py::_assign_quick_pick</code> (L368–381)<br>
+<strong>Excel writer:</strong> <code>reporting/excel_generator.py</code> — 7 sheets including Full Dashboard, Gold, Tooltip Reference, Glossary
+</p>
+
+<h3>Key constants &amp; thresholds</h3>
+<p style="margin-top:0">
+<code>AVOID_BELOW = 38</code> · universal AVOID floor (scoring_engine.py)<br>
+<code>CAP_THRESHOLDS</code> · {LARGE:(60,50), MID:(63,53), SMALL:(66,56), MICRO:(70,60)} · (BUY_min, WATCHLIST_min)<br>
+<code>mos_gate</code> · −20 if tech_confirmed (score≥70 + supertrend BUY + sector STAGE 2) else −10<br>
+<code>forensic_adj</code> cap · max(−10, min(+8, sum_of_factors))<br>
+<code>final_score</code> clamp · max(0, min(100, score)) after forensic adjustment<br>
+<code>storm_label</code> · ≥8 = STORM SAFE · ≥5 = MODERATE · else HIGH RISK<br>
+<code>MAX_OVERRIDES = 20</code> · cap on Stage 3 override forced inclusions<br>
+<code>cap-mix guarantee</code> · LARGE ≥ 20, MID ≥ 15, SMALL+MICRO ≤ 65 (priority_ranker.py L215)<br>
+<code>v10.16 display thresholds</code> · PE/PB/PS/EV/EBITDA = 500 · PEG = 50 (backfill_history.py)<br>
+<code>fundamental_score base</code> · 45 + (stage2_score / 30) × 10 → [45, 56.67] before bucket bumps
+</p>
+
+<h3>v10.16 Option B summary</h3>
+<p style="margin-top:0">
+Five valuation fields (PE, PB, PS, EV/EBITDA, PEG) display <code>"—"</code> when raw values exceed thresholds (500 for PE/PB/PS/EV; 50 for PEG). The DB stores numeric clamps for scoring hygiene, but the display layer converts to honest <code>"—"</code>. The fundamental_score has new neutrality logic: <code>if pe_num ≥ 500: pass</code> (no penalty), preventing the spurious "expensive" tag on stocks with near-zero EPS. Defensive coerce helpers added to <code>v7_analysis_engine</code>, <code>bs_engine</code>, and <code>excel_generator</code> to handle <code>"—"</code> safely. 198/198 integration tests pass.
+</p>
+
+<h3>v10.13 prior-analysis enrichment (enables O4 + O5)</h3>
+<p style="margin-top:0">
+Stage 3 reads <code>latest_analysis_results</code> table at startup via <code>get_prior_analysis_map()</code>. This populates <code>last_claude_score</code> and <code>days_since_analysis</code> columns, activating O4/O5 overrides. On the first-ever pipeline run the table is empty, so both overrides are no-ops — behavior matches pre-v10.13 (O1/O2/O3 only).
+</p>
+
+<h3>Stage progression — exact column lifecycle</h3>
+<p style="margin-top:0">
+<strong>After Stage 1:</strong> bhav columns only — symbol, close, prev_close, volume, turnover, delivery_pct, sc_group, exchange_tag<br>
+<strong>After Stage 2:</strong> + stage2_score (0-35), + cap_category (proxy from turnover)<br>
+<strong>After Stage 3:</strong> + priority_score (0-100), + override flags (o1-o5), + days_since_analysis, + last_claude_score<br>
+<strong>After yfinance enrichment:</strong> + 86 fundamental fields (pe, pb, roe, de_ratio, etc.)<br>
+<strong>After Section 6:</strong> + fundamental_score, + safety_score, + sentiment_score, + composite_score, + verdict, + label, + storm_score, + forensic_adj
+</p>
+
+<h3>Quick-pick labels are SEPARATE from verdict</h3>
+<p style="margin-top:0">
+<code>stock["verdict"]</code> (BUY/WATCHLIST/NEUTRAL/OVERVALUED/AVOID) and <code>stock["label"]</code> (DEEP VALUE / EARLY MOVER / etc.) are independent outputs assigned by different functions. The verdict drives Excel cell color; the label powers Gold-sheet sorting.
+</p>
+
+<div class="footer">
+NSE/BSE Stock Analyser · v10.16 Option B · Pipeline reference document<br>
+For ongoing changes see CLAUDE.md (Section 15) and scoring_logic_3Stagefunnel_explained.md
+</div>
+
+</div>
+
+<script>
+function showA(n) {
+  for (let i = 0; i < 8; i++) {
+    const el = document.getElementById('a' + i);
+    if (el) el.classList.toggle('active', i === n);
+  }
+  document.querySelectorAll('button[data-grp="a"]').forEach((b, i) => b.classList.toggle('active', i === n));
+}
+function showB(n) {
+  for (let i = 0; i < 7; i++) {
+    const el = document.getElementById('b' + i);
+    if (el) el.classList.toggle('active', i === n);
+  }
+  document.querySelectorAll('button[data-grp="b"]').forEach((b, i) => b.classList.toggle('active', i === n));
+}
+function showC(n) {
+  for (let i = 0; i < 5; i++) {
+    const el = document.getElementById('c' + i);
+    if (el) el.classList.toggle('active', i === n);
+  }
+  document.querySelectorAll('button[data-grp="c"]').forEach((b, i) => b.classList.toggle('active', i === n));
+}
+</script>
+
+</body>
+</html>

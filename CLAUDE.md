@@ -801,7 +801,7 @@ Six fixes + two defensive guards addressing data-integrity issues observed in th
 **FIX #4 — PE / EV-EBITDA / PEG / PS / PB clamped** (`backfill_history.py` line ~1355)
 
 - Root cause: yfinance `.info` valuation ratios unbounded — AMAGI PE = 1,981 (near-zero EPS), RHETAN EV/EBITDA = 1,352 (near-zero EBITDA).
-- Fix: new `_yf_ratio(k, cap=1000)` helper. Applied to `pe`, `pb`, `ps`, `ev_ebitda` at cap=1000; PEG at cap=100 (tighter — PEG beyond 100 is pure arithmetic noise).
+- Fix: new `_yf_ratio(k, cap=1000)` helper. Applied to `pe`, `pb`, `ps`, `ev_ebitda` at cap=1000; PEG at cap=100 (tighter — PEG beyond 100 is pure arithmetic noise). **Note:** this clamp was further tightened by v10.16 (cap=500 / PEG=50) with honest `"—"` display replacing the numeric clamp. See v10.16 entry below for the current behaviour.
 - Real quality businesses rarely exceed 200x P/E, so the cap preserves every plausible premium-growth valuation.
 
 **FIX #5 — Pro / FII / DII QoQ Δ show "—" when no real delta** (`master_funnel.py` Section 5A.4 + new 5A.4b)
@@ -872,6 +872,16 @@ Direct follow-up to v10.15 FIX #4 after user feedback on production Excel: the �
 - `apply_section_3A_valuation` line 26 was `if pe > 0 and pe_5yr > 0 and pe < (pe_5yr * 0.85):` — crashed with `TypeError` when `pe = "—"` (string).
 - New: local `_pe_num()` helper coerces `"—"` → 0 before comparison, same defensive pattern as v10.15 pledge_pct fix.
 
+**FIX #5 — Balance-sheet engine ROE comparison safe-guard** (`analysis/bs_engine.py` line 45)
+
+- `current_bs.get('roe', 0) < prev_bs_4q.get('roe', 0)` would crash `TypeError` when `roe = "—"` (which v10.15 FIX #1 can produce when neither direct nor derivable ROE is available).
+- New: local `_roe_num()` helper at top of `analyze_bs_health` coerces `"—"` → 0 before the "DEBT UP / ROE DOWN" red-flag check.
+
+**FIX #6 — Excel NEUTRAL-filter defensive coerce** (`reporting/excel_generator.py` lines 1367-1385)
+
+- `_is_exceptional_neutral()` used `float(row.get("pe_num", row.get("pe", 99)) or 99)` — crashed `ValueError` in the edge case where `pe_num` absent and fallback reached `pe = "—"`.
+- New: local `_fs()` helper with `in (None, "", "—", "--")` check then `try float()`, same pattern as `_sf` in scoring code. Applied to all 5 fields read by the filter (roe, pe, mos_pct, technical_score, composite_score).
+
 **Tooltip updates** (`reporting/tooltip_formatter.py`)
 
 - 5 valuation tooltips rewritten: P/E TTM, PEG Ratio, P/B, P/S, EV/EBITDA
@@ -884,11 +894,24 @@ Direct follow-up to v10.15 FIX #4 after user feedback on production Excel: the �
 - 6 VALUATION entries updated: 4 detailed (P/E TTM, PEG, P/B, EV/EBITDA) in primary block, 2 (P/B, P/S) in secondary block
 - Each entry now has a `'—' = Display when raw ≥ 500 (...)` bucket mirroring the numeric buckets above it
 
+**Downstream modules confirmed safe (no change needed)**
+
+Full audit of every reader of the 11 dash-capable fields across the codebase confirmed these existing helpers already handle `"—"` correctly:
+
+- `analysis/scoring_engine.py::_nonzero_qoq` — `replace("—", "0")` + `try/except` ✓
+- `analysis/fundamental_engine.py::_n` — explicit `in (None, "", "—", "--", "N/A")` check ✓
+- `analysis/spike_screener.py::_safe_num` — explicit `"—"` check (v10.10 pattern) ✓
+- `analysis/fair_value_engine.py` — uses `_sf()` + `> 0` gate for pb / ev_ebitda ✓
+- `analysis/ownership_tracker.py::_pledge_num` — v10.15 defensive helper ✓
+- `analysis/v7_analysis_engine.py::apply_section_3H_guards` — v10.15 `_pledge_val` coerce ✓
+- `analysis/forensics_engine` — reads numeric fields (altman_z, beneish_m), not valuation ✓
+- `database/data_bridge` — reads from SQLite REAL columns, never sees string `"—"` ✓
+
 **DB schema unchanged.** `fundamental_metrics.pe/pb/ps/ev_ebitda/peg` columns stay `REAL DEFAULT 0` — the clamp value (500 / 50) is persisted for scoring; display layer converts at read time.
 
 **Scoring sensitivity preserved EXCEPT for clamped values.** Real valuations in buckets [0-20], [20-40], [40-60], [60-499] still produce identical scoring behaviour. Only the [500+] region changed from `-8 penalty` to `neutral`. No real-business stocks affected — only the arithmetic-noise cases that previously showed misleading clamped numbers.
 
-Integration tests: **65/65 passed** across 9 test groups — threshold edge cases at 499/500/501, PEG 49/50, PB/PS/EV at boundaries, defensive PE coerce in v7 module (5 input shapes), behavioral equivalence on composite score (clamped pe_num stays numeric → scoring stable), full regression on v10.12/v10.13/v10.14/v10.15.
+Integration tests: **198/198 passed** across 27 test groups — threshold edge cases at 499/500/501, PEG 49/50, PB/PS/EV at boundaries, defensive PE coerce in v7 module (5 input shapes), behavioral equivalence on composite score (clamped pe_num stays numeric → scoring stable), bs_engine ROE comparison with all three input shapes (current='—', prev='—', both='—'), excel_generator `_fs` helper verified, full regression on v10.12 / v10.13 / v10.14 / v10.15.
 
 Zero DB schema change, zero analytical behaviour change for real-valuation stocks, cleaner Excel output for arithmetic-noise edge cases.
 
