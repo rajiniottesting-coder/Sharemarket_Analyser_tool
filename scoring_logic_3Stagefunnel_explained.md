@@ -1,4 +1,4 @@
-# Scoring · Verdict · Funnel — Complete Logic Explained (Post-v10.13)
+# Scoring · Verdict · Funnel — Complete Logic Explained (Post-v10.16)
 
 This is the single source of truth for how the pipeline turns ~5,150 daily bhav rows into **100 final stocks**, each with a **Composite Score (0–100)** and a **Verdict (BUY / OVERVALUED / WATCHLIST / NEUTRAL / AVOID)**.
 
@@ -610,6 +610,90 @@ These core pieces of the scoring system are unchanged from v10.0 (Session 24):
 
 v10.9 added **one new stage** (forensic quality adj) between Stage B and Stage D. v10.13 didn't change any weights, thresholds, or formulas — only activated dormant code and batched DB calls.
 
+### What v10.14 specifically changed
+
+v10.14 is a **pure display-layer cleanup** — no scoring logic, no verdict logic, no filter logic touched.
+
+| Aspect | Pre-v10.14 | Post-v10.14 |
+|---|---|---|
+| `_safe_cagr()` return range | Unbounded (could produce 10,000%+ on tiny bases) | **Clamped to [−500%, +500%]** |
+| `rev_yoy` / `pat_yoy` from yfinance | Unbounded (RVHL showed 14,183%) | **Clamped to [−500, +500]** at ingest |
+| GROWTH tooltips | Terse one-liners | **Full source attribution + TTM-vs-FY clarification + cap note** |
+| GROWTH glossary coverage | 3 partial + 7 legacy-duplicate entries | **10 complete entries** (deduplicated) |
+| Stage 1/2/3 logic | Unchanged | Unchanged |
+| Scoring / verdict / Gold filter | Unchanged | Unchanged |
+| Forensic quality adjustment | Unchanged | Unchanged |
+| v10.13 FIX #1/#2/#3 | — | Preserved intact |
+
+**Why the ±500% clamp matters:** CAGR math `(v_new / v_old)^(1/n) − 1` is mathematically undefined as v_old → 0. yfinance's quarterly/annual income statements occasionally report near-zero prior-period values for micro-caps (₹0.13 Cr revenues, ₹0.86 Cr EBITDA). The formula technically produces "correct" numbers (10,000%+) but they carry no investment signal — it's arithmetic noise from a rounding-boundary denominator. Clamping at ±500% preserves every real growth story (500% annualised over 3 years is already an exceptional compounder) while filtering the math artefacts.
+
+**Why two different YoY fields that can disagree:** `Rev YoY %` / `PAT YoY %` come from yfinance's `.info["revenueGrowth"]` and `.info["earningsGrowth"]` — these are **rolling trailing-twelve-month** (TTM) growth figures. `Rev CAGR 1Y %` and `PAT CAGR 1Y %` come from the annual income statement — these are **discrete fiscal-year** growth figures. For a company mid-year with a strong/weak recent quarter, these two measurements capture different truths. v10.14 tooltips now explain this — pre-v10.14, a user seeing Rev YoY = 145 and Rev CAGR 1Y = 20 might have assumed one was wrong.
+
+### What v10.15 specifically changed
+
+v10.15 is another **pure display-layer cleanup** — extending v10.14's clamp discipline to four more sections and fixing one field-type bug. No scoring logic, no verdict logic, no filter logic touched.
+
+| Aspect | Pre-v10.15 | Post-v10.15 |
+|---|---|---|
+| ROE % / ROA % storage | Quoted strings `'12.47'` (Excel text) | **Floats** `12.47` — sort/filter/formatting work |
+| NPM Q1/Q2/Q3 clamp | Unbounded (EMAMIREAL −845%) | **±500%** — tiny-revenue noise filtered |
+| CCC Days clamp | Unbounded + `rev.get(.., 1)` fallback | **±500 days**, rev<₹0.1 Cr short-circuits to 0 |
+| P/E TTM / EV/EBITDA / P/B / P/S | Unbounded (AMAGI 1,981) | **±1000** via `_yf_ratio()` |
+| PEG Ratio | Unbounded | **±100** (tighter — PEG > 100 is pure noise) |
+| Pro QoQ Δ display | `0` for 83/86 stocks indistinguishably | **`"—"`** when no real delta computable |
+| Pledge % / DII % display | `0` silently (free-tier unavailable) | **`"—"`** — honest about "unknown" |
+| Downstream numeric guards | Would crash `'>' on str/int` if pledge became "—" | **Defensive coerce** via `float(str(v or 0).replace("—","0"))` |
+| Stage 1 / Stage 2 / Stage 3 | Unchanged | Unchanged |
+| Scoring / verdict / Gold filter | Unchanged | Unchanged |
+| v10.14 GROWTH clamps | — | Preserved intact |
+| v10.13 Stage 3 fixes | — | Preserved intact |
+
+**Why honest "—" instead of silent 0 for Pledge %/DII %:** Free-tier Indian-market data has known structural gaps. Pledge data lives only in BSE corporate filings (no free API). DII % requires the NSE corp-info JSON API which is commonly blocked on cloud IPs (GitHub Actions runs). Storing these as 0 makes "structurally unknown" indistinguishable from "measured zero" — a user glancing at the Excel couldn't tell which stocks genuinely had no pledge and which simply hadn't been measurable. Displaying `"—"` makes the limitation visible. If a paid data source is added later, real zeros will display as 0 naturally.
+
+**Why Pro QoQ Δ specifically showed 0 for 83/86 stocks:** The shareholding table's backfill writes a literal `promoter_qoq = 0.0` as the default when yfinance can't supply real QoQ (which it never can — it's not in the `.info` dict). Section 5A.4's post-recompute cleanup had a threshold `abs(old_value) > 10` that only caught "obvious bug values" (large numbers from the old `-current` v10.4 bug) — the literal 0 slipped through. v10.15 removes that threshold: any residual number when the recompute produces `"—"` is cleaned to `"—"`. Three states are now clearly distinguished: real computed number (genuine delta, may be 0 if truly no change), absence of real number → `"—"`.
+
+**The tiny-base pattern unified across v10.14 + v10.15:** Every clamp in both releases addresses the same mathematical issue: when a denominator approaches zero, the resulting ratio approaches infinity but carries zero signal. CAGR with v_old near 0 (v10.14), NPM with rev near 0 (v10.15), CCC with rev near 0 (v10.15), PE with EPS near 0 (v10.15), EV/EBITDA with EBITDA near 0 (v10.15). The thresholds differ by field type (500% for margins/growth, 500 days for CCC, 1000 for valuation ratios, 100 for PEG) but the philosophy is the same: preserve every plausible real extreme, filter the arithmetic noise.
+
+### What v10.16 specifically changed
+
+Direct follow-up to v10.15 FIX #4 after user feedback on production Excel. User correctly flagged that the ±1000 clamp made AMAGI's raw PE of 1,981 display as **1000** in the Excel — which could mislead readers into thinking "this stock is valued at 1000× earnings" when the actual meaning is "earnings ≈ 0, P/E not meaningful".
+
+| Aspect | v10.15 behaviour | v10.16 behaviour |
+|---|---|---|
+| **P/E, P/B, P/S, EV/EBITDA display** | Clamped to 1000 (Excel shows 1000) | `"—"` when raw ≥ 500 (honest display) |
+| **PEG display** | Clamped to 100 | `"—"` when raw ≥ 50 |
+| **DB-layer cap** | ±1000 (PEG ±100) | ±500 (PEG ±50) |
+| **PE scoring bucket (pe_num ≥ 500)** | `−8` penalty (treated as "expensive") | **NEUTRAL** — no penalty, recognized as "unknown" |
+| **Real valuations (PE 0-499)** | Unchanged | Unchanged |
+| **v7 `apply_section_3A_valuation` PE read** | Would crash `TypeError` if pe="—" | Defensive `_pe_num()` coerce |
+
+**Why change the scoring for clamped PE?** Pre-v10.16, a stock like AMAGI with near-zero EPS had its PE clamped to 1000, which then hit the `_pe_f > 60` branch and got a −8 penalty in fundamental_score. But that penalty was **logically wrong** — the stock's valuation is *unknown* because the denominator is noise, not because the stock is *expensive*. Those are two very different things.
+
+v10.16 adds a new top-priority branch:
+```python
+if _pe_f >= 500:
+    pass  # clamped noise → NEUTRAL (v10.16)
+elif 0 < _pe_f <= 20:  _fs += 12
+elif 0 < _pe_f <= 40:  _fs += 7
+elif _pe_f > 60:       _fs -= 8   # real expensive (60-499) still penalized
+```
+
+Real expensive stocks in the PE 60-499 range (e.g., a growth stock at PE=80) still correctly receive the −8 penalty. Only the clamped-noise cases get neutral treatment — which is the honest thing to do when you don't actually know the valuation.
+
+**Three display states for valuation ratios now clearly distinguished:**
+- **Real number in normal range** — measurable, meaningful valuation
+- **Real number in high range** (PE 60-499) — measurable, genuinely expensive
+- **`"—"`** (raw ≥ 500) — denominator near zero, valuation not meaningful
+
+**Why not just drop the DB clamp entirely?** SQLite `REAL` columns don't cleanly hold strings — writing `"—"` into a numeric column would coerce to 0 or cause type confusion. So the DB keeps a clean numeric (capped at the display threshold for hygiene) and the display layer converts to `"—"` at Excel-generation time. This also means scoring code that reads `pe_num` (numeric key) never sees `"—"` and works without defensive coercion, except at the v7_analysis_engine site which reads `pe` (display key).
+
+**Architectural summary:**
+- `pe` key = display value, may be `"—"`, used only for Excel output
+- `pe_num` key = scoring value, always numeric (0 or clamped at 500 max), used by all scoring code
+- Separation clean and intentional — same pattern already used for `roe` vs `roe_num`, `de_ratio` vs `de_ratio_num`
+
+Zero behavioural change for stocks with real valuations; arithmetic-noise outliers now displayed and scored honestly.
+
 ---
 
 # PART 6 — Where to Look in the Code
@@ -653,4 +737,4 @@ A user hovering over the **Score /100** or **Verdict** column headers sees exact
 
 ---
 
-**Document version:** reflects code as of v10.13 (post-Stage-3 optimization trilogy). If you're on v10.9 / v10.10 / v10.11 / v10.12, the scoring logic (Parts 2–3) is unchanged; only Part 1's Stage 3 has v10.13-specific improvements.
+**Document version:** reflects code as of v10.16 (post-VALUATION display honesty + PE scoring neutrality). Scoring logic (Parts 2-3) unchanged since v10.9 except for v10.16 PE-scoring-neutrality-for-clamped-values addition. Funnel (Part 1) last changed in v10.13. v10.14 added GROWTH field clamps + tooltips. v10.15 extended clamp discipline to PROFITABILITY/FIN-HEALTH/VALUATION/SHAREHOLDING + fixed ROE/ROA numeric storage + honest "—" display for Pledge%/DII%/QoQ. v10.16 replaced v10.15's numeric clamp for valuation ratios with honest "—" display (raw ≥ 500 / PEG ≥ 50) and added scoring neutrality for clamped PE (pe_num ≥ 500 = neutral, not penalized). Zero DB schema change, zero behaviour change for stocks with real valuations.

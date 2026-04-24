@@ -28,8 +28,14 @@ def analyze_ownership_trends(current_row, hist_q1=None, hist_q2=None):
 
     # --- SUBSECTION 3K: PLEDGE INTELLIGENCE (Direction) ---
     # pledge_pct key already matches master_funnel.
-    curr_pledge = current_row.get('pledge_pct', 0) or 0
-    prev_pledge = (hist_q1.get('pledge_pct', 0) if hist_q1 else curr_pledge) or 0
+    # v10.15: pledge_pct may be "—" (honest unknown display). Coerce to 0.
+    def _pledge_num(v):
+        try:
+            return float(str(v or 0).replace("—", "0") or 0)
+        except (ValueError, TypeError):
+            return 0.0
+    curr_pledge = _pledge_num(current_row.get('pledge_pct'))
+    prev_pledge = _pledge_num(hist_q1.get('pledge_pct') if hist_q1 else None)
 
     if curr_pledge < prev_pledge:
         results['pledge_signal'] = "PLEDGE FALLING (Green Tag)"

@@ -200,28 +200,72 @@ TIPS: Dict[str, Tuple[str, str]] = {
 
     # ── Ratios ──────────────────────────────────────────────────────────────
     "P/E TTM": ("<20 cheap | 20–40 fair | >40 expensive",
-                "Score: ≤20 = +12 | ≤40 = +7 | >60 = −8"),
+                "Score: ≤20 = +12 | ≤40 = +7 | 41–60 = 0 | >60 = −8 | ≥500 = 0 (neutral).\n"
+                "Source: yfinance .info['trailingPE'].\n"
+                "Display: v10.16 shows '—' when raw value ≥ 500 — stocks\n"
+                "with near-zero earnings produce mathematical PE ratios in\n"
+                "the thousands (AMAGI hit 1,981 pre-fix). These aren't real\n"
+                "'expensive' signals — they're arithmetic noise from tiny-EPS\n"
+                "denominators. Real quality businesses never exceed PE 500,\n"
+                "so the threshold preserves every plausible premium-growth\n"
+                "case while honestly flagging 'valuation not meaningful here'.\n"
+                "Scoring: v10.16 treats clamped noise (pe_num ≥ 500) as\n"
+                "neutral, not penalised — 'unknown' not 'expensive'."),
     "P/E": ("<20 cheap | 20–40 fair | >40 expensive",
-            "Price to Earnings (TTM). Score: ≤20 = +12 | ≤40 = +7 | >60 = −8"),
+            "Price to Earnings (TTM). Score: ≤20 = +12 | ≤40 = +7 | >60 = −8.\n"
+            "v10.16: display '—' when raw ≥ 500; scoring treats as neutral.\n"
+            "(Same rationale as P/E TTM.)"),
     "Earn Yield %": (">6% undervalued vs bonds",
                      "EPS/CMP × 100. >6%: Cheap. Compare to 10Y bond yield."),
     "P/CF": ("<15 value | >25 expensive",
             "More reliable than P/E (cash harder to fake)."),
     "PEG Ratio": ("<1 undervalued | >2 expensive",
-                  "P/E / Growth. <1: Undervalued (Peter Lynch favourite)."),
+                  "P/E / Growth. <1: Undervalued (Peter Lynch favourite).\n"
+                  "Source: yfinance .info['pegRatio'] primary; 4-tier\n"
+                  "fallback computes PE / PAT-growth, PE / Rev-growth,\n"
+                  "or PE / sustainable-growth (ROE × retention).\n"
+                  "Display: v10.16 shows '—' when any tier yields ≥ 50.\n"
+                  "PEG beyond 50 means P/E divided by near-zero growth —\n"
+                  "pure arithmetic noise, not a 'very expensive' signal.\n"
+                  "Even extreme glamour stocks rarely exceed PEG of 10."),
     "PEG": ("<1 undervalued | >2 expensive",
-            "P/E / Growth. <1: Undervalued."),
+            "P/E / Growth. <1: Undervalued.\n"
+            "v10.16: display '—' when value ≥ 50."),
     "P/B": ("<2 value | >5 expensive",
-            "<1: Below asset value | >5: Only justified by very high ROE."),
-    "P/S": ("<3 cheap | >10 expensive", "Useful when P/E unavailable."),
+            "<1: Below asset value | >5: Only justified by very high ROE.\n"
+            "Source: yfinance .info['priceToBook'].\n"
+            "Display: v10.16 shows '—' when raw value ≥ 500 — tiny book-value\n"
+            "denominators produce mathematical P/B in the thousands that\n"
+            "carry no real 'overvalued' signal."),
+    "P/S": ("<3 cheap | >10 expensive",
+            "Useful when P/E unavailable.\n"
+            "Source: yfinance .info['priceToSalesTrailing12Months'].\n"
+            "Display: v10.16 shows '—' when raw value ≥ 500."),
     "EV/EBITDA": ("<12 value | >20 expensive",
-                  "IT: 20 | Pharma: 18 | FMCG: 30 | Banks: 12 | Metals: 8"),
+                  "IT: 20 | Pharma: 18 | FMCG: 30 | Banks: 12 | Metals: 8.\n"
+                  "Source: yfinance .info['enterpriseToEbitda'].\n"
+                  "Display: v10.16 shows '—' when raw value ≥ 500 — near-zero\n"
+                  "EBITDA produces mathematical EV/EBITDA in the thousands\n"
+                  "(RHETAN hit 1,352 pre-fix). These aren't real 'expensive'\n"
+                  "signals — they mean EBITDA ≈ 0, valuation undefined.\n"
+                  "Even richly-valued growth names rarely exceed 50x."),
     "ROE %": (">20% excellent | <10% weak",
-             "Score: >20% = +12 | >10% = +6 | <5% = −5"),
+             "Score: >20% = +12 | >10% = +6 | <5% = −5.\n"
+             "Source: yfinance .info['returnOnEquity'] × 100 when\n"
+             "available; else derived as Earnings Yield × P/B when\n"
+             "both are positive (ROE ≈ EPS/BVPS).\n"
+             "Display: v10.15 FIX #1 now stores as a FLOAT (was a\n"
+             "quoted string pre-v10.15, which broke Excel sorting,\n"
+             "filtering, and conditional formatting on this column).\n"
+             "Shows '—' when neither direct nor derivable."),
     "ROCE %": (">15% good capital allocation",
-               "Return on Capital Employed. ROCE > cost of capital = value-creating."),
+               "Return on Capital Employed. ROCE > cost of capital = value-creating.\n"
+               "Not available from yfinance; derived from ROE + leverage."),
     "ROA %": (">10% efficient | <5% poor",
-             "Low for Banks/Utilities is normal."),
+             "Low for Banks/Utilities is normal.\n"
+             "Source: yfinance .info['returnOnAssets'] × 100 when\n"
+             "available; else derived as ROE / (1 + D/E).\n"
+             "Display: v10.15 FIX #1 stores as FLOAT (was string)."),
     "Gross Mgn %": (">40% strong moat | >20% decent",
                     "Score: >40% = +8 | >20% = +4"),
     "EBITDA Mgn %": (">25% excellent | >15% good",
@@ -229,33 +273,96 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "NPM %": (">15% excellent | <5% thin",
              "Score: >15% = +8 | >5% = +4 | <0% = −8"),
     "NPM Q1 %": ("Most recent quarter margin vs TTM",
-                 "Q1 > NPM(TTM): margins accelerating."),
-    "NPM Q2 %": ("Previous quarter margin", "Track Q3→Q2→Q1 trend."),
+                 "Q1 > NPM(TTM): margins accelerating.\n"
+                 "Source: (Quarterly PAT / Quarterly Revenue) × 100\n"
+                 "from yfinance quarterly_income_stmt.\n"
+                 "Display: v10.15 caps at ±500% — tiny-revenue denominator\n"
+                 "(₹0.13 Cr quarterly rev for micro-caps like EMAMIREAL)\n"
+                 "produced −762% NPM in prior runs. Same clamp pattern as\n"
+                 "v10.14 CAGR fix."),
+    "NPM Q2 %": ("Previous quarter margin",
+                 "Track Q3→Q2→Q1 trend. Source: quarterly_income_stmt\n"
+                 "2nd-most-recent quarter. Display: v10.15 caps at ±500%\n"
+                 "(EMAMIREAL Q2 hit −387% pre-clamp)."),
     "NPM Q3 %": ("3rd quarter — rising = Margin Expansion",
-                 "Rising Q3→Q2→Q1 triggers Margin Expansion = YES."),
+                 "Rising Q3→Q2→Q1 triggers Margin Expansion = YES.\n"
+                 "Source: quarterly_income_stmt 3rd-most-recent quarter.\n"
+                 "Display: v10.15 caps at ±500% (EMAMIREAL Q3 hit\n"
+                 "−845% pre-clamp)."),
     "Margin Expansion": ("YES = 3 consecutive qtrs of rising NPM",
                          "Score: Fundamental +5 | Safety +3 | Storm +1."),
 
     # ── Growth ──────────────────────────────────────────────────────────────
     "Rev CAGR 1Y %": (">20% high growth | >10% good",
-                      "1Y > 3Y CAGR = growth accelerating."),
+                      "1Y > 3Y CAGR = growth accelerating.\n"
+                      "Source: latest FY revenue ÷ prior FY revenue − 1\n"
+                      "(discrete annual fiscal-year growth, from yfinance's\n"
+                      "income_stmt table). Differs from 'Rev YoY %' which uses\n"
+                      "rolling TTM growth from .info['revenueGrowth']. A large\n"
+                      "divergence between the two usually means the company\n"
+                      "is mid-year with a strong/weak recent quarter.\n"
+                      "Display: v10.14 caps at ±500% to prevent tiny-base\n"
+                      "CAGR distortions (e.g., old base of ₹1 Cr)."),
     "Rev CAGR 3Y %": (">15% strong | >8% decent",
-                      "Score: >15% = +5 | >8% = +3."),
+                      "Score: >15% = +5 | >8% = +3.\n"
+                      "Source: latest FY revenue ÷ FY-3 revenue,\n"
+                      "then ^(1/3) − 1. Requires ≥4 annual columns in\n"
+                      "yfinance income_stmt; shows '—' if fewer (newer\n"
+                      "IPOs). 3Y is more reliable than 1Y because it\n"
+                      "smooths single-quarter distortions.\n"
+                      "Display: v10.14 caps at ±500%."),
     "PAT CAGR 1Y %": (">20% strong earnings momentum",
-                      "1Y > 3Y = accelerating profitability."),
+                      "1Y > 3Y = accelerating profitability.\n"
+                      "Source: latest FY PAT ÷ prior FY PAT − 1.\n"
+                      "Shows '—' if any FY had loss (CAGR undefined).\n"
+                      "Compare with 'PAT YoY %' which uses rolling TTM.\n"
+                      "Display: v10.14 caps at ±500%."),
     "PAT CAGR 3Y %": (">20% compounder | >10% good",
-                      "Score: >20% = +8 | >10% = +4."),
+                      "Score: >20% = +8 | >10% = +4.\n"
+                      "Source: latest FY PAT ÷ FY-3 PAT, ^(1/3) − 1.\n"
+                      "Shows '—' if any FY had loss OR if income_stmt\n"
+                      "has <4 annual columns (common for new listings).\n"
+                      "Best long-horizon compounding signal.\n"
+                      "Display: v10.14 caps at ±500%."),
     "EBITDA CAGR 1Y %": (">15% strong operating growth",
-                         "Score: >15% = +4 | >8% = +2"),
+                         "Score: >15% = +4 | >8% = +2.\n"
+                         "Source: latest FY EBITDA ÷ prior FY EBITDA − 1.\n"
+                         "EBITDA recovery from near-zero base can produce\n"
+                         "outsized percentages — v10.14 caps at ±500% to\n"
+                         "prevent tiny-base noise. Real sustained EBITDA\n"
+                         "CAGR rarely exceeds 100%."),
     "Rev YoY %": (">10% growing | <0% declining",
-                  "Score: >15% = +5 | >8% = +3 | <−5% = −4"),
+                  "Score: >15% = +5 | >8% = +3 | <−5% = −4.\n"
+                  "Source: yfinance .info['revenueGrowth'] × 100 — this\n"
+                  "is TRAILING TWELVE MONTH (TTM) growth, a rolling\n"
+                  "4-quarter comparison. NOT the same as 'Rev CAGR 1Y %'\n"
+                  "which uses discrete fiscal years. TTM and CAGR diverge\n"
+                  "most in insurance/NBFC stocks (premium accounting) and\n"
+                  "companies with recent restructuring.\n"
+                  "Display: v10.14 caps at ±500% to filter yfinance junk\n"
+                  "signals on micro-cap stocks."),
     "PAT YoY %": (">20% strong | >10% good",
-                  "Score: >20% = +8 | >10% = +4 | >0% = +2 | <−10% = −7"),
-    "Q3 Rev (₹Cr)": ("Latest quarter revenue", "Rising QoQ = business growing."),
+                  "Score: >20% = +8 | >10% = +4 | >0% = +2 | <−10% = −7.\n"
+                  "Source: yfinance .info['earningsGrowth'] × 100 — rolling\n"
+                  "TTM earnings growth. Same TTM vs fiscal-year distinction\n"
+                  "as Rev YoY %.\n"
+                  "Display: v10.14 caps at ±500%."),
+    "Q3 Rev (₹Cr)": ("Latest quarter revenue",
+                     "Rising QoQ = business growing.\n"
+                     "Source: yfinance quarterly_income_stmt 3rd-most-recent\n"
+                     "column (i.e., quarter two-before-latest). Divided by\n"
+                     "₹1 Cr = ₹10 million conversion. Shows '—' if quarterly\n"
+                     "data unavailable (rare for NSE/BSE main-board)."),
     "Q3 PAT (₹Cr)": ("Latest quarter net profit",
-                     "Positive and growing = healthy earnings."),
+                     "Positive and growing = healthy earnings.\n"
+                     "Source: quarterly_income_stmt PAT row, 3rd column.\n"
+                     "Shows '—' if loss-making that quarter (NULL in DB)."),
     "Q3 EBITDA (₹Cr)": ("Latest quarter operating profit",
-                        "Q3 EBITDA Margin = Q3 EBITDA / Q3 Rev — compare vs TTM."),
+                        "Q3 EBITDA Margin = Q3 EBITDA / Q3 Rev — compare vs TTM.\n"
+                        "Source: quarterly_income_stmt EBITDA row (plain, not\n"
+                        "normalized) 3rd column. Falls back to 'operating\n"
+                        "income' row if EBITDA not reported.\n"
+                        "Shows '—' if neither available."),
 
     # ── Balance sheet ───────────────────────────────────────────────────────
     "D/E Ratio": ("<0.3 excellent | >2 risky | >3 danger",
@@ -289,7 +396,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                     "Score: >6% = +6 | >3% = +3 | <0% = −5"),
     "CCC Days": ("Lower / negative = more efficient",
                  "Cash Conversion Cycle = DIO + DSO − DPO.\n"
-                 "Negative CCC = collects cash before paying suppliers."),
+                 "Negative CCC = collects cash before paying suppliers.\n"
+                 "Source: (inventory + receivables − payables) / revenue × 365\n"
+                 "from yfinance balance_sheet + income_stmt (COGS used\n"
+                 "when available, else revenue as proxy).\n"
+                 "Display: v10.15 caps at ±500 days. Tiny-revenue denominators\n"
+                 "previously produced 16,821 days (EMAMIREAL = 46 years —\n"
+                 "arithmetic noise, not signal). If totalRevenue < 1000 the\n"
+                 "computation is skipped entirely and shown as 0 or '—'."),
     "Div Yield %": (">2% good income | >4% check sustainability",
                     ">2%: +1 Storm Score.\n"
                     "Display: '—' means company pays no dividend (v10.9).\n"
@@ -309,14 +423,26 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "  >+0.5%: Promoters buying → +5\n"
                   "  <−0.5%: Promoters selling → −5\n"
                   "Storm score also +1 if >0.3%.\n"
-                  "Display: '—' when shareholding table lacks ≥90-day\n"
-                  "history (v10.4/v10.9). Populates after ~3 months of\n"
-                  "daily runs accumulate prior-quarter data."),
+                  "Display: '—' when no real delta can be computed.\n"
+                  "v10.15 FIX #5: three states clearly distinguished —\n"
+                  "  Real number (incl. 0.0) = measured delta\n"
+                  "  '—' = no ≥90-day history OR prior value was the\n"
+                  "       backfill literal 0.0 (yfinance cannot supply\n"
+                  "       real QoQ; populates after ~3 months of runs).\n"
+                  "Pre-v10.15 showed 0 for 83/86 stocks indistinguishably —\n"
+                  "now honestly '—' unless backed by computed data."),
     "Pledge %": ("0% ideal | >10% watch | >20% RED FLAG",
                  "Safety score impact:\n"
                  "  0%: Clean cap structure → +4 (rewarded, not just neutral)\n"
                  "  10–20%: Watch → −7\n"
-                 "  >20%: RED FLAG → −15, plus suppresses ALL spike signals"),
+                 "  >20%: RED FLAG → −15, plus suppresses ALL spike signals.\n"
+                 "Display: v10.15 FIX #6 now shows '—' when value is 0,\n"
+                 "because pledge data is only in BSE corporate filings which\n"
+                 "have no free API. Zero pledge is structurally indistinguishable\n"
+                 "from 'unknown pledge' on free-tier, so honest display is '—'.\n"
+                 "If a paid BSE feed is added, real 0 and real pledge will\n"
+                 "display as numbers. Score gates still fire on numeric values\n"
+                 "only — '—' treated as 0 for guard purposes (safe default)."),
     "Pledge Direction": ("FALLING = positive | RISING = risk",
                           "Trend in promoter share pledge over time.\n"
                           "IMPROVING: Pledge dropped — promoters repaying loans (positive).\n"
@@ -330,7 +456,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "Display: '—' when no ≥90-day history in shareholding\n"
                   "table (v10.4/v10.9). Populates after ~3 months of runs."),
     "DII %": (">10% domestic confidence",
-              "Rising DII + FII = dual institutional accumulation = bullish."),
+              "Rising DII + FII = dual institutional accumulation = bullish.\n"
+              "Source: NSE corporate-info JSON API (heldPercentInstitutions\n"
+              "in yfinance is FII+DII combined; DII alone needs NSE).\n"
+              "Display: v10.15 FIX #6 shows '—' when value is 0, because\n"
+              "NSE corp-info API is blocked on cloud IPs (common for GH\n"
+              "Actions runs). Zero DII is indistinguishable from 'API\n"
+              "blocked' on free-tier, so honest display is '—'. Real DII\n"
+              "values display as numbers when API responds."),
     "DII QoQ Δ": (">0.5% domestic accumulation",
                   "Domestic institutional (MF/insurance) holding change.\n"
                   "Sentiment score impact:\n"
@@ -611,22 +744,54 @@ GROUP_TIPS: Dict[str, Tuple[str, str]] = {
                    "CMP < CFV → undervalued (buying opportunity)."),
     "VALUATION": ("Traditional valuation ratios",
                   "P/E, Earnings Yield, P/CF, PEG, P/B, P/S, EV/EBITDA.\n"
-                  "Lower = cheaper. Compare against sector medians."),
+                  "Lower = cheaper. Compare against sector medians.\n"
+                  "v10.16 (Option B): valuation ratios show '—' when raw\n"
+                  "value ≥ 500 (PEG ≥ 50) — these values come from near-zero\n"
+                  "denominators (EPS, book value, EBITDA) where the ratio\n"
+                  "is arithmetic noise, not a real 'expensive' signal.\n"
+                  "Pre-v10.16 showed a capped 1000/100 which users could\n"
+                  "misread as 'valued at 1000× earnings' (AMAGI raw PE was\n"
+                  "1,981 — meaningless). Scoring: clamped values (pe_num ≥\n"
+                  "500) are now NEUTRAL in fundamental_score derivation —\n"
+                  "no penalty for 'unknown'. Real expensive stocks (PE 60-\n"
+                  "499) still get the −8 penalty. DB still persists clamped\n"
+                  "numeric (500 max) for hygiene; display layer converts to\n"
+                  "'—'. Every plausible premium-growth valuation fits inside\n"
+                  "the thresholds."),
     "PROFITABILITY": ("How well the business makes money",
                       "ROE, ROCE, ROA, Gross/EBITDA/Net margins, quarterly NPM trend.\n"
-                      "Higher + improving = higher fundamental score."),
+                      "Higher + improving = higher fundamental score.\n"
+                      "v10.15: NPM Q1/Q2/Q3 capped at ±500% (tiny-revenue\n"
+                      "distortion — EMAMIREAL hit −845% on a tiny-rev quarter).\n"
+                      "ROE/ROA stored as floats (were strings pre-v10.15 —\n"
+                      "broke Excel sort/filter on those columns)."),
     "GROWTH": ("Revenue & earnings trajectory",
                "1-year & 3-year CAGRs, YoY growth, last quarter absolute numbers.\n"
-               "PAT growing faster than revenue = operating leverage."),
+               "PAT growing faster than revenue = operating leverage.\n"
+               "v10.14 important caveat: Rev YoY %/PAT YoY % use TRAILING\n"
+               "TTM growth (rolling 4-quarter), while Rev/PAT CAGR 1Y %\n"
+               "use DISCRETE fiscal-year growth. They can disagree — TTM\n"
+               "captures the very-recent trajectory; CAGR uses clean FY\n"
+               "boundaries. All growth fields capped at ±500% to filter\n"
+               "tiny-base yfinance noise on micro-caps."),
     "FIN HEALTH": ("Balance sheet safety",
                    "D/E, ND/EBITDA, int coverage, liquidity ratios, cash, debt,\n"
-                   "FCF, CCC days, dividend yield. Strong here = survives downturns."),
+                   "FCF, CCC days, dividend yield. Strong here = survives downturns.\n"
+                   "v10.15: CCC Days capped at ±500. When revenue < ₹0.1 Cr,\n"
+                   "CCC computation is skipped (EMAMIREAL was showing 16,821\n"
+                   "days = 46 years — arithmetic noise on tiny denominators)."),
     "CAP ALLOC": ("How management deploys cash",
                   "Dividend yield, payout ratio, capex/revenue ratio.\n"
                   "Low capex + high FCF = asset-light compounder."),
     "SHAREHOLDING": ("Who owns the stock — and how that's changing",
                      "Promoter %, pledge %, FII %, DII %, public float + QoQ deltas.\n"
-                     "Rising institutional ownership = conviction signal."),
+                     "Rising institutional ownership = conviction signal.\n"
+                     "v10.15 honest-display model: Pledge % and DII % show '—'\n"
+                     "when 0 because free-tier can't populate them reliably\n"
+                     "(pledge needs BSE filings, DII needs NSE API that's\n"
+                     "blocked on cloud IPs). Pro QoQ Δ shows '—' when no real\n"
+                     "delta computable — was showing 0 for 83/86 stocks\n"
+                     "indistinguishably pre-v10.15."),
     "QUALITY SCORES": ("Forensic & accounting-quality checks",
                        "Piotroski F-Score, Altman Z, Beneish M, earnings quality.\n"
                        "Red flags here trigger the anti-trigger guard."),

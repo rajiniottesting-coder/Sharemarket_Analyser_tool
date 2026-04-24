@@ -42,7 +42,15 @@ class BalanceSheetEngine:
             flags.append("WC DEPENDENCY")
 
         # --- RED FLAGS (Preserved Section 4) ---
-        if debt > prev_bs_4q.get('total_debt', 0) and current_bs.get('roe', 0) < prev_bs_4q.get('roe', 0):
+        # v10.16: ROE can be '—' (v10.15 FIX #1 when yfinance has no value AND
+        # no derivable proxy). Coerce defensively before comparison.
+        def _roe_num(v):
+            if v in (None, "", "—", "--", "N/A"): return 0.0
+            try: return float(v)
+            except (ValueError, TypeError): return 0.0
+        _curr_roe = _roe_num(current_bs.get('roe', 0))
+        _prev_roe = _roe_num(prev_bs_4q.get('roe', 0))
+        if debt > prev_bs_4q.get('total_debt', 0) and _curr_roe < _prev_roe:
             red_flags.append("DEBT UP / ROE DOWN")
             
         if current_bs.get('goodwill', 0) > (current_bs.get('networth', 1) * 0.5):

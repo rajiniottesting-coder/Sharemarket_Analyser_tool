@@ -220,37 +220,163 @@ GLOSSARY_DATA = [
      "10–20 = Fair value for slow-growth / value stocks | "
      "20–35 = Growth premium (acceptable if ROE>20% and growth>15%) | "
      "35–60 = Expensive (only justified by very high growth) | "
-     "> 60 = Very expensive (speculative, future growth already priced in)","All sheets"),
+     "> 60 = Very expensive (speculative, future growth already priced in) | "
+     "'—' = Display when raw value ≥ 500 (near-zero EPS produces mathematical "
+     "PE in thousands; AMAGI raw PE was 1,981 pre-fix — arithmetic noise, "
+     "not a real 'expensive' signal). "
+     "v10.16 (Option B): thousand-fold clamped values replaced with '—' for "
+     "honest display. DB persists numeric (clamped at 500) for scoring; "
+     "fundamental_score treats pe_num ≥ 500 as NEUTRAL (no penalty) because "
+     "the value represents 'unknown valuation', not 'expensive'.","All sheets"),
     ("VALUATION","PEG Ratio",
      "P/E ÷ EPS Growth Rate. Adjusts PE for growth. "
      "< 0.5 = Deeply undervalued vs growth (excellent BUY) | "
      "0.5–1.0 = Undervalued vs growth (good value) | "
      "1.0 = Fairly valued (Peter Lynch's neutral benchmark) | "
      "1.0–2.0 = Slight premium (acceptable for quality compounder) | "
-     "> 2.0 = Expensive relative to growth (avoid unless market leader)","All sheets"),
+     "> 2.0 = Expensive relative to growth (avoid unless market leader) | "
+     "'—' = Display when any tier yields ≥ 50 (P/E divided by near-zero "
+     "growth — pure arithmetic noise). Even extreme glamour stocks rarely "
+     "exceed PEG of 10. "
+     "v10.16 (Option B): threshold tightened from 100 → 50 for honest '—' "
+     "display. 4-tier fallback: direct pegRatio → PE/PAT-growth → PE/Rev-"
+     "growth → PE/sustainable-growth. If all tiers yield ≥ 50 or fail, "
+     "display is '—'.","All sheets"),
     ("VALUATION","P/B",
      "Price ÷ Book Value per Share. "
      "< 1.0 = Trading below book (potential deep value or value trap) | "
      "1.0–2.0 = Reasonable (good for banks, metals, asset-heavy) | "
      "2.0–5.0 = Premium (justified if ROE>15%) | "
-     "> 5.0 = High premium (only for asset-light compounders with high ROE)","All sheets"),
+     "> 5.0 = High premium (only for asset-light compounders with high ROE) | "
+     "'—' = Display when raw ≥ 500 (tiny book-value distortions). "
+     "v10.16 (Option B): thousand-fold noise values shown as '—' instead "
+     "of clamped to specific number.","All sheets"),
     ("VALUATION","EV/EBITDA",
      "Enterprise Value ÷ EBITDA. Better than PE as it ignores capital structure. "
      "< 8 = Cheap (cyclicals, turnarounds) | "
      "8–15 = Fair value range | "
      "15–25 = Premium (growth sectors like IT, pharma) | "
-     "> 25 = Expensive (only for market leaders or high-growth)","Full Dashboard"),
+     "> 25 = Expensive (only for market leaders or high-growth) | "
+     "'—' = Display when raw ≥ 500 (near-zero EBITDA produces mathematical "
+     "EV/EBITDA in thousands; RHETAN raw was 1,352 pre-fix). "
+     "v10.16 (Option B): honest display instead of misleading clamped number.",
+     "Full Dashboard"),
     ("VALUATION","Earn Yield %",
      "EPS ÷ CMP × 100. Inverse of PE — shows what % return you earn per ₹ invested. "
      "< 4% = Very expensive (below risk-free rate) | "
      "4–6% = Below risk-free (10Y G-Sec ~7%) | "
      "> 6% = Beats G-Sec (attractive for value investors) | "
      "> 8% = High yield (deep value territory)","All sheets"),
-    ("PROFITABILITY","ROE %","Return on Equity. >15% = efficient. 5yr avg preferred","All sheets"),
-    ("PROFITABILITY","NPM Q1/Q2/Q3","Net Profit Margin last 3 quarters. 3 rising = Margin Expansion flag","Full Dashboard"),
-    ("GROWTH","Rev CAGR 1Y %","Revenue CAGR over 1 year","Full Dashboard"),
-    ("GROWTH","PAT CAGR 1Y %","Profit After Tax CAGR over 1 year","Full Dashboard"),
-    ("GROWTH","PAT YoY %","PAT growth year-over-year","All sheets"),
+    ("PROFITABILITY","ROE %",
+     "Return on Equity = Net Income ÷ Shareholders' Equity. "
+     ">20% excellent | >15% good | >10% acceptable | <10% weak. "
+     "Source: yfinance .info['returnOnEquity'] × 100 when available; "
+     "else derived as Earnings Yield × P/B (ROE ≈ EPS/BVPS). "
+     "v10.15 FIX #1: values now stored as FLOAT (were quoted strings "
+     "pre-v10.15 — '12.47' as text, not 12.47 as number — broke Excel "
+     "sort/filter/conditional-formatting on this column for 69/86 stocks).",
+     "All sheets"),
+    ("PROFITABILITY","ROA %",
+     "Return on Assets = Net Income ÷ Total Assets. "
+     ">10% efficient | 5–10% acceptable | <5% poor (but normal for "
+     "banks/utilities which use high leverage). "
+     "Source: yfinance .info['returnOnAssets'] × 100 when available; "
+     "else derived as ROE / (1 + D/E). v10.15: stored as FLOAT, not string.",
+     "All sheets"),
+    ("PROFITABILITY","ROCE %",
+     "Return on Capital Employed. ROCE > cost of capital = value-creating. "
+     ">15% good | >20% excellent. Not directly in yfinance; derived from "
+     "ROE adjusted for leverage when possible.",
+     "Full Dashboard"),
+    ("PROFITABILITY","Gross Mgn %",
+     "Revenue − COGS, ÷ Revenue × 100. >40% = strong moat; >20% = decent. "
+     "Source: yfinance .info['grossMargins'] × 100.",
+     "Full Dashboard"),
+    ("PROFITABILITY","EBITDA Mgn %",
+     "EBITDA ÷ Revenue × 100. >25% excellent | >15% good | <10% tight. "
+     "Source: yfinance .info['ebitdaMargins'] × 100.",
+     "Full Dashboard"),
+    ("PROFITABILITY","NPM %",
+     "Net Profit Margin TTM = Net Income ÷ Revenue × 100. "
+     ">15% excellent | >5% decent | <0% unprofitable. "
+     "Source: yfinance .info['profitMargins'] × 100.",
+     "All sheets"),
+    ("PROFITABILITY","NPM Q1 %",
+     "Most recent quarter's Net Profit Margin = (Q1 PAT ÷ Q1 Revenue) × 100. "
+     "Source: yfinance quarterly_income_stmt most-recent column. "
+     "v10.15 FIX #2: capped at ±500% to prevent tiny-revenue-denominator "
+     "distortions (EMAMIREAL Q1 hit −762% pre-clamp). Same design as v10.14 "
+     "CAGR clamp. Real businesses don't sustain >500% margin even briefly.",
+     "Full Dashboard"),
+    ("PROFITABILITY","NPM Q2 %",
+     "Previous quarter's NPM. Track Q3 → Q2 → Q1 trend to catch margin "
+     "expansion early. v10.15 FIX #2: capped at ±500% (EMAMIREAL Q2 hit "
+     "−387% pre-clamp).",
+     "Full Dashboard"),
+    ("PROFITABILITY","NPM Q3 %",
+     "3rd-most-recent quarter's NPM. Rising Q3 < Q2 < Q1 triggers "
+     "'Margin Expansion = YES' — strong compounder signal. "
+     "v10.15 FIX #2: capped at ±500% (EMAMIREAL Q3 hit −845% pre-clamp).",
+     "Full Dashboard"),
+    ("PROFITABILITY","Margin Expansion",
+     "YES when NPM has risen for 3 consecutive quarters (Q3 < Q2 < Q1). "
+     "Strong operating leverage / pricing power signal. "
+     "Score: Fundamental +5, Safety +3, Storm +1.",
+     "All sheets"),
+    ("GROWTH","Rev CAGR 1Y %",
+     "Latest FY revenue ÷ prior FY revenue − 1 (discrete fiscal years). "
+     ">20% high growth | >10% good. "
+     "Differs from 'Rev YoY %' which uses rolling TTM — a large divergence "
+     "usually means the company is mid-year with a strong/weak recent quarter. "
+     "v10.14: capped at ±500% to filter tiny-base distortions.",
+     "Full Dashboard"),
+    ("GROWTH","Rev CAGR 3Y %",
+     "Latest FY ÷ FY-3 revenue, then ^(1/3) − 1. "
+     ">15% strong | >8% decent. Requires ≥4 annual columns in yfinance; "
+     "shows '—' for newer IPOs. v10.14: capped at ±500%.",
+     "Full Dashboard"),
+    ("GROWTH","PAT CAGR 1Y %",
+     "Latest FY PAT ÷ prior FY PAT − 1. >20% strong earnings momentum. "
+     "Shows '—' if either FY had loss (CAGR mathematically undefined). "
+     "v10.14: capped at ±500%.",
+     "Full Dashboard"),
+    ("GROWTH","PAT CAGR 3Y %",
+     "Latest FY PAT ÷ FY-3 PAT, ^(1/3) − 1. >20% compounder | >10% good. "
+     "Most reliable long-horizon compounding signal — 3Y smooths single-quarter "
+     "distortions. v10.14: capped at ±500%.",
+     "Full Dashboard"),
+    ("GROWTH","EBITDA CAGR 1Y %",
+     "Latest FY EBITDA ÷ prior FY EBITDA − 1. >15% strong operating growth. "
+     "EBITDA recovery from near-zero prior-year base can produce outsized "
+     "percentages — v10.14 caps at ±500% to prevent tiny-base noise.",
+     "Full Dashboard"),
+    ("GROWTH","Rev YoY %",
+     "TRAILING TWELVE-MONTH revenue growth, from yfinance "
+     ".info['revenueGrowth'] × 100. Rolling 4-quarter comparison — NOT the "
+     "same as Rev CAGR 1Y % which uses discrete fiscal years. The two diverge "
+     "most in insurance/NBFC stocks (premium accounting) and post-restructuring "
+     "companies. v10.14: capped at ±500% to filter yfinance junk signals "
+     "on micro-caps (e.g., 14,000%+ readings from tiny revenue bases).",
+     "All sheets"),
+    ("GROWTH","PAT YoY %",
+     "TRAILING TWELVE-MONTH earnings growth, from yfinance "
+     ".info['earningsGrowth'] × 100. Same TTM vs fiscal-year distinction as "
+     "Rev YoY %. v10.14: capped at ±500%.",
+     "All sheets"),
+    ("GROWTH","Q3 Rev (₹Cr)",
+     "3rd-most-recent quarter's revenue in ₹ Crore. "
+     "Source: yfinance quarterly_income_stmt 3rd column. Shows '—' if "
+     "quarterly data unavailable.",
+     "Full Dashboard"),
+    ("GROWTH","Q3 PAT (₹Cr)",
+     "3rd-most-recent quarter's net profit in ₹ Crore. "
+     "Shows '—' if loss-making that quarter (NULL in DB).",
+     "Full Dashboard"),
+    ("GROWTH","Q3 EBITDA (₹Cr)",
+     "3rd-most-recent quarter's EBITDA in ₹ Crore. "
+     "Falls back to 'operating income' row if EBITDA not reported. "
+     "Q3 EBITDA Margin = Q3 EBITDA / Q3 Rev — compare vs TTM.",
+     "Full Dashboard"),
     ("FIN HEALTH","D/E Ratio",
      "Debt ÷ Equity. "
      "0 = Zero debt (fortress balance sheet) | "
@@ -265,10 +391,77 @@ GLOSSARY_DATA = [
      "1.0–1.5 = Tight (manage carefully) | "
      "1.5–2.0 = Healthy (comfortable) | "
      "> 2.0 = Strong (ample short-term liquidity)","Full Dashboard"),
-    ("FIN HEALTH","FCF (₹Cr)","Free Cash Flow = Operating CF − Capex","Full Dashboard"),
-    ("SHAREHOLDING","Promoter %","Promoter holding. <25% = low conviction. 0% = hard drop","All sheets"),
-    ("SHAREHOLDING","Pledge %","Pledged shares. >20% = anti-trigger fires. >40% = hard drop","All sheets"),
-    ("SHAREHOLDING","FII %","Foreign Institutional Investor holding. Rising = smart money signal","Full Dashboard"),
+    ("FIN HEALTH","FCF (₹Cr)",
+     "Free Cash Flow = Operating CF − Capex in ₹ Crore. Positive + growing = "
+     "healthy cash generation. Source: yfinance .info['freeCashflow'] ÷ 1e7.",
+     "Full Dashboard"),
+    ("FIN HEALTH","CCC Days",
+     "Cash Conversion Cycle = Days Inventory Outstanding + Days Sales "
+     "Outstanding − Days Payables Outstanding. Lower = more efficient. "
+     "Negative CCC = collects cash before paying suppliers (ideal — FMCG/retail). "
+     "Source: (inventory + receivables − payables) / revenue × 365. "
+     "v10.15 FIX #3: capped at ±500 days. Computation skipped when revenue "
+     "< ₹0.1 Cr (prevents arithmetic noise — EMAMIREAL was showing 16,821 "
+     "days = 46 years before fix).",
+     "Full Dashboard"),
+    ("SHAREHOLDING","Promoter %",
+     "Promoter holding share. <25% = low conviction (consider Ownership "
+     "red flag); 0% = Hard Drop from Gold filter. "
+     "Source: NSE corp-info API primary; yfinance heldPercentInsiders fallback. "
+     "Rising over time = promoter conviction signal.",
+     "All sheets"),
+    ("SHAREHOLDING","Pro QoQ Δ",
+     "Promoter shareholding change vs previous quarter (percentage points). "
+     ">+0.5 = promoter buying (Sentiment +5); <−0.5 = selling (Sentiment −5). "
+     "Source: computed as (current promoter_pct − prior-quarter promoter_pct). "
+     "v10.15 FIX #5: three display states now distinct — real number = "
+     "measured delta; '—' = no ≥90-day history OR backfill literal 0 "
+     "(yfinance can't supply real QoQ; populates after ~3 months of daily "
+     "runs). Pre-v10.15 showed 0 for 83/86 stocks indistinguishably.",
+     "Full Dashboard"),
+    ("SHAREHOLDING","Pledge %",
+     "Percentage of promoter shares pledged as loan collateral. "
+     "0% = clean capital structure (Safety +4); 10–20% = watch (−7); "
+     ">20% = RED FLAG (Safety −15 + suppresses all spike signals). "
+     "Source: BSE corporate filings (no free API). v10.15 FIX #6: shows '—' "
+     "when 0 because 0-pledge is structurally indistinguishable from "
+     "'unknown pledge' on free-tier. Score gates still fire on numeric "
+     "values; '—' treated as 0 for guard purposes.",
+     "All sheets"),
+    ("SHAREHOLDING","Pledge Direction",
+     "FALLING = promoters repaying loans (positive); RISING = more shares "
+     "pledged (risk signal); STABLE = unchanged at non-zero level; "
+     "'—' = no pledge data (free-tier limitation).",
+     "Full Dashboard"),
+    ("SHAREHOLDING","FII %",
+     "Foreign Institutional Investor holding %. >15% = institutional backing; "
+     ">25% = high global interest. Rising FII over quarters = smart-money "
+     "accumulation signal.",
+     "Full Dashboard"),
+    ("SHAREHOLDING","FII QoQ Δ",
+     "FII holding change vs previous quarter. >+1 pp = strong accumulation "
+     "(Early Entry +8); <−1 = distribution. v10.15 FIX #5: shows '—' when "
+     "no real delta computable (backfill literal 0 filtered out).",
+     "Full Dashboard"),
+    ("SHAREHOLDING","DII %",
+     "Domestic Institutional Investor (MF/insurance/banks) holding %. "
+     ">10% = domestic confidence. Rising DII + FII = dual institutional "
+     "accumulation = bullish signal. "
+     "Source: NSE corp-info JSON API (heldPercentInstitutions in yfinance "
+     "is FII+DII combined; DII alone needs NSE). v10.15 FIX #6: shows '—' "
+     "when 0 because NSE API is commonly blocked on cloud IPs (GitHub "
+     "Actions etc.) — 0 is indistinguishable from 'API blocked' on free-tier.",
+     "Full Dashboard"),
+    ("SHAREHOLDING","DII QoQ Δ",
+     "DII holding change vs previous quarter. >+0.5 pp = strong domestic "
+     "accumulation (Sentiment +6); <−0.3 = distribution (Sentiment −3). "
+     "v10.15 FIX #5: '—' when no real delta computable.",
+     "Full Dashboard"),
+    ("SHAREHOLDING","Public Float %",
+     "Percentage of shares NOT held by promoter or institutions. "
+     "Derived as 100 − Promoter% − FII% − DII%. Lower = tighter float = "
+     "more volatile; higher = more liquid but less concentrated control.",
+     "Full Dashboard"),
     ("QUALITY SCORES","Piotroski F /9","9-point business health score computed from free yfinance data (Session 14 wire-up). ≥7=strong, ≤3=weak. Typical distribution on a real run: 4-8 range","All sheets"),
     ("QUALITY SCORES","Altman Z","Bankruptcy predictor. >2.99=safe, <1.81=distress zone. Requires paid balance-sheet feed (working capital, retained earnings, EBIT, total liabilities, total assets) — displays '—' when missing","Full Dashboard"),
     ("QUALITY SCORES","Beneish M","Manipulation risk score. >-2.22=risk, <-2.22=clean. Requires paid balance-sheet feed (NI from ops, CFO, total assets) — displays '—' when missing","Full Dashboard"),
@@ -391,11 +584,14 @@ GLOSSARY_DATA = [
      "Price ÷ Book Value per Share. "
      "<1 = trading below book (possible deep value or value trap) | "
      "1–2 = reasonable (banks, metals) | 2–5 = premium (justified if ROE>15%) | "
-     ">5 = high (asset-light compounders only)","All sheets"),
+     ">5 = high (asset-light compounders only) | "
+     "'—' = raw value ≥ 500 (tiny-book-value distortion; v10.16 Option B)",
+     "All sheets"),
     ("VALUATION","P/S",
      "Price-to-Sales = MCap ÷ Annual Revenue. "
      "<1 = very cheap (cyclicals, PSUs) | 1–3 = reasonable | 3–8 = premium | "
-     ">8 = expensive (only for high-margin businesses)","Full Dashboard"),
+     ">8 = expensive (only for high-margin businesses) | "
+     "'—' = raw value ≥ 500 (v10.16 Option B)","Full Dashboard"),
     ("VALUATION","P/CF",
      "Price-to-Cash Flow = MCap ÷ Operating Cash Flow. "
      "Better than P/E as cash flow is harder to manipulate. "
@@ -432,15 +628,10 @@ GLOSSARY_DATA = [
      "Source: derived from NPM Q1/Q2/Q3 via yfinance. Strong signal of operational leverage or pricing power.","Full Dashboard"),
 
     # ── GROWTH ────────────────────────────────────────────────────────────────
-    ("GROWTH","Rev CAGR 3Y %","Revenue Compound Annual Growth Rate over 3 years. Source: yfinance income_stmt (annual). >15% = fast growing compounder.","Full Dashboard"),
-    ("GROWTH","PAT CAGR 3Y %","Profit After Tax CAGR over 3 years. Source: yfinance income_stmt (annual). >15% = quality earnings compounder.","Full Dashboard"),
-    ("GROWTH","EBITDA CAGR 1Y %","EBITDA growth year-over-year. Source: yfinance income_stmt (annual). >15% = strong operating leverage improvement.","Full Dashboard"),
-    ("GROWTH","Rev YoY %",
-     "Revenue growth year-over-year (%) from yfinance revenueGrowth. "
-     ">20% = fast growth | 10–20% = good | 0–10% = stable | <0% = shrinking","Full Dashboard"),
-    ("GROWTH","Q3 Rev (₹Cr)","Revenue in the third most recent quarter in ₹ Crore. Source: yfinance quarterly_income_stmt.","Full Dashboard"),
-    ("GROWTH","Q3 PAT (₹Cr)","Net Profit in the third most recent quarter in ₹ Crore. Source: yfinance quarterly_income_stmt.","Full Dashboard"),
-    ("GROWTH","Q3 EBITDA (₹Cr)","EBITDA in the third most recent quarter in ₹ Crore. Source: yfinance quarterly_income_stmt.","Full Dashboard"),
+    # v10.14: The complete GROWTH glossary entries (10 fields with TTM-vs-FY
+    # clarification + cap note) now live higher in this list at the PROFITABILITY
+    # → GROWTH transition. The legacy duplicate block that was here has been
+    # removed to keep the glossary deduplicated.
 
     # ── FIN HEALTH ────────────────────────────────────────────────────────────
     ("FIN HEALTH","ND/EBITDA",
@@ -1176,11 +1367,19 @@ class ExcelGeneratorV6:
             def _is_exceptional_neutral(row):
                 if str(row.get("verdict","")) != "NEUTRAL":
                     return True  # keep all non-neutral
-                roe = float(row.get("roe_num", row.get("roe", 0)) or 0)
-                pe  = float(row.get("pe_num",  row.get("pe",  99)) or 99)
-                mos = float(row.get("mos_pct", 0) or 0)
-                ts  = float(row.get("technical_score", 50) or 50)
-                sc  = float(row.get("composite_score", 0) or 0)
+                # v10.16: pe/pb/roe display columns can be "—" (Option B honest
+                # display). Coerce defensively so float() can't crash if pe_num
+                # isn't present and the fallback lands on display '—'.
+                def _fs(v, default):
+                    if v in (None, "", "—", "--"):
+                        return float(default)
+                    try: return float(v)
+                    except (ValueError, TypeError): return float(default)
+                roe = _fs(row.get("roe_num", row.get("roe", 0)), 0)
+                pe  = _fs(row.get("pe_num",  row.get("pe",  99)), 99)
+                mos = _fs(row.get("mos_pct", 0), 0)
+                ts  = _fs(row.get("technical_score", 50), 50)
+                sc  = _fs(row.get("composite_score", 0), 0)
                 # Exceptional NEUTRAL: strong fundamentals AND undervalued AND good technicals
                 exceptional = (roe > 20 and pe < 30 and mos > 10 and ts > 62)
                 if exceptional:

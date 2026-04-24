@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · Version 10.13 · April 2026
+## AI Context File · Version 10.16 · April 2026
 
 This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. **Read it first** before making any change.
 
@@ -579,6 +579,37 @@ O4_CURRENT_S2_MAX         = 15       # today's stage2_score (deterioration signa
 O5_DAYS_SINCE_MIN         = 7        # re-check stale analyses
 O5_DAYS_SINCE_SENTINEL    = 99       # guard: skip stocks never analysed (first-run)
 
+# GROWTH field clamps (v10.14 — prevent tiny-base yfinance distortions)
+CAGR_CLAMP_PCT            = 500      # ±500 % cap on all CAGR/YoY fields
+                                     # (applies to _safe_cagr in backfill_history.py
+                                     #  AND the rev_yoy/pat_yoy .info extractions)
+
+# v10.15 clamps — same tiny-base-denominator mitigation extended to
+# PROFITABILITY, FIN HEALTH, and VALUATION groups
+NPM_CLAMP_PCT             = 500      # ±500 % cap on NPM Q1/Q2/Q3 quarterly margins
+                                     # (EMAMIREAL-like tiny-rev denominators
+                                     #  produced −845% NPM pre-clamp)
+CCC_CLAMP_DAYS            = 500      # ±500 days cap on CCC Days
+                                     # (EMAMIREAL 16,821 days = 46yr pre-clamp)
+CCC_MIN_REVENUE           = 1000     # if totalRevenue < ₹0.1 Cr, skip CCC
+                                     # computation entirely (noise threshold)
+VALUATION_CLAMP           = 500      # v10.16 Option B: DB-layer clamp lowered
+                                     # 1000→500. Display layer shows '—' when
+                                     # raw ≥ 500 (more honest than showing 1000).
+                                     # Applies to P/E, P/B, P/S, EV/EBITDA.
+                                     # (AMAGI PE=1,981 / RHETAN EV/EBITDA=1,352
+                                     #  pre-clamp; real stocks rarely exceed 200×)
+PEG_CLAMP                 = 50       # v10.16: lowered 100→50. PEG beyond 50 is
+                                     # pure arithmetic noise. Display → '—'.
+VALUATION_DISPLAY_THRESHOLD = 500    # v10.16: display threshold matches DB cap.
+                                     # When stock["pe"/"pb"/"ps"/"ev_ebitda"] raw
+                                     # ≥ this, master_funnel writes '—' to Excel.
+PEG_DISPLAY_THRESHOLD     = 50       # Same pattern for PEG (all 4 fallback tiers)
+PE_SCORING_NEUTRAL_CUTOFF = 500      # v10.16: fundamental_score treats pe_num
+                                     # ≥ this as NEUTRAL (no +12/+7/-8), not
+                                     # penalized for being "expensive" — because
+                                     # clamp value signals "unknown", not high PE.
+
 # AI batching
 AI_BATCH_SIZE            = 12
 AVOID_SKIP_AI            = True      # v10.13 FIX #1 — AVOID verdict → placeholder, not Gemini call
@@ -681,37 +712,185 @@ Sessions 1–24 (v7 era + reorg). Core data fixes, Excel + Alert Log, Early Dete
 
 ### v10.12 — Dynamic tooltip sizing + Gold row 2 text
 
-- **`reporting/excel_generator.py::_patch_tooltip_vml()`** now parses `xl/comments/comment*.xml`, maps each comment to its VML shape by `(row, col)` anchor, and sizes each box dynamically with `max(85, min(17 × line_count + 36, 380))`. Previously hardcoded to 420×380 for every tooltip → short Stop-Loss-style tips wasted ~295px of empty yellow space.
-- **`reporting/tooltip_formatter.py::_comment()`** height formula now matches the VML patch (was forcing a 260px floor regardless of content).
-- **Gold sheet row 2 criteria text** updated from 8-condition (v10.10 artifact) to 11-condition (v10.11 logic): adds `Altman Z≥1.8 · EQ≠LOW · Int Coverage≥1.5×` to the displayed list.
-- **4 tooltip entries updated** with `"—"` display semantics (Div Yield, Pro QoQ Δ, FII QoQ Δ, DII QoQ Δ) — explains when a dash means "no data source" vs "no history accumulated yet".
-- Pure presentation fix — no analytical behavior change.
+- **`reporting/excel_generator.py::_patch_tooltip_vml()`** — VML post-process now parses `xl/comments/comment*.xml`, maps each comment to its VML shape by `(row, col)` anchor, sizes each box dynamically with `max(85, min(17 × line_count + 36, 380))`. Previously hardcoded to 420×380 → short tooltips had 295px of empty yellow space below content.
+- **`reporting/tooltip_formatter.py::_comment()`** — height formula aligned with the VML patch (was forcing 260px floor regardless of content).
+- **Gold sheet row 2 criteria text** — updated from 8-condition to 11-condition display to match the v10.11 filter logic.
+- **4 tooltip entries updated** with `"—"` display semantics (Div Yield %, Pro QoQ Δ, FII QoQ Δ, DII QoQ Δ) — explains when a dash means "no data source" vs "no history accumulated yet".
+- Pure presentation fix — zero analytical behaviour change.
 
 ### v10.13 — Stage 3 optimization trilogy
 
-Three fixes addressing observed Stage 3 inefficiencies from production Excel audit:
+Three fixes addressing Stage 3 inefficiencies observed in production Excel audit:
 
-**FIX #1 — AVOID-verdict stocks skip Gemini AI (`master_funnel.py` Section 7/8)**
-- Pre-filters `final_100_list` before the Gemini batch call: any stock whose verdict starts with `"AVOID"` is extracted into a `_avoid_indices` set and given a fixed `_AVOID_PLACEHOLDER` string for `Analysis_Summary_Block_H`.
-- Only non-AVOID stocks are sent to Gemini; cursor-based positional mapping stitches the results back together.
-- **Saves Gemini quota:** observed waste was 8 AVOID stocks out of 88 (9%) per run. Placeholder message explains why the stock got skipped so users aren't confused by a blank.
-- Zero risk of breaking existing AI output mapping — for non-AVOID stocks the flow is identical to pre-v10.13.
+**FIX #1 — AVOID-verdict stocks skip Gemini** (`master_funnel.py` Section 7/8)
 
-**FIX #2 — Override rules O4 + O5 activated (`priority_ranker.py` + `data_bridge.py`)**
-- **Root cause:** O4 (score deterioration) required `last_claude_score`, and O5 (expiry re-check) required `days_since_analysis` — neither was ever populated on the Stage 3 input df. O5 was explicitly disabled with a comment warning about "99-day default → 1914-override flood bug".
-- **Fix:** New helper `data_bridge.get_prior_analysis_map()` reads `latest_analysis_results` and returns `{sym: {last_score, last_verdict, date, days_since}}`. Uses the `date` field to compute real `days_since` (not a sentinel).
-- `priority_ranker.get_top_100_candidates()` calls this at entry, attaches `last_claude_score` / `last_claude_verdict` / `days_since_analysis` columns to the df.
-- O4 now fires when: previous score ≥ 60 AND today's Stage 2 < 15.
-- O5 now fires when: `7 ≤ days_since < 99`. The `<99` guard prevents first-run explosion: on day 1 the `latest_analysis_results` table is empty, `get_prior_analysis_map()` returns `{}`, and the `if _prior_map:` block doesn't add the columns at all — so `days_since_analysis` is absent and O5 correctly does nothing.
-- Impact: closes long-tail intelligence gap where stocks that had BUY verdicts previously but dropped off the priority ranking were forgotten. Now they get re-checked at least every 7 days.
+- Pre-filters `final_100_list` before Gemini batch call; AVOID stocks get fixed placeholder. Observed waste was 8/88 = 9% of quota per run pre-v10.13.
+- Cursor-based positional mapping preserves non-AVOID mapping identical to pre-v10.13.
+- Constants: `AVOID_SKIP_AI = True`.
 
-**FIX #3 — Batch SQL for 20d vol average (`data_bridge.py` + `priority_ranker.py`)**
-- **Root cause:** `_get_vol_ratio` inside `get_top_100_candidates` called `get_20d_avg_vol(symbol)` inside `df.apply` — opened a fresh SQLite connection per row. With ~1,500 Stage-2 survivors this was ~1,500 round-trips to the DB, ~3-5 seconds wasted per run.
-- **Fix:** New helper `get_20d_avg_vol_batch(symbols)` uses a CTE with `ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC)` to get the last 20 rows per symbol in ONE query. Falls back to per-symbol calls on any SQL error so pipeline doesn't hard-fail.
-- `calculate_priority_score()` accepts an optional `avg_vol_cache` dict parameter — backward compat preserved (old callers pass nothing, still get per-symbol fetch).
-- **Measured speedup: 107×** in integration test (258ms → 2.4ms for 100 calls). Real Stage 3 with ~1,500 symbols should see ~3-5 second savings.
+**FIX #2 — Override rules O4 + O5 activated** (`priority_ranker.py` + `data_bridge.py`)
 
-Integration tests: 7/7 passed (parity / performance / prior map correctness / Stage 3 e2e with O4+O5 / first-run safety / AVOID-skip logic / import chain).
+- Root cause: `last_claude_score` and `days_since_analysis` were never populated on the Stage 3 input df — O4 always False, O5 explicitly hardcoded False.
+- New helper `data_bridge.get_prior_analysis_map()` reads `latest_analysis_results` → `{sym: {last_score, last_verdict, date, days_since}}`.
+- `priority_ranker.get_top_100_candidates()` attaches 3 new columns: `last_claude_score`, `last_claude_verdict`, `days_since_analysis`.
+- **O4** fires on `last_claude_score ≥ 60 AND stage2_score < 15` (score deterioration).
+- **O5** fires on `7 ≤ days_since_analysis < 99` (expiry re-check). The `<99` sentinel prevents first-run flood.
+- Impact: closes long-tail intelligence gap — previously-good stocks that dropped off the priority ranking are now re-checked at least weekly.
+
+**FIX #3 — Batch SQL for 20d vol average** (`data_bridge.py` + `priority_ranker.py`)
+
+- New helper `get_20d_avg_vol_batch(symbols)` — single windowed SQL (CTE + ROW_NUMBER) replaces ~1,500 per-symbol round-trips.
+- `calculate_priority_score()` accepts optional `avg_vol_cache` dict — backward compat preserved.
+- Falls back to per-symbol calls on any SQL error.
+- **Measured speedup: 107× in integration test** (258 ms → 2.4 ms for 100 calls).
+
+Integration tests: 7/7 passed. Constants added to Section 14: `OVERRIDE_MAX`, `O3_*`, `O4_*`, `O5_*`, `AVOID_SKIP_AI`.
+
+### v10.14 — GROWTH field data-integrity hardening
+
+Three fixes addressing tiny-base CAGR distortions + missing source attribution observed in production Excel audit (HUBTOWN EBITDA CAGR 1Y = 10,194.67%, RVHL Rev YoY = 14,183.8%, CHEMPLASTS EBITDA CAGR 1Y = 1,163.79%, etc.):
+
+**FIX #1a — `_safe_cagr()` clamps at ±500%** (`backfill_history.py` line ~1524)
+
+- Root cause: the CAGR formula `(v_new/v_old)^(1/n) - 1` produces absurd results when `v_old` is near zero. yfinance occasionally reports prior-year EBITDA of ₹0.86 Cr or Q3 revenue of ₹0.13 Cr. With v_new at ₹88.4 Cr, CAGR becomes 10,177%.
+- Fix: after computing, clamp `result > 500.0 → 500.0` and `result < -500.0 → -500.0`. Real India-listed businesses rarely sustain >500% CAGR on any metric, so the cap preserves all meaningful signals while filtering math artefacts.
+- Applies to all 5 CAGR fields: `rev_cagr_1y`, `rev_cagr_3y`, `pat_cagr_1y`, `pat_cagr_3y`, `ebitda_cagr_1y`.
+
+**FIX #1b — yfinance `.info` rev_yoy / pat_yoy also clamped** (`backfill_history.py` line ~1385)
+
+- Same class of distortion hits `.info["revenueGrowth"]` for micro-caps (RVHL 141.83 → 14,183%). Wrapped the `_yf(...)` calls in `max(-500, min(500, ... or 0))`.
+- Zero/None input correctly yields 0 (no false-positive clamping).
+
+**FIX #2 — GROWTH tooltip clarity** (`reporting/tooltip_formatter.py`)
+
+- All 10 GROWTH field tooltips rewritten to:
+  - **Attribute source** (yfinance `.info["revenueGrowth"]` vs `income_stmt[year]`)
+  - **Clarify TTM vs fiscal-year distinction**: `Rev YoY %` uses rolling TTM, `Rev CAGR 1Y %` uses discrete fiscal years. They can legitimately diverge (especially for insurance/NBFC stocks with premium accounting quirks) — the tooltip explains this.
+  - **Document the v10.14 cap** — ±500% threshold is visible in every affected tooltip.
+- `GROUP_TIPS["GROWTH"]` group-header tooltip also enhanced with the TTM caveat.
+
+**FIX #3 — Glossary expanded** (`reporting/excel_generator.py`)
+
+- Glossary entries for GROWTH fields went from 3 partial (Rev CAGR 1Y, PAT CAGR 1Y, PAT YoY — terse) → 10 complete entries covering every GROWTH column with full source attribution, cap explanation, and edge-case notes.
+- Removed legacy duplicate block at lines 486-494 that had 7 older GROWTH entries (pre-v10.14 wording, no cap note).
+
+Integration tests: 8/8 passed — clamp behaviour verified for 6 edge cases (HUBTOWN-style tiny base, normal growth, decline, near-zero v_new, invalid inputs returning 0, 3Y path); yfinance `max/min` wrapper verified for 7 input ranges (0.085 → 8.5, 141.83 → 500, etc.); tooltip regression checks (147 entries shape-valid, v10.12 dynamic height, v10.13 placeholder preserved); glossary dedup verified (exactly 10 GROWTH entries, no duplicates); end-to-end Excel workbook saves cleanly.
+
+Zero analytical behaviour change — v10.14 is a pure display-layer cleanup. Stage 1/2/3 filters, scoring engine, verdict logic, forensic adjustment, Gold filter, and all v10.12/v10.13 features unchanged.
+
+### v10.15 — PROFITABILITY / FIN HEALTH / VALUATION / SHAREHOLDING data-integrity hardening
+
+Six fixes + two defensive guards addressing data-integrity issues observed in the production Excel audit of 23 Apr 2026. Follow-on cleanup to the v10.14 GROWTH fixes — extends the same tiny-base-denominator mitigation to quarterly margins, cash-conversion cycle, and valuation ratios, plus fixes ROE/ROA numeric storage and honest display for free-tier-limited shareholding fields.
+
+**FIX #1 — ROE/ROA stored as floats, not f-strings** (`master_funnel.py` lines ~1213, 1226)
+
+- Root cause: derived ROE / ROA values were wrapped in `f"{_roe_derived}"` which produced quoted strings like `'12.47'`. Excel stored them as text, breaking sort / filter / conditional-formatting on those columns (69/86 stocks affected).
+- Fix: use the bare float directly — `_roe_derived if 0 < _roe_derived < 100 else "—"`. Same for ROA at line 1226.
+- Downstream safe — `_sf()` helper already handles both numeric and `"—"`.
+
+**FIX #2 — NPM Q1/Q2/Q3 clamped at ±500%** (`backfill_history.py` lines ~1591-1593)
+
+- Root cause: quarterly NPM formula `_pat_qn / _rev_qn * 100` with tiny-revenue denominators produced −762% / −387% / −845% for EMAMIREAL.
+- Fix: new `_npm_clamp(pat, rev)` helper — same clamp pattern as v10.14 `_safe_cagr`. Still returns 0 for `rev <= 0` (division safety); clamps result to [-500, +500].
+
+**FIX #3 — CCC Days clamp + revenue guard** (`backfill_history.py` line ~1932)
+
+- Root cause: `rev = ticker.info.get('totalRevenue', 1)` fallback of **1** combined with multi-crore receivables produced 16,821 days (46 years) for EMAMIREAL.
+- Fix: changed fallback to `0`, added `if rev > 1000:` guard (₹0.1 Cr minimum). Below the threshold, ccc_days = 0 (computation skipped). Above, result clamped to [-500, +500] days.
+
+**FIX #4 — PE / EV-EBITDA / PEG / PS / PB clamped** (`backfill_history.py` line ~1355)
+
+- Root cause: yfinance `.info` valuation ratios unbounded — AMAGI PE = 1,981 (near-zero EPS), RHETAN EV/EBITDA = 1,352 (near-zero EBITDA).
+- Fix: new `_yf_ratio(k, cap=1000)` helper. Applied to `pe`, `pb`, `ps`, `ev_ebitda` at cap=1000; PEG at cap=100 (tighter — PEG beyond 100 is pure arithmetic noise).
+- Real quality businesses rarely exceed 200x P/E, so the cap preserves every plausible premium-growth valuation.
+
+**FIX #5 — Pro / FII / DII QoQ Δ show "—" when no real delta** (`master_funnel.py` Section 5A.4 + new 5A.4b)
+
+- Root cause (two parts):
+  1. `backfill_history.py` line 1815 stores `promoter_qoq = 0.0` (literal) in the shareholding table when yfinance can't supply real QoQ.
+  2. Section 5A.4's cleanup threshold `abs(_old_pqoq) > 10` only caught bug values (large numbers from the old `-current` bug) — **the literal 0 passed through and displayed as `0`** for 83/86 stocks indistinguishably.
+- Fix: Section 5A.4's `elif abs > 10` threshold removed — any residual number when `_new_*qoq == "—"` now cleaned to `"—"`. Plus new Section 5A.4b post-recompute cleanup that normalizes residual 0.0s.
+- Three states now distinct: real number (genuine delta), 0.0 (guarded as missing), `"—"` (displayed).
+
+**FIX #6 — Pledge % / DII % show "—" not 0** (`master_funnel.py` Section 5A.4b)
+
+- Root cause: both fields always 0 on free-tier (pledge needs BSE corporate filings, DII needs NSE API blocked on cloud IPs). Displaying 0 was indistinguishable from "structurally known zero" (e.g., a genuinely no-pledge company).
+- Fix: Section 5A.4b normalizes `0.0` to `"—"` for both fields. Paid data source would display real zero as 0; free-tier is honest about "unknown".
+
+**SAFE-GUARDS — Downstream modules handle "—"** (`analysis/v7_analysis_engine.py` + `ownership_tracker.py`)
+
+- `v7_analysis_engine.py::apply_section_3H_guards` line 90: `row.get('pledge_pct', 0) > 20` previously crashed with `TypeError: '>' not supported between instances of 'str' and 'int'` when pledge_pct became `"—"`. Now coerces via `float(str(val or 0).replace("—", "0"))` — same defensive pattern as v10.10 Div Yield fix.
+- `ownership_tracker.py::compute_ownership_signals` lines 31-32: same coercion via local `_pledge_num()` helper before numeric comparison.
+- `spike_screener.py` already uses `_safe_num()` (from v10.10) — no change needed.
+
+**Tooltip updates** (`reporting/tooltip_formatter.py`)
+
+- 11 field tooltips updated: P/E TTM, PEG Ratio, P/B, P/S, EV/EBITDA, ROE %, ROA %, NPM Q1/Q2/Q3, CCC Days, Pro QoQ Δ, Pledge %, DII %
+- 4 group-header tooltips enhanced: VALUATION, PROFITABILITY, FIN HEALTH, SHAREHOLDING
+- Each updated entry now documents: data source, v10.15 fix applied, clamp threshold, specific pre-clamp example (AMAGI 1,981, EMAMIREAL -845%, etc.)
+
+**Glossary expansion** (`reporting/excel_generator.py`)
+
+- PROFITABILITY: 2 → 10 entries (added ROA, ROCE, Gross Mgn, EBITDA Mgn, NPM %, NPM Q1/Q2/Q3 individual, Margin Expansion)
+- FIN HEALTH: 3 → 11 entries (added CCC Days with v10.15 FIX #3 detail, others already present)
+- SHAREHOLDING: 3 → 15 entries (added Pro QoQ Δ, Pledge Direction, FII QoQ Δ, DII %, DII QoQ Δ, Public Float % + enhanced existing)
+- VALUATION: 5 → 14 entries (existing detailed entries enhanced with v10.15 clamp notes)
+
+Integration tests: **111/111 passed** across 14 test groups — all 6 fixes verified with edge cases (HUBTOWN, EMAMIREAL, AMAGI, RHETAN representative inputs), safe-guards don't crash on `"—"`, all 147 TIPS + 22 GROUP_TIPS valid shape, all 9 core modules import cleanly, v10.12 / v10.13 / v10.14 regressions all pass.
+
+Zero analytical behaviour change from v10.14 — scoring weights, verdict thresholds, forensic adjustment, Gold filter all unchanged. Pure display-layer cleanup + field type correctness.
+
+### v10.16 — VALUATION display honesty (Option B) + scoring neutrality
+
+Direct follow-up to v10.15 FIX #4 after user feedback on production Excel: the ±1000 clamp made AMAGI's PE=1,981 display as **1000**, which users correctly flagged as misleading (could be misread as "1000× earnings" when it actually means "earnings ≈ 0, P/E not meaningful"). v10.16 replaces the numeric clamp with honest `"—"` display, matching the philosophy already used for Pledge%/DII%/QoQ Δ in v10.15.
+
+**FIX #1 — Display "—" instead of clamped number for valuation ratios** (`master_funnel.py`)
+
+- Previous (v10.15): raw PE 1,981 stored as 1000, Excel column shows 1000
+- Now (v10.16): raw PE 1,981 → Excel column shows `"—"`
+- Same pattern for P/B, P/S, EV/EBITDA (threshold 500) and PEG (threshold 50)
+- Fix locations in `master_funnel.py`:
+  - Lines ~1413-1414: `ps` / `ev_ebitda` setdefault checks `0 < raw < 500` else `"—"`
+  - Lines ~1420-1457: PEG 4-tier fallback — every tier now checks `< 50` else `"—"`
+  - Lines ~1480-1486: `pe` / `pb` setdefault with threshold 500 check
+  - Lines ~2556-2567: PE fallback derivation (from EPS/CMP) also threshold-checks
+
+**FIX #2 — DB-layer cap tightened** (`backfill_history.py`)
+
+- `_yf_ratio()` default `cap` lowered from 1000 → **500**
+- PEG explicit `cap` lowered from 100 → **50**
+- Rationale: DB still stores a clamped numeric (not a string) for scoring — because SQLite `REAL` columns can't cleanly hold "—". But the cap is now at the display threshold, so display layer's `raw ≥ 500 → "—"` conversion catches all clamped values deterministically.
+
+**FIX #3 — Scoring logic: clamped PE treated as NEUTRAL** (`master_funnel.py` lines ~1852-1860)
+
+- Previous: `elif _pe_f > 60: _fs -= 8` — any PE over 60 got an "expensive" penalty, including clamped 1000 (from AMAGI tiny-EPS case). But 1000 doesn't mean "expensive" — it means "unknown".
+- Now: new top-priority branch `if _pe_f >= 500: pass` — clamped noise treated as NEUTRAL (no boost, no penalty). Real expensive stocks (PE 60-499) still get the −8 penalty.
+- This is the scoring-side half of the "display honesty" story: both Excel display AND fundamental_score now recognize "valuation undefined" as distinct from "valuation high".
+
+**FIX #4 — Downstream PE reader safe-guard** (`analysis/v7_analysis_engine.py` lines 22-34)
+
+- `apply_section_3A_valuation` line 26 was `if pe > 0 and pe_5yr > 0 and pe < (pe_5yr * 0.85):` — crashed with `TypeError` when `pe = "—"` (string).
+- New: local `_pe_num()` helper coerces `"—"` → 0 before comparison, same defensive pattern as v10.15 pledge_pct fix.
+
+**Tooltip updates** (`reporting/tooltip_formatter.py`)
+
+- 5 valuation tooltips rewritten: P/E TTM, PEG Ratio, P/B, P/S, EV/EBITDA
+- Each now says "displays '—' when raw ≥ 500 (50 for PEG)" instead of "capped at ±1000"
+- P/E TTM tooltip also documents the v10.16 scoring neutrality rule
+- VALUATION group header fully rewritten to explain Option B philosophy
+
+**Glossary expansion** (`reporting/excel_generator.py`)
+
+- 6 VALUATION entries updated: 4 detailed (P/E TTM, PEG, P/B, EV/EBITDA) in primary block, 2 (P/B, P/S) in secondary block
+- Each entry now has a `'—' = Display when raw ≥ 500 (...)` bucket mirroring the numeric buckets above it
+
+**DB schema unchanged.** `fundamental_metrics.pe/pb/ps/ev_ebitda/peg` columns stay `REAL DEFAULT 0` — the clamp value (500 / 50) is persisted for scoring; display layer converts at read time.
+
+**Scoring sensitivity preserved EXCEPT for clamped values.** Real valuations in buckets [0-20], [20-40], [40-60], [60-499] still produce identical scoring behaviour. Only the [500+] region changed from `-8 penalty` to `neutral`. No real-business stocks affected — only the arithmetic-noise cases that previously showed misleading clamped numbers.
+
+Integration tests: **65/65 passed** across 9 test groups — threshold edge cases at 499/500/501, PEG 49/50, PB/PS/EV at boundaries, defensive PE coerce in v7 module (5 input shapes), behavioral equivalence on composite score (clamped pe_num stays numeric → scoring stable), full regression on v10.12/v10.13/v10.14/v10.15.
+
+Zero DB schema change, zero analytical behaviour change for real-valuation stocks, cleaner Excel output for arithmetic-noise edge cases.
 
 ---
 

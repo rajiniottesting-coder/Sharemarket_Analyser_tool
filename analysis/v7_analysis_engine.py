@@ -21,8 +21,14 @@ class V7AnalysisEngine:
         results['yield_tag'] = "ATTRACTIVE (Green)" if yield_val > self.gsec_rate else "LOW YIELD"
         
         # HIST. CHEAP Tag: Current P/E < Own 5yr Avg * 0.85
-        pe = row.get('pe', 0)
-        pe_5yr = row.get('pe_5yr_avg', 0)
+        # v10.16: defensively coerce — pe may be "—" (string) when raw value
+        # exceeded the 500 display threshold (Option B honest display).
+        # Same defensive pattern as pledge_pct guard below (v10.15).
+        def _pe_num(v):
+            try: return float(str(v or 0).replace("—", "0") or 0)
+            except (ValueError, TypeError): return 0.0
+        pe = _pe_num(row.get('pe'))
+        pe_5yr = _pe_num(row.get('pe_5yr_avg'))
         if pe > 0 and pe_5yr > 0 and pe < (pe_5yr * 0.85):
             results['valuation_tag'] = "HIST. CHEAP"
             
@@ -85,9 +91,15 @@ class V7AnalysisEngine:
         is_suppressed = False
         reasons = []
 
-        # Rule: Promoter_Pledge > 20% (this always works — pledge_pct is
-        # reliably 0 when absent, never missing data masquerading as a flag)
-        if row.get('pledge_pct', 0) > 20:
+        # Rule: Promoter_Pledge > 20%
+        # v10.15: pledge_pct may now be "—" (honest "unknown" display, was
+        # silently 0 before free-tier limitation was made explicit). Coerce
+        # via same defensive pattern as altman_z below so guard doesn't crash.
+        try:
+            _pledge_val = float(str(row.get('pledge_pct', 0) or 0).replace("—", "0") or 0)
+        except (ValueError, TypeError):
+            _pledge_val = 0.0
+        if _pledge_val > 20:
             is_suppressed = True
             reasons.append("Pledge > 20%")
 

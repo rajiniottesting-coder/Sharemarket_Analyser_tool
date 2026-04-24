@@ -1,4 +1,4 @@
-# NSE / BSE Stock Analyser — v10.13
+# NSE / BSE Stock Analyser — v10.16
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
 > 5,000+ stocks → AI-scored Excel dashboard → your inbox by 6:00 AM IST.
@@ -11,14 +11,14 @@ Single-user personal tool. No UI, no server to manage. Runs free on GitHub Actio
 
 ## Highlights
 
-- **Three-stage funnel** — 5,150 raw rows → ~1,800 (Stage 1 ETF/junk filter) → ~1,500 (Stage 2 quality score /35) → **100 candidates** (Stage 3 priority ranker with cap diversification + 5 override rules: watchlist / announcements / spike pre-trigger / score deterioration / 7-day expiry re-check).
+- **Three-stage funnel** — 5,150 raw rows → ~600 (Stage 1 ETF/junk filter) → ~400 (Stage 2 quality score) → **100 candidates** (Stage 3 priority ranker with cap diversification).
 - **7 Fair-Value models** per stock — DCF, Graham, PE, PB, EV/EBITDA, DDM, PEG — weighted into a Composite Fair Value with Margin-of-Safety gate.
 - **Composite score /100** with cap-adjusted verdict thresholds, **confidence dots** (●●● HIGH / ●●○ MEDIUM / ●○○ LOW), and a distinct **OVERVALUED** verdict for quality businesses trading above fair value.
 - **Forensic guards** — Altman Z, Beneish M, promoter pledge, Piotroski F /9, BS Health status — automatically suppress alerts on distressed names.
 - **Forensic quality scoring** (v10.9+) — Altman Z, Earn Quality, ND/EBITDA, Int Coverage feed into the composite score (+8 bonus / −10 penalty cap).
 - **Gold-Tier filter** — 11 conditions ensure only genuinely healthy stocks with patient upside reach the Gold sheet.
 - **7-sheet Excel dashboard** — Full Dashboard, Gold (Early Movers), Trade Summary, Alert Log, Delivery Preview, Glossary, Tooltip Reference — with Indian currency formatting, right-sized hover tooltips on every metric.
-- **AI investor cards** — Google Gemini generates a 150–250 word research note per stock, batched 10–15 per API call, grounded with the engine's pre-computed Graham/PEG/CFV values. AVOID-verdict stocks (score<38) are skipped to save free-tier quota (v10.13).
+- **AI investor cards** — Google Gemini generates a 150–250 word research note per stock, batched 10–15 per API call, grounded with the engine's pre-computed Graham/PEG/CFV values.
 - **Gate-checked execution** — 6 pre-conditions (weekday, holiday calendar, NSE bhav availability, data integrity, DB freshness, minimum rows) must pass before any download or analysis.
 - **BSE resilience** — uses the `bse` pip package (Akamai auth handled internally) and falls back to a curated `DUAL_LISTED_ALLOWLIST` of 206 Nifty-100/mid-cap names when BSE downloads fail from cloud IPs.
 
@@ -156,8 +156,7 @@ Gate check (6 conditions)  ──►  all pass?  ──►  if no: email + halt
          ▼
 Section 1   Harvest        NSE bhav + delivery + BSE (pip) + SME + F&O + bulk deals + insider
 Section 1.2 DB sync        5,150 rows  →  daily_prices
-Section 0   Three-stage funnel 
-#------------REFER scoring_logic_3Stagefunnel_explained.md SHEET FOR DETAILED EXPLAINATIONS---------------#  
+Section 0   Three-stage funnel
              Stage 1 — ETF/penny/suspended filter       5,150 → ~600
              Stage 2 — Quality score /35                ~600  → ~400
              Stage 3 — Priority ranker + cap mix        ~400  → 100
@@ -321,7 +320,10 @@ Full fix-pack notes are preserved in the accompanying `README_v10_*.md` files in
 
 | Version | Key change |
 |---|---|
-| **v10.13** | Stage 3 optimization trilogy — **FIX #1** AVOID-verdict stocks now skip the Gemini AI call (saves ~8-10% quota/run; stocks get a fixed placeholder in Block H). **FIX #2** Override rules O4 (score deterioration) and O5 (7+ day expiry re-check) activated — `last_claude_score` + `days_since_analysis` are now populated from `latest_analysis_results` at Stage 3 entry. **FIX #3** 20-day vol-average is now batch-fetched in one windowed SQL query (107× faster than the ~1,500 per-symbol SQL round-trips that happened before). First-run (empty prior map) behavior unchanged. |
+| **v10.16** | VALUATION display honesty (Option B) — follow-up to v10.15 user feedback. FIX #1: valuation ratios show `'—'` instead of clamped number when raw value would be noise (PE/PB/PS/EV-EBITDA ≥ 500 → `'—'`; PEG ≥ 50 → `'—'`). Prior v10.15 showed clamped 1000/100 which users could misread as "real extreme value" — AMAGI raw PE was 1,981 shown as 1,000 looked like "1000× earnings" when actually means "earnings ≈ 0, P/E not meaningful". FIX #2: DB-layer clamp tightened 1000→500 and 100→50 (matches display threshold). FIX #3: scoring logic neutrality — `fundamental_score` now treats `pe_num ≥ 500` as NEUTRAL (no +12/+7/−8 bucket), not penalized for being "expensive", because clamp represents "unknown valuation" not "high PE". Real expensive stocks (PE 60-499) still get −8. FIX #4: `v7_analysis_engine.apply_section_3A_valuation` gets defensive `_pe_num()` coerce to handle `pe='—'` without `TypeError`. 5 valuation tooltips + VALUATION group header rewritten; 6 glossary entries updated with `'—' = ...` bucket. 65/65 integration tests pass. Zero DB schema change, zero behaviour change for real valuations. |
+| **v10.15** | PROFITABILITY / FIN HEALTH / VALUATION / SHAREHOLDING data-integrity hardening. FIX #1: ROE/ROA stored as floats (were f-string-wrapped text — broke Excel sort/filter on 69/86 stocks). FIX #2: NPM Q1/Q2/Q3 clamped at ±500% (EMAMIREAL −845% pre-clamp). FIX #3: CCC Days clamp ±500 + rev<₹0.1 Cr short-circuit (EMAMIREAL 16,821 days pre-fix). FIX #4: PE/EV-EBITDA/PB/PS clamped at ±1000, PEG at ±100 (AMAGI PE=1,981, RHETAN EV/EBITDA=1,352 pre-clamp). FIX #5: Pro/FII/DII QoQ Δ show '—' when no real delta (was 0 for 83/86 indistinguishably). FIX #6: Pledge %/DII % show '—' when 0 (honest free-tier display — no BSE filings, no NSE corp-info API). Safe-guards in v7_analysis_engine + ownership_tracker handle '—' via same defensive pattern as v10.10. 15 tooltips + 4 group headers rewritten with source + clamp notes. Glossary: PROFITABILITY 2→10, FIN HEALTH 3→11, SHAREHOLDING 3→15, VALUATION 5→14. 111/111 integration tests pass. Zero analytical behaviour change. |
+| **v10.14** | GROWTH field data-integrity hardening. FIX #1a: `_safe_cagr()` clamps at ±500% (fixes HUBTOWN 10,194%, CHEMPLASTS 1,163% tiny-base distortions). FIX #1b: `rev_yoy`/`pat_yoy` from yfinance `.info` also clamped at ±500% (fixes RVHL 14,183.8%). FIX #2: all 10 GROWTH tooltips rewritten with source attribution + TTM-vs-fiscal-year clarification + cap note. FIX #3: glossary expanded from 3 → 10 complete GROWTH entries; legacy duplicate block removed. Zero analytical behaviour change — pure display hygiene. |
+| **v10.13** | Stage 3 optimization trilogy. FIX #1: AVOID-verdict stocks skip the Gemini AI call (saves ~8-10% quota/run). FIX #2: override rules O4 (score deterioration) + O5 (7+ day expiry re-check) activated — `last_claude_score` + `days_since_analysis` now populated from `latest_analysis_results`. FIX #3: 20-day vol-average batch-fetched in one windowed SQL (107× faster than the ~1,500 per-symbol round-trips). First-run safe (empty prior map → no columns added → identical to pre-v10.13). |
 | **v10.12** | Dynamic tooltip sizing — per-tooltip height computed from content (was hardcoded 420×380 box). Gold row 2 criteria text updated to 11 conditions. |
 | **v10.11** | Gold-Tier filter expanded 8 → 11 conditions (added Altman Z ≥ 1.8, Earn Quality ≠ LOW, Int Coverage ≥ 1.5× gates). Missing forensic data passes these gates. |
 | **v10.10** | Crash-guard hotfix — `_safe_num()` helper in `scoring_engine.py::calculate_storm_score`, `spike_screener.py::check_anti_trigger_guard`, `fundamental_engine.py::calculate_piotroski_f_score` — fixes `TypeError: '>' not supported between str and float` after v10.9 Div Yield = `"—"` change. |

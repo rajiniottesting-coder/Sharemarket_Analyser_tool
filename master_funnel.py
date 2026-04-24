@@ -1210,7 +1210,11 @@ def run_master_pipeline():
                 elif _ey_v > 0 and _pb_v > 0:
                     # Derived: ROE ≈ earnings_yield × PB (reasonable approximation)
                     _roe_derived = round(_ey_v * _pb_v, 2)
-                    _roe_display = f"{_roe_derived}" if 0 < _roe_derived < 100 else "—"
+                    # v10.15 FIX #1: store as number (float), not f-string.
+                    # Prior f"{_roe_derived}" produced '12.47' (string) which
+                    # Excel stored as text — broke sort, filter, and conditional
+                    # formatting on the ROE column.
+                    _roe_display = _roe_derived if 0 < _roe_derived < 100 else "—"
                 else:
                     _roe_display = "—"
                 stock.setdefault("roe", _roe_display)
@@ -1223,7 +1227,8 @@ def run_master_pipeline():
                 elif _roe_num_val > 0 and _de_ratio >= 0:
                     # Derived: ROA ≈ ROE / (1 + D/E)
                     _roa_derived = round(_roe_num_val / (1 + _de_ratio), 2)
-                    stock.setdefault("roa", f"{_roa_derived}" if 0 < _roa_derived < 100 else "—")
+                    # v10.15 FIX #1: same string→number fix as ROE above.
+                    stock.setdefault("roa", _roa_derived if 0 < _roa_derived < 100 else "—")
                 else:
                     stock.setdefault("roa", "—")
 
@@ -1405,22 +1410,40 @@ def run_master_pipeline():
                 stock.setdefault("nd_ebitda",    _fv(nde))
                 stock.setdefault("int_coverage", _fv(ic))
                 # Valuation ratios — only show if yfinance returned a value
-                stock.setdefault("ps",           _fv(ps_v) if _fvn(ps_v) > 0 else "—")
-                stock.setdefault("ev_ebitda",    _fv(ev_v) if _fvn(ev_v) > 0 else "—")
+                # v10.16 (Option B): display "—" when value at/above threshold
+                # (tiny-denominator noise). Thresholds: P/S, EV/EBITDA > 500 → "—".
+                # Backed by v10.16 _yf_ratio cap of 500 in backfill_history; values
+                # at 500 signal "yfinance computed a huge ratio, clamp applied" —
+                # honest display is "—" not a specific number users could misread.
+                _ps_raw = _fvn(ps_v)
+                _ev_raw = _fvn(ev_v)
+                stock.setdefault(
+                    "ps",
+                    _fv(ps_v) if 0 < _ps_raw < 500 else "—"
+                )
+                stock.setdefault(
+                    "ev_ebitda",
+                    _fv(ev_v) if 0 < _ev_raw < 500 else "—"
+                )
                 # PEG Ratio — 4-tier fallback for maximum coverage
+                # v10.16 (Option B): threshold lowered 100 → 50 for "—" display.
+                # PEG > 50 means P/E divided by near-zero growth — pure arithmetic
+                # noise, not investment signal. Same philosophy as PE/EV clamps.
                 _peg_raw  = _fvn(peg_v)
                 _pe_v     = _fvn(pe)
                 _pat_g    = _fvn(pat_yoy_v)   # PAT YoY % from earningsGrowth
                 _rev_g    = _fvn(rev_yoy_v)   # Rev YoY % from revenueGrowth
                 # Tier 1: direct yfinance pegRatio
-                if _peg_raw > 0 and _peg_raw < 100:
+                if 0 < _peg_raw < 50:
                     stock.setdefault("peg", round(_peg_raw, 2))
-                # Tier 2: PE / PAT growth
+                # Tier 2: PE / PAT growth — must yield PEG < 50 to count
                 elif _pe_v > 0 and _pat_g > 0:
-                    stock.setdefault("peg", round(_pe_v / _pat_g, 2))
+                    _peg_t2 = round(_pe_v / _pat_g, 2)
+                    stock.setdefault("peg", _peg_t2 if _peg_t2 < 50 else "—")
                 # Tier 3: PE / Rev growth (proxy when PAT growth unavailable)
                 elif _pe_v > 0 and _rev_g > 0:
-                    stock.setdefault("peg", round(_pe_v / _rev_g, 2))
+                    _peg_t3 = round(_pe_v / _rev_g, 2)
+                    stock.setdefault("peg", _peg_t3 if _peg_t3 < 50 else "—")
                 # Tier 4: PE / sustainable growth rate (ROE × retention ratio)
                 # g = ROE × (1 - payout_ratio/100) — standard Gordon growth
                 elif _pe_v > 0:
@@ -1430,7 +1453,8 @@ def run_master_pipeline():
                         _ret  = 1 - min(_pay_for_peg / 100, 0.9)  # retention ratio
                         _g_sg = _roe_for_peg * _ret               # sustainable growth %
                         if _g_sg > 0:
-                            stock.setdefault("peg", round(_pe_v / _g_sg, 2))
+                            _peg_t4 = round(_pe_v / _g_sg, 2)
+                            stock.setdefault("peg", _peg_t4 if _peg_t4 < 50 else "—")
                         else:
                             stock.setdefault("peg", "—")
                     else:
@@ -1462,9 +1486,17 @@ def run_master_pipeline():
                     stock.setdefault("p_cf", _pcf_derived if 1 < _pcf_derived < 500 else "—")
                 else:
                     stock.setdefault("p_cf", "—")
-                # Numeric fields — 0 safe for arithmetic
-                stock.setdefault("pe",            _fvn(pe))
-                stock.setdefault("pb",            _fvn(pb))
+                # v10.16 (Option B): PE and PB display thresholds — show "—"
+                # when at/above 500 because those values indicate near-zero EPS
+                # or near-zero book value where the ratio is mathematical noise.
+                # pe_num / pb_num (numeric keys, set earlier at line ~1340) keep
+                # the clamped numeric value for scoring — scoring engine still
+                # uses those via _sf() which coerces "—" → 0 defensively.
+                # Display key "pe" / "pb" goes to the Excel column directly.
+                _pe_raw = _fvn(pe)
+                _pb_raw = _fvn(pb)
+                stock.setdefault("pe", _pe_raw if 0 < _pe_raw < 500 else "—")
+                stock.setdefault("pb", _pb_raw if abs(_pb_raw) > 0 and abs(_pb_raw) < 500 else "—")
                 stock.setdefault("earnings_yield",_fvn(ey))
                 stock.setdefault("earn_yield",    _fvn(ey))
                 # Normalise div_yield to % regardless of how it was stored:
@@ -1596,28 +1628,71 @@ def run_master_pipeline():
             _new_fqoq = _qoq_v109("fii_pct",      "fii_pct")
             _new_dqoq = _qoq_v109("dii_pct",      "dii_pct")
 
-            # Only overwrite if new value is a real number or the old one was clearly wrong
+            # v10.15 FIX #5: Only overwrite with new value if it's real.
+            # Otherwise, clean the old 0.0 literal (from shareholding table's
+            # backfill default) to "—". The prior >10 threshold only caught
+            # the -current bug from v10.4; a literal 0 from the DB still
+            # leaked through and displayed as "0" for 83/86 stocks.
+            #
+            # Three valid display states now:
+            #   "—"         = no history OR current unavailable (honest)
+            #   real number = measured QoQ delta (may be 0 if genuine no-change)
+            # Because the shareholding backfill always writes 0.0 (yfinance can't
+            # produce real QoQ), treating it as missing is the correct semantic.
             _old_pqoq = stock.get("promoter_qoq")
             if _new_pqoq != "—":
                 stock["promoter_qoq"] = _new_pqoq
                 _qoq_fixed += 1
-            elif isinstance(_old_pqoq, (int, float)) and abs(float(_old_pqoq)) > 10:
-                # Old value was the -current bug; correct to "—"
+            elif isinstance(_old_pqoq, (int, float)):
+                # No real delta computable — mark as unknown regardless
+                # of whether the bogus stored value was 0 or large.
                 stock["promoter_qoq"] = "—"
 
             _old_fqoq = stock.get("fii_qoq")
             if _new_fqoq != "—":
                 stock["fii_qoq"] = _new_fqoq
-            elif isinstance(_old_fqoq, (int, float)) and abs(float(_old_fqoq)) > 10:
+            elif isinstance(_old_fqoq, (int, float)):
                 stock["fii_qoq"] = "—"
 
             _old_dqoq = stock.get("dii_qoq")
             if _new_dqoq != "—":
                 stock["dii_qoq"] = _new_dqoq
-            elif isinstance(_old_dqoq, (int, float)) and abs(float(_old_dqoq)) > 10:
+            elif isinstance(_old_dqoq, (int, float)):
                 stock["dii_qoq"] = "—"
         print(f"   ✅ QoQ recompute: {_qoq_fixed} stocks got real deltas "
               f"(others show '—' — no history in shareholding table yet)")
+
+        # ─────────────────────────────────────────────────────────────────────
+        # SECTION 5A.4b — v10.15 POST-RECOMPUTE CLEANUP (FIX #5/#6)
+        # ─────────────────────────────────────────────────────────────────────
+        # Stocks with NO entry in historical_map skip the 5A.4 loop entirely
+        # (line 1582 `if not _hd: continue`). They still carry the Section-3
+        # default QoQ of 0.0 (stored by backfill as literal 0 when yfinance
+        # can't supply real QoQ). Also: pledge_pct and dii_pct are always 0
+        # on free-tier (no BSE filings / NSE blocked) and should display "—"
+        # not 0 to distinguish "unknown" from "real zero-pledge / real zero-DII".
+        # This loop doesn't touch real values — only normalizes 0 → "—" for
+        # the fields we know the free data source can never populate honestly.
+        for stock in final_100_list:
+            # v10.15 FIX #5: residual zero cleanup for QoQ deltas.
+            # If still a bare 0/0.0 after 5A.4, the source was the bogus
+            # backfill literal — show "—".
+            for _qk in ("promoter_qoq", "fii_qoq", "dii_qoq"):
+                _v = stock.get(_qk)
+                if isinstance(_v, (int, float)) and float(_v) == 0.0:
+                    stock[_qk] = "—"
+
+            # v10.15 FIX #6: honest display for known-unavailable fields.
+            # Pledge % only in BSE corporate filings (no free API).
+            # DII % only in NSE corp-info API (blocked on cloud IPs).
+            # 0.0 in these fields almost always means "unknown", not
+            # "measured zero". Display "—" so users don't misread 0.
+            _pl = stock.get("pledge_pct", 0)
+            if isinstance(_pl, (int, float)) and float(_pl) == 0.0:
+                stock["pledge_pct"] = "—"
+            _di = stock.get("dii_pct", 0)
+            if isinstance(_di, (int, float)) and float(_di) == 0.0:
+                stock["dii_pct"] = "—"
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 5A.5: FORENSICS RE-RUN (v10.2)
@@ -1775,7 +1850,14 @@ def run_master_pipeline():
                 _fs = 45.0 + (_s2_f / 30.0) * 10.0
 
                 # PE: 5-20 excellent, 20-40 good, >60 stretched
-                if   0 < _pe_f <= 20:  _fs += 12
+                # v10.16 Option B: clamped values (≥500) are arithmetic noise from
+                # near-zero EPS, not real "expensive" valuation. Treat as neutral —
+                # neither boost nor penalty — so the scoring honestly reflects
+                # "valuation unknown" rather than penalizing for what is actually
+                # missing data. Same philosophy as display "—" for these cases.
+                if _pe_f >= 500:
+                    pass  # clamped noise → neutral
+                elif 0 < _pe_f <= 20:  _fs += 12
                 elif 0 < _pe_f <= 40:  _fs += 7
                 elif _pe_f > 60:       _fs -= 8
 
@@ -2474,14 +2556,17 @@ def run_master_pipeline():
             # falls back to "—". Previous versions:
             #   pre-S27: only computed when EPS > 0 (left at 0 for neg-EPS)
             #   S27 v1:  set "—" for all EPS ≤ 0 (hid useful negative signal)
+            # v10.16: also apply |PE| > 500 → "—" threshold to the fallback
+            # derivation (EPS ≈ 0 produces |PE| > 500 = arithmetic noise).
             if not stock.get("pe") or stock.get("pe") == "—":
                 _eps3 = _sf(stock.get("eps", 0), 0)
                 _cmp3 = _sf(stock.get("close", 0), 0)
                 if _cmp3 > 0:
                     if _eps3 != 0:
                         # Positive OR negative EPS — compute signed P/E
-                        # Negative result signals loss-making; user sees how bad
-                        stock["pe"] = round(_cmp3 / _eps3, 2)
+                        _pe_fb = round(_cmp3 / _eps3, 2)
+                        # v10.16 display threshold — tiny-EPS noise filter
+                        stock["pe"] = _pe_fb if abs(_pe_fb) < 500 else "—"
                     else:
                         # EPS exactly zero — ratio genuinely undefined
                         stock["pe"] = "—"

@@ -1355,10 +1355,27 @@ def _fetch_yfinance_data(symbols: list) -> dict:
             def _yf(k, m=1.0, d=0.0):
                 try: return round(float(info.get(k) or 0) * m, 4)
                 except: return d
+            # v10.16 FIX #4 (revised Option B): valuation ratios use threshold
+            # sentinels — DB still stores clean numbers (max ±VALUATION_CAP) for
+            # hygiene, but master_funnel display-layer converts any value at/above
+            # the threshold to '—' so the Excel honestly signals "P/E not meaningful"
+            # rather than showing 1000 which users could misread as "1000× earnings".
+            # Thresholds match the display-layer logic in master_funnel.py:
+            #   PE, PB, PS, EV/EBITDA > 500 → display "—" (was cap 1000, v10.15)
+            #   PEG > 50                    → display "—" (was cap 100, v10.15)
+            # Real quality businesses never exceed these bounds, so threshold still
+            # preserves every plausible premium; over-threshold = EPS or EBITDA near
+            # zero (arithmetic noise), shown honestly as "—".
+            def _yf_ratio(k, cap=500):
+                try: v = float(info.get(k) or 0)
+                except: return 0.0
+                if v > cap:   return float(cap)      # persisted at cap; display → "—"
+                if v < -cap:  return float(-cap)
+                return round(v, 4)
             result[sym] = {
-                "pe":            _yf("trailingPE"),
+                "pe":            _yf_ratio("trailingPE"),
                 "eps":           _yf("trailingEps"),
-                "pb":            _yf("priceToBook"),
+                "pb":            _yf_ratio("priceToBook"),
                 "beta":          _yf("beta", d=1.0) or 1.0,
                 "mcap_cr":       round(mcap_inr / 1e7, 2),
                 "sector":        str(info.get("sector") or ""),
@@ -1382,8 +1399,13 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                 "gross_margin":  _yf("grossMargins", m=100),
                 "ebitda_margin": _yf("ebitdaMargins", m=100),
                 "net_margin":    _yf("profitMargins", m=100),
-                "rev_yoy":       _yf("revenueGrowth", m=100),
-                "pat_yoy":       _yf("earningsGrowth", m=100),
+                # v10.14: cap TTM growth at ±500% — same tiny-base distortion
+                # mitigation as _safe_cagr. yfinance .info["revenueGrowth"] is
+                # a rolling TTM fraction; on tiny-revenue micro-caps it can
+                # return 100+ (10,000%+). Clamping preserves real growth
+                # stories while filtering junk signals.
+                "rev_yoy":       max(-500, min(500, _yf("revenueGrowth", m=100) or 0)),
+                "pat_yoy":       max(-500, min(500, _yf("earningsGrowth", m=100) or 0)),
                 "total_cash":    round(float(info.get("totalCash") or 0)/1e7, 2),
                 "total_debt":    round(float(info.get("totalDebt") or 0)/1e7, 2),
                 "fcf":           round(float(info.get("freeCashflow") or 0)/1e7, 2),
@@ -1391,9 +1413,9 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                 "total_current_assets": round(float(info.get("totalCurrentAssets") or 0)/1e7, 2),
                 "total_current_liab":   round(float(info.get("totalCurrentLiabilities") or 0)/1e7, 2),
                 "payout_ratio":  _yf("payoutRatio", m=100),
-                "ps":            _yf("priceToSalesTrailing12Months"),
-                "ev_ebitda":     _yf("enterpriseToEbitda"),
-                "peg":           _yf("pegRatio"),
+                "ps":            _yf_ratio("priceToSalesTrailing12Months"),
+                "ev_ebitda":     _yf_ratio("enterpriseToEbitda"),
+                "peg":           _yf_ratio("pegRatio", cap=50),   # v10.16: was 100; display → "—" above 50
                 "promoter_pct":  _yf("heldPercentInsiders", m=100),
                 "inst_pct":      _yf("heldPercentInstitutions", m=100),
             }
@@ -1522,7 +1544,19 @@ def _fetch_yfinance_data(symbols: list) -> dict:
             return _is_val(df, [["operating income"]], col_idx)
 
         def _safe_cagr(v_new, v_old, years):
-            """CAGR % rounded to 2dp. Returns 0 if inputs invalid or NaN."""
+            """
+            CAGR % rounded to 2dp. Returns 0 if inputs invalid or NaN.
+
+            v10.14: Cap at ±500% to prevent tiny-base distortions.
+            Background: yfinance occasionally reports Q3 revenues of ₹0.13 Cr or
+            prior-year EBITDA near ₹1 Cr. When CAGR uses these as v_old, the
+            formula (v_new/v_old)^(1/n) − 1 yields 10,000%+ "growth" figures
+            that tell the user nothing real. Real India-listed businesses
+            rarely sustain >500% CAGR on any metric, so clamping there
+            preserves meaningful signals while filtering the math artefacts.
+            Values beyond ±500% are still flagged (extreme growth/decline)
+            without drowning the downstream display.
+            """
             try:
                 import math as _math
                 if v_old <= 0 or v_new <= 0 or years <= 0:
@@ -1530,7 +1564,12 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                 if _math.isnan(v_new) or _math.isnan(v_old):
                     return 0.0
                 result = round(((v_new / v_old) ** (1.0 / years) - 1.0) * 100, 2)
-                return result if not _math.isnan(result) else 0.0
+                if _math.isnan(result):
+                    return 0.0
+                # v10.14: clamp tiny-base distortions at ±500%
+                if result > 500.0:   return 500.0
+                if result < -500.0:  return -500.0
+                return result
             except Exception:
                 return 0.0
 
@@ -1566,9 +1605,19 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                     _ebi_q2 = _ebitda_val(_qi, 2)
 
                     # NPM = Net Profit Margin = PAT / Revenue * 100
-                    _npm_q1 = round(_pat_q0 / _rev_q0 * 100, 2) if _rev_q0 > 0 else 0.0
-                    _npm_q2 = round(_pat_q1 / _rev_q1 * 100, 2) if _rev_q1 > 0 else 0.0
-                    _npm_q3 = round(_pat_q2 / _rev_q2 * 100, 2) if _rev_q2 > 0 else 0.0
+                    # v10.15 FIX #2: clamp at ±500% to prevent tiny-revenue
+                    # denominator distortions (EMAMIREAL: Q3 PAT on tiny Q3
+                    # rev → -845% NPM, which is math-noise, not signal).
+                    # Same design as v10.14 _safe_cagr clamp.
+                    def _npm_clamp(pat, rev):
+                        if not (rev > 0): return 0.0
+                        v = round(pat / rev * 100, 2)
+                        if v > 500.0:   return 500.0
+                        if v < -500.0:  return -500.0
+                        return v
+                    _npm_q1 = _npm_clamp(_pat_q0, _rev_q0)
+                    _npm_q2 = _npm_clamp(_pat_q1, _rev_q1)
+                    _npm_q3 = _npm_clamp(_pat_q2, _rev_q2)
 
                     # Margin Expansion = "YES" when NPM has risen 3 consecutive quarters
                     # i.e. Q3(oldest) < Q2 < Q1(newest)  — improving trend
@@ -1896,8 +1945,20 @@ def fetch_deep_fundamentals(symbol):
         # Calculate CCC (Simplified)
         # DIO = (Inv / COGS) * 365 | DSO = (Rec / Rev) * 365
         # For free tier, we proxy with Rev as COGS is often missing
-        rev = ticker.info.get('totalRevenue', 1)
-        data['ccc_days'] = round(((data['inventory'] + data['receivables'] - data['payables']) / rev) * 365, 0)
+        # v10.15 FIX #3: guard against rev==1 fallback (info.get default)
+        # which made CCC = (inv+rec-pay)*365 — produced 16,821 days for
+        # EMAMIREAL. Clamp at ±500 days (real businesses top out around
+        # 365 days for distressed inventory/receivables cycles).
+        rev = ticker.info.get('totalRevenue', 0)
+        if rev > 1000:   # real revenue (≥ ₹0.1 Cr in paise)
+            raw = ((data['inventory'] + data['receivables'] - data['payables']) / rev) * 365
+            # Clamp at ±500 days — tiny-rev distortions filtered
+            if raw > 500.0:     ccc = 500.0
+            elif raw < -500.0:  ccc = -500.0
+            else:               ccc = raw
+            data['ccc_days'] = round(ccc, 0)
+        else:
+            data['ccc_days'] = 0   # no real revenue data to compute meaningful CCC
     except:
         pass
 
