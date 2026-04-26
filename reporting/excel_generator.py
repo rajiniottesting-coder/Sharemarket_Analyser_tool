@@ -169,7 +169,12 @@ GLOSSARY_DATA = [
      "DEEP VALUE = significantly undervalued (MoS>25%) with high score | "
      "EARLY MOVER = early signal detected before consensus (act ahead of crowd). "
      "Session 24: confidence dots indicate distance from the decisive threshold — "
-     "●●● = HIGH (≥5 points clear), ●●○ = MEDIUM (2-5 above), ●○○ = LOW (<2 above; cliff zone; treat with extra caution).","All sheets"),
+     "●●● = HIGH (≥5 points clear), ●●○ = MEDIUM (2-5 above), ●○○ = LOW (<2 above; cliff zone; treat with extra caution). "
+     "v10.17: data-completeness guard — a stock is only allowed to carry a BUY verdict when at least 3 of "
+     "5 sub-score dimensions (Fundamental / Technical / Safety / Sentiment / Early Entry) actually had real "
+     "data move them away from base. If a stock's score qualifies for BUY but only 0–2 dimensions are "
+     "informed, the verdict is demoted to WATCHLIST and labelled '(thin data)'. Prevents inflated BUYs on "
+     "stocks with too much missing data.","All sheets"),
     ("IDENTITY","Exchange",
      "NSE_ONLY = only on National Stock Exchange | "
      "BSE_ONLY = only on Bombay Stock Exchange | "
@@ -178,7 +183,7 @@ GLOSSARY_DATA = [
      "Session 22: when BSE bhavcopy download fails (Cloudflare blocks cloud IPs), "
      "a curated allowlist of Nifty 100 + popular mid-caps is used to tag DUAL_LISTED. "
      "Lesser-known small-caps may show NSE_ONLY even if also listed on BSE.","All sheets"),
-    ("SCORES","Score /100","Composite: Fundamental 35% + Technical 30% + Early 15% + Sentiment 10% + Safety 10%. Session 24: if no paid/AI sentiment signals fired (no FII/Promoter/DII QoQ, no insider buy, no news sentiment, no pledge direction), the 10% sentiment weight redistributes proportionally to the other 4 sub-scores (Fundamental→0.389, Technical→0.333, Early→0.167, Safety→0.111) — no 'free 5 points' for missing data. Spike bonus (+2 per trigger, max +10) is gated on fundamental quality: only awards full +10 when fundamental_score ≥ 55; capped at +3 for weaker stocks to prevent momentum masking weak fundamentals.","All sheets"),
+    ("SCORES","Score /100","Composite: Fundamental 35% + Technical 30% + Early 15% + Sentiment 10% + Safety 10%. Session 24: if no paid/AI sentiment signals fired (no FII/Promoter/DII QoQ, no insider buy, no news sentiment, no pledge direction), the 10% sentiment weight redistributes proportionally to the other 4 sub-scores (Fundamental→0.389, Technical→0.333, Early→0.167, Safety→0.111) — no 'free 5 points' for missing data. Spike bonus (+2 per trigger, max +10) is gated on fundamental quality: only awards full +10 when fundamental_score ≥ 55; capped at +3 for weaker stocks to prevent momentum masking weak fundamentals. v10.17: a high composite score alone does not guarantee BUY — the verdict also requires at least 3 of 5 sub-score dimensions to be 'informed' (real data fired, not just sat at base). Otherwise BUY is demoted to WATCHLIST with a 'thin data' annotation. See the Verdict tooltip for details.","All sheets"),
     ("SCORES","Early Entry /100","12-signal system measuring how early vs consensus. ≥50 = EARLY MOVER badge | ≥35 = AHEAD OF CONSENSUS. Session 23: low EE on a Gold-sheet stock is not a bug — Gold admits two archetypes: MOMENTUM (high EE from firing trend/volume signals) and VALUE (low EE but high Score + MoS + clean safety; quietly accumulating without momentum triggers yet)","All sheets"),
     ("SCORES","Spike Score /6","Count of active triggers from 6 IF-THEN spike conditions (Section 3H). Session 23: low Spike on a Gold stock is OK — VALUE-archetype candidates may be accumulating quietly without hot momentum triggers","All sheets"),
     ("SCORES","Storm Score /10","Volatility resilience score. Higher = more defensive in downturns (VIX>18)","Full Dashboard"),

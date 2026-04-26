@@ -251,6 +251,10 @@ Redistributed: Fund×0.389 + Tech×0.333 + EE×0.167 + Safe×0.111
 4. **OVERVALUED verdict** — distinct from WATCHLIST; styled in soft orange (`FED7AA` / `7C2D12`). Stocks that clear BUY score threshold but fail the MoS gate.
 5. Stage-2 inflation fix lives upstream in `master_funnel.py`; scoring receives corrected `fundamental_score` unchanged.
 
+**v10.17 refinement — Data-completeness guard (quality protection):**
+
+6. **BUY requires informed data** — a stock can only carry a BUY verdict if at least 3 of 5 sub-score dimensions actually had real data move them away from base (Fundamental ≥6 from Stage-2 base, Technical/Safety ≥6 from neutral 50, Sentiment paid/AI signal fired, Early Entry > 0). Stocks that score above the BUY threshold but with `informed_count < 3` are demoted to **`WATCHLIST ●●● (thin data)`**. Prevents inflated BUYs on data-blind stocks. New output fields: `data_completeness` (0–5 count) and `data_gate_applied` (bool). OVERVALUED / NEUTRAL / AVOID unaffected. Defensive `try/except` around the counter returns 5 on any error so the guard never breaks a pipeline run. See `scoring_engine.py::_count_informed_dimensions` and `MIN_INFORMED_FOR_BUY`.
+
 ### Verdict thresholds — `scoring_engine.py::CAP_THRESHOLDS`
 
 ```python
@@ -260,7 +264,8 @@ CAP_THRESHOLDS = {
     "SMALL": (66, 56),
     "MICRO": (70, 60),
 }
-AVOID_BELOW = 38   # Universal floor
+AVOID_BELOW         = 38    # Universal floor
+MIN_INFORMED_FOR_BUY = 3    # v10.17: of 5 sub-score dimensions
 ```
 
 **MoS gate for BUY** — normally MoS ≤ −10% blocks BUY (becomes OVERVALUED). Relaxed to MoS ≤ −20% if **technically confirmed**: `score ≥ 70 AND Supertrend=BUY AND Sector Stage 2`.

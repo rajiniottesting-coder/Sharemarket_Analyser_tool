@@ -69,7 +69,10 @@ TIPS: Dict[str, Tuple[str, str]] = {
                 "Confidence dots (Session 24): ●●●HIGH ●●○MED ●○○LOW.\n"
                 "v10.9: Score also carries a forensic quality adjustment\n"
                 "from Altman Z / Earn Quality / ND-EBITDA / Int Coverage\n"
-                "(max +8 / min −10) — see Score /100 tooltip for detail."),
+                "(max +8 / min −10) — see Score /100 tooltip for detail.\n"
+                "v10.17: BUY requires ≥3 of 5 sub-score dimensions to be\n"
+                "informed (real data fired). Otherwise demoted to\n"
+                "WATCHLIST ●●● (thin data)."),
     "Score /100": ("≥70 strong · ≥60 watch · <38 avoid",
                    "Weighted composite (0-100):\n"
                    "Fundamental 35% + Technical 30% + EarlyEntry 15%\n"

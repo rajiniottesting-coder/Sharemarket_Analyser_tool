@@ -409,6 +409,10 @@ ELIF final_score ≥ BUY threshold for cap:
         # Exception — "Tech Override": relax gate to MoS ≤ −20% IF:
         #   score ≥ 70 AND Supertrend=BUY AND Sector Stage 2
         #   (strong signals outweigh valuation premium)
+    ELIF informed_dimensions < 3:        # v10.17 data-completeness guard
+        # Score qualifies for BUY but too few sub-scores were informed —
+        # demote to WATCHLIST with a "(thin data)" annotation
+        verdict = WATCHLIST  (thin data)
     ELSE:
         verdict = BUY
 
@@ -436,6 +440,35 @@ How far is the score from the decisive threshold?
 | NEUTRAL | 0 to 4 above 38 | LOW | ●○○ |
 
 The final Excel **Verdict** column shows both: `BUY ●●●` or `OVERVALUED ●●○`.
+
+### Data-completeness guard (v10.17)
+
+**Why this exists.** Three of the five sub-scores (Technical, Safety, Sentiment) start at a neutral base of 50, and Fundamental starts at 45–55. If a stock has very little real data, its sub-scores all sit near base, and a few small bonuses plus a generous MoS adjustment can push the composite past the BUY threshold without the system having actually verified anything about the business. The data-completeness guard prevents this by requiring at least 3 of 5 sub-score dimensions to be **"informed"** before a BUY is allowed.
+
+**What "informed" means** (per `_count_informed_dimensions` in `scoring_engine.py`):
+
+| Dimension | Informed when... |
+|---|---|
+| Fundamental | `fundamental_score` is at least **6 points away** from its Stage-2-derived base (45 + s2/30 × 10) — i.e. at least one moderate bucket bonus or penalty fired |
+| Technical | `technical_score` is at least 6 points away from neutral 50 |
+| Safety | `safety_score` is at least 6 points away from neutral 50 |
+| Sentiment | At least one of 6 paid/AI signals fired (FII trend / insider / Promoter QoQ / DII QoQ / news sentiment / pledge direction) |
+| Early Entry | `early_entry_score > 0` (EE has zero base, so any positive score means a signal fired) |
+
+**The threshold:** `MIN_INFORMED_FOR_BUY = 3` (configurable class constant).
+
+**What gets demoted:** Only **BUY** verdicts on stocks with `informed_count < 3`. They become `WATCHLIST ●●● (thin data)` instead. The "(thin data)" annotation in the verdict-display string makes the demotion visible at a glance.
+
+**What is NOT affected:**
+- **OVERVALUED** — already advises waiting, so it doesn't need the gate
+- **WATCHLIST / NEUTRAL / AVOID** — already conservative
+- Stocks with 3+ informed dimensions — verdict unchanged
+
+**New output fields** in the dict returned by `calculate_composite_score`:
+- `data_completeness` — integer 0–5, the count of informed dimensions
+- `data_gate_applied` — bool, True only when a BUY was demoted
+
+**Defensive design.** The counting logic is wrapped in a `try/except` that returns 5 (fully informed → no demotion) on any unexpected error, so the new check can never break a working pipeline run.
 
 ---
 

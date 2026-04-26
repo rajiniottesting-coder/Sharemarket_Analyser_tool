@@ -45,8 +45,99 @@ class ScoringEngine:
     }
     AVOID_BELOW = 38         # Universal floor — below this = AVOID regardless of cap
 
+    # v10.17 quality guard: minimum number of "informed" sub-score dimensions
+    # required before a stock can carry a BUY verdict. A stock that scores
+    # high purely because most sub-scores sat at their neutral base (50) and
+    # got mild bonuses from one or two informed dimensions has too much
+    # missing data to act on. With this guard, such a stock is demoted to
+    # WATCHLIST regardless of composite score. Default 3 of 5 dimensions.
+    # See ScoringEngine._count_informed_dimensions() for the counting rule.
+    MIN_INFORMED_FOR_BUY = 3
+
     def __init__(self):
         pass  # Thresholds defined as class constants above
+
+    # ──────────────────────────────────────────────────────────────────────
+    # v10.17 — Data-completeness quality guard
+    # ──────────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _count_informed_dimensions(data, sentiment_is_informed):
+        """
+        Count how many of the 5 sub-score dimensions actually had real data
+        speak (rather than sitting at their neutral base / zero floor).
+
+        Returns an integer 0–5. Used by _get_verdict_with_confidence() to
+        gate the BUY verdict — see MIN_INFORMED_FOR_BUY.
+
+        Counting rules (each adds 1 if the test passes):
+          1. Fundamental  — fundamental_score deviates ≥ 6 from its base band
+                            (base is 45-55 depending on Stage 2 score; deviation
+                            of 6+ means at least one moderate bucket actually fired)
+          2. Technical    — technical_score deviates ≥ 6 from neutral 50
+                            (at least one BUY/SELL signal or a strong indicator)
+          3. Safety       — safety_score deviates ≥ 6 from neutral 50
+                            (real safety signal — pledge, debt, FCF, BS health, etc.)
+          4. Sentiment    — sentiment_is_informed flag (already computed upstream
+                            from the 6 paid/AI signal presence check)
+          5. Early Entry  — early_entry_score > 0 (EE has zero base; any score
+                            means at least one early-mover signal fired)
+
+        Why ±6 and not exact-equals-base? Because cap-tier base for fundamental
+        ranges 45-55. A test of 'deviation > 0' would always pass (Stage 2 score
+        is non-zero by definition). 6 points means at least one moderate bucket
+        bonus fired (PE in 0-20 = +12, ROE >10% = +6) or one penalty triggered.
+        """
+        try:
+            count = 0
+
+            # 1. Fundamental — base is 45 + (s2/30)*10, range 45-55. Compute
+            #    the actual base for this stock's Stage 2 score and check
+            #    deviation from it.
+            try:
+                s2 = float(data.get('stage2_score', 0) or 0)
+            except (ValueError, TypeError):
+                s2 = 0
+            f_base = 45.0 + min(max(s2, 0), 30) / 30.0 * 10.0
+            try:
+                f_raw = float(data.get('fundamental_score', f_base) or f_base)
+            except (ValueError, TypeError):
+                f_raw = f_base
+            if abs(f_raw - f_base) >= 6:
+                count += 1
+
+            # 2. Technical — base 50
+            try:
+                t_raw = float(data.get('technical_score', 50) or 50)
+            except (ValueError, TypeError):
+                t_raw = 50
+            if abs(t_raw - 50) >= 6:
+                count += 1
+
+            # 3. Safety — base 50
+            try:
+                safe_raw = float(data.get('safety_score', 50) or 50)
+            except (ValueError, TypeError):
+                safe_raw = 50
+            if abs(safe_raw - 50) >= 6:
+                count += 1
+
+            # 4. Sentiment — already computed by caller (paid/AI signal presence)
+            if sentiment_is_informed:
+                count += 1
+
+            # 5. Early Entry — zero base, so any positive score counts
+            try:
+                e_raw = float(data.get('early_entry_score', 0) or 0)
+            except (ValueError, TypeError):
+                e_raw = 0
+            if e_raw > 0:
+                count += 1
+
+            return count
+        except Exception:
+            # Defensive: if anything unexpected happens, return 5 (don't gate)
+            # so the new check can never break a working pipeline run.
+            return 5
 
     def calculate_composite_score(self, data):
         """
@@ -206,6 +297,12 @@ class ScoringEngine:
 
         final_score = max(0, min(100, final_score))  # Clamp 0-100
 
+        # v10.17: count "informed" sub-score dimensions for the data-completeness
+        # gate. A stock with too few informed dimensions cannot become BUY (it
+        # gets demoted to WATCHLIST inside _get_verdict_with_confidence). See
+        # MIN_INFORMED_FOR_BUY and _count_informed_dimensions for the rule.
+        informed_count = self._count_informed_dimensions(data, sentiment_is_informed)
+
         # C. Verdict derivation with confidence + OVERVALUED (fixes #4, #5)
         # ────────────────────────────────────────────────────────────────────
         cap_cat     = str(data.get("cap_category", "") or "")
@@ -215,7 +312,8 @@ class ScoringEngine:
 
         verdict_info = self._get_verdict_with_confidence(
             final_score, cap_cat, mos,
-            supertrend=supertrend, sector_stage=sector_stage
+            supertrend=supertrend, sector_stage=sector_stage,
+            informed_count=informed_count,
         )
 
         return {
@@ -227,6 +325,8 @@ class ScoringEngine:
             "weights_used":       _weights_used,
             "forensic_adj":       forensic_adj,               # v10.9
             "forensic_factors":   "|".join(_contributors) if _contributors else "",  # v10.9
+            "data_completeness":  informed_count,             # v10.17 (0-5)
+            "data_gate_applied":  verdict_info.get("data_gate_applied", False),  # v10.17
         }
 
     def calculate_storm_score(self, data, market_vix, market_off_peak):
@@ -284,27 +384,40 @@ class ScoringEngine:
         )["verdict"]
 
     def _get_verdict_with_confidence(self, score, cap_category="", mos_pct=None,
-                                      supertrend="", sector_stage=""):
+                                      supertrend="", sector_stage="",
+                                      informed_count=5):
         """
         Session 24: Enriched verdict derivation.
 
         Returns dict with:
-          verdict    — one of BUY, OVERVALUED, WATCHLIST, NEUTRAL, AVOID
-          confidence — one of HIGH, MEDIUM, LOW (based on distance from threshold)
-          display    — e.g., "BUY ●●●", "OVERVALUED ●●○", "WATCHLIST ●○○"
+          verdict           — one of BUY, OVERVALUED, WATCHLIST, NEUTRAL, AVOID
+          confidence        — one of HIGH, MEDIUM, LOW (based on distance from threshold)
+          display           — e.g., "BUY ●●●", "OVERVALUED ●●○", "WATCHLIST ●○○"
+          data_gate_applied — True if BUY was demoted to WATCHLIST by the
+                              v10.17 data-completeness guard
 
         Verdict rules:
           AVOID       — score < 38 (universal floor)
           BUY         — score ≥ cap-adjusted BUY threshold AND MoS passes gate
+                        AND informed_count ≥ MIN_INFORMED_FOR_BUY (v10.17)
           OVERVALUED  — score ≥ cap-adjusted BUY threshold BUT MoS gate blocks
                         (great business, but currently expensive)
           WATCHLIST   — score in WATCHLIST band (between BUY threshold and AVOID floor)
+                        OR score above BUY threshold but data too sparse (v10.17)
           NEUTRAL     — 38 ≤ score < WATCHLIST threshold
 
         Confidence rules (distance from the threshold the verdict clears):
           HIGH   — ≥ 5 points above the decisive threshold
           MEDIUM — 2–5 points above the decisive threshold
           LOW    — within 2 points of the threshold (cliff zone)
+
+        v10.17 data-completeness guard:
+          If a stock would qualify for BUY (score and MoS both pass) but has
+          fewer than MIN_INFORMED_FOR_BUY informed sub-score dimensions, the
+          BUY is demoted to WATCHLIST. The display string is annotated with
+          "(thin data)" so the user can see why. OVERVALUED is unaffected
+          (a great-but-expensive call already advises waiting). NEUTRAL and
+          AVOID are unaffected (they're already conservative).
         """
         # Universal AVOID floor
         if score < self.AVOID_BELOW:
@@ -312,7 +425,8 @@ class ScoringEngine:
             dist = self.AVOID_BELOW - score
             conf = "HIGH" if dist > 5 else ("MEDIUM" if dist > 2 else "LOW")
             return {"verdict":"AVOID","confidence":conf,
-                    "display":f"AVOID {self._dots(conf)}"}
+                    "display":f"AVOID {self._dots(conf)}",
+                    "data_gate_applied": False}
 
         # Cap tier resolution
         cap_up = str(cap_category).upper()
@@ -335,10 +449,19 @@ class ScoringEngine:
 
         # Verdict + confidence
         if score >= buy_min and not mos_blocks_buy:
+            # v10.17 data-completeness guard — demote to WATCHLIST if data is thin
+            if informed_count < self.MIN_INFORMED_FOR_BUY:
+                # Distance from buy threshold (still useful for confidence dots)
+                dist = score - watch_min
+                conf = "HIGH" if dist >= 5 else ("MEDIUM" if dist >= 2 else "LOW")
+                return {"verdict":"WATCHLIST","confidence":conf,
+                        "display":f"WATCHLIST {self._dots(conf)} (thin data)",
+                        "data_gate_applied": True}
             dist = score - buy_min
             conf = "HIGH" if dist >= 5 else ("MEDIUM" if dist >= 2 else "LOW")
             return {"verdict":"BUY","confidence":conf,
-                    "display":f"BUY {self._dots(conf)}"}
+                    "display":f"BUY {self._dots(conf)}",
+                    "data_gate_applied": False}
 
         if score >= buy_min and mos_blocks_buy:
             # Session 24: new OVERVALUED verdict — distinguishes "BUY-quality
@@ -346,19 +469,22 @@ class ScoringEngine:
             dist = score - buy_min
             conf = "HIGH" if dist >= 5 else ("MEDIUM" if dist >= 2 else "LOW")
             return {"verdict":"OVERVALUED","confidence":conf,
-                    "display":f"OVERVALUED {self._dots(conf)}"}
+                    "display":f"OVERVALUED {self._dots(conf)}",
+                    "data_gate_applied": False}
 
         if score >= watch_min:
             dist = score - watch_min
             conf = "HIGH" if dist >= 5 else ("MEDIUM" if dist >= 2 else "LOW")
             return {"verdict":"WATCHLIST","confidence":conf,
-                    "display":f"WATCHLIST {self._dots(conf)}"}
+                    "display":f"WATCHLIST {self._dots(conf)}",
+                    "data_gate_applied": False}
 
         # NEUTRAL — between AVOID floor and WATCHLIST threshold
         dist = score - self.AVOID_BELOW
         conf = "HIGH" if dist >= 8 else ("MEDIUM" if dist >= 4 else "LOW")
         return {"verdict":"NEUTRAL","confidence":conf,
-                "display":f"NEUTRAL {self._dots(conf)}"}
+                "display":f"NEUTRAL {self._dots(conf)}",
+                "data_gate_applied": False}
 
     @staticmethod
     def _dots(confidence: str) -> str:

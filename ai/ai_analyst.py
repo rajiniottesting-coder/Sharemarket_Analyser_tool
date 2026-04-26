@@ -232,7 +232,12 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
         "4. If a stock has NO compelling reason (low score, no signals), say so honestly — "
         "   WATCHLIST or NEUTRAL is fine. Quality over hype.\n"
         "5. The Analysis_Summary_Block_H field in your output becomes the last Excel column "
-        "   'View Analysis Summary' — make it worth reading."
+        "   'View Analysis Summary' — make it worth reading.\n"
+        "6. v10.17: respect the engine's verdict exactly. If the verdict reads "
+        "   'WATCHLIST (thin data)', this is a v10.17 quality-guard demotion — "
+        "   the score qualified for BUY but data was too sparse (<3 of 5 sub-score "
+        "   dimensions actually fired). Do NOT upgrade it back to BUY in your "
+        "   narrative; instead acknowledge that data gaps blocked a confident BUY call."
     )
 
     # Gemini generation config — master prompt goes into system_instruction.
