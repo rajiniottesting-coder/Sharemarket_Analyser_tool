@@ -12,7 +12,7 @@ A fully automated, cloud-hosted daily pipeline that:
 1. Downloads NSE + BSE market data every trading morning
 2. Screens 5,000+ stocks through a 3-stage funnel → 100 candidates
 3. Runs deep fundamental + technical + forensic + AI analysis on those 100
-4. Delivers a colour-coded 7-sheet Excel research dashboard by **06:00–06:30 AM IST**
+4. Delivers a colour-coded 7-sheet Excel research dashboard by **05:00–05:30 AM IST**
 5. Sends an optional WhatsApp summary of top picks via Twilio
 6. Maintains its own SQLite history with a 400-day rolling circular queue
 
@@ -30,7 +30,8 @@ Sharemarket_Analyser_tool/
 ├── backfill_history.py           ~1,900 lines — 365-day historical builder
 ├── requirements.txt
 ├── ingestion/
-│   ├── orchestrator.py           Gate check (6 conditions) + NSE holiday calendar 2026
+│   ├── orchestrator.py           Gate check (6 conditions) — uses holiday_calendar.py
+│   ├── holiday_calendar.py       NSE holiday-master API fetcher + DB cache
 │   ├── harvester.py              NSE bhav/delivery/SME/F&O downloaders
 │   └── reconciler.py             NSE+BSE merge + DUAL_LISTED_ALLOWLIST fallback
 ├── screening/
@@ -97,7 +98,7 @@ Tables are created by two files working together:
 | `v7_intelligence` | News + market intel per symbol | ~100 symbols |
 | `run_stats` | One row per pipeline run (gate result, counts, timings) | Append |
 | `watchlist` | Personal watchlist overrides | User-defined |
-| `market_holidays` | NSE holiday calendar 2026 | Static |
+| `market_holidays` | NSE holiday calendar (auto-fetched per year, cached) | API + cache |
 
 **Key DB functions in `database/data_bridge.py`:**
 
@@ -458,7 +459,7 @@ Old formula had `c > st_up = BUY` which was inverted → always NEUTRAL. Fixed.
 
 Six conditions:
 - **C1** Weekday (Mon–Fri)
-- **C2** Not an NSE holiday (static `HOLIDAYS_2026`)
+- **C2** Not an NSE holiday (auto-fetched from NSE API + cached in `market_holidays`; fail-closed if calendar unknown — see `holiday_calendar.py`)
 - **C3** NSE bhav copy URL available (HEAD request)
 - **C4** BSE URL check — **IGNORED by master_funnel** (cloud IPs can't reach it; `bse` pip pkg handles internally)
 - **C5** Data integrity — run in `master_funnel` AFTER download
@@ -491,8 +492,8 @@ Merges NSE + BSE bhav on `isin`. `final_symbol` prefers NSE ticker, `final_close
 
 ### GitHub Actions (`.github/workflows/market_run.yml`)
 
-- Cron: `0 0 * * 2-6` = 00:00 UTC = **05:30 IST**, Tue–Sat
-- Expected delivery: 06:00–06:30 IST
+- Cron: `0 23 * * 1-5` = 23:00 UTC Mon–Fri = **04:30 IST Tue–Sat**
+- Expected delivery: 05:00–05:30 IST
 - Runner: `ubuntu-latest`, Python 3.11
 - DB persistence: SQLite artifact `market-data-db`, 7-day retention, `overwrite: true`
 - Auto-backfill: if `daily_prices < 50,000` rows → run `backfill_history.py 365`
@@ -989,7 +990,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 | Function / Block | File | Notes |
 |---|---|---|
 | Gate check (6 conditions) | `ingestion/orchestrator.py` | `gate_check()` |
-| NSE holiday calendar | `ingestion/orchestrator.py` | `HOLIDAYS_2026` dict |
+| NSE holiday calendar | `ingestion/holiday_calendar.py` | `ensure_holiday_calendar_fresh()` — API + DB cache |
 | NSE downloaders | `ingestion/harvester.py` | `download_nse_bhavcopy` etc. |
 | BSE singleton client | `master_funnel.py` | `_get_bse_client`, `_close_bse_client` |
 | Reconciler + dual-listed fallback | `ingestion/reconciler.py` | `DUAL_LISTED_ALLOWLIST` |

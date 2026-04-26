@@ -1,7 +1,7 @@
 # NSE / BSE Stock Analyser — v10.16
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
-> 5,000+ stocks → AI-scored Excel dashboard → your inbox by 6:00 AM IST.
+> 5,000+ stocks → AI-scored Excel dashboard → your inbox by ~5:30 AM IST.
 
 A cloud-hosted, zero-intervention research engine for the Indian markets. It harvests NSE and BSE data overnight, funnels 5,000+ stocks down to the top 100 through a three-stage screener, runs fundamental, technical, forensic, and AI analysis on each, and delivers a colour-coded Excel dashboard with investor cards straight to your email — every trading morning.
 
@@ -34,7 +34,8 @@ Sharemarket_Analyser_tool/
 ├── .env                          (local only — secrets go into GitHub Secrets in prod)
 │
 ├── ingestion/
-│   ├── orchestrator.py           Gate check — 6 pre-conditions + NSE holiday calendar
+│   ├── orchestrator.py           Gate check — 6 pre-conditions
+│   ├── holiday_calendar.py       NSE holiday-master API fetcher + DB cache
 │   ├── harvester.py              NSE bhav / delivery / SME / F&O downloaders
 │   └── reconciler.py             NSE+BSE merge on ISIN + DUAL_LISTED_ALLOWLIST fallback
 │
@@ -129,9 +130,9 @@ The Gmail password must be a 16-char **App Password**, not your login password.
 
 The pipeline is designed to run for free on GitHub's 2,000 free minutes/month (a full run takes ~15–20 min on `ubuntu-latest`).
 
-**`.github/workflows/market_run.yml` cron:** `0 0 * * 2-6`
-→ 00:00 UTC = **05:30 IST**, Tue–Sat (covers Mon–Fri Indian trading days, delivered the morning after).
-Email arrives at roughly 06:00–06:30 IST after the GitHub queue delay.
+**`.github/workflows/market_run.yml` cron:** `0 23 * * 1-5`
+→ 23:00 UTC Mon–Fri = **04:30 IST Tue–Sat** (covers Mon–Fri Indian trading days, delivered the morning after).
+Email arrives at roughly 05:00–05:30 IST after the GitHub queue delay.
 
 **Required GitHub Secrets:**
 

@@ -12,7 +12,7 @@ Fixes:
   not the pipeline run date — avoids confusing date mismatch in emails
 - Stripped redundant "SKIP: " prefix from body (reason already says "Pipeline skipped:")
 - Cleaned subject line: shows short reason only, no raw prefix
-- Fixed delivery time: "06:00 IST" (was incorrectly "07:00 IST")
+- Fixed delivery time: "05:00 IST" (was incorrectly "07:00 IST"; later updated to current schedule)
 """
 
 import smtplib
@@ -140,7 +140,7 @@ def send_analysis_email(
             f"─────────────────\n"
             f"{clean_reason}\n\n"
             f"System status:    OK — no action needed.\n"
-            f"Next scheduled:   Next trading day at 06:00 IST."
+            f"Next scheduled:   Next trading day at 05:00 IST."
         )
 
     elif is_error:

@@ -1,7 +1,7 @@
 """
 orchestrator.py
 SECTION 12B — Gate Check (v7 FINAL)
-Single consolidated check at 07:00 IST next morning.
+Single consolidated check at 04:30 IST next morning.
 All 6 conditions must pass before ANY pipeline work begins.
 """
 
@@ -12,27 +12,31 @@ import requests
 import sqlite3
 from dotenv import load_dotenv
 
+try:
+    # Normal use: `from ingestion.orchestrator import gate_check`
+    from .holiday_calendar import ensure_holiday_calendar_fresh
+except ImportError:
+    # Fallback for direct execution: `python3 ingestion/orchestrator.py`
+    from holiday_calendar import ensure_holiday_calendar_fresh
+
 load_dotenv()
 
 IST = pytz.timezone('Asia/Kolkata')
 
-# ── SECTION 12C: Complete 2026 NSE Holiday Calendar ──────────────────────────
-HOLIDAYS_2026 = {
-    "2026-01-26": "Republic Day",
-    "2026-03-14": "Holi",
-    "2026-04-06": "Ram Navami",
-    "2026-04-14": "Dr. Ambedkar Jayanti",
-    "2026-04-18": "Good Friday",
-    "2026-05-01": "Maharashtra Day",
-    "2026-06-07": "Id ul Adha (Bakri Id)",
-    "2026-07-06": "Muharram",
-    "2026-08-15": "Independence Day",
-    "2026-08-27": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-21": "Diwali Laxmi Puja",
-    "2026-11-05": "Diwali Balipratipada",
-    "2026-12-25": "Christmas Day",
-}
+# ── SECTION 12C: NSE Holiday Calendar — auto-fetched, never hardcoded ────────
+# The full year's holiday calendar is fetched once per pipeline run from
+# https://www.nseindia.com/api/holiday-master?type=trading and cached in the
+# market_holidays DB table. See ingestion/holiday_calendar.py for the fetch
+# logic, fallback chain, and failure semantics.
+#
+# Cache lifecycle: per-year. When the API returns the new year's calendar
+# (NSE typically publishes by mid-December), we wipe and reinsert that year's
+# rows. Old years are retained for historical lookups.
+#
+# Cold-start safety: if the API fails AND no rows are cached for the target
+# year, _is_market_holiday_or_unknown() returns ("unknown", None) and the
+# gate check conservatively blocks the run. This prevents the pipeline from
+# silently running on an actual holiday because we couldn't reach NSE.
 
 
 def _build_nse_bhav_url(target_date: datetime.date) -> str:
@@ -74,39 +78,38 @@ def _http_head_ok(url: str, timeout: int = 15) -> bool:
         return False
 
 
-def _is_market_holiday(date_str: str) -> bool:
+def _check_market_holiday(date_str: str, year: int) -> tuple[str, str | None, dict]:
     """
-    C2: Check DB first, fall back to hardcoded HOLIDAYS_2026.
-    """
-    # Try DB lookup first
-    try:
-        conn = sqlite3.connect("market_data.db")
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM market_holidays WHERE date = ? AND exchange = 'NSE'",
-            (date_str,)
-        )
-        count = cursor.fetchone()[0]
-        conn.close()
-        if count > 0:
-            return True
-    except Exception:
-        pass  # DB not initialised yet — fall through to dict
+    C2 holiday check — three-state output.
 
-    return date_str in HOLIDAYS_2026
+    Returns:
+      ("holiday",      <name>, calendar)   — confirmed holiday, skip the run
+      ("trading_day",  None,   calendar)   — confirmed not a holiday, proceed
+      ("unknown",      None,   {})         — calendar unknown (API fail + cache empty)
+                                             → caller must fail-closed (block run)
+
+    Source of truth is the NSE holiday-master API, cached in market_holidays.
+    See ingestion/holiday_calendar.py for the full fetch + fallback story.
+    """
+    calendar = ensure_holiday_calendar_fresh(year)
+    if calendar is None:
+        return ("unknown", None, {})
+    if date_str in calendar:
+        return ("holiday", calendar[date_str], calendar)
+    return ("trading_day", None, calendar)
 
 
 def gate_check() -> dict:
     """
     SECTION 12B: Single consolidated gate check.
 
-    Schedule: runs at 07:00 IST the NEXT MORNING after market close.
+    Schedule: runs at 04:30 IST the NEXT MORNING after market close.
     Target date = YESTERDAY (the trading day whose data we are processing).
 
     Reason for next-morning schedule:
     - NSE/BSE publish Bhav Copy after 18:00 IST but availability is
       uncertain (sometimes 18:10, sometimes 18:45, sometimes delayed).
-    - Running at 07:00 IST next morning gives a guaranteed 12+ hour buffer
+    - Running at 04:30 IST next morning gives a guaranteed 10+ hour buffer
       ensuring files are always available before the pipeline starts.
 
     Returns dict: {"run": bool, "reason": str, "target_date": date,
@@ -132,14 +135,28 @@ def gate_check() -> dict:
     print("✅ C1 PASS: Weekday confirmed.")
 
     # ── C2: Market Holiday Check ─────────────────────────────────────────────
-    if _is_market_holiday(target_str):
-        holiday_name = HOLIDAYS_2026.get(target_str, "Listed Holiday")
+    holiday_status, holiday_name, _calendar = _check_market_holiday(target_str, target_date.year)
+
+    if holiday_status == "unknown":
+        reason = (
+            f"BLOCK: Holiday calendar unknown for {target_date.year}. "
+            f"NSE holiday API unreachable AND market_holidays cache is empty. "
+            f"Refusing to run — risk of executing on an actual holiday."
+        )
+        log.append({"condition": "C2 Holiday", "status": "FAIL", "detail": reason})
+        print(f"🛑 C2 FAIL: {reason}")
+        return {"run": False, "reason": reason, "target_date": target_date,
+                "bse_available": False, "log": log}
+
+    if holiday_status == "holiday":
         reason = f"SKIP: {target_str} is a market holiday ({holiday_name})."
         log.append({"condition": "C2 Holiday", "status": "FAIL", "detail": reason})
         print(f"🛑 C2 FAIL: {reason}")
         return {"run": False, "reason": reason, "target_date": target_date,
                 "bse_available": False, "log": log}
-    log.append({"condition": "C2 Holiday", "status": "PASS", "detail": f"{target_str} is not a holiday."})
+
+    log.append({"condition": "C2 Holiday", "status": "PASS",
+                "detail": f"{target_str} is not a holiday."})
     print("✅ C2 PASS: Not a market holiday.")
 
     # ── C3: NSE Bhav Copy File Availability ──────────────────────────────────
@@ -148,7 +165,7 @@ def gate_check() -> dict:
     nse_ok = _http_head_ok(nse_url)
 
     if not nse_ok:
-        # Single retry — at 07:00 IST the file should always be there
+        # Single retry — at 04:30 IST the file should always be there
         print("   C3 NSE not responding. Retrying once in 30 seconds...")
         import time; time.sleep(30)
         nse_ok = _http_head_ok(nse_url)
