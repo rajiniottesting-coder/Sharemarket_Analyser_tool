@@ -149,32 +149,137 @@ def _parse_bse_df(df):
 
 
 def _bse_bhav(target_date):
-    """BSE equity bhav copy — via bse package (always attempted)."""
+    """
+    BSE equity bhav copy — 3-tier Cloudflare-resilient cascade.
+
+    Tier 1: bse pip package          (works on most retail IPs)
+    Tier 2: cloudscraper             (handles standard Cloudflare JS challenges)
+    Tier 3: curl_cffi (chrome124)    (Chrome TLS fingerprint impersonation —
+                                      defeats Cloudflare TLS fingerprinting that
+                                      cloudscraper alone can't bypass on cloud
+                                      runners; see utils/bse_diagnosis.py)
+
+    Each tier is wrapped so a failure falls through to the next instead of
+    aborting. Returns parsed DataFrame on success, None only after ALL tiers
+    fail. A holiday/not-yet-published response from Tier 1 returns None
+    immediately without trying Tiers 2/3.
+    """
+    import io as _io
+    import zipfile as _zipfile
+
+    # ── Tier 1: bse pip package ──────────────────────────────────────────
     client = _get_bse_client()
-    if client is None:
-        return None
-    try:
-        fp = client.bhavcopyReport(
-            date=datetime.datetime.combine(target_date, datetime.datetime.min.time()),
-            folder=_bse_tmp_dir,
-        )
-        if fp is None or not Path(fp).exists():
-            print(f"⚠️  BSE bhav: not published yet for {target_date}")
-            return None
-        df = pd.read_csv(fp)
+    if client is not None:
         try:
-            os.remove(fp)
+            fp = client.bhavcopyReport(
+                date=datetime.datetime.combine(target_date, datetime.datetime.min.time()),
+                folder=_bse_tmp_dir,
+            )
+            if fp is not None and Path(fp).exists():
+                df = pd.read_csv(fp)
+                try:
+                    os.remove(fp)
+                except Exception:
+                    pass
+                parsed = _parse_bse_df(df)
+                if parsed is not None and not parsed.empty:
+                    print(f"✅ BSE Bhav downloaded via bse package: {len(parsed)} records for {target_date}")
+                    return parsed
+        except (RuntimeError, FileNotFoundError):
+            # Holiday / not yet published — definitive negative, do NOT try other tiers.
+            return None
+        except Exception as e:
+            # Network / Cloudflare error — fall through to next tier.
+            print(f"⚠️  BSE bhav (bse package) failed: {type(e).__name__}: {e} — trying cloudscraper...")
+
+    # Build candidate URLs for direct download (multiple BSE filename formats)
+    ds6  = target_date.strftime("%d%m%y").upper()      # e.g. 270426
+    ds8  = target_date.strftime("%Y%m%d")              # e.g. 20260427
+    ds8b = target_date.strftime("%d%m%Y")              # e.g. 27042026
+    bse_urls = [
+        f"https://www.bseindia.com/download/BhavCopy/Equity/EQ{ds6}_CSV.ZIP",
+        f"https://www.bseindia.com/download/BhavCopy/Equity/BhavCopy_BSE_CM_0_0_0_{ds8}_F_0000.CSV.ZIP",
+        f"https://www.bseindia.com/download/BhavCopy/Equity/EQ{ds8b}_CSV.ZIP",
+    ]
+    bse_headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/124.0.0.0 Safari/537.36',
+        'Referer':    'https://www.bseindia.com/',
+        'Accept':     'application/zip,application/octet-stream,*/*',
+    }
+
+    def _try_zip_response(content):
+        """Parse a ZIP response into a clean BSE DataFrame, or None."""
+        if not content or len(content) < 500:
+            return None
+        try:
+            with _zipfile.ZipFile(_io.BytesIO(content)) as z:
+                csv_files = [f for f in z.namelist() if f.upper().endswith('.CSV')]
+                if not csv_files:
+                    return None
+                df = pd.read_csv(z.open(csv_files[0]))
+                return _parse_bse_df(df)
+        except Exception:
+            return None
+
+    # ── Tier 2: cloudscraper ─────────────────────────────────────────────
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        )
+        # Warmup: visit the BSE bhav copy page so cookies are populated
+        try:
+            scraper.get(
+                "https://www.bseindia.com/markets/equity/eqreports/equitydebcopy.aspx",
+                headers=bse_headers, timeout=12)
         except Exception:
             pass
-        parsed = _parse_bse_df(df)
-        if parsed is not None:
-            print(f"✅ BSE Bhav downloaded: {len(parsed)} records for {target_date}")
-        return parsed
-    except (RuntimeError, FileNotFoundError):
-        return None   # holiday / not yet published — silent
+        for url in bse_urls:
+            try:
+                r = scraper.get(url, headers=bse_headers, timeout=30)
+                if r.status_code == 200:
+                    parsed = _try_zip_response(r.content)
+                    if parsed is not None and not parsed.empty:
+                        print(f"✅ BSE Bhav downloaded via cloudscraper: {len(parsed)} records for {target_date}")
+                        return parsed
+            except Exception:
+                continue
+    except ImportError:
+        print("⚠️  cloudscraper not installed — skipping Tier 2.")
     except Exception as e:
-        print(f"⚠️  BSE bhav error {target_date}: {type(e).__name__}: {e}")
-        return None
+        print(f"⚠️  cloudscraper tier failed: {type(e).__name__}: {e}")
+
+    # ── Tier 3: curl_cffi (Chrome TLS impersonation) ─────────────────────
+    try:
+        from curl_cffi import requests as cf_req
+        s = cf_req.Session(impersonate="chrome124")
+        try:
+            s.get(
+                "https://www.bseindia.com/markets/equity/eqreports/equitydebcopy.aspx",
+                headers=bse_headers, timeout=12)
+        except Exception:
+            pass
+        for url in bse_urls:
+            try:
+                r = s.get(url, headers=bse_headers, timeout=30)
+                if r.status_code == 200:
+                    parsed = _try_zip_response(r.content)
+                    if parsed is not None and not parsed.empty:
+                        print(f"✅ BSE Bhav downloaded via curl_cffi: {len(parsed)} records for {target_date}")
+                        return parsed
+            except Exception:
+                continue
+    except ImportError:
+        print("⚠️  curl_cffi not installed — skipping Tier 3. "
+              "Run: pip install curl_cffi")
+    except Exception as e:
+        print(f"⚠️  curl_cffi tier failed: {type(e).__name__}: {e}")
+
+    # All tiers exhausted — pipeline will continue in NSE-only mode.
+    print(f"❌ BSE Bhav unavailable for {target_date} after all tiers (bse / cloudscraper / curl_cffi).")
+    return None
 
 
 def _bse_delivery(target_date):

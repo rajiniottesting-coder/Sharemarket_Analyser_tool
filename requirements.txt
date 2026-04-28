@@ -10,3 +10,4 @@ flask
 bse
 cloudscraper
 yfinance
+curl_cffi
