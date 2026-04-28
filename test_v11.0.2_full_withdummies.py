@@ -1,11 +1,16 @@
 """
-Comprehensive validation suite — covers ScoringEngine (v10.17 + v11.0)
-plus the v11.0.1 reporting/ingestion bugfixes.
+Comprehensive validation suite — covers ScoringEngine (v10.17 + v11.0),
+the v11.0.1 reporting/ingestion bugfixes, AND the v11.0.2 allowlist
+auto-maintenance + chronic-AVOID demotion + turnaround flag features.
 
 Validates the ScoringEngine against every code path that exists in the
-engine, and the v11.0.1 fixes against the daily report generator,
-command parser, report formatter, and the DUAL_LISTED_ALLOWLIST. Each test is a self-contained synthetic stock with a known expected
-outcome computed by hand from the engine's documented logic.
+engine, the v11.0.1 fixes against the daily report generator, command
+parser, report formatter, and the DUAL_LISTED_ALLOWLIST, and the v11.0.2
+features against the allowlist_maintainer module, the verdict-streak
+helpers in data_bridge, the priority-ranker chronic-AVOID demotion, and
+the daily report's new Section H. Each test is a self-contained synthetic
+stock with a known expected outcome computed by hand from the engine's
+documented logic.
 
 Test coverage:
   Group 1: Sub-score weighted blend (canonical + redistributed branches)
@@ -36,6 +41,12 @@ Test coverage:
   Group 24: reporting/command_parser.py — early movers threshold
   Group 25: reporting/report_formatter.py — EARLY MOVER badge
   Group 26: cross-cutting consistency & end-to-end smoke test
+
+  ─── v11.0.2 allowlist auto-maintenance + verdict streaks ───
+  Group 27: ingestion/allowlist_maintainer.py — record / prune / lookup
+  Group 28: reconciler ⊕ runtime allowlist integration (UNION semantics)
+  Group 29: verdict streaks (avoid + recovery) + chronic-AVOID demotion
+  Group 30: daily report Section H — turnaround candidates
 
 For every test we also do a "no-leakage" check: confirm that for stocks
 with informed_count >= 3, the new engine produces the EXACT SAME composite
@@ -959,11 +970,451 @@ if DUAL_LISTED_ALLOWLIST is not None:
         else:
             failed += 1; failures.append(f"26.2 allowlist size = {total}, expected >=233")
 
+# ──────────────────────────────────────────────────────────────────────────
+# Group 27 — Allowlist auto-add/remove (v11.0.2 feature A)
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "─" * 70)
+print("Group 27: ingestion/allowlist_maintainer.py (v11.0.2)")
+print("─" * 70)
+
+import os as _os27, tempfile as _tmp27, sqlite3 as _sq27
+
+# Use a TEMP DB so we don't pollute the repo's market_data.db
+_orig_cwd27 = _os27.getcwd()
+_tmpdir27 = _tmp27.mkdtemp(prefix="alm_test_")
+_os27.chdir(_tmpdir27)
+
+try:
+    # 27.0 — module imports
+    try:
+        from ingestion.allowlist_maintainer import (
+            record_dual_listed_observations,
+            prune_runtime_allowlist,
+            get_runtime_allowlist,
+            update_last_seen,
+        )
+        passed += 1; print("  ✓ 27.0 allowlist_maintainer imports cleanly")
+        ALM_OK = True
+    except Exception as e:
+        failed += 1; failures.append(f"27.0 import: {e}")
+        ALM_OK = False
+
+    if ALM_OK:
+        import pandas as _pd27
+
+        # 27.1 — fresh-install: empty runtime allowlist returns set()
+        rt0 = get_runtime_allowlist()
+        if isinstance(rt0, set) and len(rt0) == 0:
+            passed += 1; print("  ✓ 27.1 fresh-install runtime allowlist is empty set")
+        else:
+            failed += 1; failures.append(f"27.1 expected empty set got {type(rt0)}/{len(rt0)}")
+
+        # 27.2 — record_dual_listed_observations writes new symbols
+        df_observed = _pd27.DataFrame([
+            {"symbol":"NEWLY_DISCOVERED1","exchange_tag":"DUAL_LISTED"},
+            {"symbol":"NEWLY_DISCOVERED2","exchange_tag":"DUAL_LISTED"},
+            {"symbol":"NSE_ONLY_STOCK","exchange_tag":"NSE_ONLY"},
+        ])
+        added = record_dual_listed_observations(df_observed, today_iso="2026-04-28",
+                                                hardcoded_allowlist=set())
+        if added == 2:
+            passed += 1; print("  ✓ 27.2 record_dual_listed_observations added 2 new symbols")
+        else:
+            failed += 1; failures.append(f"27.2 expected 2 added, got {added}")
+
+        # 27.3 — get_runtime_allowlist returns those symbols
+        rt1 = get_runtime_allowlist()
+        if {"NEWLY_DISCOVERED1","NEWLY_DISCOVERED2"} <= rt1:
+            passed += 1; print("  ✓ 27.3 get_runtime_allowlist surfaces newly added symbols")
+        else:
+            failed += 1; failures.append(f"27.3 missing symbols, got {rt1}")
+
+        # 27.4 — re-recording on later date refreshes last_seen but doesn't double-add
+        added2 = record_dual_listed_observations(df_observed, today_iso="2026-04-29",
+                                                  hardcoded_allowlist=set())
+        # `added2` returns count where first_seen_date == today; on day 2 these
+        # are existing records, so first_seen_date is yesterday → not counted as new.
+        if added2 == 0:
+            passed += 1; print("  ✓ 27.4 re-running on next day doesn't double-count existing entries")
+        else:
+            failed += 1; failures.append(f"27.4 expected 0 new on rerun, got {added2}")
+
+        # 27.5 — symbols already on hardcoded allowlist are skipped (no duplication)
+        df_hardcoded = _pd27.DataFrame([
+            {"symbol":"RELIANCE","exchange_tag":"DUAL_LISTED"},  # already hardcoded
+            {"symbol":"BRAND_NEW_X","exchange_tag":"DUAL_LISTED"},
+        ])
+        added3 = record_dual_listed_observations(df_hardcoded, today_iso="2026-04-29",
+                                                  hardcoded_allowlist={"RELIANCE","TCS","INFY"})
+        if added3 == 1:  # only BRAND_NEW_X should be added; RELIANCE skipped
+            passed += 1; print("  ✓ 27.5 hardcoded-allowlist symbols not duplicated into runtime table")
+        else:
+            failed += 1; failures.append(f"27.5 expected 1 new, got {added3}")
+
+        # 27.6 — prune removes entries last_seen < today − ttl_days
+        # Set last_seen for NEWLY_DISCOVERED1 to a date 40 days ago
+        _conn27 = _sq27.connect("market_data.db")
+        _conn27.execute("UPDATE dual_listed_runtime SET last_seen_date = ? WHERE symbol = ?",
+                        ("2026-03-15", "NEWLY_DISCOVERED1"))
+        _conn27.commit(); _conn27.close()
+
+        removed = prune_runtime_allowlist(today_iso="2026-04-29", ttl_days=30)
+        if removed == 1:
+            passed += 1; print("  ✓ 27.6 prune removed 1 stale entry (>30d absent)")
+        else:
+            failed += 1; failures.append(f"27.6 expected 1 pruned, got {removed}")
+
+        # 27.7 — surviving entries still queryable
+        rt2 = get_runtime_allowlist()
+        if "NEWLY_DISCOVERED1" not in rt2 and "NEWLY_DISCOVERED2" in rt2:
+            passed += 1; print("  ✓ 27.7 prune kept fresh entries, removed stale ones")
+        else:
+            failed += 1; failures.append(f"27.7 prune broke set membership: {rt2}")
+
+        # 27.8 — graceful handling of missing DataFrame columns
+        bad_df = _pd27.DataFrame([{"x":1}, {"x":2}])
+        added4 = record_dual_listed_observations(bad_df)
+        if added4 == 0:
+            passed += 1; print("  ✓ 27.8 missing exchange_tag column → 0 added (no crash)")
+        else:
+            failed += 1; failures.append(f"27.8 expected 0 from bad df, got {added4}")
+
+        # 27.9 — None / empty input is safe
+        if record_dual_listed_observations(None) == 0 and \
+           record_dual_listed_observations(_pd27.DataFrame()) == 0 and \
+           prune_runtime_allowlist(today_iso="bogus") == 0:
+            passed += 1; print("  ✓ 27.9 None/empty/bogus inputs handled gracefully")
+        else:
+            failed += 1; failures.append("27.9 None/empty input not handled")
+
+        # 27.10 — get_effective_allowlist returns hardcoded ∪ runtime
+        try:
+            from ingestion.reconciler import get_effective_allowlist
+            eff = get_effective_allowlist()
+            # Should contain at least RELIANCE (hardcoded) and NEWLY_DISCOVERED2 (runtime)
+            if "RELIANCE" in eff and "NEWLY_DISCOVERED2" in eff:
+                passed += 1; print("  ✓ 27.10 get_effective_allowlist UNIONs hardcoded + runtime")
+            else:
+                failed += 1; failures.append(f"27.10 missing expected symbols in eff allowlist")
+        except Exception as e:
+            failed += 1; failures.append(f"27.10 get_effective_allowlist: {e}")
+finally:
+    _os27.chdir(_orig_cwd27)
+    import shutil as _sh27
+    _sh27.rmtree(_tmpdir27, ignore_errors=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Final report
+# Group 28 — Reconciler integration with runtime allowlist (v11.0.2)
 # ──────────────────────────────────────────────────────────────────────────
+print("\n" + "─" * 70)
+print("Group 28: reconciler ⊕ runtime allowlist integration (v11.0.2)")
+print("─" * 70)
+
+# Use another temp DB so we don't pollute the repo
+_orig_cwd28 = _os27.getcwd()
+_tmpdir28 = _tmp27.mkdtemp(prefix="reconciler28_")
+_os27.chdir(_tmpdir28)
+
+try:
+    # Force a fresh import of reconciler so its cached state is clean
+    import importlib as _imp28
+    if "ingestion.reconciler" in sys.modules:
+        _imp28.reload(sys.modules["ingestion.reconciler"])
+    if "ingestion.allowlist_maintainer" in sys.modules:
+        _imp28.reload(sys.modules["ingestion.allowlist_maintainer"])
+
+    from ingestion.reconciler import reconcile_exchanges, DUAL_LISTED_ALLOWLIST, get_effective_allowlist
+    from ingestion.allowlist_maintainer import record_dual_listed_observations
+    import pandas as _pd28
+
+    # 28.1 — when runtime table empty, get_effective_allowlist == hardcoded
+    eff0 = get_effective_allowlist()
+    if eff0 == DUAL_LISTED_ALLOWLIST:
+        passed += 1; print("  ✓ 28.1 empty runtime → effective == hardcoded (no surprise behaviour)")
+    else:
+        failed += 1; failures.append(f"28.1 effective != hardcoded with empty runtime")
+
+    # 28.2 — when runtime table has a symbol, that symbol gets DUAL_LISTED tag
+    record_dual_listed_observations(
+        _pd28.DataFrame([{"symbol":"RUNTIME_NEW_X","exchange_tag":"DUAL_LISTED"}]),
+        today_iso="2026-04-28",
+        hardcoded_allowlist=set(),
+    )
+    nse_only = _pd28.DataFrame([
+        {"symbol":"RUNTIME_NEW_X","close":100,"isin":"INE111X01018"},
+        {"symbol":"DEFINITELY_NSE_ONLY","close":50,"isin":"INE222Y01010"},
+    ])
+    result = reconcile_exchanges(nse_only, _pd28.DataFrame())  # BSE empty
+    runtime_tag = result[result["symbol"]=="RUNTIME_NEW_X"]["exchange_tag"].iloc[0]
+    nseonly_tag = result[result["symbol"]=="DEFINITELY_NSE_ONLY"]["exchange_tag"].iloc[0]
+    if runtime_tag == "DUAL_LISTED":
+        passed += 1; print("  ✓ 28.2 runtime-discovered symbol tags as DUAL_LISTED")
+    else:
+        failed += 1; failures.append(f"28.2 RUNTIME_NEW_X got {runtime_tag} expected DUAL_LISTED")
+    if nseonly_tag == "NSE_ONLY":
+        passed += 1; print("  ✓ 28.3 unrelated symbol stays NSE_ONLY")
+    else:
+        failed += 1; failures.append(f"28.3 DEFINITELY_NSE_ONLY got {nseonly_tag}")
+
+    # 28.4 — hardcoded allowlist still works (RELIANCE)
+    nse_test = _pd28.DataFrame([{"symbol":"RELIANCE","close":1240,"isin":"INE002A01018"}])
+    result4 = reconcile_exchanges(nse_test, _pd28.DataFrame())
+    if result4[result4["symbol"]=="RELIANCE"]["exchange_tag"].iloc[0] == "DUAL_LISTED":
+        passed += 1; print("  ✓ 28.4 hardcoded allowlist (RELIANCE) still works")
+    else:
+        failed += 1; failures.append("28.4 RELIANCE no longer DUAL_LISTED")
+
+    # 28.5 — get_effective_allowlist post-record now contains the runtime entry
+    eff1 = get_effective_allowlist()
+    if "RUNTIME_NEW_X" in eff1 and "RELIANCE" in eff1:
+        passed += 1; print("  ✓ 28.5 effective allowlist UNIONs runtime + hardcoded post-record")
+    else:
+        failed += 1; failures.append(f"28.5 union broken: RUNTIME_NEW_X in eff: {'RUNTIME_NEW_X' in eff1}")
+
+finally:
+    _os27.chdir(_orig_cwd28)
+    _sh27.rmtree(_tmpdir28, ignore_errors=True)
+    # Reload modules back to repo's actual market_data.db state
+    _imp28.reload(sys.modules["ingestion.allowlist_maintainer"])
+    _imp28.reload(sys.modules["ingestion.reconciler"])
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Group 29 — Verdict streaks + chronic-AVOID demotion (v11.0.2 feature B)
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "─" * 70)
+print("Group 29: verdict streaks + chronic-AVOID demotion (v11.0.2)")
+print("─" * 70)
+
+_orig_cwd29 = _os27.getcwd()
+_tmpdir29 = _tmp27.mkdtemp(prefix="streaks_")
+_os27.chdir(_tmpdir29)
+
+try:
+    # Setup the DB schema from data_bridge
+    _imp28.reload(sys.modules.get("database.data_bridge", __import__("database.data_bridge")))
+    from database.data_bridge import initialize_v7_tables, update_verdict_streaks, get_prior_analysis_map
+    _conn29init = _sq27.connect("market_data.db")
+    initialize_v7_tables(_conn29init)
+    _conn29init.close()
+
+    # 29.1 — streak update on FIRST run: prior is empty, AVOID stock starts at 1
+    today_stocks_run1 = [
+        {"symbol":"AVOIDCO","verdict":"AVOID","composite_score":25},
+        {"symbol":"BUYCO","verdict":"BUY","composite_score":75},
+    ]
+    streaks1 = update_verdict_streaks(today_stocks_run1)
+    if streaks1.get("AVOIDCO",{}).get("avoid") == 1:
+        passed += 1; print("  ✓ 29.1 first AVOID run: avoid_streak = 1")
+    else:
+        failed += 1; failures.append(f"29.1 expected 1, got {streaks1.get('AVOIDCO',{}).get('avoid')}")
+
+    # 29.2 — turnaround_candidate stamped onto stock dict
+    if today_stocks_run1[0].get("turnaround_candidate") is False and \
+       today_stocks_run1[0].get("consecutive_avoid_quarters") == 1:
+        passed += 1; print("  ✓ 29.2 stock dict stamped with streak fields")
+    else:
+        failed += 1; failures.append(f"29.2 dict stamping incomplete: {today_stocks_run1[0]}")
+
+    # Persist run-1 results so run-2 sees them as 'prior'
+    _conn29 = _sq27.connect("market_data.db")
+    for s in today_stocks_run1:
+        _conn29.execute("""INSERT OR REPLACE INTO latest_analysis_results
+            (symbol, date, composite_score, verdict,
+             consecutive_avoid_quarters, consecutive_recovery_quarters)
+            VALUES (?,?,?,?,?,?)""",
+            (s["symbol"], "2026-04-27", s["composite_score"], s["verdict"],
+             s.get("consecutive_avoid_quarters",0),
+             s.get("consecutive_recovery_quarters",0)))
+    _conn29.commit(); _conn29.close()
+
+    # 29.3 — second AVOID run: streak advances to 2
+    today_stocks_run2 = [
+        {"symbol":"AVOIDCO","verdict":"AVOID","composite_score":22},
+        {"symbol":"BUYCO","verdict":"BUY","composite_score":78},
+    ]
+    streaks2 = update_verdict_streaks(today_stocks_run2)
+    if streaks2.get("AVOIDCO",{}).get("avoid") == 2:
+        passed += 1; print("  ✓ 29.3 second AVOID run: avoid_streak advances to 2 (chronic threshold)")
+    else:
+        failed += 1; failures.append(f"29.3 expected 2, got {streaks2.get('AVOIDCO',{}).get('avoid')}")
+
+    # 29.4 — chronic threshold (avoid≥2) reflected in stock dict
+    if today_stocks_run2[0]["consecutive_avoid_quarters"] == 2:
+        passed += 1; print("  ✓ 29.4 chronic-AVOID threshold reflected in stock dict")
+    else:
+        failed += 1; failures.append(f"29.4 dict streak {today_stocks_run2[0]}")
+
+    # Persist run-2
+    _conn29 = _sq27.connect("market_data.db")
+    for s in today_stocks_run2:
+        _conn29.execute("""INSERT OR REPLACE INTO latest_analysis_results
+            (symbol, date, composite_score, verdict,
+             consecutive_avoid_quarters, consecutive_recovery_quarters)
+            VALUES (?,?,?,?,?,?)""",
+            (s["symbol"], "2026-04-28", s["composite_score"], s["verdict"],
+             s["consecutive_avoid_quarters"], s["consecutive_recovery_quarters"]))
+    _conn29.commit(); _conn29.close()
+
+    # 29.5 — recovery: AVOIDCO bounces back with score=58, streak resets, recovery starts
+    today_stocks_run3 = [
+        {"symbol":"AVOIDCO","verdict":"WATCHLIST","composite_score":58},
+        {"symbol":"BUYCO","verdict":"BUY","composite_score":80},
+    ]
+    streaks3 = update_verdict_streaks(today_stocks_run3)
+    s_avoidco = streaks3.get("AVOIDCO", {})
+    if s_avoidco.get("avoid") == 0 and s_avoidco.get("recovery") == 1:
+        passed += 1; print("  ✓ 29.5 recovery from AVOID: avoid resets to 0, recovery starts at 1")
+    else:
+        failed += 1; failures.append(f"29.5 unexpected: {s_avoidco}")
+
+    # Persist run-3
+    _conn29 = _sq27.connect("market_data.db")
+    for s in today_stocks_run3:
+        _conn29.execute("""INSERT OR REPLACE INTO latest_analysis_results
+            (symbol, date, composite_score, verdict,
+             consecutive_avoid_quarters, consecutive_recovery_quarters)
+            VALUES (?,?,?,?,?,?)""",
+            (s["symbol"], "2026-04-29", s["composite_score"], s["verdict"],
+             s["consecutive_avoid_quarters"], s["consecutive_recovery_quarters"]))
+    _conn29.commit(); _conn29.close()
+
+    # 29.6 — second recovery quarter: turnaround_candidate flag fires (recovery >= 2)
+    today_stocks_run4 = [
+        {"symbol":"AVOIDCO","verdict":"WATCHLIST","composite_score":62},
+    ]
+    streaks4 = update_verdict_streaks(today_stocks_run4)
+    if streaks4.get("AVOIDCO",{}).get("recovery") == 2 and \
+       today_stocks_run4[0].get("turnaround_candidate") is True:
+        passed += 1; print("  ✓ 29.6 recovery_streak == 2 → turnaround_candidate=True")
+    else:
+        failed += 1; failures.append(f"29.6 expected recovery=2 + flag=True: {today_stocks_run4[0]}")
+
+    # 29.7 — recovery resets if score drops below 50
+    _conn29 = _sq27.connect("market_data.db")
+    for s in today_stocks_run4:
+        _conn29.execute("""INSERT OR REPLACE INTO latest_analysis_results
+            (symbol, date, composite_score, verdict,
+             consecutive_avoid_quarters, consecutive_recovery_quarters)
+            VALUES (?,?,?,?,?,?)""",
+            (s["symbol"], "2026-04-30", s["composite_score"], s["verdict"],
+             s["consecutive_avoid_quarters"], s["consecutive_recovery_quarters"]))
+    _conn29.commit(); _conn29.close()
+
+    today_stocks_run5 = [
+        {"symbol":"AVOIDCO","verdict":"NEUTRAL","composite_score":42},  # below 50
+    ]
+    streaks5 = update_verdict_streaks(today_stocks_run5)
+    if streaks5.get("AVOIDCO",{}).get("recovery") == 0:
+        passed += 1; print("  ✓ 29.7 recovery resets to 0 when score drops below 50")
+    else:
+        failed += 1; failures.append(f"29.7 recovery should reset: {streaks5}")
+
+    # 29.8 — chronic-AVOID demotion in priority_ranker
+    from screening.priority_ranker import calculate_priority_score
+    base_row = {
+        "symbol":"X","stage2_score":25,"delivery_pct":60,"cap_category":"LARGE CAP",
+        "turnover":1_000_000_000,"volume":1_000_000,
+        "consecutive_avoid_quarters": 0,
+    }
+    p_no_demo = calculate_priority_score(base_row, avg_vol_cache={"X": 1_000_000})
+
+    chronic_row = dict(base_row, consecutive_avoid_quarters=2)
+    p_demo = calculate_priority_score(chronic_row, avg_vol_cache={"X": 1_000_000})
+
+    if p_no_demo - p_demo == 15.0:
+        passed += 1; print("  ✓ 29.8 chronic-AVOID (≥2) subtracts 15 points from priority_score")
+    else:
+        failed += 1; failures.append(f"29.8 expected -15 delta, got {p_no_demo - p_demo}")
+
+    # 29.9 — single-AVOID does NOT trigger demotion (must be ≥2)
+    single_row = dict(base_row, consecutive_avoid_quarters=1)
+    p_single = calculate_priority_score(single_row, avg_vol_cache={"X": 1_000_000})
+    if p_single == p_no_demo:
+        passed += 1; print("  ✓ 29.9 single-AVOID (=1) does NOT demote (threshold is ≥2)")
+    else:
+        failed += 1; failures.append(f"29.9 single AVOID demoted: {p_no_demo} vs {p_single}")
+
+    # 29.10 — graceful handling of missing/non-numeric streak field
+    no_streak_row = {k:v for k,v in base_row.items() if k != "consecutive_avoid_quarters"}
+    p_no_field = calculate_priority_score(no_streak_row, avg_vol_cache={"X": 1_000_000})
+    bad_row = dict(base_row, consecutive_avoid_quarters="bogus")
+    p_bad = calculate_priority_score(bad_row, avg_vol_cache={"X": 1_000_000})
+    if p_no_field == p_no_demo and p_bad == p_no_demo:
+        passed += 1; print("  ✓ 29.10 missing/non-numeric streak field treated as 0")
+    else:
+        failed += 1; failures.append("29.10 streak-field robustness broken")
+
+finally:
+    _os27.chdir(_orig_cwd29)
+    _sh27.rmtree(_tmpdir29, ignore_errors=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Group 30 — Daily report Section H (v11.0.2 feature C)
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "─" * 70)
+print("Group 30: daily report Section H (v11.0.2)")
+print("─" * 70)
+
+import importlib as _imp30
+if "reporting.daily_report_generator" in sys.modules:
+    _imp30.reload(sys.modules["reporting.daily_report_generator"])
+from reporting.daily_report_generator import DailyReportGenerator as _DRG30
+
+_MKT30 = {"nifty_close":24000,"nifty_200d":23000,"sensex_close":80000,"vix":12.0,"fii_net":0}
+
+# 30.1 — Section H surfaces stocks with recovery_quarters >= 2
+data_h = [
+    {"symbol":"COMEBACK1","verdict":"WATCHLIST","composite_score":62,
+     "consecutive_recovery_quarters":2,"early_entry_score":0,"sector":"IT","rotation_stage":"NEUTRAL"},
+    {"symbol":"COMEBACK2","verdict":"BUY","composite_score":71,
+     "consecutive_recovery_quarters":3,"early_entry_score":0,"sector":"Healthcare","rotation_stage":"NEUTRAL"},
+    {"symbol":"NORMAL","verdict":"BUY","composite_score":70,
+     "consecutive_recovery_quarters":0,"early_entry_score":0,"sector":"IT","rotation_stage":"NEUTRAL"},
+]
+rep = _DRG30(data_h, _MKT30).generate_research_report()
+sec_h = rep.split("SECTION H")[1] if "SECTION H" in rep else ""
+
+if "COMEBACK1" in sec_h: passed += 1; print("  ✓ 30.1 Section H lists COMEBACK1 (recovery=2)")
+else: failed += 1; failures.append("30.1 COMEBACK1 missing from Section H")
+if "COMEBACK2" in sec_h: passed += 1; print("  ✓ 30.2 Section H lists COMEBACK2 (recovery=3)")
+else: failed += 1; failures.append("30.2 COMEBACK2 missing")
+if "NORMAL" not in sec_h: passed += 1; print("  ✓ 30.3 Section H excludes NORMAL (recovery=0)")
+else: failed += 1; failures.append("30.3 NORMAL leaked into Section H")
+
+# 30.4 — recovery=1 stock NOT listed (threshold is ≥2)
+data_low = [{"symbol":"BARELY","verdict":"WATCHLIST","composite_score":52,
+             "consecutive_recovery_quarters":1,"sector":"IT","rotation_stage":"NEUTRAL"}]
+rep2 = _DRG30(data_low, _MKT30).generate_research_report()
+sec_h2 = rep2.split("SECTION H")[1] if "SECTION H" in rep2 else ""
+if "BARELY" not in sec_h2:
+    passed += 1; print("  ✓ 30.4 recovery=1 (below threshold) excluded from Section H")
+else:
+    failed += 1; failures.append("30.4 recovery=1 leaked into H")
+
+# 30.5 — empty input = no crash, returns "No candidates" line
+rep3 = _DRG30([], _MKT30).generate_research_report()
+sec_h3 = rep3.split("SECTION H")[1] if "SECTION H" in rep3 else ""
+if "No candidates" in sec_h3 or sec_h3.strip() == "":
+    passed += 1; print("  ✓ 30.5 empty input → Section H present without crash")
+else:
+    failed += 1; failures.append(f"30.5 empty input section H = {sec_h3!r}")
+
+# 30.6 — section H shows verdict + composite_score + recovery count for each candidate
+rep4 = _DRG30(data_h, _MKT30).generate_research_report()
+sec_h4 = rep4.split("SECTION H")[1].split("\n")[0:6]
+sec_h4_txt = "\n".join(sec_h4)
+checks_30_6 = ["VERDICT" in sec_h4_txt, "COMPOSITE_SCORE" in sec_h4_txt,
+               "CONSECUTIVE_RECOVERY_QUARTERS" in sec_h4_txt]
+if all(checks_30_6):
+    passed += 1; print("  ✓ 30.6 Section H rows include verdict, score, and recovery streak")
+else:
+    failed += 1; failures.append(f"30.6 Section H content missing: checks={checks_30_6}")
+
+
+
 print("\n" + "═" * 70)
 print(f"FINAL: {passed} passed, {failed} failed")
 print("═" * 70)

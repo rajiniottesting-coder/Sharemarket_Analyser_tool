@@ -483,3 +483,141 @@ The technical design doc has been updated in two places to reflect this release:
 2. v11.0 row's "current major release" label updated to "major release" (since v11.0.1 supersedes it as the current release)
 
 No other §3.5 / §13 content needed updating — the existing references already describe the EE ≥ 50 threshold correctly. The bug was that the *code* didn't match the doc; this release brings the code into alignment with what the doc has always said.
+
+# NSE/BSE Stock Analyser — v11.0.2 Feature Release
+
+**Date:** 28 April 2026
+**Type:** Feature release (4 features: A1 + A2 + B + C)
+**Test status:** 150 of 150 tests pass · all 47 project Python files compile clean · zero regressions vs v11.0.1
+
+---
+
+## What this release adds
+
+This release implements four features that work together to keep the analysis pipeline accurate as the market evolves — without coupling quality judgments to structural data.
+
+### A1 — Allowlist auto-add
+
+When the BSE bhavcopy successfully downloads (~30–40% of GitHub Actions runs), the reconciler observes which symbols actually appear on both NSE and BSE. Any new dual-listed symbol that isn't already on the hardcoded `DUAL_LISTED_ALLOWLIST` is recorded into a new SQLite table `dual_listed_runtime`. Future runs (including BSE-blocked ones) UNION this runtime table with the hardcoded set — so newly-discovered dual-listed names get correctly tagged as `DUAL_LISTED` even when BSE is unavailable.
+
+### A2 — Allowlist auto-prune
+
+Runtime entries that haven't been seen for 30+ consecutive days are auto-removed via `prune_runtime_allowlist()`. **This is the only removal trigger** — quality of the stock has zero influence. A 30-day NSE absence strongly indicates delisting or symbol rename, the only legitimate reason to forget a symbol is dual-listed.
+
+### B — Chronic-AVOID demotion
+
+A new SQLite column `consecutive_avoid_quarters` tracks how many consecutive runs a stock has been verdict=AVOID. When the streak reaches 2 or more, the priority ranker subtracts 15 points from `priority_score`, deprioritising chronically-distressed stocks. The stock's `exchange_tag` and all sub-scores stay unchanged — this only affects ranking position. Override O1 (watchlist) still forces it into the analysis pool if you care.
+
+### C — Turnaround flag
+
+A new SQLite column `consecutive_recovery_quarters` tracks how many consecutive runs a stock has posted `composite_score ≥ 50` after coming out of an AVOID streak. When the counter reaches 2 or more, `turnaround_candidate=True` is set, and the stock surfaces in the daily report's new **Section H — TURNAROUND CANDIDATES**. Lets you spot recovery stories worth re-evaluating manually.
+
+---
+
+## Architectural principle (from earlier discussion)
+
+> Quality has **zero input** to allowlist membership. The allowlist answers exactly one question — "is this stock listed on both NSE and BSE?" — and that answer is binary, regulatory, and entirely independent of composite score, MoS, forensics, or verdict.
+
+A stock that turns into an AVOID candidate **stays on the allowlist** as long as it's still dual-listed. Quality concerns are handled separately via priority demotion (B) and turnaround flagging (C). This avoids the measurement-contamination feedback loop where quality-driven removal would propagate into Stage 2 / Early Entry / composite scoring of the same stock — making bad stocks look worse than reality.
+
+---
+
+## Files in this delivery
+
+| File | Where to put it | Action |
+|---|---|---|
+| `allowlist_maintainer.py` | `Sharemarket_Analyser_tool/ingestion/` | **NEW file** — place |
+| `reconciler.py` | `Sharemarket_Analyser_tool/ingestion/` | replace |
+| `data_bridge.py` | `Sharemarket_Analyser_tool/database/` | replace |
+| `priority_ranker.py` | `Sharemarket_Analyser_tool/screening/` | replace |
+| `master_funnel.py` | `Sharemarket_Analyser_tool/` (project root) | replace |
+| `daily_report_generator.py` | `Sharemarket_Analyser_tool/reporting/` | replace |
+| `test_upto_v11.0.2.py` | `Sharemarket_Analyser_tool/` (project root) | place + **delete** old `test_v11.0.1_full_withdummies.py` |
+| `NSE_BSE_Design_v11_0_2_Final.docx` | wherever your existing copy lives | replace |
+| `NSE_BSE_Design_v11_0_2_Final.pdf` | wherever your existing copy lives | replace |
+
+**No zip required.** Drop each file into its corresponding location. The total change set is **6 modified files + 1 new file + 1 renamed test file + 2 doc files = 10 files**.
+
+---
+
+## Validation performed (all clean)
+
+| Check | Result |
+|---|---|
+| All 47 project `.py` files compile | ✅ Zero syntax errors |
+| Existing 118 tests (Groups 1–26) | ✅ All pass — zero regression |
+| New tests (Groups 27–30, 32 cases) | ✅ All pass |
+| **Total** | **✅ 150 of 150 pass** |
+
+### Group breakdown
+
+| Group | Tests | What's covered |
+|---|---|---|
+| 1–20 (existing) | 84 | ScoringEngine — every code path |
+| 21–26 (existing) | 34 | v11.0.1 reporting + reconciler bugfixes |
+| **27 (new)** | 11 | `allowlist_maintainer.py` — record / prune / lookup / graceful degradation |
+| **28 (new)** | 5 | reconciler ⊕ runtime allowlist (UNION semantics, fresh-install behaviour) |
+| **29 (new)** | 10 | verdict streaks (avoid + recovery) + chronic-AVOID demotion in priority_ranker |
+| **30 (new)** | 6 | daily report Section H — turnaround candidates |
+
+---
+
+## To run the validation suite yourself
+
+```bash
+cd Sharemarket_Analyser_tool
+python3 test_upto_v11.0.2.py
+```
+
+Expected output: `FINAL: 150 passed, 0 failed`
+
+---
+
+## Database schema changes
+
+Two new tables/columns. The existing `data_bridge.initialize_v7_tables()` handles both fresh installs and upgrades (via ALTER TABLE fallback).
+
+```sql
+-- New table for runtime allowlist (A1 + A2)
+CREATE TABLE dual_listed_runtime (
+    symbol           TEXT PRIMARY KEY,
+    first_seen_date  TEXT NOT NULL,
+    last_seen_date   TEXT NOT NULL,
+    source           TEXT DEFAULT 'bse_merge'
+);
+
+-- New columns on existing table (B + C)
+ALTER TABLE latest_analysis_results ADD COLUMN consecutive_avoid_quarters INTEGER DEFAULT 0;
+ALTER TABLE latest_analysis_results ADD COLUMN consecutive_recovery_quarters INTEGER DEFAULT 0;
+```
+
+Existing DBs upgrade automatically on first run after deployment — no manual migration needed.
+
+---
+
+## Behaviour expectations on the next pipeline run
+
+**If BSE bhavcopy succeeds:**
+- New dual-listed observations get auto-recorded: `📥 Allowlist auto-add: N new dual-listed symbol(s) observed today`
+- Streaks update: `🔁 Verdict streaks updated: chronic-AVOID=N, turnaround candidates=M`
+- Stale entries pruned: `🧹 Allowlist auto-prune: removed N stale runtime entries (>30d absent)`
+
+**If BSE bhavcopy is blocked (typical Cloudflare 403 from GitHub Actions):**
+- Reconciler uses `get_effective_allowlist()` = hardcoded `DUAL_LISTED_ALLOWLIST` ∪ `dual_listed_runtime` table. So all 233 hardcoded symbols PLUS any auto-discovered ones from previous successful runs get correctly tagged as DUAL_LISTED.
+
+**On a fresh install (no DB yet):**
+- `dual_listed_runtime` table doesn't exist — `get_effective_allowlist()` falls back gracefully to the hardcoded set only. Behaviour identical to pre-v11.0.2.
+
+---
+
+## Design doc updates
+
+| Section | Change |
+|---|---|
+| §3.10 (NEW) | Verdict Streaks — explains both counters, chronic-AVOID demotion, turnaround flag, ordering invariant |
+| §7.5 | Maintenance note rewritten — points to §7.6 for self-maintenance |
+| §7.6 (NEW) | Auto-allowlist Maintenance — A1 + A2 + effective-allowlist semantics + the principle |
+| §14 Changelog | New highlighted v11.0.2 row; v11.0.1 demoted from "current bugfix release" to "bugfix release" |
+| ToC | §3.10 + §7.6 added; all subsequent page numbers bumped |
+
+Document is now **40 pages** (was 37 in v11.0.1).

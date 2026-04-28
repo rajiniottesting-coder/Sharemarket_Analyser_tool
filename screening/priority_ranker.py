@@ -79,6 +79,24 @@ def calculate_priority_score(row: dict, avg_vol_cache: dict = None) -> float:
     turnover_component = t_bonus * 10
 
     total = vol_component + fund_component + deliv_component + cap_component + turnover_component
+
+    # v11.0.2 — Feature B: Chronic-AVOID demotion.
+    # When a stock has been verdict=AVOID for 2+ consecutive runs (per the
+    # consecutive_avoid_quarters streak in latest_analysis_results), subtract
+    # 15 points from priority_score. This prevents chronic-distress stocks
+    # from consuming Stage-3 analysis budget every day.
+    #
+    # IMPORTANT: this does NOT affect exchange_tag or any quality field —
+    # the stock is still tagged correctly and still gets analysed if any
+    # override (O1 watchlist / O3 spike / O5 expiry) fires. We're only
+    # adjusting where it sits in the ranked queue.
+    try:
+        avoid_streak = int(row.get("consecutive_avoid_quarters") or 0)
+    except (ValueError, TypeError):
+        avoid_streak = 0
+    if avoid_streak >= 2:
+        total -= 15.0
+
     return round(total, 2)
 
 
@@ -110,15 +128,20 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
     # Prior-analysis enrichment: activates O4 (score deterioration) and O5
     # (7+ day expiry re-check). On first-ever run, map is empty and both
     # overrides simply don't fire — behavior identical to pre-v10.13.
+    # v11.0.2: also surfaces consecutive_avoid_quarters and
+    # consecutive_recovery_quarters used by feature B (chronic-AVOID demotion)
+    # and feature C (turnaround flag).
     _prior_map = get_prior_analysis_map()
     if _prior_map:
         def _prior_col(col_name, default):
             return df["symbol"].astype(str).map(
                 lambda s: _prior_map.get(s, {}).get(col_name, default)
             )
-        df["last_claude_score"]    = _prior_col("last_score",   0.0)
-        df["last_claude_verdict"]  = _prior_col("last_verdict", "")
-        df["days_since_analysis"]  = _prior_col("days_since",   99)
+        df["last_claude_score"]               = _prior_col("last_score",   0.0)
+        df["last_claude_verdict"]             = _prior_col("last_verdict", "")
+        df["days_since_analysis"]             = _prior_col("days_since",   99)
+        df["consecutive_avoid_quarters"]      = _prior_col("consecutive_avoid_quarters", 0)
+        df["consecutive_recovery_quarters"]   = _prior_col("consecutive_recovery_quarters", 0)
         print(f"   📚 Prior-analysis map loaded: {len(_prior_map)} symbols")
 
     # ── Compute priority scores (pass cache to avoid per-row SQL) ─────────────

@@ -96,6 +96,28 @@ def _is_dual_listed_known(symbol: str) -> bool:
     return symbol.strip().upper() in DUAL_LISTED_ALLOWLIST
 
 
+def get_effective_allowlist():
+    """
+    v11.0.2: Returns the runtime-effective union of:
+      (1) the hardcoded DUAL_LISTED_ALLOWLIST frozenset (always present)
+      (2) the dual_listed_runtime SQLite table (auto-discovered via BSE merges)
+
+    Falls back to just (1) if the runtime table is missing or unreadable —
+    so this is safe on a fresh install with no DB. The return type is a
+    plain frozenset, so .isin() and `in` checks work identically.
+    """
+    try:
+        # Lazy import — avoids a hard dependency if allowlist_maintainer ever
+        # has to be removed in a future refactor.
+        from ingestion.allowlist_maintainer import get_runtime_allowlist
+        runtime = get_runtime_allowlist()
+        if runtime:
+            return frozenset(DUAL_LISTED_ALLOWLIST | runtime)
+    except Exception:
+        pass
+    return DUAL_LISTED_ALLOWLIST
+
+
 def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFrame:
     """
     SECTION 1B: Cross-Exchange Reconciliation via ISIN.
@@ -118,10 +140,12 @@ def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFr
         # Use curated DUAL_LISTED_ALLOWLIST so widely-traded names like SBIN,
         # M&M, TITAN, BHARTIARTL get correctly tagged as DUAL_LISTED instead
         # of all defaulting to NSE_ONLY.
+        # v11.0.2: union with runtime-discovered symbols via get_effective_allowlist().
         nse_df = nse_df.copy()
         _sym_upper = nse_df["symbol"].astype(str).str.strip().str.upper()
+        _eff_allow = get_effective_allowlist()
         nse_df["exchange_tag"] = np.where(
-            _sym_upper.isin(DUAL_LISTED_ALLOWLIST),
+            _sym_upper.isin(_eff_allow),
             "DUAL_LISTED",
             "NSE_ONLY"
         )
@@ -228,7 +252,9 @@ def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFr
     _final_sym_col = "symbol_NSE" if "symbol_NSE" in merged.columns else "symbol"
     if _final_sym_col in merged.columns:
         _sym_check = merged[_final_sym_col].astype(str).str.strip().str.upper()
-        _is_known_dual = _sym_check.isin(DUAL_LISTED_ALLOWLIST)
+        # v11.0.2: union with runtime-discovered symbols
+        _eff_allow = get_effective_allowlist()
+        _is_known_dual = _sym_check.isin(_eff_allow)
         _was_nse_only  = (merged["exchange_tag"] == "NSE_ONLY")
         merged.loc[_is_known_dual & _was_nse_only, "exchange_tag"] = "DUAL_LISTED"
 

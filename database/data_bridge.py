@@ -111,20 +111,31 @@ def initialize_v7_tables(conn):
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS latest_analysis_results (
-            symbol           TEXT PRIMARY KEY,
-            date             TEXT,
-            composite_score  REAL DEFAULT 0,
-            early_score      REAL DEFAULT 0,
-            spike_score      INTEGER DEFAULT 0,
-            storm_score      REAL DEFAULT 0,
-            cfv              REAL DEFAULT 0,
-            mos_pct          REAL DEFAULT 0,
-            verdict          TEXT DEFAULT '',
-            ai_card          TEXT DEFAULT '',
-            analysis_summary TEXT DEFAULT '',
-            allocation_tag   TEXT DEFAULT ''
+            symbol                          TEXT PRIMARY KEY,
+            date                            TEXT,
+            composite_score                 REAL DEFAULT 0,
+            early_score                     REAL DEFAULT 0,
+            spike_score                     INTEGER DEFAULT 0,
+            storm_score                     REAL DEFAULT 0,
+            cfv                             REAL DEFAULT 0,
+            mos_pct                         REAL DEFAULT 0,
+            verdict                         TEXT DEFAULT '',
+            ai_card                         TEXT DEFAULT '',
+            analysis_summary                TEXT DEFAULT '',
+            allocation_tag                  TEXT DEFAULT '',
+            consecutive_avoid_quarters      INTEGER DEFAULT 0,
+            consecutive_recovery_quarters   INTEGER DEFAULT 0
         )
     """)
+
+    # v11.0.2: Backward-compat ALTER for DBs created before streak columns existed.
+    # SQLite ADD COLUMN is idempotent if we catch the OperationalError.
+    for col_def in ("consecutive_avoid_quarters INTEGER DEFAULT 0",
+                    "consecutive_recovery_quarters INTEGER DEFAULT 0"):
+        try:
+            c.execute(f"ALTER TABLE latest_analysis_results ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass  # column already exists — fine
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS bulk_deals (
@@ -435,6 +446,25 @@ def get_today_consolidated_data(target_date,
     except Exception as e:
         print(f"⚠️  Reconciler error: {e}. Using NSE-only data.")
         consolidated_df = all_nse
+
+    # v11.0.2: When BSE merge actually succeeded, record any new dual-listed
+    # observations to the runtime allowlist table so they survive future
+    # BSE-blocked runs. Failures here are non-fatal (allowlist still works
+    # from hardcoded DUAL_LISTED_ALLOWLIST).
+    if (consolidated_df is not None and not consolidated_df.empty
+            and all_bse is not None and not all_bse.empty):
+        try:
+            from ingestion.allowlist_maintainer import record_dual_listed_observations
+            from ingestion.reconciler import DUAL_LISTED_ALLOWLIST
+            new_count = record_dual_listed_observations(
+                consolidated_df,
+                today_iso=date_str,
+                hardcoded_allowlist=DUAL_LISTED_ALLOWLIST,
+            )
+            if new_count > 0:
+                print(f"   📥 Allowlist auto-add: {new_count} new dual-listed symbol(s) observed today")
+        except Exception as _e:
+            print(f"   ⚠️  Allowlist recorder skipped: {_e}")
 
     if consolidated_df is not None and not consolidated_df.empty:
         consolidated_df["date"] = date_str
@@ -978,7 +1008,9 @@ def load_latest_analysis_results() -> list:
 
 def get_prior_analysis_map() -> dict:
     """
-    v10.13: Returns dict {symbol: {last_score, last_verdict, date, days_since}}
+    v10.13: Returns dict {symbol: {last_score, last_verdict, date, days_since,
+                                    consecutive_avoid_quarters,
+                                    consecutive_recovery_quarters}}
     sourced from the latest_analysis_results table.
 
     Used by priority_ranker to:
@@ -986,6 +1018,8 @@ def get_prior_analysis_map() -> dict:
           last≥60 + today's Stage2<15) can actually fire.
       (b) populate `days_since_analysis` so override rule O5 (expiry re-check,
           not analysed in 7+ days) can fire. Both were dormant pre-v10.13.
+      (c) v11.0.2: surface verdict-streak counters so chronic-AVOID demotion
+          (feature B) and turnaround flag (feature C) can fire.
 
     Free-tier friendly: one small SELECT on an in-process SQLite table; no
     external calls.
@@ -994,10 +1028,18 @@ def get_prior_analysis_map() -> dict:
     out = {}
     try:
         conn = sqlite3.connect("market_data.db")
-        df = pd.read_sql(
-            "SELECT symbol, date, composite_score, verdict "
-            "FROM latest_analysis_results", conn,
-        )
+        # Tolerant SELECT — older DBs may not have streak columns; treat missing as 0.
+        try:
+            df = pd.read_sql(
+                "SELECT symbol, date, composite_score, verdict, "
+                "       consecutive_avoid_quarters, consecutive_recovery_quarters "
+                "FROM latest_analysis_results", conn,
+            )
+        except Exception:
+            df = pd.read_sql(
+                "SELECT symbol, date, composite_score, verdict "
+                "FROM latest_analysis_results", conn,
+            )
         conn.close()
     except Exception:
         return out
@@ -1025,10 +1067,115 @@ def get_prior_analysis_map() -> dict:
             except (ValueError, TypeError):
                 pass
 
+        try:
+            avoid_streak = int(row.get("consecutive_avoid_quarters") or 0)
+        except (ValueError, TypeError):
+            avoid_streak = 0
+        try:
+            recovery_streak = int(row.get("consecutive_recovery_quarters") or 0)
+        except (ValueError, TypeError):
+            recovery_streak = 0
+
         out[sym] = {
-            "last_score":   score,
-            "last_verdict": verdict,
-            "date":         str(d_raw)[:10] if d_raw else "",
-            "days_since":   days_since,
+            "last_score":                     score,
+            "last_verdict":                   verdict,
+            "date":                           str(d_raw)[:10] if d_raw else "",
+            "days_since":                     days_since,
+            "consecutive_avoid_quarters":     avoid_streak,
+            "consecutive_recovery_quarters":  recovery_streak,
         }
     return out
+
+
+def update_verdict_streaks(stocks_today: list) -> dict:
+    """
+    v11.0.2: For each stock analysed today, advance or reset its verdict-streak
+    counters based on the previous run's values vs today's verdict and score.
+
+    Rules
+    -----
+    consecutive_avoid_quarters:
+      • += 1 when today's verdict == "AVOID"
+      • reset to 0 on any other verdict
+      Reaching ≥ 2 triggers chronic-AVOID demotion in priority_ranker (feature B).
+
+    consecutive_recovery_quarters:
+      • += 1 when previous verdict was "AVOID" AND today's composite_score ≥ 50
+        (i.e. emerging from an AVOID streak)
+      • += 1 again when streak is already running AND today's composite ≥ 50
+      • reset to 0 if today's composite drops below 50
+      • also reset to 0 if today's verdict is back to "AVOID"
+      Reaching ≥ 2 triggers Section H "Turnaround Candidate" flag (feature C).
+
+    Parameters
+    ----------
+    stocks_today : list[dict]
+        Each dict must have at minimum 'symbol', 'verdict', 'composite_score'.
+        Typically the final_100_list passed to ExcelGenerator.
+
+    Returns dict {symbol: {avoid: int, recovery: int}} of the NEW values
+    written to the DB. Useful for tests and for stamping into stocks_today
+    so downstream consumers (daily report) can read them in-process.
+    """
+    if not stocks_today:
+        return {}
+
+    prior = get_prior_analysis_map()
+    new_streaks = {}
+
+    for stk in stocks_today:
+        sym = str(stk.get("symbol", "") or "").strip().upper()
+        if not sym:
+            continue
+        verdict = str(stk.get("verdict") or "").strip().upper()
+        try:
+            score = float(stk.get("composite_score") or 0)
+        except (ValueError, TypeError):
+            score = 0.0
+
+        prev = prior.get(sym, {})
+        prev_avoid = int(prev.get("consecutive_avoid_quarters") or 0)
+        prev_recovery = int(prev.get("consecutive_recovery_quarters") or 0)
+        prev_verdict = str(prev.get("last_verdict") or "").upper()
+
+        # Avoid streak
+        if verdict == "AVOID":
+            new_avoid = prev_avoid + 1
+        else:
+            new_avoid = 0
+
+        # Recovery streak — fires only after coming out of AVOID
+        if verdict == "AVOID":
+            new_recovery = 0  # back in AVOID territory; reset
+        elif prev_verdict == "AVOID" and score >= 50:
+            new_recovery = 1  # first quarter out of AVOID with healthy score
+        elif prev_recovery >= 1 and score >= 50:
+            new_recovery = prev_recovery + 1  # streak continues
+        else:
+            new_recovery = 0  # below 50 → reset
+
+        new_streaks[sym] = {"avoid": new_avoid, "recovery": new_recovery}
+        # Stamp back onto stock dict so downstream (daily report) can read it
+        stk["consecutive_avoid_quarters"]    = new_avoid
+        stk["consecutive_recovery_quarters"] = new_recovery
+        stk["turnaround_candidate"] = (new_recovery >= 2)
+
+    # Persist to DB
+    try:
+        conn = sqlite3.connect("market_data.db")
+        for sym, vals in new_streaks.items():
+            conn.execute(
+                """
+                UPDATE latest_analysis_results
+                   SET consecutive_avoid_quarters = ?,
+                       consecutive_recovery_quarters = ?
+                 WHERE symbol = ?
+                """,
+                (vals["avoid"], vals["recovery"], sym),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"   ⚠️  update_verdict_streaks: persist failed: {e}")
+
+    return new_streaks

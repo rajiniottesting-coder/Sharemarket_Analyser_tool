@@ -2777,6 +2777,25 @@ def run_master_pipeline():
         # ── Step B: Save TODAY's scores (for NEXT run to use as prev_scores) ─────
         # Must run AFTER loading prev_scores — otherwise we'd compare today
         # against today and Score Δ would always be 0.
+        #
+        # v11.0.2: BEFORE we overwrite the table with today's verdicts, compute
+        # verdict-streak counters (chronic-AVOID for feature B, recovery for
+        # feature C). update_verdict_streaks() reads PREVIOUS values via
+        # get_prior_analysis_map() (which still reflects yesterday's data
+        # because we haven't INSERTed yet), then writes the new streaks via
+        # UPDATE. It also stamps `consecutive_avoid_quarters`,
+        # `consecutive_recovery_quarters`, and `turnaround_candidate` onto each
+        # stock dict so the Excel/report layers can read them in-process.
+        try:
+            from database.data_bridge import update_verdict_streaks as _upd_streaks
+            _streak_summary = _upd_streaks(final_100_list)
+            _n_avoid_chronic    = sum(1 for v in _streak_summary.values() if v.get("avoid", 0) >= 2)
+            _n_turnaround       = sum(1 for v in _streak_summary.values() if v.get("recovery", 0) >= 2)
+            print(f"   🔁 Verdict streaks updated: chronic-AVOID={_n_avoid_chronic}, "
+                  f"turnaround candidates={_n_turnaround}")
+        except Exception as _str_e:
+            print(f"   ⚠️  Streak update skipped: {_str_e}")
+
         try:
             import sqlite3 as _sq_lar
             _conn_lar = _sq_lar.connect("market_data.db")
@@ -2786,8 +2805,9 @@ def run_master_pipeline():
                     """
                     INSERT OR REPLACE INTO latest_analysis_results
                         (symbol, date, composite_score, early_score,
-                         spike_score, storm_score, cfv, mos_pct, verdict)
-                    VALUES (?,?,?,?,?,?,?,?,?)
+                         spike_score, storm_score, cfv, mos_pct, verdict,
+                         consecutive_avoid_quarters, consecutive_recovery_quarters)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         str(_s_lar.get("symbol", "") or ""),
@@ -2799,6 +2819,8 @@ def run_master_pipeline():
                         float(_s_lar.get("cfv", 0) or 0),
                         float(_s_lar.get("mos_pct", 0) or 0),
                         str(_s_lar.get("verdict", "") or ""),
+                        int(_s_lar.get("consecutive_avoid_quarters", 0) or 0),
+                        int(_s_lar.get("consecutive_recovery_quarters", 0) or 0),
                     )
                 )
             _conn_lar.commit()
@@ -2806,6 +2828,16 @@ def run_master_pipeline():
             print(f"   💾 Saved {len(final_100_list)} scores → next run will compute Δ")
         except Exception as _lar_e:
             print(f"   ⚠️  Could not save analysis results: {_lar_e}")
+
+        # v11.0.2: Prune any runtime-allowlist entries that haven't been seen
+        # in 30+ days (i.e. delisted or symbol-renamed). Quality-independent.
+        try:
+            from ingestion.allowlist_maintainer import prune_runtime_allowlist
+            _pruned = prune_runtime_allowlist(today_iso=target_date.strftime("%Y-%m-%d"))
+            if _pruned > 0:
+                print(f"   🧹 Allowlist auto-prune: removed {_pruned} stale runtime entries (>30d absent)")
+        except Exception as _pe:
+            print(f"   ⚠️  Allowlist prune skipped: {_pe}")
         excel_gen = ExcelGeneratorV6(final_100_list, date_str,
                                      run_time=_run_time_ist,
                                      prev_scores=_prev_scores,

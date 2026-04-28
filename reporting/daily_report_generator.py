@@ -10,6 +10,10 @@ class DailyReportGenerator:
         'spike_triggers': '', 'sector': 'General',
         'verdict': 'WATCHLIST', 'exchange_tag': 'NSE',
         'guard_reasons': '', 'symbol': '',
+        # v11.0.2 — verdict streaks (feature B + C)
+        'consecutive_avoid_quarters': 0,
+        'consecutive_recovery_quarters': 0,
+        'turnaround_candidate': False,
     }
 
     def __init__(self, data, market_stats):
@@ -82,6 +86,20 @@ class DailyReportGenerator:
         report.append("SECTION G — SMART MONEY SUMMARY")
         sm = self.df[self.df['smart_money_signals'].astype(str).str.len() > 0].head(5)
         report.append(self._format_list(sm, ['symbol', 'smart_money_signals']))
+
+        # v11.0.2 — SECTION H: TURNAROUND CANDIDATES (feature C)
+        # Stocks that have recovered for ≥2 consecutive quarters after an
+        # AVOID streak. Surfaces stocks worth re-evaluating manually.
+        report.append("\nSECTION H — TURNAROUND CANDIDATES")
+        try:
+            ta_mask = self.df['consecutive_recovery_quarters'].fillna(0).astype(int) >= 2
+            ta_stocks = self.df[ta_mask].sort_values(
+                by='consecutive_recovery_quarters', ascending=False).head(5)
+        except Exception:
+            ta_stocks = self.df.iloc[0:0]  # empty same shape
+        report.append(self._format_list(
+            ta_stocks,
+            ['symbol', 'verdict', 'composite_score', 'consecutive_recovery_quarters']))
 
         return "\n".join(report)
 
