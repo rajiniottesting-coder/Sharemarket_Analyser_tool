@@ -179,13 +179,44 @@ def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFr
     use_isin_merge = nse_has_isin.any() and bse_has_isin.any()
 
     if use_isin_merge:
-        merged = pd.merge(
-            nse_df,
-            bse_df,
+        # v12.0.1 BUG FIX: only merge rows that have a real (12+ char) ISIN.
+        # Previously the full nse_df + bse_df were merged on isin=='' which
+        # produced a Cartesian explosion of false-positive DUAL_LISTED tags
+        # for every NSE row with a missing ISIN against every BSE row with a
+        # missing ISIN. Symptom: ~99% DUAL_LISTED, index tickers (IT, PSUBANK,
+        # BANKNIFTY1) tagged DUAL_LISTED, BSE_ONLY/BSE_SME counts = 0.
+        # Fix: split the merge into (a) ISIN-matched rows on real ISINs only,
+        # then (b) symbol-fallback for rows that didn't have an ISIN to merge on.
+        nse_with_isin = nse_df[nse_has_isin].copy()
+        bse_with_isin = bse_df[bse_has_isin].copy()
+        nse_without_isin = nse_df[~nse_has_isin].copy()
+        bse_without_isin = bse_df[~bse_has_isin].copy()
+
+        merged_isin = pd.merge(
+            nse_with_isin,
+            bse_with_isin,
             on="isin",
             how="outer",
             suffixes=("_NSE", "_BSE"),
         )
+
+        # For rows that lacked an ISIN, fall back to symbol-merge so we don't
+        # lose them entirely. Symbol-merge produces the same column shape
+        # (close_NSE / close_BSE / sc_group_BSE / etc.) so _apply_exchange_tag
+        # below works uniformly.
+        if not nse_without_isin.empty or not bse_without_isin.empty:
+            merged_sym = pd.merge(
+                nse_without_isin,
+                bse_without_isin,
+                on="symbol",
+                how="outer",
+                suffixes=("_NSE", "_BSE"),
+            )
+            # Combine both
+            merged = pd.concat([merged_isin, merged_sym], ignore_index=True, sort=False)
+        else:
+            merged = merged_isin
+
         # Check if ISIN merge produced meaningful DUAL_LISTED results
         # (at least 5% of NSE stocks should be dual-listed if BSE ISINs are valid)
         sym_nse_test = merged.get("symbol_NSE", merged.get("symbol", pd.Series()))
