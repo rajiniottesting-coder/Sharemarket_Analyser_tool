@@ -1580,6 +1580,62 @@ if _rec31 is not None:
     except Exception as _e:
         failed += 1; failures.append(f"31.6 exception: {_e}")
 
+    # 31.7 — REAL-WORLD BSE-only company: Silverline Technologies Ltd
+    #   ISIN: INE368A01021 · BSE scrip code: 500389 · symbol: SILVERLINE
+    #   NSE: NOT LISTED. Confirmed via business-standard.com on 28-Apr-2026.
+    #   This is a regression test against the production scenario where
+    #   genuinely-BSE-only equities were getting falsely tagged DUAL_LISTED.
+    try:
+        nse_sil = _pd_31.DataFrame({
+            "symbol": ["RELIANCE", "TCS", "INFY", "PSUBANK", "BANKNIFTY1"],
+            "isin":   ["INE002A01018", "INE467B01029", "INE009A01021", "", ""],
+            "close":  [3000.0, 4200.0, 1700.0, 38000.0, 50000.0],
+            "volume": [10000, 10000, 10000, 100, 100],
+        })
+        bse_sil = _pd_31.DataFrame({
+            "symbol":   ["RELIANCE", "TCS", "INFY", "SILVERLINE"],
+            "isin":     ["INE002A01018", "INE467B01029", "INE009A01021", "INE368A01021"],
+            "close":    [3001.0, 4201.0, 1701.0, 21.55],
+            "sc_group": ["A", "A", "A", "T"],   # T = Trade-to-Trade (NOT SME)
+            "bse_code": ["500325", "532540", "500209", "500389"],
+        })
+        m_sil = _rec31(nse_sil, bse_sil)
+        sym_bse_col = "symbol_BSE" if "symbol_BSE" in m_sil.columns else "symbol"
+        sil_rows = m_sil[m_sil[sym_bse_col].astype(str).str.upper() == "SILVERLINE"]
+        if sil_rows.empty:
+            failed += 1; failures.append("31.7 SILVERLINE not found in merged output")
+        else:
+            sil_tag = sil_rows["exchange_tag"].iloc[0]
+            if sil_tag == "BSE_ONLY":
+                passed += 1
+                print("  ✓ 31.7 SILVERLINE (real BSE-only equity, T2T group) → BSE_ONLY")
+            else:
+                failed += 1
+                failures.append(f"31.7 SILVERLINE tagged {sil_tag}, expected BSE_ONLY")
+    except Exception as _e:
+        failed += 1; failures.append(f"31.7 exception: {_e}")
+
+    # 31.8 — Same Silverline data but with sc_group='M' (BSE SME group)
+    #   should tag BSE_SME instead of BSE_ONLY — verifies the SME branch fires
+    #   correctly for genuinely-BSE-only equities.
+    try:
+        bse_sme = bse_sil.copy()
+        bse_sme.loc[bse_sme["symbol"] == "SILVERLINE", "sc_group"] = "M"
+        m_sme = _rec31(nse_sil, bse_sme)
+        sil_sme = m_sme[m_sme[sym_bse_col].astype(str).str.upper() == "SILVERLINE"]
+        if sil_sme.empty:
+            failed += 1; failures.append("31.8 SILVERLINE-SME not found in merged output")
+        else:
+            sil_sme_tag = sil_sme["exchange_tag"].iloc[0]
+            if sil_sme_tag == "BSE_SME":
+                passed += 1
+                print("  ✓ 31.8 SILVERLINE with sc_group='M' (SME) → BSE_SME")
+            else:
+                failed += 1
+                failures.append(f"31.8 SILVERLINE-SME tagged {sil_sme_tag}, expected BSE_SME")
+    except Exception as _e:
+        failed += 1; failures.append(f"31.8 exception: {_e}")
+
 print("\n" + "═" * 70)
 print(f"FINAL: {passed} passed, {failed} failed")
 print("═" * 70)
