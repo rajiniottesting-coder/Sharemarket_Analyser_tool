@@ -72,7 +72,12 @@ TIPS: Dict[str, Tuple[str, str]] = {
                 "(max +8 / min −10) — see Score /100 tooltip for detail.\n"
                 "v10.17: BUY requires ≥3 of 5 sub-score dimensions to be\n"
                 "informed (real data fired). Otherwise demoted to\n"
-                "WATCHLIST ●●● (thin data)."),
+                "WATCHLIST ●●● (thin data).\n"
+                "v12.0: NEUTRAL stocks now appear in the Full Dashboard\n"
+                "regardless of fundamentals. Stage 3 already enforces the\n"
+                "quality gate; the prior 'exceptional NEUTRAL only' filter\n"
+                "was removed because it silently shrank the dashboard\n"
+                "below 100 rows whenever Gemini quota was exhausted."),
     "Score /100": ("≥70 strong · ≥60 watch · <38 avoid",
                    "Weighted composite (0-100):\n"
                    "Fundamental 35% + Technical 30% + EarlyEntry 15%\n"

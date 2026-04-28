@@ -1364,34 +1364,20 @@ class ExcelGeneratorV6:
         for col,dflt in self.REQUIRED_COLS.items():
             if col not in self.df.columns: self.df[col]=dflt
 
-        # ── Filter NEUTRAL stocks: only keep if exceptionally good ──────────
-        # NEUTRAL = score doesn't qualify for BUY/WATCHLIST
-        # Keep NEUTRAL only if: ROE>20% AND PE<30 AND MoS>10% AND ts>65
-        # i.e. strong fundamentals + undervalued + decent technicals
-        if not self.df.empty and "verdict" in self.df.columns:
-            def _is_exceptional_neutral(row):
-                if str(row.get("verdict","")) != "NEUTRAL":
-                    return True  # keep all non-neutral
-                # v10.16: pe/pb/roe display columns can be "—" (Option B honest
-                # display). Coerce defensively so float() can't crash if pe_num
-                # isn't present and the fallback lands on display '—'.
-                def _fs(v, default):
-                    if v in (None, "", "—", "--"):
-                        return float(default)
-                    try: return float(v)
-                    except (ValueError, TypeError): return float(default)
-                roe = _fs(row.get("roe_num", row.get("roe", 0)), 0)
-                pe  = _fs(row.get("pe_num",  row.get("pe",  99)), 99)
-                mos = _fs(row.get("mos_pct", 0), 0)
-                ts  = _fs(row.get("technical_score", 50), 50)
-                sc  = _fs(row.get("composite_score", 0), 0)
-                # Exceptional NEUTRAL: strong fundamentals AND undervalued AND good technicals
-                exceptional = (roe > 20 and pe < 30 and mos > 10 and ts > 62)
-                if exceptional:
-                    return True
-                return False
-
-            self.df = self.df[self.df.apply(_is_exceptional_neutral, axis=1)].reset_index(drop=True)
+        # ── NEUTRAL filter: REMOVED in v12.0 ────────────────────────────────
+        # Previously this block dropped NEUTRAL-verdict stocks unless they met
+        # an "exceptional" bar (ROE>20% AND PE<30 AND MoS>10% AND ts>62). This
+        # caused the dashboard to silently shrink below 100 whenever Gemini
+        # quota was exhausted: stocks that didn't get an AI card stayed at the
+        # default NEUTRAL label and got filtered out here, even though Stage 3
+        # had already selected them as worth analysing.
+        #
+        # Stage 3 (priority_ranker.get_top_100_candidates) is the single
+        # authoritative quality gate. If a stock makes it into final_100_list,
+        # it belongs in the dashboard regardless of verdict tier — including
+        # NEUTRAL. Sorting by VERDICT_ORDER in priority_ranker already places
+        # BUY first and AVOID last, so NEUTRAL rows surface in their natural
+        # position without crowding out high-conviction picks.
 
     @staticmethod
     def _safe_val(v): return _sv(v)

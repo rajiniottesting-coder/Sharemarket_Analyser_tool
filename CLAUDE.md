@@ -883,10 +883,11 @@ Direct follow-up to v10.15 FIX #4 after user feedback on production Excel: the �
 - `current_bs.get('roe', 0) < prev_bs_4q.get('roe', 0)` would crash `TypeError` when `roe = "—"` (which v10.15 FIX #1 can produce when neither direct nor derivable ROE is available).
 - New: local `_roe_num()` helper at top of `analyze_bs_health` coerces `"—"` → 0 before the "DEBT UP / ROE DOWN" red-flag check.
 
-**FIX #6 — Excel NEUTRAL-filter defensive coerce** (`reporting/excel_generator.py` lines 1367-1385)
+**FIX #6 — Excel NEUTRAL-filter defensive coerce** (`reporting/excel_generator.py` lines 1367-1385) — *historic; superseded in v12.0*
 
 - `_is_exceptional_neutral()` used `float(row.get("pe_num", row.get("pe", 99)) or 99)` — crashed `ValueError` in the edge case where `pe_num` absent and fallback reached `pe = "—"`.
-- New: local `_fs()` helper with `in (None, "", "—", "--")` check then `try float()`, same pattern as `_sf` in scoring code. Applied to all 5 fields read by the filter (roe, pe, mos_pct, technical_score, composite_score).
+- v10.16 added a local `_fs()` helper with `in (None, "", "—", "--")` check then `try float()`, same pattern as `_sf` in scoring code. Applied to all 5 fields read by the filter (roe, pe, mos_pct, technical_score, composite_score).
+- **v12.0 update:** The entire `_is_exceptional_neutral()` function and the filter that called it have been removed. The block was silently shrinking the dashboard below 100 rows whenever Gemini quota exhausted (NEUTRAL is the default verdict for stocks that didn't get an AI card). Stage 3 (`priority_ranker.get_top_100_candidates`) is the single authoritative quality gate; the Excel layer no longer second-guesses it. See v12.0 section at end of this doc for context.
 
 **Tooltip updates** (`reporting/tooltip_formatter.py`)
 
@@ -1053,10 +1054,46 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 - [ ] Reduce AI batch size 12 → 8 if response truncation observed
 - [ ] FCF-yield based FV model (M8) for capital-light businesses
 - [ ] PAT CAGR in fundamental score (needs data source)
-- [ ] Verify ETFs = 0 in output after pipeline run
-- [ ] Expand DUAL_LISTED_ALLOWLIST as new IPOs confirm dual-listing
+- [x] Verify ETFs = 0 in output after pipeline run *(v12.0: BSE 3-tier cascade restores sc_group filter so ETFs stop leaking)*
+- [ ] Expand DUAL_LISTED_ALLOWLIST as new IPOs confirm dual-listing *(v11.0.2 added runtime auto-add via `dual_listed_runtime` table)*
 - [ ] Investigate BSE corporate filings API for Pledge % and separate DII (paid)
 
 ---
 
-*Last updated: April 2026 · v10.11 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 21. v12.0 RELEASE — BSE Cloudflare resilience + Dashboard size stability
+
+**Date:** 28 April 2026
+**Files changed:** `master_funnel.py`, `reporting/excel_generator.py`, `reporting/tooltip_formatter.py`, `requirements.txt` + 4 doc files
+
+### Two root-cause fixes that resolve four observable symptoms
+
+**Symptom set:**
+- Dashboard had 79 stocks instead of 100 (~21 missing on every quota-exhausted run)
+- Exchange tag column was 98% `DUAL_LISTED` with zero `BSE_ONLY` / `BSE_SME` entries
+- Index/ETF tickers (`IT`, `PSUBANK`, `BANKNIFTY1`, `MON100`, `HDFCNIFBAN`) leaked into the analysis pool
+- Some Stage-3 selected stocks silently never reached the Excel output
+
+**Root cause #1 — BSE bhavcopy single-attempt strategy.** `master_funnel._bse_bhav()` called only the `bse` pip package. When BSE returned 403 (Cloudflare blocking cloud IPs), the function returned `None` and the reconciler fell into its `bse_df.empty` fallback at `ingestion/reconciler.py` line 138. That fallback can only produce `DUAL_LISTED` (when on allowlist) or `NSE_ONLY` (otherwise) — `BSE_ONLY` and `BSE_SME` become impossible. Plus `pre_screener.py`'s ETF filter at line 40 is `sc_group`-based, which requires BSE data; so when BSE is down, indices/ETFs flow through unfiltered.
+
+**v12.0 fix:** `master_funnel._bse_bhav()` now uses a 3-tier cascade: bse package → cloudscraper → curl_cffi. Each tier wrapped so a Cloudflare-style failure falls through to the next; only a Tier-1 `RuntimeError`/`FileNotFoundError` (the bse package's signal for "not yet published" — i.e. holiday/weekend/intraday) returns `None` immediately without burning Tier 2/3 attempts.
+
+The diagnosis logic was already in the project — `utils/bse_diagnosis.py` had been explicitly recommending `curl_cffi` as the fix, and `ingestion/harvester.download_bse_bhavcopy` already used Tiers 1+2 for SME data. v12.0 just consolidates this into the main pipeline path.
+
+**Root cause #2 — Excel-layer NEUTRAL filter.** `ExcelGeneratorV6.__init__` had a block at lines 1367-1394 that dropped any NEUTRAL-verdict stock unless it met `ROE>20% AND PE<30 AND MoS>10% AND tech_score>62`. On healthy runs this rarely showed because Gemini AI cards promoted most NEUTRAL stocks to BUY/WATCHLIST/AVOID before the filter ran. On runs where Gemini quota exhausted (a daily occurrence on free tier), 20+ stocks stayed at the default NEUTRAL label and got silently dropped — making the dashboard size dependent on AI quota state.
+
+**v12.0 fix:** Filter removed entirely. Stage 3 (`priority_ranker.get_top_100_candidates`) is the only quality gate now. Comment block left in place explaining the decision so future maintainers don't accidentally re-add it.
+
+### What stays the same
+
+- All v11.0.2 features still fire: streak counters, chronic-AVOID demotion, turnaround flag, Section H, runtime allowlist auto-add/auto-prune
+- Dashboard sort order: BUY → OVERVALUED → WATCHLIST → NEUTRAL → AVOID (NEUTRAL slot was always defined in `VERDICT_ORDER`, just not previously visible)
+- All other Excel sheets (Gold, Trade Summary, Alert Log, Delivery Preview, Glossary, Tooltip Reference) untouched
+- Prior-analysis enrichment, override rules O1-O5, all unchanged
+
+### Operational note
+
+`pip install curl_cffi` is the only new dependency. Without it, the cascade gracefully skips Tier 3 with a console warning; pipeline still works as long as Tier 1 or Tier 2 succeeds. On retail/residential IPs Tier 1 typically works; on cloud runners (GitHub Actions, AWS) Tier 3 is often required.
+
+---
+
+*Last updated: April 2026 · v12.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

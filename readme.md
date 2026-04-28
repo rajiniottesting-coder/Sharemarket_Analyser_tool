@@ -484,6 +484,92 @@ The technical design doc has been updated in two places to reflect this release:
 
 No other §3.5 / §13 content needed updating — the existing references already describe the EE ≥ 50 threshold correctly. The bug was that the *code* didn't match the doc; this release brings the code into alignment with what the doc has always said.
 
+# NSE/BSE Stock Analyser — v12.0 Release
+
+**Date:** 28 April 2026
+**Type:** Feature/quality release — robustness fixes to ingestion + dashboard contract
+**Test status:** all 47 Python files compile clean; pipeline run end-to-end verified (100 stocks delivered, real exchange-tag distribution, all v11.0.2 streak features still firing)
+
+---
+
+## What this release fixes
+
+v11.0.2 worked correctly when its inputs were healthy, but two structural fragilities surfaced in production runs:
+
+1. **BSE bhavcopy failures cascaded silently.** When BSE blocked the download (Cloudflare 403 on cloud IPs), `master_funnel._bse_bhav` returned `None` after a single attempt, the reconciler fell into its NSE-only fallback, and the dashboard ended up with ~98% of stocks tagged `DUAL_LISTED`, no `BSE_ONLY`/`BSE_SME` tags at all, and several index/ETF tickers (`IT`, `PSUBANK`, `BANKNIFTY1`, `MON100`, `HDFCNIFBAN`) leaking through because `sc_group`-based ETF filtering depends on BSE data.
+
+2. **The "exceptional NEUTRAL only" Excel filter silently shrank the dashboard.** `ExcelGeneratorV6.__init__` dropped any NEUTRAL-verdict stock that didn't meet a strict ROE/PE/MoS/tech bar. On healthy runs this was rarely visible because most stocks were promoted out of NEUTRAL by the AI cards. On runs where Gemini quota was exhausted (which happens on free-tier daily), 20+ stocks stayed NEUTRAL by default and got filtered out — the Full Dashboard would have 79–82 rows instead of the documented 100.
+
+The fixes target the two root causes rather than the symptoms.
+
+### FIX #1 — BSE bhavcopy 3-tier Cloudflare-resilient cascade
+
+`master_funnel._bse_bhav()` now cascades through three strategies before giving up:
+
+1. **Tier 1**: `bse` pip package (works on most retail IPs — current behavior)
+2. **Tier 2**: `cloudscraper` with BSE homepage warmup (handles standard Cloudflare JS challenges)
+3. **Tier 3**: `curl_cffi` with `chrome124` TLS impersonation (defeats Cloudflare TLS fingerprinting that cloudscraper alone can't bypass on cloud runners)
+
+Each tier falls through to the next on network/Cloudflare errors, but a holiday/not-yet-published response from Tier 1 (`RuntimeError`/`FileNotFoundError`) still returns `None` immediately without burning Tier 2/3 attempts. The diagnosis logic was already present in the project (`utils/bse_diagnosis.py` explicitly identified `curl_cffi` as the fix; `ingestion/harvester.download_bse_bhavcopy` already used Tiers 1+2 for SME) — v12.0 just wires it into the main pipeline path.
+
+When BSE actually downloads, the reconciler runs its proper ISIN/symbol merge, the four-way tag taxonomy (`DUAL_LISTED`/`NSE_ONLY`/`BSE_ONLY`/`BSE_SME`) is restored, and the pre-screener's `sc_group`-based ETF/MF filter starts firing again. Indices and ETFs stop leaking into the top-100.
+
+### FIX #2 — Removed silent NEUTRAL filter in Excel generator
+
+`ExcelGeneratorV6.__init__` (in `reporting/excel_generator.py`, was lines 1367–1394) used to apply a second quality gate AFTER Stage 3 had already chosen the top 100. NEUTRAL-verdict rows were dropped unless they met `ROE>20% AND PE<30 AND MoS>10% AND tech_score>62`. This block has been removed entirely.
+
+The replacement is a comment block explaining the decision: Stage 3's `priority_ranker.get_top_100_candidates` is the single authoritative quality gate. If a stock makes it into `final_100_list`, it belongs in the dashboard regardless of verdict. The existing `VERDICT_ORDER` sort in priority_ranker already places NEUTRAL between WATCHLIST and AVOID, so NEUTRAL rows surface naturally near the bottom without crowding high-conviction picks at the top.
+
+The dashboard size is now stable across runs regardless of Gemini quota state.
+
+### Doc updates that ride with this release
+
+- `reporting/tooltip_formatter.py` — Verdict tooltip extended with v12.0 note explaining NEUTRAL stocks now appear in the Full Dashboard
+- `requirements.txt` — `curl_cffi` added (only new dependency)
+- `pipeline_reference_v12.0.html` — title/meta/footer updated to v12.0; new annotation in the Stage 3 → Excel handoff explaining the NEUTRAL filter removal
+- `CLAUDE.md` — FIX #6 reference (line 886, the v10.16 defensive coerce) updated to note the function was removed in v12.0
+- `scoring_logic_3Stagefunnel_explained.md` — line 736 reference updated to note the function no longer exists; v12.0 addendum added
+
+---
+
+## Files in this delivery
+
+| File | Where to put it | Action |
+|---|---|---|
+| `master_funnel.py` | `Sharemarket_Analyser_tool/` (project root) | already deployed (BSE cascade) |
+| `excel_generator.py` | `Sharemarket_Analyser_tool/reporting/` | replace (NEUTRAL filter removed) |
+| `tooltip_formatter.py` | `Sharemarket_Analyser_tool/reporting/` | replace |
+| `requirements.txt` | `Sharemarket_Analyser_tool/` (project root) | already deployed (curl_cffi added) |
+| `readme.md` | `Sharemarket_Analyser_tool/` (project root) | replace (this file) |
+| `CLAUDE.md` | `Sharemarket_Analyser_tool/` (project root) | replace |
+| `scoring_logic_3Stagefunnel_explained.md` | `Sharemarket_Analyser_tool/` (project root) | replace |
+| `pipeline_reference_v12.0.html` | `Sharemarket_Analyser_tool/` (project root) | replace |
+
+**Run after deploy:** no new dependencies — `curl_cffi` already in your repo.
+
+---
+
+## What you'll observe
+
+**In the console** (one of these will fire on every run):
+```
+✅ BSE Bhav downloaded via bse package: NNNN records for YYYY-MM-DD
+✅ BSE Bhav downloaded via cloudscraper: NNNN records for YYYY-MM-DD
+✅ BSE Bhav downloaded via curl_cffi: NNNN records for YYYY-MM-DD
+```
+
+**In the dashboard**:
+- 100 rows of data in `📊 Full Dashboard` (was 79–82 on quota-exhausted runs)
+- Realistic exchange tag mix: `DUAL_LISTED` + `NSE_ONLY` + `BSE_ONLY` + `BSE_SME` (was 98% `DUAL_LISTED`)
+- No index/ETF rows like `IT`, `PSUBANK`, `BANKNIFTY1`, `MON100`, `HDFCNIFBAN`
+- New verdict ordering: BUY → OVERVALUED → WATCHLIST → **NEUTRAL** (newly visible) → AVOID
+
+**Zero regressions** to v11.0.2 features:
+- v11.0.2 streak counters (`consecutive_avoid_quarters`, `consecutive_recovery_quarters`) still update via the same path
+- Section H "Turnaround Candidates" in daily report still fires when recovery streak ≥ 2
+- Chronic-AVOID demotion (priority_score −= 15 when avoid streak ≥ 2) still applies
+- Allowlist auto-add/auto-prune still runs
+
 # NSE/BSE Stock Analyser — v11.0.2 Feature Release
 
 **Date:** 28 April 2026
