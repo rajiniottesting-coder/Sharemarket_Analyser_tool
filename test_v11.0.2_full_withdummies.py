@@ -1,15 +1,18 @@
 """
 Comprehensive validation suite — covers ScoringEngine (v10.17 + v11.0),
-the v11.0.1 reporting/ingestion bugfixes, AND the v11.0.2 allowlist
-auto-maintenance + chronic-AVOID demotion + turnaround flag features.
+the v11.0.1 reporting/ingestion bugfixes, the v11.0.2 allowlist
+auto-maintenance + chronic-AVOID demotion + turnaround flag features,
+AND the v12.1 reconciler empty-ISIN false-positive hotfix.
 
 Validates the ScoringEngine against every code path that exists in the
 engine, the v11.0.1 fixes against the daily report generator, command
-parser, report formatter, and the DUAL_LISTED_ALLOWLIST, and the v11.0.2
+parser, report formatter, and the DUAL_LISTED_ALLOWLIST, the v11.0.2
 features against the allowlist_maintainer module, the verdict-streak
 helpers in data_bridge, the priority-ranker chronic-AVOID demotion, and
-the daily report's new Section H. Each test is a self-contained synthetic
-stock with a known expected outcome computed by hand from the engine's
+the daily report's new Section H, and the v12.1 reconciler hotfix that
+prevents empty-ISIN rows from being falsely tagged DUAL_LISTED via
+symbol-merge collision. Each test is a self-contained synthetic stock
+with a known expected outcome computed by hand from the engine's
 documented logic.
 
 Test coverage:
@@ -1414,6 +1417,168 @@ else:
     failed += 1; failures.append(f"30.6 Section H content missing: checks={checks_30_6}")
 
 
+
+print("\n" + "═" * 70)
+print("Group 31: v12.1 reconciler — empty-ISIN false-positive prevention")
+print("─" * 70)
+
+try:
+    import pandas as _pd_31
+    import numpy as _np_31
+    from ingestion.reconciler import reconcile_exchanges as _rec31
+    passed += 1; print("  ✓ 31.0 reconciler imports cleanly for v12.1 tests")
+except Exception as _e_31_imp:
+    failed += 1
+    failures.append(f"31.0 reconciler import: {_e_31_imp}")
+    _rec31 = None
+
+if _rec31 is not None:
+    # 31.1 — Index tickers (empty ISIN on NSE) must NOT be tagged DUAL_LISTED
+    # even if a BSE row exists with the same symbol but no ISIN. This was the
+    # production bug: PSUBANK (NSE index) collided with BSE PSUBANK on symbol
+    # match and got falsely tagged DUAL_LISTED.
+    try:
+        nse31 = _pd_31.DataFrame({
+            "symbol": ["RELIANCE", "PSUBANK", "IT", "BANKNIFTY1"],
+            "isin":   ["INE002A01018", "", "", ""],
+            "close":  [3000, 38000, 38000, 50000],
+            "volume": [1000, 1000, 1000, 1000],
+        })
+        bse31 = _pd_31.DataFrame({
+            "symbol":   ["RELIANCE", "PSUBANK", "ITCOLLIDE"],
+            "isin":     ["INE002A01018", "", ""],
+            "close":    [3001, 38500, 50],
+            "sc_group": ["A", "M", "B"],
+            "bse_code": ["500325", "111111", "222222"],
+        })
+        m31 = _rec31(nse31, bse31)
+        sym_col = "symbol_NSE" if "symbol_NSE" in m31.columns else "symbol"
+        psu_rows = m31[m31[sym_col].astype(str) == "PSUBANK"]
+        psu_dual = (psu_rows["exchange_tag"] == "DUAL_LISTED").any()
+        if not psu_dual:
+            passed += 1; print("  ✓ 31.1 PSUBANK (empty ISIN both sides) NOT tagged DUAL_LISTED")
+        else:
+            failed += 1; failures.append("31.1 PSUBANK incorrectly tagged DUAL_LISTED — v12.1 fix regressed")
+    except Exception as _e:
+        failed += 1; failures.append(f"31.1 exception: {_e}")
+
+    # 31.2 — IT (NSE index, empty ISIN) must stay NSE_ONLY
+    try:
+        it_rows = m31[m31[sym_col].astype(str) == "IT"]
+        it_tag = it_rows["exchange_tag"].iloc[0] if len(it_rows) > 0 else "MISSING"
+        if it_tag == "NSE_ONLY":
+            passed += 1; print("  ✓ 31.2 IT (NSE index) tagged NSE_ONLY (not falsely DUAL_LISTED)")
+        else:
+            failed += 1; failures.append(f"31.2 IT tagged {it_tag}, expected NSE_ONLY")
+    except Exception as _e:
+        failed += 1; failures.append(f"31.2 exception: {_e}")
+
+    # 31.3 — RELIANCE (real ISIN match both sides) must be DUAL_LISTED
+    try:
+        rel_rows = m31[m31[sym_col].astype(str) == "RELIANCE"]
+        rel_tag = rel_rows["exchange_tag"].iloc[0] if len(rel_rows) > 0 else "MISSING"
+        if rel_tag == "DUAL_LISTED":
+            passed += 1; print("  ✓ 31.3 RELIANCE (real ISIN match) correctly tagged DUAL_LISTED")
+        else:
+            failed += 1; failures.append(f"31.3 RELIANCE tagged {rel_tag}, expected DUAL_LISTED")
+    except Exception as _e:
+        failed += 1; failures.append(f"31.3 exception: {_e}")
+
+    # 31.4 — Realistic-scale test: 600 true ISIN matches must produce ~600 DUAL_LISTED
+    # (not 2000+ as the v11.x/v12.0.1 bug produced)
+    try:
+        _np_31.random.seed(42)
+        n_nse_31, n_bse_31 = 2483, 4997
+        nse_big = _pd_31.DataFrame({
+            "symbol": [f"NSE{i:04d}" for i in range(n_nse_31)],
+            "isin":   [f"INE{i:08d}A1" for i in range(n_nse_31)],
+            "close":  _np_31.random.uniform(50, 5000, n_nse_31),
+            "volume": _np_31.random.randint(1000, 1000000, n_nse_31),
+        })
+        # 5 NSE indices with empty ISIN
+        for i, sym in enumerate(["IT", "PSUBANK", "BANKNIFTY1", "MON100", "HDFCNIFBAN"]):
+            nse_big.loc[i, "symbol"] = sym
+            nse_big.loc[i, "isin"]   = ""
+
+        bse_isins = ([f"INE{i:08d}A1" for i in range(600)] +     # 600 dual-listed
+                     [f"INE9{i:07d}A1" for i in range(1500)] +    # 1500 BSE-only
+                     [""] * 200 +                                  # 200 SME (no ISIN)
+                     [""] * 2697)                                  # 2697 misc empty
+        bse_grps = ["A"] * 600 + ["B"] * 1500 + ["M"] * 200 + ["A"] * 2697
+        # 2038 of empty-ISIN BSE rows have symbols colliding with NSE — pre-fix
+        # this triggered the symbol-merge cross-join false-positive
+        bse_syms = ([f"BSE_DL_{i}" for i in range(600)] +
+                    [f"BSE_ONLY_{i}" for i in range(1500)] +
+                    [f"SME_{i}" for i in range(200)] +
+                    [f"NSE{i % n_nse_31:04d}" for i in range(2038)] +
+                    [f"BSE_NOISN_{i}" for i in range(659)])
+        bse_big = _pd_31.DataFrame({
+            "symbol":   bse_syms,
+            "isin":     bse_isins,
+            "close":    _np_31.random.uniform(50, 5000, n_bse_31),
+            "sc_group": bse_grps,
+            "bse_code": [str(500000 + i) for i in range(n_bse_31)],
+        })
+
+        m_big = _rec31(nse_big, bse_big)
+        n_dual = int((m_big["exchange_tag"] == "DUAL_LISTED").sum())
+
+        # Pre-fix: ~2038-2483 false DUAL_LISTED. Post-fix: should be ~600.
+        if 580 <= n_dual <= 700:
+            passed += 1
+            print(f"  ✓ 31.4 realistic-scale: {n_dual} DUAL_LISTED (expected ~600, was 2038+ pre-fix)")
+        else:
+            failed += 1
+            failures.append(f"31.4 DUAL_LISTED count {n_dual} outside expected 580-700 range")
+    except Exception as _e:
+        failed += 1; failures.append(f"31.4 exception: {_e}")
+
+    # 31.5 — BSE_ONLY and BSE_SME tags must populate (were 0 in pre-fix dashboards)
+    try:
+        n_bse_only = int((m_big["exchange_tag"] == "BSE_ONLY").sum())
+        n_bse_sme  = int((m_big["exchange_tag"] == "BSE_SME").sum())
+        if n_bse_only > 1000 and n_bse_sme >= 100:
+            passed += 1
+            print(f"  ✓ 31.5 BSE_ONLY={n_bse_only} & BSE_SME={n_bse_sme} populated (were 0 pre-fix)")
+        else:
+            failed += 1
+            failures.append(f"31.5 BSE_ONLY={n_bse_only} BSE_SME={n_bse_sme} unexpectedly low")
+    except Exception as _e:
+        failed += 1; failures.append(f"31.5 exception: {_e}")
+
+    # 31.6 — Allowlist override still works for hardcoded DUAL stocks even if
+    # ISIN merge somehow misses them (defensive sanity check)
+    try:
+        from ingestion.reconciler import DUAL_LISTED_ALLOWLIST as _DLA31
+        # Pick a known hardcoded entry
+        hc_sym = "RELIANCE" if "RELIANCE" in _DLA31 else next(iter(_DLA31))
+        nse_hc = _pd_31.DataFrame({
+            "symbol": [hc_sym, "OTHER"],
+            "isin":   ["", ""],   # empty so ISIN merge doesn't run
+            "close":  [3000, 100],
+            "volume": [1000, 1000],
+        })
+        bse_hc = _pd_31.DataFrame({
+            "symbol": [hc_sym],
+            "isin":   [""],
+            "close":  [3001],
+            "sc_group": ["A"],
+            "bse_code": ["500325"],
+        })
+        m_hc = _rec31(nse_hc, bse_hc)
+        col = "symbol_NSE" if "symbol_NSE" in m_hc.columns else "symbol"
+        hc_rows = m_hc[m_hc[col].astype(str) == hc_sym]
+        # The fallback whole-symbol-merge path should produce DUAL_LISTED for hc_sym
+        # (since it matches on symbol AND is on the hardcoded allowlist)
+        hc_tags = set(hc_rows["exchange_tag"].astype(str).tolist())
+        if "DUAL_LISTED" in hc_tags:
+            passed += 1
+            print(f"  ✓ 31.6 hardcoded allowlist override still tags {hc_sym} as DUAL_LISTED")
+        else:
+            failed += 1
+            failures.append(f"31.6 {hc_sym} tagged {hc_tags}, expected DUAL_LISTED via override")
+    except Exception as _e:
+        failed += 1; failures.append(f"31.6 exception: {_e}")
 
 print("\n" + "═" * 70)
 print(f"FINAL: {passed} passed, {failed} failed")

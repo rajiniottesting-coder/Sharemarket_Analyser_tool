@@ -1096,4 +1096,55 @@ The diagnosis logic was already in the project — `utils/bse_diagnosis.py` had 
 
 ---
 
-*Last updated: April 2026 · v12.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 22. v12.1 RECONCILER HOTFIX — Empty-ISIN false-positive prevention
+
+**Date:** 28 April 2026
+**Files changed:** `ingestion/reconciler.py`, `test_v11.0.2_full_withdummies.py` (new Group 31 tests), 4 doc files
+**Test status:** 157 of 157 pass (150 pre-existing + 7 new regression tests)
+
+### Why this hotfix exists
+
+After v12.0 deployed, BSE bhavcopy started downloading reliably for the first time in months. The first dashboard run with healthy BSE data revealed a regression that had always been latent in v11.x but was masked by BSE being unreachable: `~99%` of stocks tagged `DUAL_LISTED`, zero `BSE_ONLY`/`BSE_SME` entries, and 2,038 symbols added to the runtime allowlist in a single run.
+
+### The bug
+
+`pd.merge(nse, bse, on="isin", how="outer")` treats empty string `""` as a valid join key. When many NSE rows lack an ISIN (sector indices `IT`/`PSUBANK`/`BANKNIFTY1`, ETFs `MON100`/`HDFCNIFBAN`) AND many BSE rows lack an ISIN (junk listings, delisted, SME), the outer merge produces a Cartesian explosion:
+
+- N empty-ISIN NSE rows × M empty-ISIN BSE rows → N×M output rows, each tagged DUAL_LISTED
+- For your 2,483 NSE × 4,997 BSE input: ~2,038 false-positive DUAL_LISTED rows
+
+The v12.0.1 attempt (split merge by `has_isin`, route empty-ISIN rows through symbol-merge) merely shifted the bug — symbol-merge has the same Cartesian-collision problem because non-equity tickers can collide across exchanges without being the same security (NSE `PSUBANK` index ≠ BSE `PSUBANK` listing).
+
+### The v12.1 fix
+
+Strict conservative principle: **without an ISIN, there is no reliable evidence of cross-listing.** Empty-ISIN rows are passed through as "shadow" frames with `symbol_NSE` populated and the BSE-side columns left null (or vice versa for BSE-only no-ISIN rows). `_apply_exchange_tag` then correctly reads them as NSE_ONLY / BSE_ONLY / BSE_SME based on `has_nse` / `has_bse` / `sc_group`.
+
+The hardcoded `DUAL_LISTED_ALLOWLIST` post-merge override still fires for symbols on the curated list — so a known dual-listed stock that lacks ISIN data temporarily is still tagged correctly. But the override is precise; it won't blanket-match by symbol.
+
+### What was tested
+
+`test_v11.0.2_full_withdummies.py` Group 31 — runs every regression-cycle:
+
+- **31.1**: PSUBANK (empty ISIN both sides) NOT tagged DUAL_LISTED ← direct regression for the production symptom
+- **31.2**: IT (NSE index) tagged NSE_ONLY
+- **31.3**: RELIANCE (real ISIN match) correctly DUAL_LISTED — happy path sanity
+- **31.4**: Realistic-scale 2483×4997 input → ~600 DUAL_LISTED (not 2038+)
+- **31.5**: BSE_ONLY and BSE_SME tags populate (were 0 pre-fix)
+- **31.6**: Hardcoded allowlist override still works for symbols missing from merge
+
+### LESSON for future fixes — TEST BEFORE PUSHING
+
+This bug went through three iterations before resolving (v11.x → v12.0.1 → v12.1) because each attempt was simulated on contrived data instead of being run end-to-end through `_parse_bse_df` → `standardize_to_v7_schema` → `reconcile_exchanges`. The fix patterns to remember:
+
+1. **Always trace through the FULL pipeline** (parse + standardize + reconcile) — don't stop at the function being modified
+2. **Run the regression test suite before declaring a fix complete** — `python test_v11.0.2_full_withdummies.py`
+3. **Add a regression test for every bug fixed** — Group 31 now permanently locks the empty-ISIN false-positive out
+
+### Operational notes
+
+- v12.0.1 self-healing cleanup (in `master_funnel.py`) still runs every startup. On the first run after deploying v12.1, it'll detect the polluted runtime allowlist (still has 2,038 entries from the v12.0 run that triggered before the fix), back it up, truncate, and the v12.1 reconciler will then repopulate correctly.
+- Index tickers (`IT`, `PSUBANK`, `BANKNIFTY1`, etc.) now correctly tag as `NSE_ONLY`. They may still appear in the dashboard if they pass the screener's other gates — adding them to an explicit denylist in `pre_screener.py` is a separate enhancement, not part of v12.1.
+
+---
+
+*Last updated: April 2026 · v12.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

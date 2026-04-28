@@ -77,7 +77,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                 "regardless of fundamentals. Stage 3 already enforces the\n"
                 "quality gate; the prior 'exceptional NEUTRAL only' filter\n"
                 "was removed because it silently shrank the dashboard\n"
-                "below 100 rows whenever Gemini quota was exhausted."),
+                "below 100 rows whenever Gemini quota was exhausted.\n"
+                "v12.1: reconciler hotfix — Exchange tag is now derived\n"
+                "purely from ISIN match (not symbol-match) for stocks with\n"
+                "no ISIN, so non-equity tickers (indices, ETFs) no longer\n"
+                "get falsely tagged DUAL_LISTED."),
     "Score /100": ("≥70 strong · ≥60 watch · <38 avoid",
                    "Weighted composite (0-100):\n"
                    "Fundamental 35% + Technical 30% + EarlyEntry 15%\n"

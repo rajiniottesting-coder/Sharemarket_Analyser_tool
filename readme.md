@@ -484,6 +484,99 @@ The technical design doc has been updated in two places to reflect this release:
 
 No other §3.5 / §13 content needed updating — the existing references already describe the EE ≥ 50 threshold correctly. The bug was that the *code* didn't match the doc; this release brings the code into alignment with what the doc has always said.
 
+# NSE/BSE Stock Analyser — v12.1 Reconciler Hotfix
+
+**Date:** 28 April 2026
+**Type:** Hotfix — addresses regressions exposed once v12.0's BSE cascade restored real BSE data
+**Test status:** **157 of 157 tests pass** (150 pre-existing + 7 new v12.1 regression tests in Group 31). Zero regressions vs v12.0.
+
+---
+
+## What this hotfix fixes
+
+After v12.0 deployed and BSE bhavcopy started downloading reliably, the dashboard surfaced a different problem: ~99% of stocks tagged `DUAL_LISTED`, zero `BSE_ONLY`/`BSE_SME` entries, and 2,038+ symbols added to the runtime allowlist in a single run (vs the expected ~30-50 per day on a healthy system). This was a pre-existing reconciler bug that was simply masked while BSE was unreachable in v11.x — once v12.0 fixed BSE ingestion, the bug became visible.
+
+### Root cause
+
+`ingestion/reconciler.py::reconcile_exchanges()` had two compounding issues:
+
+1. **Empty-ISIN cross-join**: `pd.merge(nse, bse, on="isin", how="outer")` treats empty string `""` as a valid join key. With many NSE rows lacking ISIN (sector indices, ETF tickers like `IT`, `PSUBANK`, `BANKNIFTY1`) AND many BSE rows lacking ISIN (junk listings, delisted, SME), the outer merge produced a Cartesian explosion of false-positive `DUAL_LISTED` tags.
+
+2. **Symbol-merge fallback was unsafe for empty-ISIN rows**: When v12.0.1 attempted to fix #1 by routing empty-ISIN rows through symbol-merge instead of ISIN-merge, it merely shifted the false-positive into a new code path. Symbol-based matching is unreliable across exchanges because non-equity tickers can collide without being the same security (the NSE `PSUBANK` index and a coincidentally-named BSE security both exist, but they are NOT the same instrument).
+
+### The fix (v12.1)
+
+`reconcile_exchanges()` now follows a strict conservative principle:
+
+> **Without an ISIN, there is no reliable evidence of cross-listing. Empty-ISIN rows default to NSE_ONLY or BSE_ONLY/BSE_SME — they are NEVER tagged DUAL_LISTED via symbol-match alone.**
+
+Mechanically:
+- ISIN-bearing rows from each side participate in the ISIN merge → produces clean `DUAL_LISTED` tags for genuine cross-listed equities
+- Empty-ISIN NSE rows are passed through as a "shadow" frame with `symbol_NSE` populated and the BSE-side columns left null → `_apply_exchange_tag` correctly tags them `NSE_ONLY`
+- Empty-ISIN BSE rows are passed through with `symbol_BSE` populated → tagged `BSE_ONLY` or `BSE_SME` based on `sc_group`
+- The hardcoded `DUAL_LISTED_ALLOWLIST` post-merge override still works (a known dual-listed stock that the merge happened to miss can still be promoted), but the override is precise — it only fires for symbols on the curated list, not via blanket symbol-match
+
+### What this hotfix is NOT
+
+- Not a re-architecture of the reconciler. The function signature, downstream API, and overall flow are unchanged.
+- Not a database migration. The v12.0.1 self-healing cleanup (in `master_funnel.py`) already truncates the polluted runtime allowlist on the next run.
+- Not a scoring change. All 30 v11.0.2 / v10.x test groups (150 tests) pass with zero modification.
+
+---
+
+## Files in this delivery
+
+| File | Where to put it | Action |
+|---|---|---|
+| `reconciler.py` | `Sharemarket_Analyser_tool/ingestion/` | replace |
+| `test_v11.0.2_full_withdummies.py` | `Sharemarket_Analyser_tool/` (project root) | replace (adds Group 31 = 7 new regression tests for v12.1) |
+| `readme.md` | `Sharemarket_Analyser_tool/` (project root) | replace (this file — v12.1 section added) |
+| `CLAUDE.md` | `Sharemarket_Analyser_tool/` (project root) | replace (v12.1 §22 section added) |
+| `scoring_logic_3Stagefunnel_explained.md` | `Sharemarket_Analyser_tool/` (project root) | replace (v12.1 footer marker) |
+| `pipeline_reference_v12_1.html` | `Sharemarket_Analyser_tool/` (project root) | replace `pipeline_reference_v12_0.html` (rename + content update) |
+| `tooltip_formatter.py` | `Sharemarket_Analyser_tool/reporting/` | replace (v12.1 reconciler note) |
+
+**Already deployed in your repo (no action needed):** `master_funnel.py` (v12.0 BSE cascade + v12.0.1 self-healing cleanup), `excel_generator.py` (v12.0 NEUTRAL filter removal), `requirements.txt` (curl_cffi).
+
+**Run after deploy:** no new dependencies; just push and trigger the pipeline.
+
+---
+
+## What you'll observe in the next run
+
+**Run log:**
+```
+🧹 v12.0.1: Detected polluted runtime allowlist (2,038 rows). Cleaning...
+   ✅ Backed up 2,038 rows... ✅ Truncated...
+...
+✅ BSE Bhav downloaded via bse package: 4997 records...
+   📥 Allowlist auto-add: ~300-500 new dual-listed symbol(s) observed today   ← was 2038
+```
+
+**Dashboard `Exchange ⓘ` column:**
+- DUAL_LISTED: ~30-40% (was 99%)
+- NSE_ONLY: ~30-40% (was 1%)
+- BSE_ONLY: ~10-15% (was 0%)
+- BSE_SME: a few % (was 0%)
+
+**Index/ETF cleanup:** Tickers like `IT`, `PSUBANK`, `BANKNIFTY1`, `MON100`, `HDFCNIFBAN` get correctly tagged `NSE_ONLY` instead of falsely `DUAL_LISTED`. They may still appear in the dashboard if they pass the screener's other gates — adding them to the explicit denylist in `pre_screener.py` is a separate enhancement.
+
+**No regressions:** All v11.0.2 features (chronic-AVOID demotion, turnaround flag, Section H, runtime allowlist auto-add/auto-prune) and all v12.0 features (BSE cascade, NEUTRAL filter removal) remain fully functional and verified by the test suite.
+
+---
+
+## Test coverage added in v12.1
+
+`test_v11.0.2_full_withdummies.py` Group 31 — **7 new tests:**
+
+- 31.0: Reconciler imports cleanly
+- 31.1: PSUBANK (empty ISIN both sides) is NOT tagged DUAL_LISTED — direct regression test for the symptom
+- 31.2: IT (NSE index, empty ISIN) stays NSE_ONLY
+- 31.3: RELIANCE (real ISIN match both sides) is correctly tagged DUAL_LISTED — sanity that we didn't break the happy path
+- 31.4: Realistic-scale test with 2483 NSE × 4997 BSE — DUAL_LISTED count must be ~600 (not 2038+ as the pre-fix bug produced)
+- 31.5: BSE_ONLY and BSE_SME tags must populate (were 0 in pre-fix dashboards)
+- 31.6: Hardcoded allowlist override still works for symbols that the merge happened to miss
+
 # NSE/BSE Stock Analyser — v12.0 Release
 
 **Date:** 28 April 2026
