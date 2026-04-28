@@ -21,7 +21,7 @@ class ReportFormatter:
             f"{stock.get('symbol', '')} | {stock.get('company_name', '')} | {stock.get('sector', 'General')}\n"
             f"[{stock.get('verdict', 'WATCHLIST')}] [{stock.get('cap_badge', 'Unknown')}] [{stock.get('exchange_tag', 'NSE')}]"
         )
-        if stock.get('early_entry_score', 0) >= 70:
+        if stock.get('early_entry_score', 0) >= 50:
             header += " [EARLY MOVER]"
         if stock.get('new_market_entry'):
             header += " [NEW MARKET]"

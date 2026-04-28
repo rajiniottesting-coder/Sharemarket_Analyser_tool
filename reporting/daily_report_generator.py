@@ -41,7 +41,7 @@ class DailyReportGenerator:
             return "\n".join(report)
 
         # SECTION A: EARLY MOVERS
-        early_movers = self.df[self.df['early_entry_score'] >= 70].sort_values(
+        early_movers = self.df[self.df['early_entry_score'] >= 50].sort_values(
             by='early_entry_score', ascending=False)
         report.append("SECTION A — EARLY MOVERS TODAY")
         report.append(self._format_list(early_movers, ['symbol', 'early_entry_score', 'sector']))
@@ -58,10 +58,13 @@ class DailyReportGenerator:
         report.append(self._format_list(spikes, ['symbol', 'spike_triggers']))
 
         # SECTION D: SECTOR ROTATION
+        # rotation_stage stores strings like "STAGE 4 — DISTRIBUTION", not ints.
+        # Match by stage label substring to roll up sectors per stage correctly.
         report.append("SECTION D — SECTOR ROTATION UPDATE")
-        for stage in [4, 3, 2, 1]:
-            sectors = self.df[self.df['rotation_stage'] == stage]['sector'].unique()[:3]
-            report.append(f"Stage {stage}: {', '.join(str(s) for s in sectors) if len(sectors) > 0 else 'None'}")
+        for stage_num, stage_label in [(4, 'STAGE 4'), (3, 'STAGE 3'), (2, 'STAGE 2'), (1, 'STAGE 1')]:
+            mask = self.df['rotation_stage'].astype(str).str.contains(stage_label, na=False)
+            sectors = self.df.loc[mask, 'sector'].dropna().unique()[:3]
+            report.append(f"Stage {stage_num}: {', '.join(str(s) for s in sectors) if len(sectors) > 0 else 'None'}")
 
         # SECTION E: BSE SME WATCH
         sme_watch = self.df[

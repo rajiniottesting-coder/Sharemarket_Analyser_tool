@@ -71,6 +71,21 @@ DUAL_LISTED_ALLOWLIST = frozenset({
     "TATACHEM", "JUBLFOOD", "KAJARIACER", "HOMEFIRST", "GRANULES", "PITTIENG",
     "VOLTAMP", "CARERATING", "STYLAMIND", "GOCOLORS", "HALEOSLABS", "AMAGI",
     "CMSINFO", "RANEHOLDIN",
+    # ─── v11.0 batch addition (Apr 2026) — verified large/mid dual-listed ──
+    # All confirmed by NSE+BSE listing pairs. Added to fix wrong NSE_ONLY tags
+    # observed in 27-Apr-2026 dashboard run when BSE bhavcopy fails on
+    # GitHub Actions runners (Cloudflare 403).
+    "ABBOTINDIA", "BATAINDIA", "BHARTIHEXA", "GLAXO", "GRINDWELL", "USHAMART",
+    "RKFORGE", "NAZARA", "CIEINDIA", "VENUSREM", "TALBROAUTO", "CARBORUNIV",
+    "VGUARD", "ANTHEM", "INNOVACAP", "MINDACORP", "ERIS", "POLYPLEX",
+    "AADHARHFC", "ASIANTILES", "FIVESTAR", "ANANDRATHI", "WEWORK", "PYRAMID",
+    "WELENT", "LAXMIDENTL", "SENORES",
+    # ─── PENDING manual verification — uncomment after confirming BSE pairing ─
+    # "MOREALTY",   # listing pairing not fully verified
+    # "KMEW",       # 2025 IPO — verify BSE code
+    # "RBA",        # ticker → BSE code mapping needs verification
+    # ─── NOT added — these are index ETFs/futures, NOT individual equities ──
+    # "IT", "PSUBANK", "BANKNIFTY1"  — index tickers, would corrupt the allowlist semantics
 })
 
 

@@ -24,8 +24,8 @@ class CommandParser:
 
         # --- SCREENING COMMANDS ---
         if "early movers today" in cmd:
-            filtered = self.df[self.df['early_entry_score'] >= 70]
-            return self._format_summary(filtered, "EARLY MOVERS (Score >= 70)")
+            filtered = self.df[self.df['early_entry_score'] >= 50]
+            return self._format_summary(filtered, "EARLY MOVERS (Score >= 50)")
 
         if "momentum scan" in cmd:
             filtered = self.df[(self.df['8w_chg'] > 15) & (self.df['composite_score'] > 65)]

@@ -1,8 +1,10 @@
 """
-v10.17 comprehensive validation suite.
+Comprehensive validation suite — covers ScoringEngine (v10.17 + v11.0)
+plus the v11.0.1 reporting/ingestion bugfixes.
 
-Validates the new ScoringEngine against every code path that exists in the
-engine. Each test is a self-contained synthetic stock with a known expected
+Validates the ScoringEngine against every code path that exists in the
+engine, and the v11.0.1 fixes against the daily report generator,
+command parser, report formatter, and the DUAL_LISTED_ALLOWLIST. Each test is a self-contained synthetic stock with a known expected
 outcome computed by hand from the engine's documented logic.
 
 Test coverage:
@@ -27,13 +29,22 @@ Test coverage:
   Group 19: Defensive — None / empty / "—" inputs
   Group 20: Output dict shape consistency
 
+  ─── v11.0.1 reporting & ingestion bugfix groups ───
+  Group 21: ingestion/reconciler.py — DUAL_LISTED_ALLOWLIST integrity
+  Group 22: ingestion/reconciler.py — runtime exchange-tag behavior
+  Group 23: reporting/daily_report_generator.py — Section A & D
+  Group 24: reporting/command_parser.py — early movers threshold
+  Group 25: reporting/report_formatter.py — EARLY MOVER badge
+  Group 26: cross-cutting consistency & end-to-end smoke test
+
 For every test we also do a "no-leakage" check: confirm that for stocks
 with informed_count >= 3, the new engine produces the EXACT SAME composite
 score and verdict as the old engine would have.
 """
 
 import sys
-sys.path.insert(0, "/home/claude/work_v2")
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from analysis.scoring_engine import ScoringEngine
 
 scorer = ScoringEngine()
@@ -629,6 +640,325 @@ if leakage_count == 0:
     print(f"  ✓ no leakage across 8 representative scenarios (informed≥3 → gate never fires)")
 else:
     failed += 1
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Group 21: ingestion/reconciler.py — DUAL_LISTED_ALLOWLIST integrity
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "─" * 70)
+print("Group 21: DUAL_LISTED_ALLOWLIST integrity (v11.0.1)")
+print("─" * 70)
+
+try:
+    from ingestion.reconciler import (
+        DUAL_LISTED_ALLOWLIST,
+        _is_dual_listed_known,
+        reconcile_exchanges,
+    )
+    passed += 1
+    print(f"  ✓ 21.0 reconciler imports cleanly")
+except Exception as e:
+    failed += 1
+    failures.append(f"21.0 reconciler import failed: {e}")
+    DUAL_LISTED_ALLOWLIST = None  # force-skip downstream tests gracefully
+
+if DUAL_LISTED_ALLOWLIST is not None:
+    NEW_27 = {
+        "ABBOTINDIA","BATAINDIA","BHARTIHEXA","GLAXO","GRINDWELL","USHAMART",
+        "RKFORGE","NAZARA","CIEINDIA","VENUSREM","TALBROAUTO","CARBORUNIV",
+        "VGUARD","ANTHEM","INNOVACAP","MINDACORP","ERIS","POLYPLEX",
+        "AADHARHFC","ASIANTILES","FIVESTAR","ANANDRATHI","WEWORK","PYRAMID",
+        "WELENT","LAXMIDENTL","SENORES",
+    }
+    INDEX_TICKERS = {"IT","PSUBANK","BANKNIFTY1"}
+    PENDING       = {"MOREALTY","KMEW","RBA"}
+    EXISTING      = ["RELIANCE","TCS","HDFCBANK","SBIN","TITAN","M&M","MARUTI","INFY"]
+
+    # 21.1 all 27 new symbols on allowlist
+    miss = NEW_27 - DUAL_LISTED_ALLOWLIST
+    if not miss: passed += 1; print(f"  ✓ 21.1 all 27 new symbols on allowlist")
+    else: failed += 1; failures.append(f"21.1 missing from allowlist: {miss}")
+
+    # 21.2 index tickers correctly excluded
+    wrong = INDEX_TICKERS & DUAL_LISTED_ALLOWLIST
+    if not wrong: passed += 1; print(f"  ✓ 21.2 index tickers correctly excluded (IT/PSUBANK/BANKNIFTY1)")
+    else: failed += 1; failures.append(f"21.2 index tickers leaked into allowlist: {wrong}")
+
+    # 21.3 pending-verification stocks correctly excluded
+    pre = PENDING & DUAL_LISTED_ALLOWLIST
+    if not pre: passed += 1; print(f"  ✓ 21.3 pending-verification stocks correctly excluded")
+    else: failed += 1; failures.append(f"21.3 pending stocks prematurely added: {pre}")
+
+    # 21.4 no duplicate entries (parse via AST to ignore quoted strings inside comments)
+    import ast as _ast21
+    fs_strings = []
+    tree21 = _ast21.parse(open("ingestion/reconciler.py").read())
+    for node in _ast21.walk(tree21):
+        if isinstance(node, _ast21.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, _ast21.Name) and tgt.id == "DUAL_LISTED_ALLOWLIST":
+                    if isinstance(node.value, _ast21.Call) and isinstance(node.value.args[0], _ast21.Set):
+                        fs_strings = [e.value for e in node.value.args[0].elts if isinstance(e, _ast21.Constant)]
+    dups = [s for s in set(fs_strings) if fs_strings.count(s) > 1]
+    if not dups: passed += 1; print(f"  ✓ 21.4 no duplicate entries in allowlist source")
+    else: failed += 1; failures.append(f"21.4 duplicate entries: {dups}")
+
+    # 21.5 _is_dual_listed_known() helper works for new symbols
+    broken = [s for s in NEW_27 if not _is_dual_listed_known(s)]
+    if not broken: passed += 1; print(f"  ✓ 21.5 _is_dual_listed_known() works for all 27 new symbols")
+    else: failed += 1; failures.append(f"21.5 helper failed for: {broken}")
+
+    # 21.6 existing allowlist preserved (no accidental removals)
+    broken_existing = [s for s in EXISTING if s not in DUAL_LISTED_ALLOWLIST]
+    if not broken_existing: passed += 1; print(f"  ✓ 21.6 existing allowlist members preserved (RELIANCE, TCS, etc.)")
+    else: failed += 1; failures.append(f"21.6 dropped existing: {broken_existing}")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Group 22: ingestion/reconciler.py — runtime exchange-tag behavior
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "─" * 70)
+print("Group 22: runtime exchange-tag behavior (v11.0.1)")
+print("─" * 70)
+
+if DUAL_LISTED_ALLOWLIST is not None:
+    import pandas as _pd
+
+    # 22.1 — newly added symbol tags as DUAL_LISTED when bse_df is empty (Cloudflare 403 path)
+    nse_df1 = _pd.DataFrame([
+        {"symbol":"ABBOTINDIA","close":25425.0,"isin":"INE358A01054"},
+        {"symbol":"BATAINDIA", "close":1287.0, "isin":"INE176A01028"},
+        {"symbol":"NEWCO_NSE", "close":150.0,  "isin":"INE999X01010"},
+        {"symbol":"RELIANCE",  "close":1240.0, "isin":"INE002A01018"},
+    ])
+    r1 = reconcile_exchanges(nse_df1, _pd.DataFrame())
+    abbot = r1[r1["symbol"]=="ABBOTINDIA"]["exchange_tag"].iloc[0]
+    bata  = r1[r1["symbol"]=="BATAINDIA"]["exchange_tag"].iloc[0]
+    newco = r1[r1["symbol"]=="NEWCO_NSE"]["exchange_tag"].iloc[0]
+    reli  = r1[r1["symbol"]=="RELIANCE"]["exchange_tag"].iloc[0]
+    if abbot == "DUAL_LISTED": passed += 1; print(f"  ✓ 22.1 ABBOTINDIA → DUAL_LISTED when bse empty")
+    else: failed += 1; failures.append(f"22.1 ABBOTINDIA wrong tag: {abbot}")
+    if bata == "DUAL_LISTED": passed += 1; print(f"  ✓ 22.2 BATAINDIA → DUAL_LISTED when bse empty")
+    else: failed += 1; failures.append(f"22.2 BATAINDIA wrong tag: {bata}")
+    if newco == "NSE_ONLY": passed += 1; print(f"  ✓ 22.3 genuine NSE-only stock stays NSE_ONLY")
+    else: failed += 1; failures.append(f"22.3 NEWCO_NSE wrong tag: {newco}")
+    if reli == "DUAL_LISTED": passed += 1; print(f"  ✓ 22.4 RELIANCE (existing allowlist) → DUAL_LISTED")
+    else: failed += 1; failures.append(f"22.4 RELIANCE wrong tag: {reli}")
+
+    # 22.5 — index tickers stay NSE_ONLY at runtime
+    nse_df2 = _pd.DataFrame([{"symbol":"IT","close":39000.0,"isin":""}])
+    r2 = reconcile_exchanges(nse_df2, _pd.DataFrame())
+    it_tag = r2[r2["symbol"]=="IT"]["exchange_tag"].iloc[0]
+    if it_tag == "NSE_ONLY": passed += 1; print(f"  ✓ 22.5 index ticker IT stays NSE_ONLY at runtime")
+    else: failed += 1; failures.append(f"22.5 index IT wrong tag: {it_tag}")
+
+    # 22.6 — partial BSE merge (Cloudflare returned tiny unrelated subset) still promotes via safety override
+    nse_df3 = _pd.DataFrame([
+        {"symbol":"ABBOTINDIA","close":25425.0,"isin":"INE358A01054"},
+        {"symbol":"NEWCO_NSE", "close":150.0,  "isin":"INE999X01010"},
+    ])
+    bse_tiny = _pd.DataFrame([{"symbol":"XYZ","close":50.0,"isin":"INE888B01010","sc_group":"A"}])
+    r3 = reconcile_exchanges(nse_df3, bse_tiny)
+    sym_col = "symbol_NSE" if "symbol_NSE" in r3.columns else "symbol"
+    abbot3 = r3[r3[sym_col].astype(str).str.contains("ABBOTINDIA", na=False)]
+    if not abbot3.empty and abbot3["exchange_tag"].iloc[0] == "DUAL_LISTED":
+        passed += 1; print(f"  ✓ 22.6 ABBOTINDIA promoted via safety override after partial BSE merge")
+    else:
+        failed += 1; failures.append(f"22.6 safety override didn't fire on partial merge")
+
+    # 22.7 — graceful handling of None inputs
+    try:
+        _ = reconcile_exchanges(None, None)
+        _ = reconcile_exchanges(None, _pd.DataFrame())
+        _ = reconcile_exchanges(_pd.DataFrame(), None)
+        passed += 1; print(f"  ✓ 22.7 reconciler survives None inputs without crashing")
+    except Exception as e:
+        failed += 1; failures.append(f"22.7 None-input handling: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Group 23: reporting/daily_report_generator.py — Section A & D
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "─" * 70)
+print("Group 23: daily report Section A & D (v11.0.1)")
+print("─" * 70)
+
+import numpy as _np
+try:
+    from reporting.daily_report_generator import DailyReportGenerator
+    passed += 1; print(f"  ✓ 23.0 daily_report_generator imports cleanly")
+    DRG_OK = True
+except Exception as e:
+    failed += 1; failures.append(f"23.0 daily_report_generator import: {e}")
+    DRG_OK = False
+
+if DRG_OK:
+    _MKT = {"nifty_close":24000,"nifty_200d":23000,"sensex_close":80000,"vix":12.0,"fii_net":-19216}
+
+    # Section A — boundary tests
+    data_a = [
+        {"symbol":"PSUBANK","early_entry_score":55,"sector":"General","rotation_stage":"NEUTRAL","composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"guard_reasons":"","smart_money_signals":"","exchange_tag":"NSE_ONLY","vol_ratio":1.0},
+        {"symbol":"BELOW45","early_entry_score":45,"sector":"IT","rotation_stage":"NEUTRAL","composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"guard_reasons":"","smart_money_signals":"","exchange_tag":"NSE_ONLY","vol_ratio":1.0},
+        {"symbol":"HIGH80","early_entry_score":80,"sector":"IT","rotation_stage":"NEUTRAL","composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"guard_reasons":"","smart_money_signals":"","exchange_tag":"NSE_ONLY","vol_ratio":1.0},
+    ]
+    rep_a = DailyReportGenerator(data_a, _MKT).generate_research_report()
+    sec_a = rep_a.split("SECTION A")[1].split("SECTION B")[0]
+    if "PSUBANK" in sec_a: passed += 1; print(f"  ✓ 23.1 Section A includes PSUBANK (EE=55, was missed by old >=70)")
+    else: failed += 1; failures.append("23.1 PSUBANK missing from Section A")
+    if "HIGH80" in sec_a: passed += 1; print(f"  ✓ 23.2 Section A includes HIGH80 (EE=80, passes either threshold)")
+    else: failed += 1; failures.append("23.2 HIGH80 missing")
+    if "BELOW45" not in sec_a: passed += 1; print(f"  ✓ 23.3 Section A excludes BELOW45 (EE=45, below threshold)")
+    else: failed += 1; failures.append("23.3 BELOW45 leaked into Section A")
+
+    # Section D — all 4 stages populate correctly via string substring match
+    data_d = [
+        {"symbol":"S1","sector":"Healthcare","rotation_stage":"STAGE 1 — EARLY ACCUMULATION","early_entry_score":0,"composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"guard_reasons":"","smart_money_signals":"","exchange_tag":"NSE_ONLY","vol_ratio":1.0},
+        {"symbol":"S2","sector":"IT","rotation_stage":"STAGE 2 — CONFIRMED UPTREND","early_entry_score":0,"composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"guard_reasons":"","smart_money_signals":"","exchange_tag":"NSE_ONLY","vol_ratio":1.0},
+        {"symbol":"S3","sector":"Real Estate","rotation_stage":"STAGE 3 — MOMENTUM PEAK","early_entry_score":0,"composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"guard_reasons":"","smart_money_signals":"","exchange_tag":"NSE_ONLY","vol_ratio":1.0},
+        {"symbol":"S4","sector":"Financial Services","rotation_stage":"STAGE 4 — DISTRIBUTION","early_entry_score":0,"composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"guard_reasons":"","smart_money_signals":"","exchange_tag":"NSE_ONLY","vol_ratio":1.0},
+        {"symbol":"SN","sector":"Industrials","rotation_stage":"NEUTRAL","early_entry_score":0,"composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"guard_reasons":"","smart_money_signals":"","exchange_tag":"NSE_ONLY","vol_ratio":1.0},
+    ]
+    rep_d = DailyReportGenerator(data_d, _MKT).generate_research_report()
+    sec_d = rep_d.split("SECTION D")[1].split("SECTION E")[0]
+    for stage_num, sector, label in [(4,"Financial Services","stage 4"),(3,"Real Estate","stage 3"),(2,"IT","stage 2"),(1,"Healthcare","stage 1")]:
+        if f"Stage {stage_num}: {sector}" in sec_d:
+            passed += 1; print(f"  ✓ 23.{4+stage_num}b Section D Stage {stage_num} contains '{sector}'")
+        else:
+            failed += 1; failures.append(f"23.{4+stage_num}b Stage {stage_num} missing {sector}")
+
+    # Section D — empty rotation_stage column
+    data_empty = [{**d, "rotation_stage":""} for d in data_d]
+    rep_e = DailyReportGenerator(data_empty, _MKT).generate_research_report()
+    sec_e = rep_e.split("SECTION D")[1].split("SECTION E")[0]
+    if "Stage 4: None" in sec_e and "Stage 1: None" in sec_e:
+        passed += 1; print(f"  ✓ 23.9 empty rotation_stage → all stages 'None' (no crash)")
+    else:
+        failed += 1; failures.append(f"23.9 empty rotation_stage edge case failed")
+
+    # Section D — NaN values
+    data_nan = [{**d, "rotation_stage":_np.nan} for d in data_d]
+    rep_n = DailyReportGenerator(data_nan, _MKT).generate_research_report()
+    sec_n = rep_n.split("SECTION D")[1].split("SECTION E")[0]
+    if "Stage 4: None" in sec_n:
+        passed += 1; print(f"  ✓ 23.10 NaN rotation_stage → all stages 'None' (no crash)")
+    else:
+        failed += 1; failures.append(f"23.10 NaN rotation_stage crashed")
+
+    # Section D — caps at 3 sectors per stage (preserved behaviour)
+    data_six = [
+        {"symbol":f"X{i}","sector":f"Sec{i}","rotation_stage":"STAGE 1 — EARLY ACCUMULATION","early_entry_score":0,"composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"guard_reasons":"","smart_money_signals":"","exchange_tag":"NSE_ONLY","vol_ratio":1.0}
+        for i in range(6)
+    ]
+    rep_6 = DailyReportGenerator(data_six, _MKT).generate_research_report()
+    sec_6 = rep_6.split("SECTION D")[1].split("SECTION E")[0]
+    s1_line = [l for l in sec_6.split("\n") if l.startswith("Stage 1:")][0]
+    if s1_line.count("Sec") == 3:
+        passed += 1; print(f"  ✓ 23.11 Section D caps at 3 sectors per stage (preserved [:3])")
+    else:
+        failed += 1; failures.append(f"23.11 Section D cap behaviour broken")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Group 24: reporting/command_parser.py — early movers threshold
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "─" * 70)
+print("Group 24: command_parser early movers (v11.0.1)")
+print("─" * 70)
+
+try:
+    from reporting.command_parser import CommandParser
+    passed += 1; print(f"  ✓ 24.0 command_parser imports cleanly")
+    CMD_OK = True
+except Exception as e:
+    failed += 1; failures.append(f"24.0 command_parser import: {e}")
+    CMD_OK = False
+
+if CMD_OK:
+    data_cmd = [
+        {"symbol":"PSUBANK","early_entry_score":55,"sector":"General","composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"upside":10,"cap_category":"MID CAP","vol_ratio":1.0,"8w_chg":0,"rotation_stage":"NEUTRAL","close":100,"cmp":100},
+        {"symbol":"BIGGER","early_entry_score":75,"sector":"IT","composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"upside":15,"cap_category":"LARGE CAP","vol_ratio":1.0,"8w_chg":0,"rotation_stage":"NEUTRAL","close":100,"cmp":100},
+        {"symbol":"TOOLOW","early_entry_score":40,"sector":"IT","composite_score":50,"verdict":"WATCHLIST","mos_pct":0,"upside":5,"cap_category":"LARGE CAP","vol_ratio":1.0,"8w_chg":0,"rotation_stage":"NEUTRAL","close":100,"cmp":100},
+    ]
+    out = str(CommandParser(data_context=data_cmd).execute("early movers today"))
+    if "PSUBANK" in out: passed += 1; print(f"  ✓ 24.1 'early movers today' picks up PSUBANK (EE=55)")
+    else: failed += 1; failures.append("24.1 PSUBANK missing")
+    if "BIGGER" in out: passed += 1; print(f"  ✓ 24.2 'early movers today' picks up BIGGER (EE=75)")
+    else: failed += 1; failures.append("24.2 BIGGER missing")
+    if "TOOLOW" not in out: passed += 1; print(f"  ✓ 24.3 'early movers today' excludes TOOLOW (EE=40)")
+    else: failed += 1; failures.append("24.3 TOOLOW leaked")
+    if ">= 50" in out: passed += 1; print(f"  ✓ 24.4 title says 'Score >= 50' (matches threshold)")
+    else: failed += 1; failures.append("24.4 wrong title")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Group 25: reporting/report_formatter.py — EARLY MOVER badge
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "─" * 70)
+print("Group 25: report_formatter EARLY MOVER badge (v11.0.1)")
+print("─" * 70)
+
+try:
+    from reporting.report_formatter import ReportFormatter
+    passed += 1; print(f"  ✓ 25.0 report_formatter imports cleanly")
+    RFM_OK = True
+except Exception as e:
+    failed += 1; failures.append(f"25.0 report_formatter import: {e}")
+    RFM_OK = False
+
+if RFM_OK:
+    fmt = ReportFormatter()
+    def _stk(ee):
+        return {"symbol":"X","company_name":"X","sector":"General","verdict":"WATCHLIST","cap_badge":"MID","exchange_tag":"NSE_ONLY","early_entry_score":ee,"spike_count":0,"spike_triggers":[],"cmp":100,"day_chg_pct":0,"52w_low":50,"52w_high":150,"vol_ratio":1.0,"2w_chg":0,"4w_chg":0,"6w_chg":0,"8w_chg":0,"cfv":100,"cfv_low":80,"cfv_high":120,"mos_pct":0,"mos_label":"NEUTRAL","upside_to_fv":0,"upside_per_share":0,"pe":0,"earnings_yield":0,"pcf":0,"peg":0,"pb":0,"roe":0,"de":0,"fcf_yld":0,"rev_growth":0,"pat_growth":0,"div_yld":0,"f_score":0,"sector_stage":"NEUTRAL","smart_money_signals":[],"top_early_signal":"","storm_score":0,"vix":12,"fii_7d":0,"nifty_200d":0,"analysis_summary":""}
+    if "[EARLY MOVER]" in fmt.format_investor_card(_stk(55)):
+        passed += 1; print(f"  ✓ 25.1 EE=55 stock gets [EARLY MOVER] badge")
+    else: failed += 1; failures.append("25.1 EE=55 missed badge")
+    if "[EARLY MOVER]" not in fmt.format_investor_card(_stk(45)):
+        passed += 1; print(f"  ✓ 25.2 EE=45 stock does NOT get [EARLY MOVER] badge")
+    else: failed += 1; failures.append("25.2 EE=45 wrongly badged")
+    if "[EARLY MOVER]" in fmt.format_investor_card(_stk(50)):
+        passed += 1; print(f"  ✓ 25.3 EE=50 boundary stock GETS [EARLY MOVER] badge")
+    else: failed += 1; failures.append("25.3 EE=50 boundary missed badge")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Group 26: cross-cutting consistency check (v11.0.1)
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "─" * 70)
+print("Group 26: cross-cutting consistency (v11.0.1)")
+print("─" * 70)
+
+# 26.1 — all 3 reporting files use threshold 50 in operational comparisons
+import re as _re
+THRESH_RE = _re.compile(r"early_entry_score['\"]?\s*[\],)0\s]*\)?\s*>=\s*(\d+)")
+mismatches = []
+for f, expected in [("reporting/daily_report_generator.py",50),
+                    ("reporting/command_parser.py",50),
+                    ("reporting/report_formatter.py",50)]:
+    src = open(f).read()
+    for m in THRESH_RE.findall(src):
+        if int(m) != expected:
+            mismatches.append(f"{f} found >={m}, expected >={expected}")
+if not mismatches:
+    passed += 1; print(f"  ✓ 26.1 all 3 reporting files use EE threshold 50 consistently")
+else:
+    failed += 1; failures.append(f"26.1 EE threshold mismatch: {mismatches}")
+
+# 26.2 — allowlist count grew by exactly 27 vs the v11.0 baseline
+# Baseline = the v11.0 source SHOULD have 206 entries. Modern runtime should be 233.
+if DUAL_LISTED_ALLOWLIST is not None:
+    total = len(DUAL_LISTED_ALLOWLIST)
+    if total == 233:
+        passed += 1; print(f"  ✓ 26.2 allowlist size = 233 (206 baseline + 27 new)")
+    else:
+        # softer check: confirm at minimum +27 over the documented v11.0 baseline of 206
+        # This handles future allowlist edits (e.g. uncommenting MOREALTY/KMEW/RBA)
+        if total >= 233:
+            passed += 1
+            warnings.append(f"26.2 allowlist size = {total} (>=233 expected, future additions OK)")
+            print(f"  ✓ 26.2 allowlist size = {total} (>=233; future additions accepted)")
+        else:
+            failed += 1; failures.append(f"26.2 allowlist size = {total}, expected >=233")
+
 
 
 # ──────────────────────────────────────────────────────────────────────────
