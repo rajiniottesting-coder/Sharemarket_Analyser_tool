@@ -169,7 +169,13 @@ TIPS: Dict[str, Tuple[str, str]] = {
                 "Session 19 safety caps: M1 DCF capped at 4× CMP,\n"
                 "composite CFV capped at 3× CMP.\n"
                 "Prevents low-beta stocks with tiny terminal-value denominators\n"
-                "from producing implausible 5×–10× fair values."),
+                "from producing implausible 5×–10× fair values.\n"
+                "v12.2: M3/M4/M5 sector resolution rewritten — production sector\n"
+                "strings (Basic Materials, Industrials, Communication Services,\n"
+                "Consumer Cyclical/Defensive, Financial Services, Real Estate)\n"
+                "now canonicalize via SECTOR_ALIASES before substring matching\n"
+                "against benchmark multipliers, so 31 of 100 stocks no longer\n"
+                "silently fall through to defaults."),
     "FV Low (₹)": ("Conservative FV = CFV × 0.85",
                   "CMP below FV Low = very deeply undervalued."),
     "FV High (₹)": ("Optimistic FV = CFV × 1.15",
@@ -198,17 +204,46 @@ TIPS: Dict[str, Tuple[str, str]] = {
                           "Conservative — rewards stable earnings + book value."),
     "M3: PE FV (₹)": ("Sector-relative P/E fair value — 20% weight in CFV",
                       "FV = EPS × sector median P/E.\n"
-                      "Shows 0 when EPS negative."),
+                      "Shows 0 when EPS negative.\n"
+                      "v12.2: 28 sector benchmarks (Banks 18, Tech 30, FMCG 45,\n"
+                      "Steel 10, Metals 12, Realty 25, Telecom 22 etc.).\n"
+                      "Production sector strings canonicalize through\n"
+                      "SECTOR_ALIASES — e.g., 'Basic Materials' → Metals (PE 12),\n"
+                      "'Industrials' → Infra (PE 22), 'Communication Services' →\n"
+                      "Telecom (PE 22). 'General' falls to default 25 by design."),
     "M4: PB FV (₹)": ("Price/Book fair value — 15% weight in CFV",
                       "FV = Book Value × sector median P/B.\n"
-                      "Most useful for banks, NBFCs, and asset-heavy businesses."),
+                      "Most useful for banks, NBFCs, and asset-heavy businesses.\n"
+                      "v12.2: 28 sector benchmarks. Same SECTOR_ALIASES path as\n"
+                      "M3 — Basic Materials gets PB 1.5 (Metals), Industrials\n"
+                      "gets PB 2.5 (Infra), Communication Services gets PB 2.5\n"
+                      "(Telecom). BVPS fallback derives from close/PB if missing."),
     "M5: EV FV (₹)": ("EV/EBITDA fair value — 10% weight in CFV",
-                      "Capital-structure neutral — useful when debt levels vary widely."),
+                      "Capital-structure neutral — useful when debt levels vary widely.\n"
+                      "Formula: CMP × (sector_ev_mult / current_ev_ebitda).\n"
+                      "v12.2: 28 sector benchmarks (Tech 22, FMCG 30, Steel 5,\n"
+                      "Banks 12, Realty 12 etc.) + SECTOR_ALIASES canonicalization.\n"
+                      "Caveat: shortcut formula assumes net debt and share count\n"
+                      "remain stable vs peers. For Tech with rich sector multiples,\n"
+                      "M5 can produce aggressive upside (e.g. 1.5–2× CMP). The 10%\n"
+                      "composite weight bounds this; 3× CMP composite cap caps the\n"
+                      "extreme. A proper EV-based FV (with EBITDA + net_debt + shares)\n"
+                      "is a Round 2 candidate."),
     "M6: DDM FV (₹)": ("Dividend Discount Model — 5% weight in CFV",
-                       "Only meaningful for consistent dividend payers."),
+                       "Only meaningful for consistent dividend payers.\n"
+                       "Gordon Growth: FV = D1 / (r - g).\n"
+                       "v12.2 fix: removed the 2% growth floor that previously\n"
+                       "inflated FV for stocks with declining earnings. A stock\n"
+                       "with pat_yoy=-20 now correctly gets 0% div growth (was\n"
+                       "getting 2% before). Yield range gate: 0.1% < yield < 15%."),
     "M7: PEG FV (₹)": ("Growth-adjusted P/E fair value — 5% weight in CFV",
                        "Rewards genuine growth companies at reasonable multiples.\n"
-                       "Shows 0 when earnings growth negative."),
+                       "Formula: EPS × growth_pct (mathematically a PEG=1.0\n"
+                       "implied fair PE — Lynch's rule of thumb).\n"
+                       "Shows 0 when earnings growth negative.\n"
+                       "v12.2 unit guard: skips when growth < 1.0 (catches the\n"
+                       "case where growth_3yr accidentally arrives as a decimal\n"
+                       "0.15 instead of percent 15, which would 100×-misprice)."),
 
     # ── Ratios ──────────────────────────────────────────────────────────────
     "P/E TTM": ("<20 cheap | 20–40 fair | >40 expensive",

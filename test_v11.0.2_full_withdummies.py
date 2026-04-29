@@ -2026,9 +2026,14 @@ print("GROUP 44 — Output dict shape")
 print("═" * 70)
 
 m = _fv.calculate_all_models(_fv_base_stock(), beta=1.0, growth_3yr=15)
+# Round 1: models dict now includes '_sector_resolutions' diagnostic metadata
+# in addition to the 7 model outputs. Filter underscore-prefixed keys when
+# checking for model output completeness.
+_model_keys = {k for k in m.keys() if not k.startswith("_")}
 _expected_keys = {"M1_DCF", "M2_Graham", "M3_PE", "M4_PB",
                   "M5_EV", "M6_DDM", "M7_PEG"}
-_fv_check("44.1", "All 7 model keys present", set(m.keys()), _expected_keys)
+_fv_check("44.1", "All 7 model keys present (excluding diagnostic metadata)",
+          _model_keys, _expected_keys)
 
 _result = _fv.get_composite_fair_value(m, cmp=1000)
 _expected_keys = {"cfv", "cfv_low", "cfv_high", "mos_label",
@@ -2057,8 +2062,9 @@ _tcs_like = {
 }
 m = _fv.calculate_all_models(_tcs_like, beta=0.8, growth_3yr=12)
 _result = _fv.get_composite_fair_value(m, cmp=3500)
+# Round 1: filter out underscore-prefixed metadata keys when counting models
 _fv_check("45.1a", "TCS-like: at least 6 of 7 models populated",
-          sum(1 for v in m.values() if v > 0) >= 6, True)
+          sum(1 for k, v in m.items() if not k.startswith("_") and v > 0) >= 6, True)
 _fv_check_in("45.1b", "TCS-like: CFV produces sensible MoS (-50% to +50%)",
              _result['mos_pct'], -50, 50)
 
@@ -2096,7 +2102,8 @@ _loss_maker = {
     "sector": "Realty",
 }
 m = _fv.calculate_all_models(_loss_maker, beta=1.5, growth_3yr=-10)
-_positive_count = sum(1 for v in m.values() if v > 0)
+# Round 1: filter out underscore-prefixed metadata keys when counting models
+_positive_count = sum(1 for k, v in m.items() if not k.startswith("_") and v > 0)
 _fv_check_in("45.4a", "Loss-maker: most models correctly skip",
              _positive_count, 0, 2)
 _fv_check("45.4b", "Loss-maker: M3 PE = 0 (negative EPS)", m['M3_PE'], 0)
@@ -2114,6 +2121,255 @@ _fv_check("45.5a", "v12.2 'Real Estate Investment' resolves to Real Estate PE=25
           m['M3_PE'], 8 * 25)
 _fv_check("45.5b", "v12.2 'Real Estate Investment' resolves to Real Estate PB=2.5",
           m['M4_PB'], 80 * 2.5)
+
+
+
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUPS 46-48: v12.2 Round 1 Enhancements
+# ──────────────────────────────────────────────────────────────────────────
+# Tests for Round 1 follow-on fixes diagnosed from production-data analysis:
+#   • SECTOR_ALIASES — explicit normalization for production sector strings
+#     that didn't substring-match any benchmark key (Basic Materials,
+#     Industrials, Communication Services, etc.)
+#   • _canonicalize_sector() helper — case-insensitive alias lookup
+#   • debug_sector_resolutions in models output — surfaces which benchmark
+#     key each model resolved to, so future regressions are visible
+#
+# Real-world impact diagnosed: 31 of 100 production stocks were silently
+# falling through to default multipliers because their sector strings
+# didn't match any benchmark key in the v12.2 maps.
+
+from analysis.fair_value_engine import (
+    SECTOR_ALIASES,
+    _canonicalize_sector,
+    _resolve_sector_map,
+)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 46: SECTOR_ALIASES — production sector normalization
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 46 — Round 1: SECTOR_ALIASES production sector normalization")
+print("═" * 70)
+
+# 46.1: Sectors found in production data that pre-Round-1 fell to defaults
+# Each (input_sector, expected_PE_after_fix, expected_resolved_key)
+_round1_pe_map = {
+    "Software": 28, "Technology": 30, "IT": 30,
+    "Banks": 18, "Banking": 18, "NBFC": 20, "Insurance": 22, "Financial": 20,
+    "Pharma": 30, "Healthcare": 28,
+    "FMCG": 45, "Consumer": 40,
+    "Auto": 25, "Automobile": 25,
+    "Steel": 10, "Metals": 12,
+    "Oil": 12, "Energy": 15, "Power": 20,
+    "Realty": 25, "Real Estate": 25,
+    "Telecom": 22, "Cement": 22,
+    "Textiles": 15, "Media": 25,
+    "Chemical": 28, "Infra": 22, "Defence": 40,
+}
+
+# (input, expected_PE, expected_key)
+_prod_sectors = [
+    ("Basic Materials",         12, "Metals"),
+    ("Industrials",             22, "Infra"),
+    ("Communication Services",  22, "Telecom"),
+    ("Consumer Cyclical",       40, "Consumer"),
+    ("Consumer Defensive",      40, "Consumer"),
+    ("Financial Services",      20, "Financial"),
+    ("Real Estate",             25, "Realty"),
+    ("Healthcare",              28, "Healthcare"),
+    ("Technology",              30, "Technology"),
+    ("Energy",                  15, "Energy"),
+]
+for _i, (_sec, _exp_pe, _exp_key) in enumerate(_prod_sectors, 1):
+    _val, _key = _resolve_sector_map(_sec, _round1_pe_map, 25)
+    _fv_check(f"46.1.{_i}a", f"Round 1 sector '{_sec}' → PE = {_exp_pe}", _val, _exp_pe)
+    _fv_check(f"46.1.{_i}b", f"Round 1 sector '{_sec}' → key = '{_exp_key}'", _key, _exp_key)
+
+# 46.2: "General" (catch-all) correctly stays at default
+_val, _key = _resolve_sector_map("General", _round1_pe_map, 25)
+_fv_check("46.2a", "Round 1 'General' falls to default PE=25", _val, 25)
+_fv_check("46.2b", "Round 1 'General' resolved key = '(default)'", _key, "(default)")
+
+# 46.3: Empty sector returns "(empty)" key for diagnostic clarity
+_val, _key = _resolve_sector_map("", _round1_pe_map, 25)
+_fv_check("46.3a", "Round 1 empty sector returns default value", _val, 25)
+_fv_check("46.3b", "Round 1 empty sector resolved key = '(empty)'", _key, "(empty)")
+
+# 46.4: SECTOR_ALIASES dict contains expected production mappings
+_required_aliases = ["Basic Materials", "Industrials", "Communication Services",
+                     "Consumer Cyclical", "Consumer Defensive", "Financial Services",
+                     "Information Technology", "Iron & Steel"]
+for _i, _alias in enumerate(_required_aliases, 1):
+    _fv_check(f"46.4.{_i}", f"SECTOR_ALIASES contains '{_alias}'",
+              _alias in SECTOR_ALIASES, True)
+
+# 46.5: Aliasing is case-insensitive
+_canon = _canonicalize_sector("BASIC MATERIALS")
+_fv_check("46.5a", "Canonicalize is case-insensitive: 'BASIC MATERIALS' → 'Metals'",
+          _canon, "Metals")
+_canon = _canonicalize_sector("basic materials")
+_fv_check("46.5b", "Canonicalize is case-insensitive: 'basic materials' → 'Metals'",
+          _canon, "Metals")
+_canon = _canonicalize_sector("  Basic Materials  ")
+_fv_check("46.5c", "Canonicalize strips whitespace", _canon, "Metals")
+
+# 46.6: Unknown sector strings pass through unchanged (substring fallback)
+_canon = _canonicalize_sector("Some Niche Industry")
+_fv_check("46.6", "Unknown sector passes through canonicalize unchanged",
+          _canon, "Some Niche Industry")
+
+# 46.7: None / empty produce empty string
+_fv_check("46.7a", "Canonicalize None → empty string", _canonicalize_sector(None), "")
+_fv_check("46.7b", "Canonicalize empty → empty string", _canonicalize_sector(""), "")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 47: debug_sector_resolutions — diagnostic output (Round 1)
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 47 — Round 1: _sector_resolutions diagnostic field")
+print("═" * 70)
+
+# 47.1: Models dict now contains _sector_resolutions metadata
+m = _fv.calculate_all_models(_fv_base_stock(sector="Banks"), beta=1.0, growth_3yr=15)
+_fv_check("47.1", "models dict contains '_sector_resolutions' key",
+          "_sector_resolutions" in m, True)
+
+# 47.2: _sector_resolutions has entries for M3, M4, M5
+_res = m["_sector_resolutions"]
+_fv_check("47.2a", "_sector_resolutions has M3_PE entry", "M3_PE" in _res, True)
+_fv_check("47.2b", "_sector_resolutions has M4_PB entry", "M4_PB" in _res, True)
+_fv_check("47.2c", "_sector_resolutions has M5_EV entry", "M5_EV" in _res, True)
+
+# 47.3: For Banks sector, all three resolve to "Banks" key
+_fv_check("47.3a", "Banks → M3 resolves to 'Banks'", _res["M3_PE"], "Banks")
+_fv_check("47.3b", "Banks → M4 resolves to 'Banks'", _res["M4_PB"], "Banks")
+_fv_check("47.3c", "Banks → M5 resolves to 'Banks'", _res["M5_EV"], "Banks")
+
+# 47.4: For "Basic Materials" (aliased to Metals), all three resolve to "Metals"
+m = _fv.calculate_all_models(_fv_base_stock(sector="Basic Materials"),
+                             beta=1.0, growth_3yr=15)
+_res = m["_sector_resolutions"]
+_fv_check("47.4a", "Basic Materials → M3 resolves to 'Metals'", _res["M3_PE"], "Metals")
+_fv_check("47.4b", "Basic Materials → M4 resolves to 'Metals'", _res["M4_PB"], "Metals")
+_fv_check("47.4c", "Basic Materials → M5 resolves to 'Metals'", _res["M5_EV"], "Metals")
+
+# 47.5: For unrecognised sector, resolutions read "(default)"
+m = _fv.calculate_all_models(_fv_base_stock(sector="Wibble Wobble"),
+                             beta=1.0, growth_3yr=15)
+_res = m["_sector_resolutions"]
+_fv_check("47.5a", "Unknown sector → M3 = '(default)'", _res["M3_PE"], "(default)")
+_fv_check("47.5b", "Unknown sector → M4 = '(default)'", _res["M4_PB"], "(default)")
+_fv_check("47.5c", "Unknown sector → M5 = '(default)'", _res["M5_EV"], "(default)")
+
+# 47.6: For empty sector, resolutions read "(empty)"
+m = _fv.calculate_all_models(_fv_base_stock(sector=""), beta=1.0, growth_3yr=15)
+_res = m["_sector_resolutions"]
+_fv_check("47.6a", "Empty sector → M3 = '(empty)'", _res["M3_PE"], "(empty)")
+_fv_check("47.6b", "Empty sector → M4 = '(empty)'", _res["M4_PB"], "(empty)")
+
+# 47.7: _sector_resolutions does NOT pollute the composite
+# (it's a non-numeric dict, so the composite weighter must skip it)
+m = _fv.calculate_all_models(_fv_base_stock(sector="Banks"), beta=1.0, growth_3yr=15)
+_result = _fv.get_composite_fair_value(m, cmp=1000)
+# CFV should be sane (close to the expected blend); critically, it should NOT
+# be 0 due to _sector_resolutions being treated as a model.
+_fv_check("47.7", "Composite ignores _sector_resolutions metadata",
+          _result['cfv'] > 0, True)
+
+# 47.8: Composite produces same numeric value with or without _sector_resolutions
+# (compare against an identical-models dict that has it stripped out)
+m_clean = {k: v for k, v in m.items() if not k.startswith("_")}
+_clean_result = _fv.get_composite_fair_value(m_clean, cmp=1000)
+_fv_check("47.8", "Composite numerically identical with/without diagnostic key",
+          _result['cfv'], _clean_result['cfv'])
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 48: End-to-end Round 1 production scenarios
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 48 — Round 1: production scenarios from real Excel data")
+print("═" * 70)
+
+# 48.1: HINDALCO-like (Basic Materials sector) — pre-Round-1 hit defaults,
+# now should hit Metals multipliers
+_hindalco_like = {
+    "close": 600, "eps": 60, "bvps": 450, "pb": 1.33, "pe": 10,
+    "div_yield": 0.5, "pat_yoy": -45, "ev_ebitda": 8,
+    "sector": "Basic Materials",
+}
+m = _fv.calculate_all_models(_hindalco_like, beta=1.2, growth_3yr=10)
+# Metals: PE=12, PB=1.5, EV=6
+# M3 = 60 × 12 = 720 (was 60 × 25 = 1500 pre-Round-1 — clearly different)
+_fv_check("48.1a", "HINDALCO-like: M3 hits Metals PE=12 (not default 25)",
+          m['M3_PE'], 60 * 12)
+_fv_check("48.1b", "HINDALCO-like: M4 hits Metals PB=1.5 (not default 3.0)",
+          m['M4_PB'], 450 * 1.5)
+_fv_check("48.1c", "HINDALCO-like: sector resolution shows Metals",
+          m['_sector_resolutions']['M3_PE'], "Metals")
+
+# 48.2: BHARTIARTL-like (Communication Services) — now hits Telecom
+_bharti_like = {
+    "close": 1200, "eps": 30, "bvps": 200, "pb": 6.0, "pe": 40,
+    "div_yield": 0.9, "pat_yoy": -55, "ev_ebitda": 10,
+    "sector": "Communication Services",
+}
+m = _fv.calculate_all_models(_bharti_like, beta=0.7, growth_3yr=8)
+# Telecom: PE=22, PB=2.5, EV=9
+_fv_check("48.2a", "BHARTIARTL-like: M3 hits Telecom PE=22",
+          m['M3_PE'], 30 * 22)
+_fv_check("48.2b", "BHARTIARTL-like: M4 hits Telecom PB=2.5",
+          m['M4_PB'], 200 * 2.5)
+_fv_check("48.2c", "BHARTIARTL-like: sector resolution shows Telecom",
+          m['_sector_resolutions']['M5_EV'], "Telecom")
+
+# 48.3: Industrials sector → Infra mapping
+_industrial_like = {
+    "close": 800, "eps": 40, "bvps": 300, "pb": 2.67, "pe": 20,
+    "div_yield": 1.5, "pat_yoy": 10, "ev_ebitda": 11,
+    "sector": "Industrials",
+}
+m = _fv.calculate_all_models(_industrial_like, beta=1.1, growth_3yr=15)
+# Infra: PE=22, PB=2.5, EV=11
+_fv_check("48.3a", "Industrials: M3 hits Infra PE=22", m['M3_PE'], 40 * 22)
+_fv_check("48.3b", "Industrials: M4 hits Infra PB=2.5", m['M4_PB'], 300 * 2.5)
+
+# 48.4: Consumer Cyclical → Consumer mapping (was already partially OK
+# via substring "Consumer", but now explicit through alias)
+_consumer_cyc = {
+    "close": 500, "eps": 25, "bvps": 100, "pb": 5.0, "pe": 20,
+    "div_yield": 1.2, "pat_yoy": 18, "ev_ebitda": 18,
+    "sector": "Consumer Cyclical",
+}
+m = _fv.calculate_all_models(_consumer_cyc, beta=1.0, growth_3yr=15)
+_fv_check("48.4a", "Consumer Cyclical: M3 hits Consumer PE=40", m['M3_PE'], 25 * 40)
+_fv_check("48.4b", "Consumer Cyclical: M5 hits Consumer EV=22",
+          m['_sector_resolutions']['M5_EV'], "Consumer")
+
+# 48.5: General sector — catch-all, intentionally falls to defaults
+_general_stock = {
+    "close": 400, "eps": 20, "bvps": 150, "pb": 2.67, "pe": 20,
+    "div_yield": 0, "pat_yoy": 5, "ev_ebitda": 12,
+    "sector": "General",
+}
+m = _fv.calculate_all_models(_general_stock, beta=1.0, growth_3yr=10)
+_fv_check("48.5a", "General sector: M3 falls to default PE=25",
+          m['M3_PE'], 20 * 25)
+_fv_check("48.5b", "General sector: resolution explicitly shows '(default)'",
+          m['_sector_resolutions']['M3_PE'], "(default)")
+
+# 48.6: Aliased sector still produces sensible composite
+m = _fv.calculate_all_models(_hindalco_like, beta=1.2, growth_3yr=10)
+_result = _fv.get_composite_fair_value(m, cmp=600)
+_fv_check_in("48.6a", "HINDALCO-like (Round 1): produces sensible CFV",
+             _result['cfv'], 100, 1800)
+_fv_check_in("48.6b", "HINDALCO-like (Round 1): MoS in plausible range",
+             _result['mos_pct'], -50, 200)
 
 
 

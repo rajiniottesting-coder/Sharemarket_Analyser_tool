@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · Version 10.16 · April 2026
+## AI Context File · Version 12.2 · April 2026
 
 This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. **Read it first** before making any change.
 
@@ -1147,4 +1147,90 @@ This bug went through three iterations before resolving (v11.x → v12.0.1 → v
 
 ---
 
-*Last updated: April 2026 · v12.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 23. v12.2 RELEASE — Fair Value Engine hardening (initial fixes + Round 1)
+
+**Date:** 29 April 2026
+**Files changed:** `analysis/fair_value_engine.py`, `test_v11.0.2_full_withdummies.py` (Groups 32-48 added), `CLAUDE.md`, `pipeline_reference_v12_2.html`, `reporting/excel_generator.py` (glossary updates), `reporting/tooltip_formatter.py`
+**Test status:** 319 of 319 pass (157 pre-existing + 93 v12.2 valuation + 69 Round 1 + corrections)
+
+### Why this release exists
+
+A code review of `analysis/fair_value_engine.py` flagged 7 issues across the 7 valuation models (M1-M7), ranging from defensive-coding gaps (eps/bvps not sanitised) to dimensional concerns (M5 EV/EBITDA shortcut formula) to documentation/code mismatches (M6 DDM growth derivation). A real-data audit of before/after Excel dashboards then revealed that even after the initial fixes, 31 of 100 production stocks were still falling through to default sector multipliers because their sector strings ("Basic Materials", "Industrials", "Communication Services") didn't substring-match any benchmark key.
+
+### v12.2 initial release — code-review-driven fixes
+
+| Fix | Model | Before | After |
+|-----|-------|--------|-------|
+| **eps/bvps sanitisation** | M1, M2, M3, M7 | `data.get('eps', 0)` raw — crashed on `'—'` / `'N/A'` / `None` | Now routes through `_sf()` like every other field |
+| **Sector substring matching** | M3, M4, M5 | `sector.split()[0]` only matched first word — "Information Technology" got default 25 | Two-pass: SECTOR_ALIASES canonicalisation, then case-insensitive substring scan |
+| **Sector map expansion** | M3, M4, M5 | Missing Realty, Telecom, Cement, Textiles, Media, Insurance, NBFC, Defence | All explicitly mapped |
+| **DDM growth derivation** | M6 | `min(max(_pat_g / 200, 0.02), 0.06)` — 2% floor inflated FV for declining-earnings stocks | `max(min(_pat_g / 100 / 2, 0.06), 0.0)` — 0% floor, units explicit |
+| **PEG unit guard** | M7 | `EPS × growth_3yr` no guard — would silently 100×-misprice if growth arrived as decimal (0.15 vs 15) | Skip if `growth < 1.0` (likely unit error) |
+| **Composite unknown-key default** | composite | `base_weights.get(k, 0.10)` silently weighted unknown keys | `k in base_weights` filter; unknown keys excluded from total weight |
+
+### v12.2 Round 1 — production-data-driven follow-on
+
+A diff of two real Excel dashboards (`NSE_BSE_Full_Dashboard_20260428_before_fix.xlsx` vs `_after_fix.xlsx`) revealed:
+
+- **31 of 100 stocks** had M3/M4/M5 unchanged after the v12.2 fix because their sector strings didn't match any benchmark key (Basic Materials, Industrials, Communication Services, General). Mean MoS change for these sectors: **−0.05** — i.e., zero benefit from the fix.
+- **62 of 89 stocks** (those that did get sector resolution) had M4 PB change, with median delta of ₹35 and tails extending to ₹137,000 — confirming that sector resolution is the single biggest driver of behavioural change in the entire engine.
+- M6 DDM dropped exactly **−20.63%** for 13 dividend-paying stocks with negative `pat_yoy` (BAJAJFINSV, BHARTIARTL, HINDALCO, etc.) — matching the analytic prediction `9.524/12.0 = 0.794` from removing the 2% floor.
+
+#### Round 1 changes
+
+1. **`SECTOR_ALIASES` dict** in `analysis/fair_value_engine.py` — explicit map for production sector strings to canonical benchmark keys:
+   - `Basic Materials → Metals` (PE 12, PB 1.5, EV 6)
+   - `Industrials → Infra` (PE 22, PB 2.5, EV 11)
+   - `Communication Services → Telecom` (PE 22, PB 2.5, EV 9)
+   - `Consumer Cyclical / Consumer Defensive → Consumer` (PE 40, PB 6, EV 22)
+   - `Financial Services → Financial` (PE 20, PB 2, EV 12)
+   - `Real Estate → Realty` (PE 25, PB 2.5, EV 12)
+   - `General` left as catch-all → falls to default 25/3.0/15 (intentional — no sector signal)
+   - Plus 12 industry-specific aliases for legacy data sources (Iron & Steel, Banks - Public Sector, Information Technology, etc.)
+
+2. **`_canonicalize_sector()` helper** — case-insensitive lookup that whitespace-strips and applies SECTOR_ALIASES. Falls through to substring matcher if no alias hits.
+
+3. **`_sector_resolutions` diagnostic field** — every `calculate_all_models()` call now returns a `'_sector_resolutions'` key in the models dict containing `{'M3_PE': 'Metals', 'M4_PB': 'Metals', 'M5_EV': 'Metals'}` style mapping. Underscore prefix signals "metadata, not model output." Composite weighter (`get_composite_fair_value`) filters via `k in base_weights` so the metadata is correctly excluded from FV math.
+
+### What was tested
+
+`test_v11.0.2_full_withdummies.py` Groups 32-48 — runs every regression cycle:
+
+- **Group 32-38**: Per-model happy paths and edge cases for M1 through M7
+- **Group 39**: Composite blending including unknown-key hardening (test 39.4)
+- **Group 40-42**: MoS derivation, score adjustment bands, MoS labels (all 7 tiers)
+- **Group 43**: Defensive inputs — `eps='—'`, `eps=None`, `eps='N/A'`, `bvps='—'` etc.
+- **Group 44**: Output dict shape — handles `_sector_resolutions` metadata correctly
+- **Group 45**: Realistic end-to-end scenarios (TCS-like, Steel, PSU bank, Loss-maker, Real Estate Investment)
+- **Group 46**: SECTOR_ALIASES — every production sector resolves to expected benchmark; "General" intentionally stays at default
+- **Group 47**: `_sector_resolutions` diagnostic — present in output, populated correctly, doesn't pollute composite (test 47.7, 47.8)
+- **Group 48**: HINDALCO-like, BHARTIARTL-like, Industrials, Consumer Cyclical, General — full integration scenarios from production data
+
+### Known limitations carried into v12.2
+
+These were identified in the code review but **deliberately not fixed** in this release because they require either data-pipeline changes or design decisions:
+
+1. **M5 EV/EBITDA shortcut formula** — uses `CMP × sector_ev_mult / current_ev_ebitda`, which assumes net debt and share count remain stable vs peers. A proper EV-based fair value would compute `(EBITDA × sector_ev_mult − net_debt) / shares_outstanding`, requiring three new data fields. The 10% composite weight bounds the impact. Real-data audit confirmed M5 is producing aggressive Tech-sector upside (TCS at 80% upside), but outputs are dimensionally plausible (66 of 72 stocks land in [0.3×, 3×] CMP range). Round 2 candidate.
+
+2. **M7 "PEG" model** — implements `EPS × growth_pct`, mathematically equivalent to assuming PEG = 1.0 (Lynch's rule) but doesn't expose the constant explicitly. Real-data audit showed 0 stocks had this fire the unit guard, so production data is clean. Round 2 candidate to make `PEG_BENCHMARK = 1.0` explicit.
+
+3. **MoS distribution shift** — mean MoS moved from +4.7% to +10.8% across 89 stocks. This is the engine becoming more correctly bullish (it can now see real undervaluations that were masked by default multipliers); not a bug. May warrant re-tuning the score adjustment thresholds (`+12 at MoS>40`, etc.) if backtests calibrated against the old distribution.
+
+### LESSON — Audit production data before declaring fixes complete
+
+The v12.2 initial release passed all 250 hand-crafted unit tests but still left 31% of production stocks unaffected because the test data didn't include the actual sector strings yfinance returns. The Round 1 fix existed because we ran a real pipeline twice and diff'd the Excel outputs. The pattern to remember:
+
+1. Hand-crafted tests verify the code does what it's written to do.
+2. Production-data audits verify the code does what it should do.
+3. **Both are necessary; neither is sufficient.**
+
+### Operational notes
+
+- The `_sector_resolutions` diagnostic field is now present in every stock dict after `master_funnel.py` line 1962 (`stock.update(models)`). Downstream consumers that iterate stock keys must skip underscore-prefixed entries (none currently do; existing code uses explicit lookups). If you add a new dashboard column that surfaces this, recommended format: `f"M3:{res['M3_PE']} M4:{res['M4_PB']} M5:{res['M5_EV']}"` for compact display.
+- Glossary entries for M3 / M4 / M5 / CFV / MoS in `reporting/excel_generator.py` updated with v12.2 sector-aliasing notes.
+- Tooltip Reference entries in `reporting/tooltip_formatter.py` updated to match.
+- The `pipeline_reference_v12_1.html` was bumped to `pipeline_reference_v12_2.html` with the same content plus a v12.2 changelog entry inline.
+
+---
+
+*Last updated: April 2026 · v12.2 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

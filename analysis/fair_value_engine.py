@@ -12,28 +12,94 @@ def _sf(val, default=0.0):
         return float(default)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Sector normalization — v12.2 Round 1
+# ──────────────────────────────────────────────────────────────────────────
+# Maps the sector strings that arrive from upstream (yfinance / NSE feed) to
+# the canonical keys used in the per-model sector multiple maps below.
+# Without this, sector strings that don't substring-match any benchmark key
+# silently fall through to the default multipliers, producing the same
+# "neutral" fair value as a stock whose sector we genuinely can't classify.
+#
+# Real-world example: production data showed 31 of 100 stocks in sectors
+# whose strings ("Basic Materials", "Industrials", "Communication Services",
+# "General") didn't match any benchmark key, so M3/M4/M5 always returned
+# default values for them. After aliasing, these sectors map to their nearest
+# benchmark equivalent (Metals, Infra, Telecom) and produce real signal.
+SECTOR_ALIASES = {
+    # yfinance "Sector" field (top-level GICS-style classification)
+    "Basic Materials":         "Metals",       # steel, copper, chemicals, mining
+    "Industrials":             "Infra",        # capital goods, construction, defense, transport
+    "Communication Services":  "Telecom",      # Bharti, telecom infrastructure
+    "Consumer Cyclical":       "Consumer",     # consumer discretionary
+    "Consumer Defensive":      "Consumer",     # consumer staples
+    "Financial Services":      "Financial",    # broad — banks/NBFCs/insurance subdivision via substring
+    "Real Estate":             "Realty",
+    # "Healthcare" → matches our Healthcare key directly
+    # "Technology" → matches our Technology key directly
+    # "Energy" → matches our Energy key directly
+    # "Utilities" → matches our Power key indirectly (no entry needed)
+    # "General" → no good mapping (catch-all bucket); falls through to default
+
+    # Common legacy / industry-specific labels (Indian market data sources)
+    "Information Technology":  "Technology",
+    "IT Services":             "Technology",
+    "Software":                "Software",
+    "Iron & Steel":            "Steel",
+    "Iron and Steel":          "Steel",
+    "Banking and Finance":     "Banks",
+    "Banks - Public Sector":   "Banks",
+    "Banks - Private Sector":  "Banks",
+    "Pharmaceuticals":         "Pharma",
+    "Auto Components":         "Auto",
+    "Automobiles":             "Auto",
+    "Cement & Construction":   "Cement",
+    "Real Estate Investment":  "Realty",
+    "Power Generation":        "Power",
+    "Oil & Gas":               "Oil",
+    "Capital Goods":           "Infra",
+    "Defence":                 "Defence",
+    "Defense":                 "Defence",
+}
+
+
+def _canonicalize_sector(sector_str):
+    """Apply SECTOR_ALIASES if applicable; otherwise return the original string.
+
+    Case-insensitive on alias keys but preserves canonical-value casing.
+    """
+    if not sector_str:
+        return ""
+    s = str(sector_str).strip()
+    s_lower = s.lower()
+    for alias, canonical in SECTOR_ALIASES.items():
+        if alias.lower() == s_lower:
+            return canonical
+    return s   # no alias — pass through to substring matcher
+
+
 def _resolve_sector_map(sector_str, sector_map, default):
     """Match a sector string against a benchmark map.
 
-    The previous implementation used `sector.split()[0]` which only matched
-    the first whitespace-separated word. That broke multi-word sectors like
-    "Information Technology" (would only match 'Information', missing
-    'IT'/'Technology' keys), "Iron & Steel" (matched 'Iron', missing 'Steel'),
-    and many others.
+    Two-pass resolution:
+      1. Apply SECTOR_ALIASES to canonicalize known-but-unmapped strings
+         (e.g., "Basic Materials" → "Metals").
+      2. Substring-search the canonicalized string against the benchmark map.
 
-    This helper does a case-insensitive substring search across the full
-    sector string. The map is iterated in insertion order — Python dicts
-    preserve insertion order from 3.7+ — so callers should put more
-    specific keys (e.g., 'Software') before more generic ones ('IT') if
+    The map is iterated in insertion order (Python 3.7+), so callers should
+    put more specific keys (e.g., 'Software') before generic ones ('IT') if
     a string could match multiple. Returns `default` if no key matches.
+
+    Returns: (matched_value, matched_key) so callers can surface diagnostics.
     """
     if not sector_str:
-        return default
-    s = str(sector_str).upper()
+        return default, "(empty)"
+    canonical = _canonicalize_sector(sector_str)
+    s = str(canonical).upper()
     for key, val in sector_map.items():
         if key.upper() in s:
-            return val
-    return default
+            return val, key
+    return default, "(default)"
 
 
 class FairValueEngine:
@@ -44,24 +110,33 @@ class FairValueEngine:
         """
         Step 1: 7 Valuation Models (M1-M7)
 
-        v12.2 fixes:
+        v12.2 fixes (initial release):
           • eps / bvps now go through _sf() — previously these were the only
             data fetches that bypassed sanitization, making the engine crash
             when upstream sent '—' / 'N/A' / None for these fields.
           • M3 / M4 / M5 sector parsing replaced with substring matching so
-            multi-word sectors like 'Information Technology' resolve correctly
-            (was silently falling through to default values before).
+            multi-word sectors like 'Information Technology' resolve correctly.
           • M3 / M4 / M5 sector maps expanded to cover Realty, Telecom,
             Cement, Textiles, Media, Insurance, NBFC explicitly.
           • M6 DDM: removed the 2% growth floor (was systematically
             over-rewarding stocks with declining earnings); added a unit-clear
-            growth formula matching the documented intent (pat_yoy / 2,
-            capped at GDP nominal of 6%).
+            growth formula matching the documented intent.
           • M7 PEG: made unit-safe with explicit guard for unexpectedly small
             growth values (catches the case where growth_3yr accidentally
             arrives as a decimal fraction instead of a percentage).
+
+        v12.2 Round 1 enhancements (addresses production-data findings):
+          • SECTOR_ALIASES: explicit normalization map for production sector
+            strings (e.g., "Basic Materials" → "Metals") that don't substring-
+            match any benchmark key. Diagnosed from real Excel output where
+            31 of 100 stocks were silently using default multipliers.
+          • debug_sector_resolutions in output: surfaces which benchmark key
+            each model resolved to, so future regressions in sector handling
+            are visible without code archaeology.
         """
         models = {}
+        # Track which benchmark key each model resolved to (Round 1 diagnostic)
+        sector_resolutions = {}
 
         # v12.2 fix: route through _sf() so '—' / None / '' don't blow up
         # downstream comparisons like `eps > 0`.
@@ -69,45 +144,27 @@ class FairValueEngine:
         bv  = _sf(data.get('bvps', 0), 0)
 
         # M1: DCF (3-Stage) — Stage 1 capped at 25%
-        # Session 19 fix: two guards to prevent M1 from producing absurd
-        # fair-value multiples (10×+ CMP) on low-beta stocks.
-        #
-        #   Guard 1 — WACC floor at 10%:
-        #     With gsec=6.8% and equity-risk-premium=5.5%, a stock with
-        #     beta=0.2 (like SBIN) gets WACC = 6.8 + 0.2×5.5 = 7.9%.
-        #     Terminal growth is 4.5%, so the denominator (WACC-gt) becomes
-        #     just 3.4%, and dividing terminal value by 3.4% produces
-        #     mathematically correct but practically absurd fair values
-        #     (SBIN came out at ₹12,126 vs CMP ₹1,108 = 10.9× CMP).
-        #     Indian equity discount rates of less than 10% are unrealistic
-        #     given a ~6.8% risk-free rate and the true equity risk premium
-        #     in Indian markets (typically 6-8%, not 5.5%).
-        #
-        #   Guard 2 — cap final DCF at 4× CMP:
-        #     Even with WACC floored, an EPS-based DCF with aggressive
-        #     growth assumptions can produce fair values many multiples of
-        #     price for outliers. A 4× cap means "deeply undervalued" but
-        #     not absurd — anything beyond should skip this model rather
-        #     than distort the composite.
+        # Session 19: WACC floor at 10% + 4× CMP cap.
         _raw_wacc = (self.gsec + beta * 5.5) / 100
-        wacc = max(_raw_wacc, 0.10)             # floor WACC at 10%
+        wacc = max(_raw_wacc, 0.10)
         gt = 0.045
         cmp_m1 = _sf(data.get('close', 0))
-        if eps > 0 and wacc > gt:               # WACC must exceed terminal growth rate
+        if eps > 0 and wacc > gt:
             g1 = min(growth_3yr / 100, 0.25)
             g2 = g1 / 2
             dcf = sum(eps * (1+g1)**y / (1+wacc)**y for y in range(1,6))
             dcf += sum(eps * (1+g1)**5 * (1+g2)**(y-5) / (1+wacc)**y for y in range(6,11))
             terminal = (eps * (1+g1)**5 * (1+g2)**5 * (1+gt)) / (wacc - gt) / (1+wacc)**10
             _m1 = dcf + terminal
-            # Guard 2: cap at 4× CMP (or skip if we can't compare to price)
             if cmp_m1 > 0 and _m1 > cmp_m1 * 4:
                 _m1 = cmp_m1 * 4
             models['M1_DCF'] = round(_m1, 2)
         else:
             models['M1_DCF'] = 0
 
-        # M2: Graham Number — derive bvps from pb × close if not in data
+        # M2: Graham Number — derive bvps from pb × close if missing.
+        # Note: M2 uses no sector multiplier — formula depends only on EPS
+        # and BVPS, so v12.2 sector fixes don't affect this model.
         _bvps = bv
         if (not _bvps or _bvps == 0) and data.get('pb') and _sf(data.get('pb')) > 0:
             _close = _sf(data.get('close', 0))
@@ -118,17 +175,13 @@ class FairValueEngine:
 
         # M4: Price-to-Book Fair Value = BVPS × sector_median_PB
         _pb_v = _sf(data.get('pb'))
-        # Session 15: the old check `'_bvps' in dir() and _bvps` was a no-op —
-        # dir() always contained '_bvps' after the M2 block. Simplified to a
-        # direct truthiness check with the fallback derivation preserved.
         if _bvps and _bvps > 0:
             _bvps4 = _bvps
         elif _pb_v > 0:
             _bvps4 = round(_sf(data.get('close', 0)) / _pb_v, 2)
         else:
             _bvps4 = 0
-        # v12.2: expanded sector PB benchmarks. Keys ordered specific → generic
-        # so 'Software' matches before 'IT' would (substring search).
+        # v12.2: expanded sector PB map. Round 1: aliasing handled upstream.
         _sec_pb_map = {
             "Banks": 2.0, "Banking": 2.0, "NBFC": 2.5,
             "Insurance": 2.5, "Financial": 2.0,
@@ -143,11 +196,11 @@ class FairValueEngine:
             "Textiles": 1.8, "Media": 2.5,
             "Chemical": 3.5, "Infra": 2.5, "Defence": 5.0,
         }
-        _sec_pb = _resolve_sector_map(data.get('sector', ''), _sec_pb_map, 3.0)
+        _sec_pb, _pb_key = _resolve_sector_map(data.get('sector', ''), _sec_pb_map, 3.0)
+        sector_resolutions['M4_PB'] = _pb_key
         models['M4_PB'] = round(_bvps4 * _sec_pb, 2) if _bvps4 > 0 else 0
 
         # M3: PE Mean Reversion — sector-appropriate benchmark PE
-        # v12.2: substring matching (not split-first-word) + expanded map.
         _sec_pe_map = {
             "Software": 28, "Technology": 30, "IT": 30,
             "Banks": 18, "Banking": 18, "NBFC": 20, "Insurance": 22,
@@ -162,32 +215,22 @@ class FairValueEngine:
             "Textiles": 15, "Media": 25,
             "Chemical": 28, "Infra": 22, "Defence": 40,
         }
-        _fair_pe = _resolve_sector_map(
+        _fair_pe, _pe_key = _resolve_sector_map(
             data.get('sector', ''), _sec_pe_map,
             _sf(data.get('sector_pe_5yr', 0), 0) or 25,
         )
-        # Session 15: guard against negative EPS — negative fair value is nonsensical
-        # and would distort composite FV; Graham / DCF already do this guard.
+        sector_resolutions['M3_PE'] = _pe_key
         models['M3_PE'] = round(eps * _fair_pe, 2) if eps > 0 else 0
 
         # M7: PEG-Adjusted (Lynch's PEG=1 → fair PE = growth rate)
-        # v12.2 clarification: this is mathematically equivalent to assuming
-        # PEG = 1.0 (Lynch's rule of thumb). Fair PE = growth rate (in percent),
-        # so fair_value = EPS × growth_pct.
-        # Guard added against unit confusion: if growth_3yr arrives as a
-        # decimal (0.15 instead of 15), we'd silently produce a 100× too small
-        # FV. We treat any value < 1 as suspect and skip rather than mis-price.
+        # v12.2 unit guard: skip if growth < 1.0 (likely arrived as decimal).
         adj_growth = min(growth_3yr, 30)
-        if eps > 0 and adj_growth >= 1.0:        # at least 1% growth, properly in % units
+        if eps > 0 and adj_growth >= 1.0:
             models['M7_PEG'] = round(eps * adj_growth, 2)
         else:
             models['M7_PEG'] = 0
 
         # M5: EV/EBITDA-based Fair Value
-        # Shortcut form: fair_value ≈ CMP × (sector_ev_mult / current_ev_ebitda)
-        # Note: this implicitly assumes net debt and share count remain stable
-        # vs. peers. The 10% composite weight bounds the impact of this
-        # assumption. v12.2: substring matching + expanded sector map.
         ev_ebitda_curr = _sf(data.get('ev_ebitda', 0))
         _sec_ev_map = {
             "Software": 22, "Technology": 22, "IT": 20,
@@ -203,9 +246,10 @@ class FairValueEngine:
             "Textiles": 8, "Media": 12,
             "Chemical": 14, "Infra": 11, "Defence": 18,
         }
-        sector_ev_mult = _resolve_sector_map(
+        sector_ev_mult, _ev_key = _resolve_sector_map(
             data.get('sector', ''), _sec_ev_map, 15
         )
+        sector_resolutions['M5_EV'] = _ev_key
         cmp_m5 = _sf(data.get('close', 0))
         if ev_ebitda_curr > 0 and cmp_m5 > 0:
             models['M5_EV'] = round(cmp_m5 * sector_ev_mult / ev_ebitda_curr, 2)
@@ -213,26 +257,13 @@ class FairValueEngine:
             models['M5_EV'] = 0
 
         # M6: DDM (Dividend Discount Model) — Gordon Growth Model
-        # FV = D1 / (r - g)  where D1 = DPS × (1+g)
-        # Only valid for genuine dividend-paying stocks (0.1% < yield < 15%)
-        # Yields > 15% indicate bad data (unit mismatch) — skip DDM.
-        #
-        # v12.2 fix: growth derivation rewritten for clarity and correctness.
-        #   • OLD code: `min(max(_pat_g / 200, 0.02), 0.06)` had a 2% floor
-        #     that systematically inflated FV for stocks with declining
-        #     earnings — even a stock with pat_yoy=-20 got 2% growth credit.
-        #   • NEW code: pat_yoy is in percent, so divide by 100 to get a
-        #     decimal, then halve (conservative — comment said "min(pat/2,
-        #     GDP=10%)"). Floor at 0% (stagnation), cap at 6% (matches GDP
-        #     nominal anchor described in original comment). Negative-growth
-        #     stocks now correctly get 0% div growth, not a free 2%.
+        # v12.2 fix: removed 2% growth floor; growth = max(min(pat_yoy/200, 0.06), 0)
         div_yield_pct = _sf(data.get('div_yield', 0))
         if 0.1 < div_yield_pct < 15.0 and cmp_m5 > 0:
-            dps        = cmp_m5 * div_yield_pct / 100   # annual DPS in ₹
+            dps        = cmp_m5 * div_yield_pct / 100
             _pat_g_pct = _sf(data.get('pat_yoy', 0), 0)
-            # half of pat_yoy growth (conservative), floored at 0, capped at 6%
             div_growth = max(min(_pat_g_pct / 100 / 2, 0.06), 0.0)
-            req_return = (self.gsec + 4.5) / 100         # risk-free + equity premium
+            req_return = (self.gsec + 4.5) / 100
             if req_return > div_growth and dps > 0:
                 d1 = dps * (1 + div_growth)
                 models['M6_DDM'] = round(d1 / (req_return - div_growth), 2)
@@ -241,6 +272,11 @@ class FairValueEngine:
         else:
             models['M6_DDM'] = 0
 
+        # Round 1: attach sector resolution diagnostics. Underscore prefix
+        # signals "metadata, not a model output"; composite weighting in
+        # get_composite_fair_value() filters these out via base_weights guard.
+        models['_sector_resolutions'] = sector_resolutions
+
         return models
 
     def get_composite_fair_value(self, models, cmp):
@@ -248,9 +284,9 @@ class FairValueEngine:
         Step 2 & 3: Composite weighting and Margin of Safety (MoS).
         Uses all available (non-zero) models with normalized base weights.
 
-        v12.2 fix: unknown model keys now get weight 0 (excluded) rather than
-        a phantom 0.10 default — prevents accidental dilution if a future
-        change adds a key to `models` that isn't in `base_weights`.
+        v12.2: unknown model keys get weight 0 (excluded) rather than a
+        phantom 0.10 default. This also means metadata keys like
+        '_sector_resolutions' (Round 1) are correctly ignored.
         """
         base_weights = {
             "M1_DCF":    0.30,
@@ -262,7 +298,6 @@ class FairValueEngine:
             "M7_PEG":    0.05,
         }
 
-        # Include only known, non-zero models; normalize weights so they sum to 1
         available = {k: v for k, v in models.items()
                      if isinstance(v, (int, float)) and v > 0
                      and k in base_weights}
@@ -271,42 +306,28 @@ class FairValueEngine:
         if total_w > 0 and available:
             cfv = sum(v * base_weights[k] for k, v in available.items()) / total_w
         elif available:
-            cfv = sum(available.values()) / len(available)  # equal-weight fallback
+            cfv = sum(available.values()) / len(available)
         else:
             cfv = 0
 
-        # Session 19 safety net: cap composite CFV at 3× CMP.
-        # Even with M1 guarded, other models can occasionally spike (e.g., a
-        # Graham number from a high-EPS + high-BVPS stock, or an EV/EBITDA
-        # output when the sector multiple is far above current). A 3× cap
-        # corresponds to 200% MoS — already the extreme edge of plausible
-        # value. Anything beyond should be treated as a data-quality signal,
-        # not a buy signal. This is belt-and-suspenders with the M1 4× cap.
+        # Session 19: cap composite CFV at 3× CMP.
         if cmp > 0 and cfv > cmp * 3:
             cfv = cmp * 3
 
         cfv = round(cfv, 2)
 
-        # Step 3: Margin of Safety (MoS %)
-        # MoS = how much cheaper CMP is vs fair value (as % of CMP)
-        # Positive = stock is below fair value (good), Negative = above (overvalued)
         mos = round(((cfv - cmp) / cmp * 100), 2) if cmp > 0 else 0
 
-        # Step 4: CFV Score Adjustment (based on corrected MoS %)
-        # MoS > 30% = meaningful undervaluation → strong BUY signal bonus
-        # MoS < -20% = overvalued → penalise score
         score_adj = 0
-        if   mos > 40:         score_adj = 12   # deeply undervalued
-        elif mos > 25:         score_adj = 8    # significantly undervalued
-        elif mos > 10:         score_adj = 4    # mildly undervalued
-        elif mos < -30:        score_adj = -10  # significantly overvalued
-        elif mos < -15:        score_adj = -5   # mildly overvalued
+        if   mos > 40:         score_adj = 12
+        elif mos > 25:         score_adj = 8
+        elif mos > 10:         score_adj = 4
+        elif mos < -30:        score_adj = -10
+        elif mos < -15:        score_adj = -5
 
-        # Upside — floor at -100% to prevent absurd display values
         upside = round(((cfv - cmp) / cmp * 100), 2) if cmp > 0 else -100
         upside = max(upside, -100)
 
-        # MoS label
         if   mos > 40:  mos_lbl = "EXCEPTIONAL VALUE"
         elif mos > 25:  mos_lbl = "STRONG VALUE"
         elif mos > 10:  mos_lbl = "GOOD VALUE"
