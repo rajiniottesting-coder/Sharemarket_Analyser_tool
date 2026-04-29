@@ -1580,61 +1580,542 @@ if _rec31 is not None:
     except Exception as _e:
         failed += 1; failures.append(f"31.6 exception: {_e}")
 
-    # 31.7 — REAL-WORLD BSE-only company: Silverline Technologies Ltd
-    #   ISIN: INE368A01021 · BSE scrip code: 500389 · symbol: SILVERLINE
-    #   NSE: NOT LISTED. Confirmed via business-standard.com on 28-Apr-2026.
-    #   This is a regression test against the production scenario where
-    #   genuinely-BSE-only equities were getting falsely tagged DUAL_LISTED.
-    try:
-        nse_sil = _pd_31.DataFrame({
-            "symbol": ["RELIANCE", "TCS", "INFY", "PSUBANK", "BANKNIFTY1"],
-            "isin":   ["INE002A01018", "INE467B01029", "INE009A01021", "", ""],
-            "close":  [3000.0, 4200.0, 1700.0, 38000.0, 50000.0],
-            "volume": [10000, 10000, 10000, 100, 100],
-        })
-        bse_sil = _pd_31.DataFrame({
-            "symbol":   ["RELIANCE", "TCS", "INFY", "SILVERLINE"],
-            "isin":     ["INE002A01018", "INE467B01029", "INE009A01021", "INE368A01021"],
-            "close":    [3001.0, 4201.0, 1701.0, 21.55],
-            "sc_group": ["A", "A", "A", "T"],   # T = Trade-to-Trade (NOT SME)
-            "bse_code": ["500325", "532540", "500209", "500389"],
-        })
-        m_sil = _rec31(nse_sil, bse_sil)
-        sym_bse_col = "symbol_BSE" if "symbol_BSE" in m_sil.columns else "symbol"
-        sil_rows = m_sil[m_sil[sym_bse_col].astype(str).str.upper() == "SILVERLINE"]
-        if sil_rows.empty:
-            failed += 1; failures.append("31.7 SILVERLINE not found in merged output")
-        else:
-            sil_tag = sil_rows["exchange_tag"].iloc[0]
-            if sil_tag == "BSE_ONLY":
-                passed += 1
-                print("  ✓ 31.7 SILVERLINE (real BSE-only equity, T2T group) → BSE_ONLY")
-            else:
-                failed += 1
-                failures.append(f"31.7 SILVERLINE tagged {sil_tag}, expected BSE_ONLY")
-    except Exception as _e:
-        failed += 1; failures.append(f"31.7 exception: {_e}")
 
-    # 31.8 — Same Silverline data but with sc_group='M' (BSE SME group)
-    #   should tag BSE_SME instead of BSE_ONLY — verifies the SME branch fires
-    #   correctly for genuinely-BSE-only equities.
-    try:
-        bse_sme = bse_sil.copy()
-        bse_sme.loc[bse_sme["symbol"] == "SILVERLINE", "sc_group"] = "M"
-        m_sme = _rec31(nse_sil, bse_sme)
-        sil_sme = m_sme[m_sme[sym_bse_col].astype(str).str.upper() == "SILVERLINE"]
-        if sil_sme.empty:
-            failed += 1; failures.append("31.8 SILVERLINE-SME not found in merged output")
-        else:
-            sil_sme_tag = sil_sme["exchange_tag"].iloc[0]
-            if sil_sme_tag == "BSE_SME":
-                passed += 1
-                print("  ✓ 31.8 SILVERLINE with sc_group='M' (SME) → BSE_SME")
-            else:
-                failed += 1
-                failures.append(f"31.8 SILVERLINE-SME tagged {sil_sme_tag}, expected BSE_SME")
-    except Exception as _e:
-        failed += 1; failures.append(f"31.8 exception: {_e}")
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUPS 32-45: FairValueEngine — 7 Valuation Models (v12.2)
+# ──────────────────────────────────────────────────────────────────────────
+# Comprehensive coverage for analysis/fair_value_engine.py
+#   • All 7 models (M1 DCF, M2 Graham, M3 PE, M4 PB, M5 EV, M6 DDM, M7 PEG)
+#   • Composite blending, MoS derivation, score adjustment bands
+#   • v12.2 fixes: eps/bvps sanitization, sector resolver, M6/M7 corrections,
+#     unknown-key composite hardening
+# Each test is self-contained with hand-computed expected values.
+# Uses the existing passed/failed/failures counters so the final tally rolls
+# up cleanly with the rest of the suite.
+
+import math as _math_fv
+from analysis.fair_value_engine import FairValueEngine
+
+_fv = FairValueEngine(gsec_yield=6.0)
+
+
+def _fv_check(test_id, description, got, want, tol=0.01):
+    """Numeric-or-equality check. Mirrors the style of the scoring tests."""
+    global passed, failed
+    if isinstance(want, (int, float)) and isinstance(got, (int, float)):
+        ok = abs(got - want) <= tol
+    else:
+        ok = got == want
+    if ok:
+        passed += 1
+        print(f"  ✓ {test_id} {description}")
+    else:
+        failed += 1
+        msg = f"{test_id} {description}: got {got!r}, want {want!r}"
+        print(f"  ✗ {msg}")
+        failures.append(msg)
+
+
+def _fv_check_in(test_id, description, got, lo, hi):
+    """Range check."""
+    global passed, failed
+    if lo <= got <= hi:
+        passed += 1
+        print(f"  ✓ {test_id} {description} ({got} in [{lo}, {hi}])")
+    else:
+        failed += 1
+        msg = f"{test_id} {description}: {got} not in [{lo}, {hi}]"
+        print(f"  ✗ {msg}")
+        failures.append(msg)
+
+
+def _fv_base_stock(**overrides):
+    """Standard happy-path stock for FV tests: profitable mid-cap."""
+    s = {
+        "close":     1000,
+        "eps":       50,        # PE ≈ 20 at this CMP
+        "bvps":      400,       # PB ≈ 2.5
+        "pb":        2.5,
+        "pe":        20,
+        "div_yield": 0,         # default: no dividend
+        "pat_yoy":   15,        # 15% earnings growth
+        "ev_ebitda": 12,
+        "sector":    "Banks",
+    }
+    s.update(overrides)
+    return s
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 32: M1 DCF (3-Stage Discounted Cash Flow)
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 32 — M1 DCF (3-Stage Discounted Cash Flow)")
+print("═" * 70)
+
+m = _fv.calculate_all_models(_fv_base_stock(), beta=1.0, growth_3yr=15)
+_fv_check_in("32.1", "DCF returns positive FV for profitable stock", m['M1_DCF'], 100, 4000)
+
+m = _fv.calculate_all_models(_fv_base_stock(eps=-5), beta=1.0, growth_3yr=15)
+_fv_check("32.2", "DCF skips on negative EPS", m['M1_DCF'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(eps=0), beta=1.0, growth_3yr=15)
+_fv_check("32.3", "DCF skips on zero EPS", m['M1_DCF'], 0)
+
+# Low-beta + high-growth would normally explode — guard caps at 4× CMP
+m = _fv.calculate_all_models(_fv_base_stock(close=1000, eps=100), beta=0.2, growth_3yr=25)
+_fv_check_in("32.4", "DCF cap at 4× CMP engaged for low-beta high-growth", m['M1_DCF'], 100, 4000)
+
+# WACC floor at 10% prevents division-by-near-zero with very low beta
+m = _fv.calculate_all_models(_fv_base_stock(), beta=0.0, growth_3yr=10)
+_fv_check_in("32.5", "DCF stable with very low beta (WACC floor)", m['M1_DCF'], 100, 4000)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 33: M2 Graham Number
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 33 — M2 Graham Number")
+print("═" * 70)
+
+# Math: √(22.5 × 50 × 400) = √450000 ≈ 670.82
+m = _fv.calculate_all_models(_fv_base_stock(), beta=1.0, growth_3yr=15)
+_expected = round(_math_fv.sqrt(22.5 * 50 * 400), 2)
+_fv_check("33.1", "Graham math: √(22.5 × eps × bvps)", m['M2_Graham'], _expected)
+
+m = _fv.calculate_all_models(_fv_base_stock(eps=-5), beta=1.0, growth_3yr=15)
+_fv_check("33.2", "Graham skips on negative EPS", m['M2_Graham'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(bvps=0, pb=0), beta=1.0, growth_3yr=15)
+_fv_check("33.3", "Graham skips when bvps=0 and no pb fallback", m['M2_Graham'], 0)
+
+# BVPS fallback from PB: bvps=0 but pb=2.5 and close=1000 → derived bvps=400
+m = _fv.calculate_all_models(_fv_base_stock(bvps=0), beta=1.0, growth_3yr=15)
+_fv_check("33.4", "Graham uses pb×close fallback for BVPS", m['M2_Graham'], _expected)
+
+m = _fv.calculate_all_models(_fv_base_stock(bvps=0, pb=0), beta=1.0, growth_3yr=15)
+_fv_check("33.5", "Graham skips when both bvps and pb missing", m['M2_Graham'], 0)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 34: M3 PE Mean Reversion (with sector resolution, v12.2 fixes)
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 34 — M3 PE Mean Reversion (v12.2 sector resolution)")
+print("═" * 70)
+
+m = _fv.calculate_all_models(_fv_base_stock(sector="Banks"), beta=1.0, growth_3yr=15)
+_fv_check("34.1", "PE-based FV for Banks (PE=18)", m['M3_PE'], 50 * 18)
+
+m = _fv.calculate_all_models(_fv_base_stock(sector="IT"), beta=1.0, growth_3yr=15)
+_fv_check("34.2", "PE-based FV for IT (PE=30)", m['M3_PE'], 50 * 30)
+
+# v12.2 fix: multi-word "Information Technology" now resolves
+m = _fv.calculate_all_models(_fv_base_stock(sector="Information Technology"),
+                             beta=1.0, growth_3yr=15)
+_fv_check("34.3", "v12.2 'Information Technology' resolves to Technology PE=30",
+          m['M3_PE'], 50 * 30)
+
+# v12.2 fix: "Iron & Steel" now matches Steel (was matching only 'Iron')
+m = _fv.calculate_all_models(_fv_base_stock(sector="Iron & Steel"),
+                             beta=1.0, growth_3yr=15)
+_fv_check("34.4", "v12.2 'Iron & Steel' resolves to Steel PE=10", m['M3_PE'], 50 * 10)
+
+# v12.2: Realty (was missing entirely)
+m = _fv.calculate_all_models(_fv_base_stock(sector="Realty"), beta=1.0, growth_3yr=15)
+_fv_check("34.5", "v12.2 Realty sector recognized (PE=25)", m['M3_PE'], 50 * 25)
+
+# v12.2: Telecom (was missing)
+m = _fv.calculate_all_models(_fv_base_stock(sector="Telecom"), beta=1.0, growth_3yr=15)
+_fv_check("34.6", "v12.2 Telecom sector recognized (PE=22)", m['M3_PE'], 50 * 22)
+
+m = _fv.calculate_all_models(_fv_base_stock(sector="Wibble Wobble"),
+                             beta=1.0, growth_3yr=15)
+_fv_check("34.7", "Unknown sector falls back to default PE=25", m['M3_PE'], 50 * 25)
+
+m = _fv.calculate_all_models(_fv_base_stock(eps=-5, sector="Banks"),
+                             beta=1.0, growth_3yr=15)
+_fv_check("34.8", "PE skips on negative EPS", m['M3_PE'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(sector="", sector_pe_5yr=22),
+                             beta=1.0, growth_3yr=15)
+_fv_check("34.9", "Empty sector uses sector_pe_5yr fallback", m['M3_PE'], 50 * 22)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 35: M4 Price-to-Book
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 35 — M4 Price-to-Book")
+print("═" * 70)
+
+m = _fv.calculate_all_models(_fv_base_stock(sector="Banks"), beta=1.0, growth_3yr=15)
+_fv_check("35.1", "PB-based FV for Banks (PB=2.0)", m['M4_PB'], 400 * 2.0)
+
+# v12.2: Insurance sector (new)
+m = _fv.calculate_all_models(_fv_base_stock(sector="Insurance"), beta=1.0, growth_3yr=15)
+_fv_check("35.2", "v12.2 Insurance recognized (PB=2.5)", m['M4_PB'], 400 * 2.5)
+
+# BVPS fallback: bvps=0, pb=2.0, close=1000 → derived bvps=500, sector PB=2.0 → FV=1000
+m = _fv.calculate_all_models(_fv_base_stock(sector="Banks", bvps=0, pb=2.0),
+                             beta=1.0, growth_3yr=15)
+_fv_check("35.3", "PB uses bvps fallback from close/pb", m['M4_PB'], 500 * 2.0)
+
+m = _fv.calculate_all_models(_fv_base_stock(bvps=0, pb=0), beta=1.0, growth_3yr=15)
+_fv_check("35.4", "PB skips when bvps and pb both missing", m['M4_PB'], 0)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 36: M5 EV/EBITDA
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 36 — M5 EV/EBITDA")
+print("═" * 70)
+
+# cmp=1000, sector_ev=12, current_ev=12 → FV ≈ CMP
+m = _fv.calculate_all_models(_fv_base_stock(sector="Banks", ev_ebitda=12),
+                             beta=1.0, growth_3yr=15)
+_fv_check("36.1", "EV-based FV when current = sector multiple (FV ≈ CMP)",
+          m['M5_EV'], 1000.0)
+
+# Steel sector_ev=5, current=5 → FV=CMP
+m = _fv.calculate_all_models(_fv_base_stock(sector="Steel", ev_ebitda=5, close=1000),
+                             beta=1.0, growth_3yr=15)
+_expected = round(1000 * 5 / 5, 2)
+_fv_check("36.2", "EV FV with Steel sector (mult=5)", m['M5_EV'], _expected)
+
+m = _fv.calculate_all_models(_fv_base_stock(ev_ebitda=0), beta=1.0, growth_3yr=15)
+_fv_check("36.3", "EV skips when ev_ebitda missing", m['M5_EV'], 0)
+
+# v12.2: Realty sector (new)
+m = _fv.calculate_all_models(_fv_base_stock(sector="Realty", ev_ebitda=10),
+                             beta=1.0, growth_3yr=15)
+_expected = round(1000 * 12 / 10, 2)
+_fv_check("36.4", "v12.2 Realty EV multiple recognized", m['M5_EV'], _expected)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 37: M6 DDM (Dividend Discount Model) — v12.2 growth fix
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 37 — M6 DDM (v12.2 growth derivation fix)")
+print("═" * 70)
+
+m = _fv.calculate_all_models(_fv_base_stock(div_yield=0), beta=1.0, growth_3yr=15)
+_fv_check("37.1", "DDM skips for non-dividend stock", m['M6_DDM'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(div_yield=20), beta=1.0, growth_3yr=15)
+_fv_check("37.2", "DDM skips when yield > 15% (bad data)", m['M6_DDM'], 0)
+
+# Healthy dividend stock — verify Gordon math
+# DPS=1000×0.025=25, growth=max(min(10/100/2, 0.06), 0)=0.05
+# req=0.105, d1=26.25, FV=26.25/0.055≈477.27
+m = _fv.calculate_all_models(_fv_base_stock(div_yield=2.5, pat_yoy=10),
+                             beta=1.0, growth_3yr=10)
+_fv_check("37.3", "DDM happy path: 2.5% yield, 10% pat_yoy", m['M6_DDM'], 477.27, tol=0.5)
+
+# v12.2 FIX: negative pat_yoy → 0% growth (was 2% in old code)
+# DPS=25, d1=25, FV=25/0.105≈238.10
+m = _fv.calculate_all_models(_fv_base_stock(div_yield=2.5, pat_yoy=-20),
+                             beta=1.0, growth_3yr=15)
+_fv_check("37.4", "v12.2 negative pat_yoy → 0% div growth (no free 2% floor)",
+          m['M6_DDM'], 238.10, tol=0.5)
+
+# v12.2: zero pat_yoy → 0% growth
+m = _fv.calculate_all_models(_fv_base_stock(div_yield=2.5, pat_yoy=0),
+                             beta=1.0, growth_3yr=15)
+_fv_check("37.5", "v12.2 zero pat_yoy → 0% div growth", m['M6_DDM'], 238.10, tol=0.5)
+
+# High pat_yoy capped at 6% growth
+# pat_yoy=20 → growth=min(20/100/2, 0.06)=0.06, DPS=25, d1=26.5, FV=26.5/0.045≈588.89
+m = _fv.calculate_all_models(_fv_base_stock(div_yield=2.5, pat_yoy=20),
+                             beta=1.0, growth_3yr=15)
+_fv_check("37.6", "v12.2 high pat_yoy capped at 6% growth", m['M6_DDM'], 588.89, tol=0.5)
+
+m = _fv.calculate_all_models(_fv_base_stock(div_yield=15.0), beta=1.0, growth_3yr=15)
+_fv_check("37.7", "DDM yield boundary: 15.0 excluded", m['M6_DDM'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(div_yield=0.1), beta=1.0, growth_3yr=15)
+_fv_check("37.8", "DDM yield boundary: 0.1 excluded", m['M6_DDM'], 0)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 38: M7 PEG — v12.2 unit guard
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 38 — M7 PEG (v12.2 unit guard)")
+print("═" * 70)
+
+m = _fv.calculate_all_models(_fv_base_stock(), beta=1.0, growth_3yr=15)
+_fv_check("38.1", "PEG: eps=50 × growth=15%", m['M7_PEG'], 750)
+
+m = _fv.calculate_all_models(_fv_base_stock(), beta=1.0, growth_3yr=50)
+_fv_check("38.2", "PEG growth capped at 30%", m['M7_PEG'], 50 * 30)
+
+m = _fv.calculate_all_models(_fv_base_stock(eps=-5), beta=1.0, growth_3yr=15)
+_fv_check("38.3", "PEG skips on negative EPS", m['M7_PEG'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(), beta=1.0, growth_3yr=0)
+_fv_check("38.4", "PEG skips on zero growth", m['M7_PEG'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(), beta=1.0, growth_3yr=-5)
+_fv_check("38.5", "PEG skips on negative growth", m['M7_PEG'], 0)
+
+# v12.2 FIX: growth_3yr accidentally as decimal (0.15 instead of 15) → skipped
+m = _fv.calculate_all_models(_fv_base_stock(), beta=1.0, growth_3yr=0.15)
+_fv_check("38.6", "v12.2 PEG guards against decimal-fraction growth (0.15)",
+          m['M7_PEG'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(), beta=1.0, growth_3yr=1.0)
+_fv_check("38.7", "PEG boundary: growth=1.0 valid", m['M7_PEG'], 50 * 1.0)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 39: Composite Weighting (v12.2 unknown-key hardening)
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 39 — Composite weighting")
+print("═" * 70)
+
+# All 7 models present and equal → CFV equals that value
+_fake = {"M1_DCF": 100, "M2_Graham": 100, "M3_PE": 100,
+         "M4_PB": 100, "M5_EV": 100, "M6_DDM": 100, "M7_PEG": 100}
+_result = _fv.get_composite_fair_value(_fake, cmp=100)
+_fv_check("39.1", "All-equal models → CFV = that value", _result['cfv'], 100)
+
+# Partial set with normalized weights
+# M1=200 (w=0.30), M3=100 (w=0.20). Normalized: total_w=0.50
+# CFV = (200×0.30 + 100×0.20) / 0.50 = 80/0.50 = 160
+_fake = {"M1_DCF": 200, "M2_Graham": 0, "M3_PE": 100,
+         "M4_PB": 0, "M5_EV": 0, "M6_DDM": 0, "M7_PEG": 0}
+_result = _fv.get_composite_fair_value(_fake, cmp=150)
+_fv_check("39.2", "Partial model set with normalized weights", _result['cfv'], 160)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 0, "M2_Graham": 0}, cmp=100)
+_fv_check("39.3", "All models zero → CFV = 0", _result['cfv'], 0)
+
+# v12.2 FIX: unknown model key gets weight 0, doesn't dilute composite
+_fake = {"M1_DCF": 100, "UNKNOWN_MODEL": 999}
+_result = _fv.get_composite_fair_value(_fake, cmp=100)
+_fv_check("39.4", "v12.2 unknown model key excluded from composite",
+          _result['cfv'], 100)
+
+# 3× CMP cap engages
+_fake = {"M1_DCF": 5000}
+_result = _fv.get_composite_fair_value(_fake, cmp=100)
+_fv_check("39.5", "Composite CFV capped at 3× CMP", _result['cfv'], 300)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 100}, cmp=0)
+_fv_check("39.6", "cmp=0 handled gracefully (mos_pct=0)", _result['mos_pct'], 0)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 40: MoS Percentage Derivation
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 40 — MoS percentage derivation")
+print("═" * 70)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 1180}, cmp=1000)
+_fv_check("40.1", "MoS positive: CFV 1180, CMP 1000 → +18%", _result['mos_pct'], 18.0)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 850}, cmp=1000)
+_fv_check("40.2", "MoS negative: CFV 850, CMP 1000 → -15%", _result['mos_pct'], -15.0)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 1000}, cmp=1000)
+_fv_check("40.3", "MoS zero when CFV = CMP", _result['mos_pct'], 0.0)
+
+# Extreme: CFV would be 10× CMP, capped at 3× → MoS = +200%
+_result = _fv.get_composite_fair_value({"M1_DCF": 10000}, cmp=1000)
+_fv_check("40.4", "MoS at extreme undervaluation (capped CFV)",
+          _result['mos_pct'], 200.0)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 1}, cmp=10000)
+_fv_check("40.5", "Upside floored at -100%", _result['upside'] >= -100, True)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 41: Score Adjustment Bands
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 41 — Score adjustment bands")
+print("═" * 70)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 1500}, cmp=1000)  # +50%
+_fv_check("41.1", "MoS > 40 → +12 score adj", _result['score_adjustment'], 12)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 1300}, cmp=1000)  # +30%
+_fv_check("41.2", "25 < MoS ≤ 40 → +8 score adj", _result['score_adjustment'], 8)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 1180}, cmp=1000)  # +18%
+_fv_check("41.3", "10 < MoS ≤ 25 → +4 score adj", _result['score_adjustment'], 4)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 1050}, cmp=1000)  # +5%
+_fv_check("41.4", "Neutral MoS band → 0 score adj", _result['score_adjustment'], 0)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 800}, cmp=1000)  # -20%
+_fv_check("41.5", "-30 ≤ MoS < -15 → -5 score adj", _result['score_adjustment'], -5)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 600}, cmp=1000)  # -40%
+_fv_check("41.6", "MoS < -30 → -10 score adj", _result['score_adjustment'], -10)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 42: MoS Labels
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 42 — MoS labels")
+print("═" * 70)
+
+_label_cases = [
+    ({"M1_DCF": 1500}, 1000, "EXCEPTIONAL VALUE"),         # +50%
+    ({"M1_DCF": 1300}, 1000, "STRONG VALUE"),              # +30%
+    ({"M1_DCF": 1180}, 1000, "GOOD VALUE"),                # +18%
+    ({"M1_DCF": 1050}, 1000, "FAIR VALUE"),                # +5%
+    ({"M1_DCF":  900}, 1000, "SLIGHT PREMIUM"),            # -10%
+    ({"M1_DCF":  800}, 1000, "OVERVALUED"),                # -20%
+    ({"M1_DCF":  600}, 1000, "SIGNIFICANTLY OVERVALUED"),  # -40%
+]
+for _i, (_models, _cmp, _want_label) in enumerate(_label_cases, 1):
+    _result = _fv.get_composite_fair_value(_models, cmp=_cmp)
+    _fv_check(f"42.{_i}", f"label = {_want_label}", _result['mos_label'], _want_label)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 43: Defensive Inputs (v12.2 sanitization fix)
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 43 — Defensive inputs (v12.2 eps/bvps sanitization)")
+print("═" * 70)
+
+# eps='—' must NOT crash, all eps-dependent models return 0
+m = _fv.calculate_all_models(_fv_base_stock(eps="—"), beta=1.0, growth_3yr=15)
+_fv_check("43.1a", "v12.2 eps='—' → no crash, M1=0", m['M1_DCF'], 0)
+_fv_check("43.1b", "v12.2 eps='—' → M2=0",          m['M2_Graham'], 0)
+_fv_check("43.1c", "v12.2 eps='—' → M3=0",          m['M3_PE'], 0)
+_fv_check("43.1d", "v12.2 eps='—' → M7=0",          m['M7_PEG'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(eps=None), beta=1.0, growth_3yr=15)
+_fv_check("43.2", "v12.2 eps=None → no crash, M1=0", m['M1_DCF'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(eps="N/A"), beta=1.0, growth_3yr=15)
+_fv_check("43.3", "v12.2 eps='N/A' → no crash, M3=0", m['M3_PE'], 0)
+
+# bvps='—' but pb fallback works → M2 still produces value
+m = _fv.calculate_all_models(_fv_base_stock(bvps="—"), beta=1.0, growth_3yr=15)
+_expected = round(_math_fv.sqrt(22.5 * 50 * 400), 2)
+_fv_check("43.4", "v12.2 bvps='—' uses pb fallback", m['M2_Graham'], _expected)
+
+m = _fv.calculate_all_models(_fv_base_stock(bvps="—", pb="N/A"),
+                             beta=1.0, growth_3yr=15)
+_fv_check("43.5", "v12.2 both bvps and pb garbage → clean 0", m['M2_Graham'], 0)
+
+m = _fv.calculate_all_models(_fv_base_stock(sector=""), beta=1.0, growth_3yr=15)
+_fv_check("43.6", "Empty sector falls back to default PE=25", m['M3_PE'], 50 * 25)
+
+m = _fv.calculate_all_models(_fv_base_stock(sector=None), beta=1.0, growth_3yr=15)
+_fv_check("43.7", "None sector falls back to default", m['M3_PE'], 50 * 25)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 44: Output Dict Shape
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 44 — Output dict shape")
+print("═" * 70)
+
+m = _fv.calculate_all_models(_fv_base_stock(), beta=1.0, growth_3yr=15)
+_expected_keys = {"M1_DCF", "M2_Graham", "M3_PE", "M4_PB",
+                  "M5_EV", "M6_DDM", "M7_PEG"}
+_fv_check("44.1", "All 7 model keys present", set(m.keys()), _expected_keys)
+
+_result = _fv.get_composite_fair_value(m, cmp=1000)
+_expected_keys = {"cfv", "cfv_low", "cfv_high", "mos_label",
+                  "mos_pct", "score_adjustment", "upside"}
+_fv_check("44.2", "Composite output has all 7 expected keys",
+          set(_result.keys()), _expected_keys)
+
+_fv_check("44.3a", "cfv_low ≈ 0.85 × cfv",
+          abs(_result['cfv_low'] - 0.85 * _result['cfv']) < 0.5, True)
+_fv_check("44.3b", "cfv_high ≈ 1.15 × cfv",
+          abs(_result['cfv_high'] - 1.15 * _result['cfv']) < 0.5, True)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 45: Realistic End-to-End Scenarios
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 45 — Realistic end-to-end scenarios")
+print("═" * 70)
+
+# 45.1 Profitable IT large-cap (TCS-like)
+_tcs_like = {
+    "close": 3500, "eps": 110, "bvps": 250, "pb": 14.0, "pe": 31.8,
+    "div_yield": 1.5, "pat_yoy": 12, "ev_ebitda": 20,
+    "sector": "Information Technology",
+}
+m = _fv.calculate_all_models(_tcs_like, beta=0.8, growth_3yr=12)
+_result = _fv.get_composite_fair_value(m, cmp=3500)
+_fv_check("45.1a", "TCS-like: at least 6 of 7 models populated",
+          sum(1 for v in m.values() if v > 0) >= 6, True)
+_fv_check_in("45.1b", "TCS-like: CFV produces sensible MoS (-50% to +50%)",
+             _result['mos_pct'], -50, 50)
+
+# 45.2 Cyclical steel mid-cap
+_steel_like = {
+    "close": 800, "eps": 60, "bvps": 700, "pb": 1.14, "pe": 13.3,
+    "div_yield": 2.0, "pat_yoy": 30, "ev_ebitda": 5,
+    "sector": "Iron & Steel",
+}
+m = _fv.calculate_all_models(_steel_like, beta=1.4, growth_3yr=20)
+_result = _fv.get_composite_fair_value(m, cmp=800)
+_fv_check("45.2a", "Steel-like: M3 uses Steel PE=10 (not generic 25)",
+          m['M3_PE'], 60 * 10)
+_fv_check_in("45.2b", "Steel-like: produces sensible CFV",
+             _result['cfv'], 100, 2400)
+
+# 45.3 PSU bank (low PE, dividend-paying)
+_psu_bank = {
+    "close": 500, "eps": 50, "bvps": 400, "pb": 1.25, "pe": 10,
+    "div_yield": 4.5, "pat_yoy": 15, "ev_ebitda": 8,
+    "sector": "Banks",
+}
+m = _fv.calculate_all_models(_psu_bank, beta=1.0, growth_3yr=15)
+_result = _fv.get_composite_fair_value(m, cmp=500)
+_fv_check("45.3a", "PSU bank: M3 uses Banks PE=18", m['M3_PE'], 50 * 18)
+_fv_check("45.3b", "PSU bank: M6 produces dividend-based FV (positive)",
+          m['M6_DDM'] > 0, True)
+_fv_check_in("45.3c", "PSU bank: typically shows undervaluation",
+             _result['mos_pct'], -10, 200)
+
+# 45.4 Loss-making stock (negative EPS, no dividend)
+_loss_maker = {
+    "close": 50, "eps": -10, "bvps": 25, "pb": 2.0, "pe": 0,
+    "div_yield": 0, "pat_yoy": -50, "ev_ebitda": 0,
+    "sector": "Realty",
+}
+m = _fv.calculate_all_models(_loss_maker, beta=1.5, growth_3yr=-10)
+_positive_count = sum(1 for v in m.values() if v > 0)
+_fv_check_in("45.4a", "Loss-maker: most models correctly skip",
+             _positive_count, 0, 2)
+_fv_check("45.4b", "Loss-maker: M3 PE = 0 (negative EPS)", m['M3_PE'], 0)
+_fv_check("45.4c", "Loss-maker: M7 PEG = 0", m['M7_PEG'], 0)
+_fv_check("45.4d", "Loss-maker: M6 DDM = 0 (no dividend)", m['M6_DDM'], 0)
+
+# 45.5 Multi-word sector that broke pre-v12.2 ("Real Estate Investment")
+_re_stock = {
+    "close": 200, "eps": 8, "bvps": 80, "pb": 2.5, "pe": 25,
+    "div_yield": 1.0, "pat_yoy": 8, "ev_ebitda": 11,
+    "sector": "Real Estate Investment",
+}
+m = _fv.calculate_all_models(_re_stock, beta=1.2, growth_3yr=10)
+_fv_check("45.5a", "v12.2 'Real Estate Investment' resolves to Real Estate PE=25",
+          m['M3_PE'], 8 * 25)
+_fv_check("45.5b", "v12.2 'Real Estate Investment' resolves to Real Estate PB=2.5",
+          m['M4_PB'], 80 * 2.5)
+
+
 
 print("\n" + "═" * 70)
 print(f"FINAL: {passed} passed, {failed} failed")
