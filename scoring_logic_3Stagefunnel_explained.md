@@ -1,4 +1,4 @@
-# Scoring · Verdict · Funnel — Complete Logic Explained (Post-v12.2)
+# Scoring · Verdict · Funnel — Complete Logic Explained (Post-v12.3)
 
 This is the single source of truth for how the pipeline turns ~5,150 daily bhav rows into **100 final stocks**, each with a **Composite Score (0–100)** and a **Verdict (BUY / OVERVALUED / WATCHLIST / NEUTRAL / AVOID)**.
 

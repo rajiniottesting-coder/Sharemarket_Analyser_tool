@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>NSE/BSE Stock Analyser — Pipeline Reference (v12.2)</title>
+<title>NSE/BSE Stock Analyser — Pipeline Reference (v12.3)</title>
 <style>
   :root {
     --bg-primary:#fff;--bg-secondary:#f8f7f3;--bg-tertiary:#f1efe8;
@@ -77,7 +77,7 @@
 <body>
 <div class="wrap">
 <h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
-<div class="meta">v12.2 · Daily pre-market intelligence pipeline · Single source of truth for end-to-end logic</div>
+<div class="meta">v12.3 · Daily pre-market intelligence pipeline · Single source of truth for end-to-end logic</div>
 <div class="toc">
   <h3>Contents</h3>
   <ol>
@@ -107,7 +107,7 @@
 <svg viewBox="0 0 680 504">
 <defs><marker id="arrA0" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">From 5,150 tickers to 100 conviction-ranked picks — the daily pipeline</text>
-<g class="c-gray"><rect x="40" y="60" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="80" text-anchor="middle" dominant-baseline="central">INPUT · NSE/BSE bhav copy + yfinance + history DB</text><text class="ts" x="340" y="100" text-anchor="middle" dominant-baseline="central">~5,150 daily rows · v12.1: empty-ISIN fix · v12.2: fair value engine hardening (sector aliasing + 7-model fixes)</text></g>
+<g class="c-gray"><rect x="40" y="60" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="80" text-anchor="middle" dominant-baseline="central">INPUT · NSE/BSE bhav copy + yfinance + history DB</text><text class="ts" x="340" y="100" text-anchor="middle" dominant-baseline="central">~5,150 daily rows · v12.2: sector aliasing + 7-model fixes · v12.3: M5 proper EV formula + M7 PEG_BENCHMARK</text></g>
 <line x1="340" y1="116" x2="340" y2="128" class="arr" marker-end="url(#arrA0)"/>
 <g class="c-blue"><rect x="40" y="138" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="158" text-anchor="middle" dominant-baseline="central">STAGE 1 · Eligibility filter (V0–V9 hard drops)</text><text class="ts" x="340" y="180" text-anchor="middle" dominant-baseline="central">9 filters · ETF/MF group · vol&gt;0 · price≥₹10 · delivery≥40%</text><text class="ts" x="340" y="200" text-anchor="middle" dominant-baseline="central">circuit · suspended · SME liquidity → ~3,500 pass</text></g>
 <line x1="340" y1="218" x2="340" y2="230" class="arr" marker-end="url(#arrA0)"/>
@@ -841,7 +841,7 @@ Stage 3 reads <code>latest_analysis_results</code> table at startup via <code>ge
 </p>
 
 <div class="footer">
-NSE/BSE Stock Analyser · v12.2 · Pipeline reference document<br>
+NSE/BSE Stock Analyser · v12.3 · Pipeline reference document<br>
 For ongoing changes see CLAUDE.md (Section 15) and scoring_logic_3Stagefunnel_explained.md
 </div>
 

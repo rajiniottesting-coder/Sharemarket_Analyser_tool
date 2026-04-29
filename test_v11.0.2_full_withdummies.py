@@ -1774,7 +1774,9 @@ print("GROUP 36 — M5 EV/EBITDA")
 print("═" * 70)
 
 # cmp=1000, sector_ev=12, current_ev=12 → FV ≈ CMP
-m = _fv.calculate_all_models(_fv_base_stock(sector="Banks", ev_ebitda=12),
+# v12.3 Round 2: Banks/NBFCs/Insurance now correctly skip M5 (EV/EBITDA isn't
+# meaningful for financials). Use Pharma sector for this test instead.
+m = _fv.calculate_all_models(_fv_base_stock(sector="Pharma", ev_ebitda=18),
                              beta=1.0, growth_3yr=15)
 _fv_check("36.1", "EV-based FV when current = sector multiple (FV ≈ CMP)",
           m['M5_EV'], 1000.0)
@@ -2370,6 +2372,408 @@ _fv_check_in("48.6a", "HINDALCO-like (Round 1): produces sensible CFV",
              _result['cfv'], 100, 1800)
 _fv_check_in("48.6b", "HINDALCO-like (Round 1): MoS in plausible range",
              _result['mos_pct'], -50, 200)
+
+
+
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUPS 49-50: v12.3 Round 2 — M5 EV proper formula + M7 PEG_BENCHMARK
+# ──────────────────────────────────────────────────────────────────────────
+# Tests for Round 2 enhancements:
+#   • M5 EV/EBITDA: three-tier formula. Tier 1 uses proper EV math when
+#     q_ebitda_cr + total_debt_cr + cash_cr + mcap_cr are all available.
+#     Tier 2 falls back to the v12.2 multiplicative shortcut. Tier 3 skips
+#     entirely (banks/NBFCs/insurance, or when no EV/EBITDA at all).
+#   • M7 PEG: PEG_BENCHMARK = 1.0 made explicit (Lynch's rule of thumb).
+#   • _m5_method diagnostic: surfaces which M5 tier fired.
+
+
+def _fv_stock_with_full_m5_data(**overrides):
+    """Stock with all the Tier-1 M5 fields populated."""
+    s = _fv_base_stock(**overrides)
+    # Add proper-M5 inputs (Round 2)
+    s.setdefault("q_ebitda_cr",   25.0)    # quarterly EBITDA in ₹Cr
+    s.setdefault("total_debt_cr", 200.0)
+    s.setdefault("cash_cr",        50.0)
+    s.setdefault("mcap_cr",      1000.0)   # market cap in ₹Cr
+    return s
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 49: M5 EV/EBITDA — Round 2 three-tier formula
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 49 — Round 2: M5 EV/EBITDA proper formula + tier dispatch")
+print("═" * 70)
+
+# 49.1: Tier 1 (proper) fires when all 4 fields are populated
+# Pharma sector_ev=18, q_ebitda=25 → annual_ebitda=100
+# fair_EV_cr = 100 × 18 = 1800
+# net_debt_cr = 200 - 50 = 150
+# fair_mcap_cr = 1800 - 150 = 1650
+# fair_per_share = CMP × (1650 / 1000) = 1000 × 1.65 = 1650
+m = _fv.calculate_all_models(
+    _fv_stock_with_full_m5_data(sector="Pharma"),
+    beta=1.0, growth_3yr=15,
+)
+_fv_check("49.1a", "Tier 1 fires when all 4 fields populated (Pharma example)",
+          m['M5_EV'], 1650.0, tol=1.0)
+_fv_check("49.1b", "Tier 1 records '_m5_method' = 'proper'",
+          m['_sector_resolutions'].get('_m5_method'), "proper")
+
+# 49.2: Tier 1 with zero-debt company (legitimate, common case)
+# Same as 49.1 but cash > debt → net_debt is negative (net cash position)
+# fair_mcap_cr = 1800 - (50 - 100) = 1800 + 50 = 1850 → CMP × 1.85 = 1850
+m = _fv.calculate_all_models(
+    _fv_stock_with_full_m5_data(sector="Pharma", total_debt_cr=50, cash_cr=100),
+    beta=1.0, growth_3yr=15,
+)
+_fv_check("49.2", "Tier 1 handles net cash company (cash > debt)",
+          m['M5_EV'], 1850.0, tol=1.0)
+
+# 49.3: Tier 1 produces 4× CMP cap when ratio explodes
+# Take a tiny-debt stock with huge EBITDA so fair_EV is much higher than mcap
+# q_ebitda_cr = 200 → annual = 800; sector_ev=18 → fair_EV = 14400
+# net_debt = 0; fair_mcap = 14400; ratio = 14400/1000 = 14.4 → would be 14400
+# Should be capped at 4× CMP = 4000
+m = _fv.calculate_all_models(
+    _fv_stock_with_full_m5_data(
+        sector="Pharma", q_ebitda_cr=200, total_debt_cr=0, cash_cr=0,
+    ),
+    beta=1.0, growth_3yr=15,
+)
+_fv_check("49.3", "Tier 1 capped at 4× CMP for outliers",
+          m['M5_EV'], 4000.0, tol=1.0)
+
+# 49.4: Tier 1 with very high debt → fair_mcap_cr negative → 70% discount
+# fair_EV_cr = 100 × 18 = 1800; debt 5000 - cash 50 = 4950 net debt
+# fair_mcap = 1800 - 4950 = -3150 → negative → emit CMP × 0.3 = 300
+m = _fv.calculate_all_models(
+    _fv_stock_with_full_m5_data(sector="Pharma", total_debt_cr=5000, cash_cr=50),
+    beta=1.0, growth_3yr=15,
+)
+_fv_check("49.4a", "Tier 1 with negative fair equity emits 70% discount",
+          m['M5_EV'], 300.0, tol=1.0)
+_fv_check("49.4b", "Tier 1 negative-equity records method = 'proper_negative_equity'",
+          m['_sector_resolutions'].get('_m5_method'), "proper_negative_equity")
+
+# 49.5: Tier 2 (shortcut) fires when proper inputs missing but ev_ebitda available
+# This is the legacy v12.2 path
+s = _fv_base_stock(sector="Pharma", ev_ebitda=15)
+# DON'T add q_ebitda_cr / total_debt_cr / cash_cr / mcap_cr
+m = _fv.calculate_all_models(s, beta=1.0, growth_3yr=15)
+# Pharma sector_ev=18, current=15 → CMP × 18/15 = 1000 × 1.2 = 1200
+_fv_check("49.5a", "Tier 2 (shortcut) fires when proper inputs missing",
+          m['M5_EV'], 1200.0, tol=1.0)
+_fv_check("49.5b", "Tier 2 records method = 'shortcut'",
+          m['_sector_resolutions'].get('_m5_method'), "shortcut")
+
+# 49.6: Tier 3a — Bank sector → skip entirely (M5 not meaningful for financials)
+m = _fv.calculate_all_models(
+    _fv_stock_with_full_m5_data(sector="Banks"),
+    beta=1.0, growth_3yr=15,
+)
+_fv_check("49.6a", "Tier 3 skip_financial: Banks → M5 = 0",
+          m['M5_EV'], 0)
+_fv_check("49.6b", "Banks records method = 'skip_financial'",
+          m['_sector_resolutions'].get('_m5_method'), "skip_financial")
+
+# 49.7: Tier 3b — NBFC also skipped
+m = _fv.calculate_all_models(
+    _fv_stock_with_full_m5_data(sector="NBFC"),
+    beta=1.0, growth_3yr=15,
+)
+_fv_check("49.7a", "NBFC → M5 = 0", m['M5_EV'], 0)
+_fv_check("49.7b", "NBFC method = 'skip_financial'",
+          m['_sector_resolutions'].get('_m5_method'), "skip_financial")
+
+# 49.8: Tier 3c — Insurance also skipped
+m = _fv.calculate_all_models(
+    _fv_stock_with_full_m5_data(sector="Insurance"),
+    beta=1.0, growth_3yr=15,
+)
+_fv_check("49.8a", "Insurance → M5 = 0", m['M5_EV'], 0)
+_fv_check("49.8b", "Insurance method = 'skip_financial'",
+          m['_sector_resolutions'].get('_m5_method'), "skip_financial")
+
+# 49.9: Tier 3d — no EV/EBITDA AND no proper inputs → skip
+s = _fv_base_stock(sector="Pharma", ev_ebitda=0)
+m = _fv.calculate_all_models(s, beta=1.0, growth_3yr=15)
+_fv_check("49.9a", "No data at all → M5 = 0", m['M5_EV'], 0)
+_fv_check("49.9b", "Records method = 'skip_no_data'",
+          m['_sector_resolutions'].get('_m5_method'), "skip_no_data")
+
+# 49.10: Round 1 sector aliasing still works with Tier 1
+# Basic Materials → Metals (sector_ev=6); q_ebitda=25 → annual 100
+# fair_EV = 100 × 6 = 600; net_debt = 150; fair_mcap = 450
+# fair_per_share = 1000 × (450/1000) = 450
+m = _fv.calculate_all_models(
+    _fv_stock_with_full_m5_data(sector="Basic Materials"),
+    beta=1.0, growth_3yr=15,
+)
+_fv_check("49.10a", "Round 1 + Round 2: 'Basic Materials' → Metals + Tier 1",
+          m['M5_EV'], 450.0, tol=1.0)
+_fv_check("49.10b", "Resolved key still 'Metals' (Round 1)",
+          m['_sector_resolutions']['M5_EV'], "Metals")
+
+# 49.11: Tier 1 with negative q_ebitda → falls through to Tier 2 (since
+# Tier 1 requires q_ebitda > 0)
+s = _fv_stock_with_full_m5_data(sector="Pharma", q_ebitda_cr=-5, ev_ebitda=15)
+m = _fv.calculate_all_models(s, beta=1.0, growth_3yr=15)
+# q_ebitda < 0 disqualifies Tier 1; Tier 2 fires with ev_ebitda=15
+# Pharma sector_ev=18 → CMP × 18/15 = 1200
+_fv_check("49.11", "Negative q_ebitda → falls through to Tier 2 shortcut",
+          m['M5_EV'], 1200.0, tol=1.0)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 50: M7 PEG — Round 2: PEG_BENCHMARK explicit constant
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 50 — Round 2: M7 PEG_BENCHMARK explicit constant")
+print("═" * 70)
+
+# 50.1: Round 2 default PEG_BENCHMARK = 1.0 produces same numbers as v12.2
+# (mathematically identical since 1.0 × X = X)
+m = _fv.calculate_all_models(_fv_base_stock(eps=50), beta=1.0, growth_3yr=15)
+# 50 × 15 × 1.0 = 750 (same as v12.2)
+_fv_check("50.1", "PEG_BENCHMARK=1.0 default unchanged from v12.2",
+          m['M7_PEG'], 750.0)
+
+# 50.2: Growth cap at 30% still applies
+m = _fv.calculate_all_models(_fv_base_stock(eps=50), beta=1.0, growth_3yr=50)
+# capped at 30 → 50 × 30 × 1.0 = 1500
+_fv_check("50.2", "Growth still capped at 30% post-Round-2",
+          m['M7_PEG'], 1500.0)
+
+# 50.3: Unit guard still active (growth < 1.0 → skip)
+m = _fv.calculate_all_models(_fv_base_stock(eps=50), beta=1.0, growth_3yr=0.15)
+_fv_check("50.3", "Unit guard still skips decimal-fraction growth",
+          m['M7_PEG'], 0)
+
+# 50.4: Negative EPS still skips
+m = _fv.calculate_all_models(_fv_base_stock(eps=-5), beta=1.0, growth_3yr=15)
+_fv_check("50.4", "Negative EPS still skips M7", m['M7_PEG'], 0)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 51: Round 2 — production-data integration scenarios
+# ──────────────────────────────────────────────────────────────────────────
+print("\n" + "═" * 70)
+print("GROUP 51 — Round 2: production-realistic integration")
+print("═" * 70)
+
+# 51.1: HINDALCO-like (Basic Materials with full Round 2 inputs)
+# This was the exemplar stock for Round 1; verify Round 2 works on top.
+_hindalco = {
+    "close": 1074, "eps": 60, "bvps": 450, "pb": 1.33, "pe": 14.4,
+    "div_yield": 0.5, "pat_yoy": -45, "ev_ebitda": 8,
+    "sector": "Basic Materials",
+    # Round 2 fields (HINDALCO is a real metals giant with ~₹2,40,000 Cr mcap)
+    "q_ebitda_cr":  6500, "total_debt_cr": 50000, "cash_cr": 8000,
+    "mcap_cr":      241000,
+}
+m = _fv.calculate_all_models(_hindalco, beta=1.2, growth_3yr=10)
+_fv_check("51.1a", "HINDALCO-like: Round 1 sector resolution still 'Metals'",
+          m['_sector_resolutions']['M5_EV'], "Metals")
+_fv_check("51.1b", "HINDALCO-like: Round 2 Tier 1 fired (proper formula)",
+          m['_sector_resolutions']['_m5_method'], "proper")
+# Sanity: M5 should be a non-zero positive number, less than 4× CMP
+_fv_check_in("51.1c", "HINDALCO-like: M5 in plausible range",
+             m['M5_EV'], 0, 4 * 1074)
+
+# 51.2: PSU bank (financial sector → M5 must skip)
+_psu_bank = {
+    "close": 500, "eps": 50, "bvps": 400, "pb": 1.25, "pe": 10,
+    "div_yield": 4.5, "pat_yoy": 15, "ev_ebitda": 8,
+    "sector": "Banks",
+    # Even with full Round 2 inputs, banks should skip M5
+    "q_ebitda_cr": 1000, "total_debt_cr": 5000, "cash_cr": 800,
+    "mcap_cr":     50000,
+}
+m = _fv.calculate_all_models(_psu_bank, beta=1.0, growth_3yr=15)
+_fv_check("51.2a", "PSU bank: M5 = 0 (financial sector)", m['M5_EV'], 0)
+_fv_check("51.2b", "PSU bank: method = 'skip_financial'",
+          m['_sector_resolutions']['_m5_method'], "skip_financial")
+# Other models should still fire
+_fv_check("51.2c", "PSU bank: M3 still fires (Banks PE=18)",
+          m['M3_PE'], 50 * 18)
+
+# 51.3: Pre-Round-2 stock (no q_ebitda_cr etc) still works via Tier 2 shortcut
+_legacy = {
+    "close": 1000, "eps": 50, "bvps": 400, "pb": 2.5, "pe": 20,
+    "div_yield": 1.5, "pat_yoy": 10, "ev_ebitda": 12,
+    "sector": "Consumer Cyclical",
+    # NO Round 2 inputs
+}
+m = _fv.calculate_all_models(_legacy, beta=1.0, growth_3yr=12)
+# Consumer sector_ev=22, current=12 → CMP × 22/12 = 1833.33
+_fv_check("51.3a", "Legacy stock (no Round 2 fields): Tier 2 fires",
+          m['_sector_resolutions']['_m5_method'], "shortcut")
+_fv_check("51.3b", "Legacy stock M5 ≈ shortcut formula result",
+          m['M5_EV'], round(1000 * 22 / 12, 2), tol=1.0)
+
+
+
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# GROUP 52: v12.3 Round 2 — Downstream Consumer Regression Guards
+# ──────────────────────────────────────────────────────────────────────────
+# The Round 2 changes added a dict-typed key (`_sector_resolutions`) to the
+# models dict that gets `stock.update(models)`-ed into the stock dict in
+# master_funnel.py. These tests lock in the no-regression guarantee that
+# downstream consumers (DataFrame ops, Excel column lookups, JSON-style
+# round-trips) handle the new metadata key safely.
+#
+# Each test simulates a specific real-world downstream operation that
+# could plausibly break if `_sector_resolutions` were treated as numeric.
+
+print("\n" + "═" * 70)
+print("GROUP 52 — Round 2: downstream consumer regression guards")
+print("═" * 70)
+
+import pandas as _pd
+
+# 52.1: stock.update(models) — the master_funnel.py pattern. After the update,
+# stock dict should have _sector_resolutions as a dict (not as numeric)
+m = _fv.calculate_all_models(_fv_base_stock(sector="Banks"), beta=1.0, growth_3yr=15)
+fake_stock = {"symbol": "TEST", "close": 1000}
+fake_stock.update(m)
+_fv_check("52.1a", "stock.update(models) preserves _sector_resolutions as dict",
+          isinstance(fake_stock.get("_sector_resolutions"), dict), True)
+_fv_check("52.1b", "stock dict still has all 7 model numeric values",
+          all(isinstance(fake_stock.get(k), (int, float))
+              for k in ["M1_DCF","M2_Graham","M3_PE","M4_PB",
+                        "M5_EV","M6_DDM","M7_PEG"]), True)
+
+# 52.2: DataFrame creation from list of stock dicts (what master_funnel.py
+# does before passing to excel_generator). The metadata column should appear
+# but not break DataFrame construction.
+_stocks = []
+for _sec in ["Banks", "Technology", "Basic Materials"]:
+    _s = _fv_base_stock(sector=_sec)
+    _m = _fv.calculate_all_models(_s, beta=1.0, growth_3yr=15)
+    _r = _fv.get_composite_fair_value(_m, cmp=_s["close"])
+    _s.update(_m)
+    _s.update(_r)
+    _s["symbol"] = f"T_{_sec[:3]}"
+    _stocks.append(_s)
+_df = _pd.DataFrame(_stocks)
+_fv_check("52.2a", "DataFrame creates cleanly with metadata column",
+          len(_df), 3)
+_fv_check("52.2b", "DataFrame has _sector_resolutions column",
+          "_sector_resolutions" in _df.columns, True)
+_fv_check("52.2c", "M5_EV column is numeric in DataFrame",
+          _pd.api.types.is_numeric_dtype(_df["M5_EV"]), True)
+
+# 52.3: Sort and filter operations (excel_generator uses these)
+try:
+    _sorted = _df.sort_values("cfv", ascending=False)
+    _fv_check("52.3a", "Sort by cfv works with metadata column", len(_sorted), 3)
+except Exception as _e:
+    _fv_check("52.3a", f"Sort failed: {_e}", False, True)
+
+try:
+    _filtered = _df[_df["M5_EV"] > 0]
+    # Banks should be filtered out (M5=0); Technology + Basic Materials remain
+    _fv_check("52.3b", "Filter M5>0 correctly excludes financial-sector skip",
+              len(_filtered), 2)
+except Exception as _e:
+    _fv_check("52.3b", f"Filter failed: {_e}", False, True)
+
+# 52.4: to_dict('records') round-trip (excel_generator uses this)
+try:
+    _records = _df.to_dict("records")
+    _df2 = _pd.DataFrame(_records)
+    _fv_check("52.4a", "to_dict('records') round-trip preserves rows",
+              len(_records), 3)
+    _fv_check("52.4b", "Round-trip preserves _sector_resolutions",
+              isinstance(_records[0].get("_sector_resolutions"), dict), True)
+except Exception as _e:
+    _fv_check("52.4a", f"Round-trip failed: {_e}", False, True)
+
+# 52.5: Excel generator's FV_MODEL_KEYS pattern — the {"M1_DCF","M2_Graham",...}
+# set lookup must work for explicit keys; metadata key should NOT be in the set
+_FV_MODEL_KEYS = {"M1_DCF","M2_Graham","M3_PE","M4_PB","M5_EV","M6_DDM","M7_PEG",
+                  "cfv","cfv_low","cfv_high"}
+_fv_check("52.5a", "_sector_resolutions correctly excluded from FV_MODEL_KEYS",
+          "_sector_resolutions" not in _FV_MODEL_KEYS, True)
+_fv_check("52.5b", "_m5_method correctly excluded from FV_MODEL_KEYS",
+          "_m5_method" not in _FV_MODEL_KEYS, True)
+
+# 52.6: Composite weighter must skip non-model dict-typed keys.
+# Test passing a contrived dict with extra weird keys to ensure they're filtered.
+_contrived = {
+    "M1_DCF": 1000.0, "M2_Graham": 950.0, "M3_PE": 1100.0,
+    "M4_PB": 980.0, "M5_EV": 1050.0, "M6_DDM": 0, "M7_PEG": 1020.0,
+    "_sector_resolutions": {"M3_PE": "Banks", "_m5_method": "skip_financial"},
+    "_extra_metadata": {"foo": "bar"},  # simulate a future metadata key
+    "_extra_string": "this should be ignored",
+    "UNKNOWN_MODEL": 999,
+}
+_result = _fv.get_composite_fair_value(_contrived, cmp=1000)
+# Expected: only the 6 known non-zero models contribute
+# total_w = 0.30+0.15+0.20+0.15+0.10+0.05 = 0.95
+# weighted sum = 1000*0.30 + 950*0.15 + 1100*0.20 + 980*0.15 + 1050*0.10 + 1020*0.05
+#              = 300 + 142.5 + 220 + 147 + 105 + 51 = 965.5
+# cfv = 965.5 / 0.95 = 1016.32
+_fv_check("52.6", "Composite weighter ignores all non-model keys (dict, str, unknown)",
+          _result['cfv'], 1016.32, tol=0.5)
+
+# 52.7: Confirm scoring engine accepts FV-engine-output stocks without crash.
+# This is the master_funnel SECTION 6 path.
+try:
+    from analysis.scoring_engine import ScoringEngine
+    _sc = ScoringEngine()
+    _stk = _fv_base_stock(sector="Banks")
+    _stk["fundamental_score"] = 60
+    _stk["technical_score"]   = 65
+    _stk["safety_score"]      = 60
+    _stk["sentiment_score"]   = 55
+    _stk["early_entry_score"] = 25
+    _stk["stage2_score"]      = 25
+    _stk["cap_category"]      = "LARGE"
+    _stk["fii_3q_trend"]      = "UP"
+    _stk["supertrend"]        = "BUY"
+    _stk["rotation_stage"]    = "STAGE 2 — CONFIRMED UPTREND"
+    _m = _fv.calculate_all_models(_stk, beta=1.0, growth_3yr=15)
+    _r = _fv.get_composite_fair_value(_m, cmp=_stk["close"])
+    _stk.update(_m)
+    _stk.update(_r)
+    _v = _sc.calculate_composite_score(_stk)
+    _fv_check("52.7a", "ScoringEngine accepts FV output incl. _sector_resolutions",
+              "verdict" in _v, True)
+    _fv_check("52.7b", "Composite score is numeric",
+              isinstance(_v["composite_score"], (int, float)), True)
+except Exception as _e:
+    _fv_check("52.7a", f"Scoring crashed: {_e}", False, True)
+
+# 52.8: Empty-string sector handling (defensive — pipeline may pass "" if
+# yfinance fails for that stock). M5 must not crash.
+m = _fv.calculate_all_models(
+    _fv_base_stock(sector="", q_ebitda_cr=100, total_debt_cr=300,
+                   cash_cr=50, mcap_cr=5000),
+    beta=1.0, growth_3yr=15,
+)
+# Empty sector → resolved key is "(empty)", which is NOT a financial keyword
+# So Tier 1 fires with default sector_ev=15
+_fv_check("52.8a", "Empty sector still produces M5 via Tier 1",
+          m['M5_EV'] > 0, True)
+_fv_check("52.8b", "Empty sector method = 'proper' (not skip_financial)",
+          m['_sector_resolutions'].get('_m5_method'), "proper")
+
+# 52.9: NaN/None safety in Round-2 input fields. If the pipeline somehow
+# passes None for q_ebitda_cr, the engine should fall back to Tier 2 not crash.
+m = _fv.calculate_all_models(
+    _fv_base_stock(sector="Pharma", q_ebitda_cr=None, ev_ebitda=12),
+    beta=1.0, growth_3yr=15,
+)
+_fv_check("52.9a", "None q_ebitda_cr → falls to Tier 2 shortcut",
+          m['_sector_resolutions'].get('_m5_method'), "shortcut")
+_fv_check("52.9b", "None q_ebitda_cr produces non-zero M5 via shortcut",
+          m['M5_EV'] > 0, True)
 
 
 

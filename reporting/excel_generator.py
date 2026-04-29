@@ -214,9 +214,9 @@ GLOSSARY_DATA = [
     ("FAIR VALUE","M2: Graham FV","Graham Number = √(22.5×EPS×BVPS). Skip if EPS negative. v12.2: eps/bvps now sanitized via _sf() — handles '—' / 'N/A' / None inputs cleanly.","Full Dashboard"),
     ("FAIR VALUE","M3: PE FV","EPS × Sector 5yr median P/E (mean reversion). v12.2: 28-sector benchmarks via SECTOR_ALIASES (Banks 18, Tech 30, FMCG 45, Steel 10, Realty 25, Telecom 22, Defence 40, etc.). 'Basic Materials' → Metals, 'Industrials' → Infra, 'Communication Services' → Telecom.","Full Dashboard"),
     ("FAIR VALUE","M4: PB FV","BVPS × Sector median Price/Book. Good for asset-heavy sectors (banks, metals). v12.2: 28-sector benchmarks via SECTOR_ALIASES. BVPS fallback derives from close/PB if missing.","Full Dashboard"),
-    ("FAIR VALUE","M5: EV FV","CMP × (Sector median EV/EBITDA ÷ Stock EV/EBITDA). Good for capital-intensive businesses. v12.2: 28-sector benchmarks via SECTOR_ALIASES. Caveat: shortcut formula assumes net debt and share count remain stable vs peers; for Tech with rich sector multiples M5 can produce aggressive upside (1.5–2× CMP). The 10% composite weight + 3× CMP composite cap bound the impact.","Full Dashboard"),
+    ("FAIR VALUE","M5: EV FV","CMP × (Sector median EV/EBITDA ÷ Stock EV/EBITDA). Good for capital-intensive businesses. v12.2: 28-sector benchmarks via SECTOR_ALIASES. v12.3 Round 2: proper EV-based formula primary — fair_per_share = CMP × ((annual_ebitda × sector_mult − net_debt) / mcap_cr). Three-tier dispatch (proper / shortcut / skip). Banks/NBFCs/Insurance skip M5 entirely (EV/EBITDA not meaningful for financials). _m5_method diagnostic surfaces which tier fired.","Full Dashboard"),
     ("FAIR VALUE","M6: DDM FV","Dividend Discount Model = DPS×(1+g)/(r−g). Only shown for dividend-paying stocks. v12.2 fix: removed the 2% growth floor — declining-earnings stocks (pat_yoy<0) now correctly get 0% div growth (was 2%, which inflated FV by ~26%).","Full Dashboard"),
-    ("FAIR VALUE","M7: PEG FV","EPS × EPS Growth Rate. PEG=1 baseline. v12.2 unit guard: skips when growth_3yr < 1.0 (catches the case where growth arrives as a decimal 0.15 instead of percent 15, which would 100×-misprice).","Full Dashboard"),
+    ("FAIR VALUE","M7: PEG FV","EPS × EPS Growth Rate × PEG_BENCHMARK. v12.3 Round 2: PEG_BENCHMARK = 1.0 made an explicit named constant (Lynch's rule of thumb). Mathematically identical to v12.2 outputs but the constant is now tunable — strict value setups could use 0.8, growth-tilted mandates 1.2. v12.2 unit guard still active: skips when growth_3yr < 1.0 (catches decimal-fraction unit error).","Full Dashboard"),
     ("VALUATION","P/E TTM","Price-to-Earnings trailing 12 months","All sheets"),
     ("VALUATION","Earn Yield %","EPS/CMP×100. >6% = beats 10Y GSec risk-free rate","All sheets"),
     ("VALUATION","P/E TTM",
@@ -577,14 +577,14 @@ GLOSSARY_DATA = [
     ("FAIR VALUE","M2: Graham FV (₹)","Graham Number = √(22.5 × EPS × BVPS). Benjamin Graham's intrinsic value formula. Best for value stocks with positive EPS. v12.2: eps/bvps sanitized via _sf(); BVPS fallback derives from close/PB if missing.","Full Dashboard"),
     ("FAIR VALUE","M3: PE FV (₹)","EPS × Sector 5yr median P/E. Mean-reversion model — assumes P/E reverts to sector norm. v12.2: 28-sector benchmarks via SECTOR_ALIASES — production sectors (Basic Materials → Metals PE 12, Industrials → Infra PE 22, Communication Services → Telecom PE 22, Consumer Cyclical/Defensive → Consumer PE 40, Financial Services → Financial PE 20, Real Estate → Realty PE 25) now resolve correctly.","Full Dashboard"),
     ("FAIR VALUE","M4: PB FV (₹)","BVPS × Sector median Price/Book. Best for asset-heavy sectors: banks, metals, real estate. v12.2: same SECTOR_ALIASES path as M3 — Basic Materials gets PB 1.5 (Metals), Industrials gets PB 2.5 (Infra), Communication Services gets PB 2.5 (Telecom).","Full Dashboard"),
-    ("FAIR VALUE","M5: EV FV (₹)","CMP × (Sector median EV/EBITDA ÷ Stock EV/EBITDA). Best for capital-intensive businesses. v12.2: 28-sector benchmarks via SECTOR_ALIASES. Caveat: shortcut formula assumes net debt and share count remain stable vs peers; for Tech with rich sector multiples M5 can produce aggressive upside — 10% composite weight + 3× CMP composite cap bound the impact.","Full Dashboard"),
+    ("FAIR VALUE","M5: EV FV (₹)","CMP × (Sector median EV/EBITDA ÷ Stock EV/EBITDA). Best for capital-intensive businesses. v12.2: 28-sector benchmarks via SECTOR_ALIASES. v12.3 Round 2: proper EV-based formula primary — fair_per_share = CMP × ((annual_ebitda × sector_mult − net_debt) / mcap_cr). Tier 1 fires when q_ebitda_cr + total_debt_cr + cash_cr + mcap_cr all populated; Tier 2 falls back to v12.2 shortcut; Tier 3 skips for Banks/NBFCs/Insurance entirely. 4× CMP cap on Tier 1 outliers; 70% discount when fair equity goes negative (severely overlevered).","Full Dashboard"),
     ("FAIR VALUE","M6: DDM FV (₹)",
      "Gordon Growth Model = DPS×(1+g)/(r−g). "
      "Only shown for dividend-paying stocks (yield 0.1%–15%). "
      "DPS = CMP × Div Yield. r = GSec + 4.5%. g = max(min(pat_yoy/200, 6%), 0%). "
      "v12.2 fix: removed the 2% growth floor that previously inflated FV by ~26% "
      "for declining-earnings stocks (pat_yoy<0) — they now correctly get 0% div growth.","Full Dashboard"),
-    ("FAIR VALUE","M7: PEG FV (₹)","EPS × EPS Growth Rate. PEG=1 baseline (Lynch's rule). Best for high-growth stocks where PE alone overstates expensiveness. v12.2 unit guard: skips when growth_3yr < 1.0 (catches the case where growth arrives as a decimal 0.15 instead of percent 15, which would 100×-misprice).","Full Dashboard"),
+    ("FAIR VALUE","M7: PEG FV (₹)","EPS × EPS Growth Rate × PEG_BENCHMARK. PEG=1 baseline (Lynch's rule). Best for high-growth stocks where PE alone overstates expensiveness. v12.3 Round 2: PEG_BENCHMARK = 1.0 now an explicit named constant — tunable for value-tilted (0.8) or growth-tilted (1.2) mandates. v12.2 unit guard still active: skips when growth_3yr < 1.0 (catches decimal-fraction unit error).","Full Dashboard"),
 
     # ── VALUATION ─────────────────────────────────────────────────────────────
     ("VALUATION","P/B",
@@ -1448,7 +1448,7 @@ class ExcelGeneratorV6:
         N=len(FULL_COLS)
         # R1
         ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=N)
-        c=ws.cell(1,1,f"NSE / BSE STOCK ANALYSER  ·  FULL RESEARCH DASHBOARD  ·  v6.1  ·  {self.dlbl}")
+        c=ws.cell(1,1,f"NSE / BSE STOCK ANALYSER  ·  FULL RESEARCH DASHBOARD  ·  v6.2  ·  {self.dlbl}")
         c.fill=_f(NAVY); c.font=_ft(True,WHITE,13); c.alignment=_al()
         ws.row_dimensions[1].height=34
         # R2
@@ -1844,7 +1844,7 @@ class ExcelGeneratorV6:
     def _glossary(self,wb):
         ws=wb.create_sheet("📖 Glossary"); ws.sheet_properties.tabColor="475569"
         ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=5)
-        c=ws.cell(1,1,"GLOSSARY  ·  Full Forms & Descriptions of All Column Abbreviations  ·  NSE/BSE Stock Analyser v6.1")
+        c=ws.cell(1,1,"GLOSSARY  ·  Full Forms & Descriptions of All Column Abbreviations  ·  NSE/BSE Stock Analyser v6.2")
         c.fill=_f(NAVY); c.font=_ft(True,WHITE,12); c.alignment=_al()
         ws.row_dimensions[1].height=28
         ws.column_dimensions["A"].width=3

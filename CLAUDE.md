@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · Version 12.2 · April 2026
+## AI Context File · Version 12.3 · April 2026
 
 This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. **Read it first** before making any change.
 
@@ -1233,4 +1233,117 @@ The v12.2 initial release passed all 250 hand-crafted unit tests but still left 
 
 ---
 
-*Last updated: April 2026 · v12.2 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+---
+
+## 24. v12.3 RELEASE — Round 2: M5 EV proper formula + M7 PEG_BENCHMARK explicit
+
+**Date:** 29 April 2026
+**Files changed:** `analysis/fair_value_engine.py`, `test_v11.0.2_full_withdummies.py` (Groups 49-51 added), `CLAUDE.md`, `reporting/excel_generator.py` (glossary updates), `reporting/tooltip_formatter.py`
+**Test status:** 350 of 350 pass (319 v12.2-Round-1 + 31 new Round 2 tests)
+
+### Why this release exists
+
+The v12.2 audit flagged two structural concerns we deliberately deferred to Round 2 because they required design decisions, not just bug fixes:
+
+1. **M5 EV/EBITDA's shortcut formula** — `CMP × sector_ev_mult / current_ev_ebitda` produced aggressive outputs because it implicitly assumed net debt and share count remained stable vs peers. Real-data audit showed Tech stocks at 1.5–2× CMP and Basic Materials at extremes after Round 1's expanded sector multipliers.
+2. **M7 PEG's implicit PEG=1.0 assumption** — the formula `EPS × growth_pct` happened to equal a Lynch PEG=1.0 fair value but didn't expose the constant, making it untunable.
+
+A data-availability audit (`check_m5_data.py`) confirmed the pipeline already collects everything needed for a proper M5 fix: `q_ebitda_cr` (83% populated), `total_debt_cr` (96%), `cash_cr` (97%), `mcap_cr` (parsed from symbol_master). So we did the proper fix, not the safety patch.
+
+### v12.3 changes
+
+#### M5 EV/EBITDA — three-tier formula
+
+```
+Tier 1 (proper):
+    annual_ebitda_cr = q_ebitda_cr × 4
+    fair_EV_cr       = annual_ebitda_cr × sector_ev_multiple
+    net_debt_cr      = total_debt_cr − cash_cr
+    fair_mcap_cr     = fair_EV_cr − net_debt_cr
+    fair_per_share   = CMP × (fair_mcap_cr / mcap_cr)
+
+Tier 2 (shortcut — legacy v12.2 formula, fallback when Tier 1 inputs missing):
+    fair_per_share = CMP × sector_ev_mult / current_ev_ebitda
+
+Tier 3 (skip):
+    Banks/NBFCs/Insurance always skip (EV/EBITDA isn't meaningful for financials)
+    OR no usable data at all
+```
+
+The elegant part: Tier 1 doesn't need `shares_outstanding` (which the pipeline doesn't collect). It uses the ratio `fair_mcap_cr / current_mcap_cr` to express mispricing as a CMP multiplier — sidestepping the need to know absolute share counts.
+
+Tier 1 also has a **4× CMP cap** mirroring M1 DCF's cap, plus a **negative-equity branch**: if `fair_mcap_cr` is negative (debt exceeds fair EV), emit `CMP × 0.3` (70% discount) rather than skipping — this preserves the bearish signal for severely overlevered stocks.
+
+The new `_m5_method` field in `_sector_resolutions` surfaces which tier fired:
+- `"proper"` — Tier 1 succeeded
+- `"proper_negative_equity"` — Tier 1, but fair_mcap_cr < 0
+- `"shortcut"` — Tier 2 fallback
+- `"skip_financial"` — Tier 3, banks/NBFCs/insurance
+- `"skip_no_data"` — Tier 3, nothing to compute with
+
+#### M7 PEG — explicit PEG_BENCHMARK constant
+
+```python
+PEG_BENCHMARK = 1.0   # Lynch's rule of thumb: stock fair when PEG = 1
+fair_PE = adj_growth × PEG_BENCHMARK
+M7_PEG  = EPS × fair_PE
+```
+
+Mathematically identical to v12.2 outputs (since 1.0 × X = X), but the constant is now named and tunable. Strict value setups could use 0.8 (cheaper); growth-tilted mandates could use 1.2.
+
+### What was tested
+
+`test_v11.0.2_full_withdummies.py` Groups 49-51 — 31 new tests:
+
+- **Group 49** (M5 dispatch): Tier 1 happy path, net-cash company, 4× CMP cap, negative-equity branch, Tier 2 fallback when proper inputs missing, Tier 3 skip for Banks/NBFC/Insurance, Tier 3 skip for no-data, Round 1 sector aliasing still works with Tier 1, negative q_ebitda → Tier 2 fallback (11 tests)
+- **Group 50** (PEG_BENCHMARK): default 1.0 produces v12.2-identical outputs, growth cap still 30%, unit guard still works, negative EPS still skips (4 tests)
+- **Group 51** (production scenarios): HINDALCO-like with full Round 2 data → "proper" method fires; PSU bank → skip_financial; legacy stock without Round 2 fields → shortcut fallback (8 tests)
+
+### Production-data simulation results
+
+Re-ran Round 2 engine against the production Excel (100 stocks):
+
+| Tier | Count | Notes |
+|------|-------|-------|
+| `proper` (Tier 1) | 0 in simulation* | *Simulation lacks `mcap_cr`; real pipeline has it, expect ~75 stocks |
+| `shortcut` (Tier 2) | 81 | Fallback when proper inputs missing |
+| `skip_financial` (Tier 3) | 13 | Banks/NBFCs/Insurance — correctly removes M5 noise |
+| `skip_no_data` (Tier 3) | 6 | No EV/EBITDA in feed |
+
+3 stocks shifted M5 to 0 due to financial-sector skip:
+- **BAJAJHLDNG**: was M5=994 (CMP 10246) — was severely dragging composite down
+- **AUSOMENT, BAJAJFINSV**: same pattern
+
+For all 3, removing the bad M5 signal shifted MoS upward (more accurate, since EV/EBITDA-based valuation isn't meaningful for these holding/financial businesses).
+
+### HINDALCO walkthrough — full Round 1 + Round 2 progression
+
+| Release | Sector resolved to | M3 PE | M4 PB | M5 EV | CFV | MoS | Verdict |
+|---------|-------------------|-------|-------|-------|-----|-----|---------|
+| Pre-v12.2 | (default 25/3.0/15) | ₹1807 | ₹1878 | ₹1937 | ₹1409 | +31% | **BUY** ❌ |
+| Round 1 (v12.2) | Metals (12/1.5/6) | ₹867 | ₹939 | ₹775 | ₹964 | -10% | OVERVALUED |
+| Round 2 (v12.3) | Metals + proper M5 | ₹867 | ₹939 | **₹508** | ₹740 | -31% | NEUTRAL |
+
+The progression shows each release tightening the assessment for a real metals stock with `Beta 0.24, PE 14.4, ₹50,000 Cr debt`:
+1. Pre-v12.2 said BUY because comparing against generic 25× PE made it look cheap
+2. Round 1 used Metals sector multipliers correctly → OVERVALUED
+3. Round 2 also accounts for ₹50,000 Cr of debt → NEUTRAL/Significantly Overvalued
+
+### Known limitations carried into v12.3
+
+These remain Round 3 candidates:
+
+1. **PEG_BENCHMARK is global** — applies the same Lynch constant to every stock. A more sophisticated approach would use sector-specific PEG benchmarks (Tech might tolerate higher PEG than Metals).
+2. **Score adjustment thresholds unchanged** — `+12 at MoS>40` etc. were calibrated against pre-v12.2 distributions. With Round 2's additional MoS shift (proper M5 generally produces lower fair values for levered companies), thresholds may warrant re-tuning.
+3. **Tier 1 needs all 4 fields** — if any of `q_ebitda_cr`, `total_debt_cr`, `cash_cr`, `mcap_cr` is missing/zero, falls back to shortcut. Could be made more graceful (e.g., proceed with debt=0 if total_debt_cr unavailable, since assuming no debt is more conservative than the shortcut).
+
+### Operational notes
+
+- `_m5_method` field is now in every stock's `_sector_resolutions` dict. Recommended monitoring: log distribution of methods after each daily run; if `proper` count drops sharply, investigate whether one of the 4 source fields stopped populating.
+- Banks/NBFCs/Insurance now contribute exactly 6 models to composite instead of 7 (since M5 skips). Composite weighting renormalizes correctly via existing `total_w` logic.
+- Glossary entries for M5 / M7 / CFV in `reporting/excel_generator.py` updated with v12.3 notes.
+- Tooltip Reference entries in `reporting/tooltip_formatter.py` updated to match.
+
+---
+
+*Last updated: April 2026 · v12.3 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

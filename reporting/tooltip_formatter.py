@@ -175,7 +175,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                 "Consumer Cyclical/Defensive, Financial Services, Real Estate)\n"
                 "now canonicalize via SECTOR_ALIASES before substring matching\n"
                 "against benchmark multipliers, so 31 of 100 stocks no longer\n"
-                "silently fall through to defaults."),
+                "silently fall through to defaults.\n"
+                "v12.3 Round 2: M5 now uses proper EV math (annual_ebitda ×\n"
+                "sector_mult − net_debt) when full data available; banks/NBFCs/\n"
+                "insurance correctly skip M5 entirely. M7 PEG_BENCHMARK = 1.0\n"
+                "made explicit constant (was implicit)."),
     "FV Low (₹)": ("Conservative FV = CFV × 0.85",
                   "CMP below FV Low = very deeply undervalued."),
     "FV High (₹)": ("Optimistic FV = CFV × 1.15",
@@ -220,15 +224,17 @@ TIPS: Dict[str, Tuple[str, str]] = {
                       "(Telecom). BVPS fallback derives from close/PB if missing."),
     "M5: EV FV (₹)": ("EV/EBITDA fair value — 10% weight in CFV",
                       "Capital-structure neutral — useful when debt levels vary widely.\n"
-                      "Formula: CMP × (sector_ev_mult / current_ev_ebitda).\n"
-                      "v12.2: 28 sector benchmarks (Tech 22, FMCG 30, Steel 5,\n"
-                      "Banks 12, Realty 12 etc.) + SECTOR_ALIASES canonicalization.\n"
-                      "Caveat: shortcut formula assumes net debt and share count\n"
-                      "remain stable vs peers. For Tech with rich sector multiples,\n"
-                      "M5 can produce aggressive upside (e.g. 1.5–2× CMP). The 10%\n"
-                      "composite weight bounds this; 3× CMP composite cap caps the\n"
-                      "extreme. A proper EV-based FV (with EBITDA + net_debt + shares)\n"
-                      "is a Round 2 candidate."),
+                      "v12.3 Round 2: proper EV-based formula primary —\n"
+                      "  fair_per_share = CMP × ((annual_ebitda × sector_mult\n"
+                      "                            − net_debt) / mcap_cr)\n"
+                      "Three-tier dispatch:\n"
+                      "  Tier 1 (proper): when q_ebitda_cr + total_debt_cr +\n"
+                      "    cash_cr + mcap_cr all available\n"
+                      "  Tier 2 (shortcut): legacy v12.2 formula as fallback\n"
+                      "  Tier 3 (skip): Banks/NBFCs/Insurance always (EV/EBITDA\n"
+                      "    isn't meaningful for financials)\n"
+                      "v12.2: 28-sector benchmarks (Tech 22, FMCG 30, Steel 5,\n"
+                      "Banks 12, Realty 12) + SECTOR_ALIASES canonicalization."),
     "M6: DDM FV (₹)": ("Dividend Discount Model — 5% weight in CFV",
                        "Only meaningful for consistent dividend payers.\n"
                        "Gordon Growth: FV = D1 / (r - g).\n"
@@ -238,12 +244,15 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "getting 2% before). Yield range gate: 0.1% < yield < 15%."),
     "M7: PEG FV (₹)": ("Growth-adjusted P/E fair value — 5% weight in CFV",
                        "Rewards genuine growth companies at reasonable multiples.\n"
-                       "Formula: EPS × growth_pct (mathematically a PEG=1.0\n"
-                       "implied fair PE — Lynch's rule of thumb).\n"
+                       "Formula: EPS × growth_pct × PEG_BENCHMARK.\n"
+                       "v12.3 Round 2: PEG_BENCHMARK = 1.0 made an explicit named\n"
+                       "constant (Lynch's rule: stock fair when PEG = 1.0).\n"
+                       "Mathematically identical to v12.2 but constant is now\n"
+                       "tunable — value-tilted setups could use 0.8, growth\n"
+                       "setups 1.2.\n"
                        "Shows 0 when earnings growth negative.\n"
-                       "v12.2 unit guard: skips when growth < 1.0 (catches the\n"
-                       "case where growth_3yr accidentally arrives as a decimal\n"
-                       "0.15 instead of percent 15, which would 100×-misprice)."),
+                       "v12.2 unit guard: skips when growth < 1.0 (catches\n"
+                       "decimal-fraction unit error)."),
 
     # ── Ratios ──────────────────────────────────────────────────────────────
     "P/E TTM": ("<20 cheap | 20–40 fair | >40 expensive",

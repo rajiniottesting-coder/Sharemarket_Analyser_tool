@@ -133,6 +133,19 @@ class FairValueEngine:
           • debug_sector_resolutions in output: surfaces which benchmark key
             each model resolved to, so future regressions in sector handling
             are visible without code archaeology.
+
+        v12.3 Round 2 enhancements (M5 dimensional fix + M7 explicitness):
+          • M5 EV/EBITDA: replaced the multiplicative shortcut with a proper
+            EV-based formula (annual_ebitda × sector_mult − net_debt), with
+            three-tier fallback. Only fires Tier 1 when q_ebitda_cr +
+            total_debt_cr + cash_cr + mcap_cr are all available. Tier 2 falls
+            back to the v12.2 shortcut. Banks/NBFCs/Insurance now correctly
+            skip M5 entirely (EV/EBITDA isn't meaningful for financials).
+          • M7 PEG: PEG_BENCHMARK = 1.0 now an explicit named constant
+            (Lynch's rule of thumb), making the assumption tunable.
+          • _m5_method diagnostic: surfaces which M5 tier fired ("proper" /
+            "shortcut" / "skip_financial" / "skip_no_data" /
+            "proper_negative_equity") so quality of M5 output is visible.
         """
         models = {}
         # Track which benchmark key each model resolved to (Round 1 diagnostic)
@@ -224,13 +237,47 @@ class FairValueEngine:
 
         # M7: PEG-Adjusted (Lynch's PEG=1 → fair PE = growth rate)
         # v12.2 unit guard: skip if growth < 1.0 (likely arrived as decimal).
+        # v12.3 Round 2: PEG_BENCHMARK constant made explicit. Lynch's classic
+        # rule of thumb: a stock is fairly valued when PEG = 1.0 (so fair PE
+        # equals the growth rate). The constant is named so it's tunable —
+        # value-investing setups might use 0.8 (stricter), while growth-tilted
+        # mandates might use 1.2 (more permissive).
+        PEG_BENCHMARK = 1.0
         adj_growth = min(growth_3yr, 30)
         if eps > 0 and adj_growth >= 1.0:
-            models['M7_PEG'] = round(eps * adj_growth, 2)
+            # fair_PE = growth_rate × PEG_BENCHMARK
+            # fair_value = EPS × fair_PE
+            models['M7_PEG'] = round(eps * adj_growth * PEG_BENCHMARK, 2)
         else:
             models['M7_PEG'] = 0
 
         # M5: EV/EBITDA-based Fair Value
+        # v12.3 Round 2: replaces the v12.2 multiplicative shortcut with a
+        # proper EV-based per-share fair value that accounts for net debt.
+        #
+        # Why the change: production data showed the v12.2 shortcut formula
+        # (`CMP × sector_ev_mult / current_ev_ebitda`) producing aggressive
+        # outputs for sectors where the new sector multiple was very different
+        # from the old default. The shortcut implicitly assumed net debt and
+        # share count remained stable vs peers — a fragile assumption.
+        #
+        # The proper formula avoids this by working in absolute ₹Cr units:
+        #   fair_EV_cr     = annual_ebitda_cr × sector_ev_mult
+        #   net_debt_cr    = total_debt_cr − cash_cr
+        #   fair_mcap_cr   = fair_EV_cr − net_debt_cr   (debt subtracts from equity value)
+        #   fair_per_share = CMP × (fair_mcap_cr / current_mcap_cr)
+        #
+        # The last step is the elegant trick: by ratioing the fair mcap to the
+        # current mcap, we don't need to know shares_outstanding. CMP already
+        # encodes that information, and (fair_mcap_cr / mcap_cr) gives the
+        # mispricing as a multiplier on CMP.
+        #
+        # Three tiers, each falling back to the next:
+        #   Tier 1 (proper):    needs annual_ebitda_cr, total_debt_cr, cash_cr, mcap_cr
+        #   Tier 2 (shortcut):  needs ev_ebitda ratio + cmp + sector mult (legacy v12.2)
+        #   Tier 3 (skip):      no usable data → 0
+        #
+        # The `_m5_method` field surfaces which tier fired, for diagnostics.
         ev_ebitda_curr = _sf(data.get('ev_ebitda', 0))
         _sec_ev_map = {
             "Software": 22, "Technology": 22, "IT": 20,
@@ -251,10 +298,66 @@ class FairValueEngine:
         )
         sector_resolutions['M5_EV'] = _ev_key
         cmp_m5 = _sf(data.get('close', 0))
-        if ev_ebitda_curr > 0 and cmp_m5 > 0:
+
+        # Tier 1: proper EV math (uses absolute ₹Cr fields)
+        # We accept either q_ebitda_cr (quarterly, multiply by 4) or annual EBITDA.
+        # Banks/NBFCs use a different income structure — skip M5 entirely for them
+        # since EV/EBITDA isn't meaningful for financials.
+        _is_financial = any(k in str(_ev_key).upper() for k in
+                            ["BANK", "NBFC", "INSURANCE", "FINANCIAL"])
+        _q_ebitda    = _sf(data.get('q_ebitda_cr', 0), 0)
+        _total_debt  = _sf(data.get('total_debt_cr',
+                            data.get('total_debt', 0)), 0)
+        _cash        = _sf(data.get('cash_cr',
+                            data.get('cash', 0)), 0)
+        _mcap_cr     = _sf(data.get('mcap_cr',
+                            data.get('mcap', 0)), 0)
+
+        _proper_inputs_ok = (
+            not _is_financial
+            and _q_ebitda > 0
+            and _mcap_cr > 0
+            and cmp_m5 > 0
+            # debt and cash can be 0 (zero-debt company is fine), so we don't
+            # require them to be positive — but they must not be negative
+            and _total_debt >= 0
+            and _cash >= 0
+        )
+
+        if _proper_inputs_ok:
+            # Tier 1: proper formula
+            _annual_ebitda_cr = _q_ebitda * 4         # annualize quarterly
+            _fair_ev_cr       = _annual_ebitda_cr * sector_ev_mult
+            _net_debt_cr      = _total_debt - _cash
+            _fair_mcap_cr     = _fair_ev_cr - _net_debt_cr
+
+            if _fair_mcap_cr > 0:
+                _m5 = cmp_m5 * (_fair_mcap_cr / _mcap_cr)
+                # Sanity: cap at 4× CMP (mirrors M1 DCF cap) to prevent
+                # tiny-EBITDA + low-debt outliers producing implausible numbers
+                if _m5 > cmp_m5 * 4:
+                    _m5 = cmp_m5 * 4
+                models['M5_EV'] = round(_m5, 2)
+                sector_resolutions['_m5_method'] = "proper"
+            else:
+                # Negative fair equity = company's debt exceeds its EV at sector
+                # multiple = severely overvalued / overlevered. Express as a
+                # heavily-discounted FV rather than skipping (which would lose
+                # the bearish signal).
+                models['M5_EV'] = round(cmp_m5 * 0.3, 2)  # 70% discount
+                sector_resolutions['_m5_method'] = "proper_negative_equity"
+
+        elif ev_ebitda_curr > 0 and cmp_m5 > 0 and not _is_financial:
+            # Tier 2: legacy shortcut (when proper inputs missing)
             models['M5_EV'] = round(cmp_m5 * sector_ev_mult / ev_ebitda_curr, 2)
+            sector_resolutions['_m5_method'] = "shortcut"
+
         else:
+            # Tier 3: skip
             models['M5_EV'] = 0
+            sector_resolutions['_m5_method'] = (
+                "skip_financial" if _is_financial else "skip_no_data"
+            )
 
         # M6: DDM (Dividend Discount Model) — Gordon Growth Model
         # v12.2 fix: removed 2% growth floor; growth = max(min(pat_yoy/200, 0.06), 0)
