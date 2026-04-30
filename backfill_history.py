@@ -16,6 +16,29 @@ INSTALL (one-time):
 
 BSE: uses `bse` pip package — handles Akamai bot-detection internally.
 NSE: uses direct archive URL with session warm-up.
+
+v12.7 (this release) — comprehensive dual-listed integrity pass:
+  Twelve bugs found in the v12.6.1 audit, all rooted in the same shape:
+  daily_prices stores one row per (symbol, date, exchange), so dual-listed
+  symbols have 2× rows on every date. Pre-v12.7 several functions ran
+  groupby('symbol') / WHERE symbol=? without an exchange filter, producing
+  either silent crashes (#1), half-period rolling windows (#2, #3, #6, #7),
+  6-month-stale price series (#5, fixed in master_funnel/data_bridge),
+  or marginally wrong CMP lookups (#9). v12.7 patches every per-symbol
+  reader to filter exchange='NSE' (or dedupe preferring NSE) and replaces
+  the silent except-pass in _compute_all_indicators with a structured
+  error counter so future regressions of this category are visible.
+
+  Backfill-side fixes shipped here:
+    - _compute_all_indicators: chunk SELECT now reads exchange column,
+      dedupes (symbol,date) preferring NSE, replaces silent except-pass.
+    - enrich_prices: SELECT now filters exchange='NSE' before groupby.
+    - delivery_pct UPDATE now scopes to exchange='NSE' (was over-writing
+      BSE rows with NSE delivery numbers — dormant but corrupting).
+    - CMP lookups for earnings-yield (2 places): now filter exchange='NSE'.
+    - active_syms filter and other date('now') calls: replaced with an
+      IST-aware target_iso passed in, so the -7-day window is correct
+      regardless of when the runner clock crosses midnight UTC.
 """
 import yfinance as yf
 import sqlite3
@@ -905,9 +928,19 @@ def upsert(df, table, conn):
 
 def enrich_prices(conn, date_iso):
     try:
+        # v12.7 (#3 FIX): filter exchange='NSE' before groupby('symbol').
+        # Pre-fix, dual-listed stocks had 2× rows interleaved on each date,
+        # so grp.tail(252) was effectively the last 126 trading days
+        # (mix of NSE+BSE rows). The values written to daily_prices
+        # week_high_52 / week_low_52 / vol_50d_avg were half-period for
+        # the picked exchange row and stale (never written) for the other.
+        # Master_funnel reads these via its own NSE-filtered SQL so the
+        # user-facing Excel was unaffected pre-fix, but the DB columns
+        # were wrong for any future consumer.
         df = pd.read_sql(
             "SELECT symbol, exchange, date, high, low, close, prev_close, volume "
-            "FROM daily_prices WHERE date <= ? ORDER BY symbol, date",
+            "FROM daily_prices WHERE date <= ? AND exchange='NSE' "
+            "ORDER BY symbol, date",
             conn, params=(date_iso,)
         )
         if df.empty:
@@ -1016,13 +1049,23 @@ def run_backfill():
             if deliv is not None and not deliv.empty:
                 deliv['date'] = date_iso
                 upsert(deliv, 'delivery_stats', conn)
-                # Reflect delivery_pct into daily_prices
+                # v12.7 (#4 FIX): Reflect delivery_pct into daily_prices —
+                # but ONLY into NSE-tagged rows. Pre-fix, this UPDATE had
+                # no exchange filter, so for dual-listed symbols it also
+                # over-wrote the BSE row's delivery_pct with the NSE
+                # delivery number (BSE has its own separate convention).
+                # The corruption was dormant — no downstream consumer
+                # reads daily_prices.delivery_pct for BSE rows — but it
+                # silently broke the BSE side of the price store and
+                # would have surfaced the moment any future code path
+                # filtered exchange='BSE' for delivery analytics.
                 updates = [
                     (float(row['delivery_pct']), row['symbol'], date_iso)
                     for _, row in deliv[['symbol','delivery_pct']].iterrows()
                 ]
                 conn.executemany(
-                    "UPDATE daily_prices SET delivery_pct=? WHERE symbol=? AND date=?",
+                    "UPDATE daily_prices SET delivery_pct=? "
+                    "WHERE symbol=? AND date=? AND exchange='NSE'",
                     updates
                 )
                 conn.commit()
@@ -1116,21 +1159,33 @@ def run_backfill():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _compute_all_indicators(conn):
-    # ── Step 1: Active symbols only (traded in last 7 days) ──────────────────
+    # ── Step 1: Active symbols only (traded in last 7 days of DB data) ───────
     # Processing ALL 8,700+ historical symbols one-by-one is very slow.
     # A stock not traded in the last 7 days will have volume=0 today and
     # gets dropped at Stage 1 Gate F3 BEFORE technicals are ever read.
     # So computing technicals for inactive/delisted symbols is 100% wasted work.
     # -7 days (vs -30 days) gives ~2,500 active symbols instead of 6,600+.
-    active_syms = pd.read_sql(
-        """
-        SELECT DISTINCT symbol
-        FROM   daily_prices
-        WHERE  date >= date('now', '-7 days')
-        ORDER  BY symbol
-        """,
-        conn
-    )['symbol'].tolist()
+    #
+    # v12.7 (#10 FIX): pin the 7-day window to (max date in DB - 7 days)
+    # rather than SQLite's date('now') which returns UTC. Pre-fix, on
+    # GitHub Actions runs where the runner clock crosses midnight UTC
+    # before this function executes, date('now', '-7 days') would shift
+    # by a day vs. IST and silently exclude one trading day's symbols
+    # near month/year boundaries. Using MAX(date) anchors the window to
+    # the actual data, eliminating the wallclock dependency.
+    _max_date_row = conn.execute(
+        "SELECT MAX(date) FROM daily_prices"
+    ).fetchone()
+    _anchor_date = _max_date_row[0] if _max_date_row and _max_date_row[0] else None
+    if _anchor_date:
+        active_syms = pd.read_sql(
+            "SELECT DISTINCT symbol FROM daily_prices "
+            "WHERE date >= date(?, '-7 days') ORDER BY symbol",
+            conn, params=(_anchor_date,)
+        )['symbol'].tolist()
+    else:
+        # Empty DB — nothing to compute
+        active_syms = []
 
     total   = len(active_syms)
     skipped = max(0, 8711 - total)
@@ -1151,15 +1206,49 @@ def _compute_all_indicators(conn):
     CHUNK  = 500
     chunks = [active_syms[i: i + CHUNK] for i in range(0, total, CHUNK)]
 
+    # v12.7 (#1, #2 FIX): dual-listed stocks have rows on BOTH 'NSE' and
+    # 'BSE' exchange tags in daily_prices (PK is symbol,date,exchange).
+    # Pre-fix the chunk SELECT had no exchange filter, so groupby('symbol')
+    # yielded one group with 2× rows per date. Two failures resulted:
+    #   #1 compute_technicals raised "ValueError: index must be monotonic
+    #      increasing or decreasing" at the v12.4-introduced reindex(method=
+    #      'ffill') call in the prior_h branch (post-sort_values('date'),
+    #      duplicate dates produce a non-monotonic integer index that
+    #      reindex(ffill) refuses). Caught by the silent except → row
+    #      missing from technical_indicators. 95 of 99 funnel stocks
+    #      affected in v12.6.1 production (DUAL_LISTED tag).
+    #   #2 compute_weekly_momentum's iloc[-11/21/31/41] / tail(50) / tail(90)
+    #      walked back N rows, not N trading days — half-period values
+    #      written to weekly_momentum.
+    # Same root cause for both. Fix: dedupe (symbol, date) preferring NSE
+    # rows. Falls through cleanly for NSE_ONLY (no BSE rows to drop),
+    # BSE_ONLY (no NSE rows → BSE row kept), and DUAL_LISTED (NSE row
+    # wins, BSE row dropped).
+    # Also replace the silent except: pass with a structured counter so
+    # future regressions of this category are visible in the run log.
+    _ti_errors = 0
+    _ti_err_samples = []
+
     for chunk_syms in chunks:
         placeholders = ",".join(["?"] * len(chunk_syms))
         chunk_hist = pd.read_sql(
-            f"SELECT symbol, date, open, high, low, close, volume "
+            f"SELECT symbol, exchange, date, open, high, low, close, volume "
             f"FROM daily_prices "
             f"WHERE symbol IN ({placeholders}) "
             f"ORDER BY symbol, date ASC",
             conn, params=chunk_syms
         )
+
+        # Dedupe (symbol,date) preferring NSE. NSE_SME and BSE_SME tagged
+        # exchanges deduped the same way (they don't dual-list with main
+        # board, so no real impact, just code uniformity).
+        if not chunk_hist.empty:
+            chunk_hist['_exch_pref'] = (chunk_hist['exchange'] != 'NSE').astype(int)
+            chunk_hist = (chunk_hist
+                          .sort_values(['symbol', '_exch_pref', 'date'])
+                          .drop_duplicates(['symbol', 'date'], keep='first')
+                          .drop(columns=['_exch_pref'])
+                          .reset_index(drop=True))
 
         for sym, hist in chunk_hist.groupby('symbol', sort=False):
             try:
@@ -1180,8 +1269,16 @@ def _compute_all_indicators(conn):
                 wm['date']   = latest_date
                 wm_rows.append(wm)
 
-            except Exception:
-                pass
+            except Exception as _ti_e:
+                # v12.7: surface (don't swallow) — keep loop going, but
+                # remember the failure so the user sees a count + first
+                # 3 examples in the run log. A spike in this counter is
+                # the canary for "something upstream changed shape."
+                _ti_errors += 1
+                if len(_ti_err_samples) < 3:
+                    _ti_err_samples.append(
+                        f"{sym}: {type(_ti_e).__name__}: {str(_ti_e)[:80]}"
+                    )
 
             processed += 1
             if processed % 250 == 0:
@@ -1189,6 +1286,10 @@ def _compute_all_indicators(conn):
 
         # Release chunk from memory immediately after processing
         del chunk_hist
+
+    if _ti_errors > 0:
+        print(f"   ⚠️  compute_technicals: {_ti_errors} symbols failed "
+              f"(swallowed pre-v12.7). First 3: {'; '.join(_ti_err_samples)}")
 
     if ti_rows:
         upsert(pd.DataFrame(ti_rows), 'technical_indicators', conn)
@@ -1815,8 +1916,14 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             (today_str2 + f"|eps={eps}|mcap={mcap}|pe={pe}", sym)
         )
 
+        # v12.7 (#9 FIX): filter exchange='NSE'. Pre-fix, for dual-listed
+        # symbols this returned whichever exchange's row was inserted
+        # last (BSE close ≈ NSE close, but typically off by 0.1–0.5%).
+        # Earnings yield computation got a marginally wrong CMP. Pinning
+        # to NSE eliminates the silent drift.
         cmp = float((conn.execute(
-            "SELECT close FROM daily_prices WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
+            "SELECT close FROM daily_prices WHERE symbol=? "
+            "AND exchange='NSE' ORDER BY date DESC LIMIT 1", (sym,)
         ).fetchone() or (0,))[0])
 
         pb  = d.get("pb", 0)
@@ -1906,8 +2013,11 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
                     # merge into fm_rows (same logic as yf_data above)
                     eps = quote.get("eps", 0); pe = quote.get("pe", 0)
                     pb  = quote.get("pb", 0)
+                    # v12.7 (#9 FIX): filter exchange='NSE' — same pattern
+                    # as the yfinance branch above.
                     cmp = float((conn.execute(
-                        "SELECT close FROM daily_prices WHERE symbol=? ORDER BY date DESC LIMIT 1", (sym,)
+                        "SELECT close FROM daily_prices WHERE symbol=? "
+                        "AND exchange='NSE' ORDER BY date DESC LIMIT 1", (sym,)
                     ).fetchone() or (0,))[0])
                     ey  = round((eps / cmp * 100), 2) if cmp > 0 and eps > 0 else 0
                     fm_rows.append({

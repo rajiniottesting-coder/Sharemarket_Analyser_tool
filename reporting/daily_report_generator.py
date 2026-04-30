@@ -30,9 +30,17 @@ class DailyReportGenerator:
         report = []
 
         # HEADER
+        # v12.7 (#8 FIX): pre-fix mood was "BULLISH" if nifty > sma200 else
+        # "BEARISH", but with NIFTY 50 not ingested into daily_prices both
+        # values returned 0 → mood was always BEARISH (misleading). Now
+        # render "—" when nifty data is unavailable so users aren't shown
+        # a fabricated regime call.
         nifty  = self.mkt.get('nifty_close', 0)
         sma200 = self.mkt.get('nifty_200d', 0)
-        mood   = "BULLISH" if nifty > sma200 else "BEARISH"
+        if nifty > 0 and sma200 > 0:
+            mood = "BULLISH" if nifty > sma200 else "BEARISH"
+        else:
+            mood = "—"   # no NIFTY data available
         header = (
             f"HEADER: NSE/BSE Research | {self.today_str} | {mood}\n"
             f"Nifty: {nifty} | Sensex: {self.mkt.get('sensex_close', 0)} | "

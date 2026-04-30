@@ -3948,6 +3948,469 @@ else:
     failures.append("56.2d: master_funnel '-365 days' SQL filter changed (should stay 365)")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# GROUP 57 — v12.7 Comprehensive dual-listed integrity fix set
+# ══════════════════════════════════════════════════════════════════════
+# Background: v12.6.1 production audit found that the Excel showed
+# technicals (SMA200, RSI, MACD, ADX, OBV, S1/S2/R1/R2) populated for
+# only 4 of 99 stocks. Root-cause investigation surfaced 12 bugs all
+# rooted in the same shape: daily_prices stores one row per
+# (symbol, date, exchange), so dual-listed symbols have 2× rows on
+# every date. Several functions ran groupby('symbol') / WHERE symbol=?
+# without an exchange filter, producing silent crashes, half-period
+# rolling windows, 6-month-stale price series, or marginally wrong
+# CMP lookups. v12.7 patches every per-symbol reader to filter
+# exchange='NSE' (or dedupe preferring NSE) and replaces the silent
+# except-pass in _compute_all_indicators with a structured error
+# counter so future regressions are visible.
+#
+# Tests below are organised by the 12 fix numbers from the v12.7
+# release notes. Each has 1-3 sub-tests covering code shape (locks
+# the patch in place against future edits) and behaviour (verifies
+# the fix actually works on synthetic data).
+
+print("\n" + "═" * 70)
+print("GROUP 57 — v12.7 Comprehensive dual-listed integrity fixes")
+print("═" * 70)
+
+import os as _os57
+import sys as _sys57
+_proj_root57 = _os57.path.dirname(_os57.path.abspath(__file__))
+_bf_path57 = _os57.path.join(_proj_root57, "backfill_history.py")
+_db_path57 = _os57.path.join(_proj_root57, "database/data_bridge.py")
+_mf_path57 = _os57.path.join(_proj_root57, "master_funnel.py")
+_dr_path57 = _os57.path.join(_proj_root57, "reporting/daily_report_generator.py")
+with open(_bf_path57) as _fh: _bf_src57 = _fh.read()
+with open(_db_path57) as _fh: _db_src57 = _fh.read()
+with open(_mf_path57) as _fh: _mf_src57 = _fh.read()
+with open(_dr_path57) as _fh: _dr_src57 = _fh.read()
+
+# ── Fix #1: _compute_all_indicators chunk SQL + dedup ────────────────────
+if "SELECT symbol, exchange, date, open, high, low, close, volume" in _bf_src57:
+    passed += 1
+    print("  ✓ 57.1a #1 chunk SELECT now reads exchange column")
+else:
+    failed += 1
+    failures.append("57.1a (#1): chunk SELECT missing exchange column")
+
+if "drop_duplicates(['symbol', 'date']" in _bf_src57:
+    passed += 1
+    print("  ✓ 57.1b #1 drop_duplicates(['symbol','date']) present")
+else:
+    failed += 1
+    failures.append("57.1b (#1): drop_duplicates step missing")
+
+if "_exch_pref" in _bf_src57 and "!= 'NSE'" in _bf_src57:
+    passed += 1
+    print("  ✓ 57.1c #1 NSE-preference dedup ordering present")
+else:
+    failed += 1
+    failures.append("57.1c (#1): NSE-preference dedup ordering missing")
+
+# ── Fix #2: silent except-pass replaced with counter ─────────────────────
+if "_ti_errors" in _bf_src57 and "_ti_err_samples" in _bf_src57:
+    passed += 1
+    print("  ✓ 57.2a #2 silent except-pass replaced with structured counter")
+else:
+    failed += 1
+    failures.append("57.2a (#2): silent except-pass not replaced")
+
+# ── Fix #3: enrich_prices filters NSE ────────────────────────────────────
+_ep_idx = _bf_src57.find("def enrich_prices(")
+_ep_end = _bf_src57.find("\ndef ", _ep_idx + 1) if _ep_idx >= 0 else -1
+_ep_body = _bf_src57[_ep_idx:_ep_end] if _ep_idx >= 0 and _ep_end > 0 else ""
+if "exchange='NSE'" in _ep_body:
+    passed += 1
+    print("  ✓ 57.3a #3 enrich_prices SELECT filters exchange='NSE'")
+else:
+    failed += 1
+    failures.append("57.3a (#3): enrich_prices SELECT not filtered to NSE")
+
+# ── Fix #4: delivery_pct UPDATE scoped to NSE ────────────────────────────
+if "UPDATE daily_prices SET delivery_pct=? " in _bf_src57 and \
+   "AND exchange='NSE'" in _bf_src57:
+    passed += 1
+    print("  ✓ 57.4a #4 delivery_pct UPDATE scoped to exchange='NSE'")
+else:
+    failed += 1
+    failures.append("57.4a (#4): delivery_pct UPDATE still un-scoped (corrupts BSE rows)")
+
+# ── Fix #5: get_symbol_history filters NSE + ORDER BY DESC ───────────────
+_gsh_idx = _db_src57.find("def get_symbol_history(")
+_gsh_end = _db_src57.find("\ndef ", _gsh_idx + 1) if _gsh_idx >= 0 else -1
+_gsh_body = _db_src57[_gsh_idx:_gsh_end] if _gsh_idx >= 0 and _gsh_end > 0 else ""
+if "exchange='NSE'" in _gsh_body and "ORDER BY date DESC" in _gsh_body:
+    passed += 1
+    print("  ✓ 57.5a #5 get_symbol_history filters NSE + uses ORDER BY DESC")
+else:
+    failed += 1
+    failures.append("57.5a (#5): get_symbol_history still returns 6-month-stale series")
+
+# ── Fix #6: get_20d_avg_vol filters NSE ──────────────────────────────────
+_g20_idx = _db_src57.find("def get_20d_avg_vol(")
+_g20_end = _db_src57.find("\ndef ", _g20_idx + 1) if _g20_idx >= 0 else -1
+_g20_body = _db_src57[_g20_idx:_g20_end] if _g20_idx >= 0 and _g20_end > 0 else ""
+if "exchange='NSE'" in _g20_body:
+    passed += 1
+    print("  ✓ 57.6a #6 get_20d_avg_vol filters exchange='NSE'")
+else:
+    failed += 1
+    failures.append("57.6a (#6): get_20d_avg_vol still mixes NSE+BSE volumes")
+
+# ── Fix #7: get_20d_avg_vol_batch filters NSE in CTE ─────────────────────
+_g20b_idx = _db_src57.find("def get_20d_avg_vol_batch(")
+_g20b_end = _db_src57.find("\ndef ", _g20b_idx + 1) if _g20b_idx >= 0 else -1
+_g20b_body = _db_src57[_g20b_idx:_g20b_end] if _g20b_idx >= 0 and _g20b_end > 0 else ""
+if "exchange='NSE'" in _g20b_body:
+    passed += 1
+    print("  ✓ 57.7a #7 get_20d_avg_vol_batch CTE filters exchange='NSE'")
+else:
+    failed += 1
+    failures.append("57.7a (#7): get_20d_avg_vol_batch still mixes NSE+BSE in window function")
+
+# ── Fix #8: nifty_close uses correct function + mood gracefully degrades ─
+if "get_nifty_close_from_db" in _db_src57:
+    passed += 1
+    print("  ✓ 57.8a #8 get_nifty_close_from_db helper added")
+else:
+    failed += 1
+    failures.append("57.8a (#8): get_nifty_close_from_db helper missing")
+
+if "\"nifty_close\":   get_nifty_close_from_db()" in _mf_src57:
+    passed += 1
+    print("  ✓ 57.8b #8 master_funnel maps nifty_close to correct function")
+else:
+    failed += 1
+    failures.append("57.8b (#8): master_funnel still maps nifty_close to 52w_high")
+
+if "if nifty > 0 and sma200 > 0" in _dr_src57 and 'mood = "—"' in _dr_src57:
+    passed += 1
+    print("  ✓ 57.8c #8 daily_report_generator renders '—' mood when nifty data missing")
+else:
+    failed += 1
+    failures.append("57.8c (#8): daily_report mood logic still always-BEARISH on missing nifty")
+
+# ── Fix #9: CMP lookups for earnings yield filter NSE (2 places) ─────────
+# Source has the SQL split across two adjacent string literals; count both.
+_cmp_count = _bf_src57.count(
+    'SELECT close FROM daily_prices WHERE symbol=? "\r\n'
+    '            "AND exchange=\'NSE\' ORDER BY date DESC LIMIT 1'
+)
+# Fallback: just count NSE-filtered close-lookup occurrences
+if _cmp_count < 2:
+    _cmp_count = 0
+    _idx = 0
+    while True:
+        _f = _bf_src57.find("SELECT close FROM daily_prices WHERE symbol=?", _idx)
+        if _f < 0:
+            break
+        _idx = _f + 1
+        # Look ahead 200 chars for the NSE filter (split across lines OK)
+        if "exchange='NSE'" in _bf_src57[_f:_f+200]:
+            _cmp_count += 1
+
+if _cmp_count >= 2:
+    passed += 1
+    print(f"  ✓ 57.9a #9 both CMP lookups for earnings yield filter NSE ({_cmp_count} found)")
+else:
+    failed += 1
+    failures.append(f"57.9a (#9): only {_cmp_count}/2 CMP lookups patched")
+
+# ── Fix #10: active_syms uses MAX(date)-anchored window not date('now') ──
+if "SELECT MAX(date) FROM daily_prices" in _bf_src57 and \
+   "_anchor_date" in _bf_src57:
+    passed += 1
+    print("  ✓ 57.10a #10 active_syms anchored to MAX(date) not wallclock")
+else:
+    failed += 1
+    failures.append("57.10a (#10): active_syms still uses date('now') (UTC drift risk)")
+
+# ── Fix #11: save_to_database DELETE uses data dates, not server clock ───
+if "_data_dates" in _db_src57 and "DELETE FROM daily_prices WHERE date IN" in _db_src57:
+    passed += 1
+    print("  ✓ 57.11a #11 save_to_database DELETE scoped to data's actual dates")
+else:
+    failed += 1
+    failures.append("57.11a (#11): save_to_database DELETE still uses server today_str")
+
+# ── Fix #12: master_funnel refreshes technicals after daily price upsert ──
+if "Section 1.5" in _mf_src57 and "_ci_daily" in _mf_src57:
+    passed += 1
+    print("  ✓ 57.12a #12 master_funnel triggers daily technical recompute")
+else:
+    failed += 1
+    failures.append("57.12a (#12): master_funnel still leaves technicals stale on daily runs")
+
+# ── Fix v12.6.1 reaffirmed: workflow YAML passes 400 not 365 ─────────────
+_yml_path57 = _os57.path.join(_proj_root57, ".github/workflows/market_run.yml")
+if _os57.path.exists(_yml_path57):
+    with open(_yml_path57) as _fh:
+        _yml_src57 = _fh.read()
+    if "backfill_history.py 400" in _yml_src57:
+        passed += 1
+        print("  ✓ 57.13a workflow YAML passes 400 (matches v12.6.1 Python default)")
+    else:
+        failed += 1
+        failures.append("57.13a: workflow YAML still passes 365 — overrides v12.6.1 default")
+else:
+    warnings.append("57.13a: .github/workflows/market_run.yml not found in test scope")
+
+# ── End-to-end behaviour test ────────────────────────────────────────────
+# 57.14: build a tiny in-memory DB with one DUAL_LISTED, one NSE_ONLY,
+# one BSE_ONLY symbol; run the full chain; verify all 3 land in
+# technical_indicators with sensible values, AND get_symbol_history
+# returns the most recent N NSE rows (not 6-month-stale ones).
+try:
+    if _proj_root57 not in _sys57.path:
+        _sys57.path.insert(0, _proj_root57)
+    if 'backfill_history' in _sys57.modules: del _sys57.modules['backfill_history']
+    if 'database.data_bridge' in _sys57.modules: del _sys57.modules['database.data_bridge']
+    import backfill_history as _bf57
+    import sqlite3 as _sq57, tempfile as _tf57, pandas as _pd57, numpy as _np57
+    from datetime import date as _dt57, timedelta as _td57
+
+    _np57.random.seed(42)
+    _end57 = _dt57.today()
+    _dates57 = _pd57.bdate_range(_end57 - _td57(days=400), _end57)[-247:]
+    _prices57 = 100 + _np57.cumsum(_np57.random.randn(len(_dates57)) * 1.5)
+
+    _rows57 = []
+    for _i57, _d57 in enumerate(_dates57):
+        _ds57 = _d57.strftime('%Y-%m-%d')
+        _p57 = _prices57[_i57]
+        _rows57.append(('TESTDUAL', 'NSE', _ds57, _p57,
+                        _p57*1.01, _p57*0.99, _p57, 100000))
+        _rows57.append(('TESTDUAL', 'BSE', _ds57, _p57*1.001,
+                        _p57*1.011, _p57*0.991, _p57*1.001, 50000))
+        _rows57.append(('TESTNSE', 'NSE', _ds57, _p57+50,
+                        (_p57+50)*1.01, (_p57+50)*0.99, _p57+50, 80000))
+        _rows57.append(('TESTBSE', 'BSE', _ds57, _p57+200,
+                        (_p57+200)*1.01, (_p57+200)*0.99, _p57+200, 30000))
+
+    with _tf57.TemporaryDirectory() as _tdt57:
+        # get_symbol_history hard-codes "market_data.db" so chdir here
+        _orig_cwd = _os57.getcwd()
+        try:
+            _os57.chdir(_tdt57)
+            _conn57 = _sq57.connect("market_data.db")
+            _bf57.init_all_tables(_conn57)
+            _df57 = _pd57.DataFrame(_rows57,
+                columns=['symbol','exchange','date','open','high','low','close','volume'])
+            _df57.to_sql('daily_prices', _conn57, if_exists='append', index=False)
+
+            # Run patched _compute_all_indicators (silently)
+            import io as _io57, contextlib as _cl57
+            _buf57 = _io57.StringIO()
+            with _cl57.redirect_stdout(_buf57):
+                _bf57._compute_all_indicators(_conn57)
+
+            _ti_res57 = _conn57.execute(
+                "SELECT symbol, sma_200, rsi_14, support1, support2, "
+                "resist1, resist2 FROM technical_indicators ORDER BY symbol"
+            ).fetchall()
+            _wm_res57 = _conn57.execute(
+                "SELECT symbol, chg_2w, chg_4w FROM weekly_momentum "
+                "ORDER BY symbol"
+            ).fetchall()
+            _conn57.close()
+
+            # Now test get_symbol_history with the patched code
+            from database.data_bridge import (
+                get_symbol_history as _gsh57,
+                get_20d_avg_vol as _gv57,
+                get_20d_avg_vol_batch as _gvb57,
+            )
+            _hist_dual = _gsh57('TESTDUAL', limit=250)
+            _hist_dual_lastclose = float(_hist_dual.iloc[-1]['close']) if not _hist_dual.empty else 0
+            _expected_today = float(_prices57[-1])
+
+            _vol_dual = _gv57('TESTDUAL')
+            _vol_batch = _gvb57(['TESTDUAL', 'TESTNSE', 'TESTBSE'])
+        finally:
+            _os57.chdir(_orig_cwd)
+
+    # 57.14a: all 3 symbol-types land in technical_indicators
+    _syms57 = {r[0] for r in _ti_res57}
+    if _syms57 == {'TESTDUAL', 'TESTNSE', 'TESTBSE'}:
+        passed += 1
+        print("  ✓ 57.14a DUAL_LISTED + NSE_ONLY + BSE_ONLY all populate technical_indicators")
+    else:
+        failed += 1
+        failures.append(f"57.14a: missing {{'TESTDUAL','TESTNSE','TESTBSE'}} - {_syms57} != expected")
+
+    # 57.14b: DUAL_LISTED has sensible non-zero technicals (not all NaN/0)
+    _dual_row = next((r for r in _ti_res57 if r[0] == 'TESTDUAL'), None)
+    if _dual_row and _dual_row[1] > 0 and _dual_row[2] > 0:
+        passed += 1
+        print(f"  ✓ 57.14b DUAL_LISTED computes non-zero SMA200 ({_dual_row[1]:.2f}) "
+              f"and RSI14 ({_dual_row[2]:.2f})")
+    else:
+        failed += 1
+        failures.append(f"57.14b: DUAL_LISTED row missing or zero — {_dual_row}")
+
+    # 57.14c: R2 != R1 for DUAL_LISTED (real 247-day series, not collapsed)
+    if _dual_row and abs(_dual_row[5] - _dual_row[6]) > 0.01:
+        passed += 1
+        print(f"  ✓ 57.14c DUAL_LISTED has distinct R1 ({_dual_row[5]:.2f}) "
+              f"and R2 ({_dual_row[6]:.2f})")
+    else:
+        failed += 1
+        failures.append("57.14c: DUAL_LISTED R1==R2 — dedup may not have NSE-preferred")
+
+    # 57.14d: weekly_momentum chg_2w for DUAL_LISTED matches NSE-only ground truth
+    _wm_dual = next((r for r in _wm_res57 if r[0] == 'TESTDUAL'), None)
+    _expected_2w = round((_prices57[-1] - _prices57[-11]) / _prices57[-11] * 100, 2)
+    if _wm_dual and abs(_wm_dual[1] - _expected_2w) < 0.05:
+        passed += 1
+        print(f"  ✓ 57.14d DUAL_LISTED chg_2w ({_wm_dual[1]:.2f}%) matches "
+              f"NSE-only ground truth ({_expected_2w:.2f}%)")
+    else:
+        failed += 1
+        failures.append(f"57.14d: DUAL_LISTED chg_2w wrong — got {_wm_dual[1] if _wm_dual else None}, "
+                        f"expected {_expected_2w}")
+
+    # 57.14e: get_symbol_history returns TODAY's price as iloc[-1], not 6-month-stale
+    if abs(_hist_dual_lastclose - _expected_today) < 0.01:
+        passed += 1
+        print(f"  ✓ 57.14e get_symbol_history iloc[-1] = today's NSE close "
+              f"({_hist_dual_lastclose:.2f}, expected {_expected_today:.2f})")
+    else:
+        failed += 1
+        failures.append(f"57.14e: get_symbol_history iloc[-1]={_hist_dual_lastclose:.2f} "
+                        f"!= today's NSE close {_expected_today:.2f} (stale data bug)")
+
+    # 57.14f: get_20d_avg_vol returns NSE-only volume (~100000 for TESTDUAL)
+    # Pre-fix would mix in BSE rows (~50000) and pull avg DOWN.
+    if 90000 < _vol_dual < 110000:
+        passed += 1
+        print(f"  ✓ 57.14f get_20d_avg_vol returns NSE-only volume ({_vol_dual:.0f})")
+    else:
+        failed += 1
+        failures.append(f"57.14f: get_20d_avg_vol = {_vol_dual:.0f} — should be ~100000 NSE-only")
+
+    # 57.14g: get_20d_avg_vol_batch returns NSE-only for DUAL_LISTED
+    if 'TESTDUAL' in _vol_batch and 90000 < _vol_batch['TESTDUAL'] < 110000:
+        passed += 1
+        print(f"  ✓ 57.14g get_20d_avg_vol_batch returns NSE-only volume "
+              f"for DUAL_LISTED ({_vol_batch['TESTDUAL']:.0f})")
+    else:
+        failed += 1
+        failures.append(f"57.14g: batch vol for TESTDUAL wrong — {_vol_batch.get('TESTDUAL','MISSING')}")
+
+    # ── 57.15: lock all 14 user-facing technical Excel columns populate ──
+    # This is the test that would have caught the v12.6.1 production bug
+    # immediately. Reproduces the exact master_funnel _ti_map enrichment
+    # path (master_funnel.py:1791-1809) and verifies every one of the
+    # 14 columns the user asks about (SMA 200, Supertrend, ADX, RSI 14,
+    # MACD Signal, Stoch %K, MFI, OBV Signal, Above VWAP, Chart Pattern,
+    # Support 1/2, Resist 1/2) ends up populated for DUAL_LISTED symbols.
+    # If any cell is None / "" / 0 (where it shouldn't be), the test fails.
+    _expected_cols = [
+        ("sma_200",     "numeric"),    # 88.6 expected for TESTDUAL base
+        ("supertrend",  "string"),     # SELL / BUY / NEUTRAL
+        ("adx",         "numeric"),    # 9.8 expected
+        ("rsi_14",      "numeric"),    # 44.83 expected
+        ("macd_signal_txt", "string"), # SELL / BUY / NEUTRAL
+        ("stoch_k",     "numeric"),    # 14.29 expected
+        ("mfi_14",      "numeric"),    # ~43 expected
+        ("obv_signal",  "string"),     # FALLING / RISING / NEUTRAL
+        ("above_vwap",  "string"),     # YES / NO
+        ("support1",    "numeric"),    # ~95 expected
+        ("support2",    "numeric"),    # ~78 expected — distinct from S1
+        ("resist1",     "numeric"),    # ~102 expected
+        ("resist2",     "numeric"),    # ~107 expected — distinct from R1
+    ]
+    # Re-fetch the full ti row for TESTDUAL (using same temp DB connection)
+    # We need to re-open since the previous block closed it. Build a new
+    # synthetic DB inline for this test isolated.
+    _np57.random.seed(42)
+    _dates_l = _pd57.bdate_range(_end57 - _td57(days=400), _end57)[-247:]
+    _prices_l = 100 + _np57.cumsum(_np57.random.randn(len(_dates_l)) * 1.5)
+    _rows_l = []
+    for _i, _d in enumerate(_dates_l):
+        _ds = _d.strftime('%Y-%m-%d'); _p = _prices_l[_i]
+        _rows_l.append(('TESTDUAL','NSE',_ds, _p, _p*1.01, _p*0.99, _p, 1000000))
+        _rows_l.append(('TESTDUAL','BSE',_ds, _p*1.001, _p*1.011, _p*0.991, _p*1.001, 50000))
+    with _tf57.TemporaryDirectory() as _tdt15:
+        _orig_cwd_15 = _os57.getcwd()
+        try:
+            _os57.chdir(_tdt15)
+            _conn15 = _sq57.connect("market_data.db")
+            _bf57.init_all_tables(_conn15)
+            _df15 = _pd57.DataFrame(_rows_l,
+                columns=['symbol','exchange','date','open','high','low','close','volume'])
+            _df15.to_sql('daily_prices', _conn15, if_exists='append', index=False)
+            _buf15 = _io57.StringIO()
+            with _cl57.redirect_stdout(_buf15):
+                _bf57._compute_all_indicators(_conn15)
+            # Replicate master_funnel:1149-1161 read
+            _ti_query15 = _conn15.execute(
+                "SELECT t.sma_200, t.supertrend, t.adx, t.rsi_14, "
+                "t.macd_signal_txt, t.stoch_k, t.mfi_14, t.obv_signal, "
+                "t.above_vwap, t.support1, t.support2, t.resist1, t.resist2 "
+                "FROM technical_indicators t "
+                "WHERE t.symbol = 'TESTDUAL'"
+            ).fetchone()
+            _conn15.close()
+        finally:
+            _os57.chdir(_orig_cwd_15)
+
+    if _ti_query15 is None:
+        failed += 1
+        failures.append("57.15: TESTDUAL missing from technical_indicators (the v12.6.1 bug)")
+    else:
+        _populated = 0
+        _missing = []
+        # Tuple indices match the SELECT column order
+        _idx_keys = ["sma_200","supertrend","adx","rsi_14","macd_signal_txt",
+                     "stoch_k","mfi_14","obv_signal","above_vwap",
+                     "support1","support2","resist1","resist2"]
+        for _i, _key in enumerate(_idx_keys):
+            _val = _ti_query15[_i]
+            _kind = next((k for n,k in _expected_cols if n == _key), "any")
+            _ok = False
+            if _kind == "numeric":
+                try:
+                    _ok = _val is not None and float(_val) != 0.0
+                except (TypeError, ValueError):
+                    _ok = False
+            elif _kind == "string":
+                _ok = isinstance(_val, str) and _val != "" and _val != "—"
+            else:
+                _ok = _val is not None and _val != ""
+            if _ok:
+                _populated += 1
+            else:
+                _missing.append(f"{_key}={_val!r}")
+
+        if _populated == 13:
+            passed += 1
+            print(f"  ✓ 57.15a All 13 technical_indicators columns populated for "
+                  f"DUAL_LISTED (SMA200, RSI, MACD, ADX, OBV, Stoch, MFI, "
+                  f"Supertrend, VWAP, S1/S2/R1/R2)")
+        else:
+            failed += 1
+            failures.append(f"57.15a: only {_populated}/13 cols populated for DUAL_LISTED — "
+                            f"missing/zero: {', '.join(_missing)}")
+
+        # 57.15b: explicitly verify R1 != R2 and S1 != S2 (real distinct levels)
+        _r1, _r2 = float(_ti_query15[11]), float(_ti_query15[12])
+        _s1, _s2 = float(_ti_query15[9]),  float(_ti_query15[10])
+        if abs(_r2 - _r1) > 0.01 and abs(_s2 - _s1) > 0.01:
+            passed += 1
+            print(f"  ✓ 57.15b DUAL_LISTED has distinct S1/S2 ({_s1:.2f}/{_s2:.2f}) "
+                  f"and R1/R2 ({_r1:.2f}/{_r2:.2f}) — dedup gave real 247-day series")
+        else:
+            failed += 1
+            failures.append(f"57.15b: DUAL_LISTED levels collapsed — "
+                            f"S1={_s1:.2f}/S2={_s2:.2f}, R1={_r1:.2f}/R2={_r2:.2f}")
+
+except Exception as _e57:
+    import traceback as _tb57
+    failed += 1
+    failures.append(f"57.14/57.15: end-to-end test crashed — {type(_e57).__name__}: {_e57}\n"
+                    + _tb57.format_exc()[:500])
+
 
 print("\n" + "═" * 70)
 print(f"FINAL: {passed} passed, {failed} failed")

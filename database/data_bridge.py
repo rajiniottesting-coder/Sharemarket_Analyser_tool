@@ -594,9 +594,24 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
                 combined = pd.concat(frames, ignore_index=True)
                 if "date" not in combined.columns:
                     combined["date"] = today_str
+                # v12.7 (#11 FIX): scope the DELETE to the date(s) actually
+                # present in `combined`. Pre-fix this used today_str (server
+                # wallclock) which can differ from the data's date when
+                # (a) the runner clock has crossed midnight UTC but IST
+                # is still on the previous day, or (b) gap-fill is
+                # writing rows for a non-today date. The mismatch could
+                # DELETE the wrong day's rows (silently no-op) and then
+                # INSERT OR IGNORE could skip the insert on PK conflict
+                # if rows already existed. Use the actual data dates.
+                _data_dates = sorted({str(d) for d in combined["date"].unique() if d})
                 try:
-                    conn.execute("DELETE FROM daily_prices WHERE date = ?", (today_str,))
-                    conn.commit()
+                    if _data_dates:
+                        _ph = ",".join(["?"] * len(_data_dates))
+                        conn.execute(
+                            f"DELETE FROM daily_prices WHERE date IN ({_ph})",
+                            _data_dates
+                        )
+                        conn.commit()
                 except Exception:
                     pass
                 _safe_insert(combined, "daily_prices", conn)
@@ -883,7 +898,16 @@ def get_nifty_200_sma() -> float:
 
 
 def get_20d_avg_vol(symbol: str) -> float:
-    """20-day average volume for a symbol — used by priority_ranker."""
+    """20-day average volume for a symbol — used by priority_ranker.
+
+    v12.7 (#6 FIX): filter exchange='NSE'. Pre-fix, dual-listed symbols
+    had 2× rows per date, so LIMIT 20 picked the last 20 ROWS = ~10
+    trading days × 2 exchanges. AVG(volume) ended up being a mix of
+    NSE and BSE volumes — typically pulling avg_vol DOWN (BSE volumes
+    are usually 5-10× smaller than NSE) and inflating the priority-
+    ranker's vol_spike_ratio = current_vol / avg_vol for dual-listed
+    stocks, biasing Stage 3 selection toward them.
+    """
     if not symbol:
         return 0.0
     conn = sqlite3.connect("market_data.db")
@@ -891,7 +915,8 @@ def get_20d_avg_vol(symbol: str) -> float:
         r = pd.read_sql_query(
             "SELECT AVG(volume) FROM ("
             "  SELECT volume FROM daily_prices "
-            "  WHERE symbol=? ORDER BY date DESC LIMIT 20"
+            "  WHERE symbol=? AND exchange='NSE' "
+            "  ORDER BY date DESC LIMIT 20"
             ")",
             conn, params=(symbol,),
         )
@@ -924,6 +949,12 @@ def get_20d_avg_vol_batch(symbols) -> dict:
         # One SQL using window function: for each symbol, keep only the 20
         # most-recent rows, then AVG(volume). This matches get_20d_avg_vol's
         # semantics exactly (most-recent 20 by date per symbol).
+        #
+        # v12.7 (#7 FIX): added exchange='NSE' filter to the inner SELECT.
+        # Pre-fix the ROW_NUMBER() partition was over (symbol) with no
+        # exchange filter, so for dual-listed symbols PARTITION BY symbol
+        # picked 20 rows mixing both exchanges (~10 NSE + ~10 BSE).
+        # Same root cause and same fix as get_20d_avg_vol single-symbol.
         placeholders = ",".join("?" for _ in syms)
         sql = f"""
             WITH ranked AS (
@@ -933,6 +964,7 @@ def get_20d_avg_vol_batch(symbols) -> dict:
                        ) AS rn
                 FROM daily_prices
                 WHERE symbol IN ({placeholders})
+                  AND exchange='NSE'
             )
             SELECT symbol, AVG(volume) AS avg_vol
             FROM ranked
@@ -957,18 +989,40 @@ def get_20d_avg_vol_batch(symbols) -> dict:
 
 
 def get_symbol_history(symbol: str, limit: int = 250) -> pd.DataFrame:
-    """Historical OHLCV for a symbol, ascending by date."""
+    """Historical OHLCV for a symbol, ascending by date.
+
+    v12.7 (#5 FIX): two related bugs corrected here.
+      a) Pre-fix, no exchange filter — for dual-listed symbols this
+         returned 2× rows interleaved on each date (NSE + BSE rows for
+         every trading day).
+      b) Pre-fix, ORDER BY date ASC LIMIT N — for stocks with more rows
+         than `limit`, this returned the OLDEST N rows, not the most
+         recent N. Combined with (a), a dual-listed stock with 247×2 = 494
+         rows and limit=250 returned a series ending in ~November 2025
+         (the first 125 trading days of NSE+BSE pairs), not "today".
+         Master_funnel:1176 then took history.iloc[-1]["close"] as
+         "today's price" and walked back iloc[-11/21/31/41] to compute
+         2W/4W/6W/8W changes — values shown in the Excel were 6-month-
+         stale and based on interleaved exchange rows.
+    Fix: filter exchange='NSE', take latest N via ORDER BY DESC LIMIT N,
+    then sort ascending in pandas so the function still returns
+    chronologically-ordered rows (callers depend on iloc[-1] being today).
+    """
     if not symbol:
         return pd.DataFrame()
     conn = sqlite3.connect("market_data.db")
     try:
         df = pd.read_sql_query(
             "SELECT date, open, high, low, close, volume "
-            "FROM daily_prices WHERE symbol=? "
-            "ORDER BY date ASC LIMIT ?",
+            "FROM daily_prices WHERE symbol=? AND exchange='NSE' "
+            "ORDER BY date DESC LIMIT ?",
             conn, params=(symbol, limit),
         )
         if not df.empty:
+            # Re-sort ascending so iloc[-1] is the most recent date —
+            # preserves the original API contract for downstream callers
+            # (master_funnel uses iloc[-1] / iloc[-n] for current/N-back).
+            df = df.sort_values("date").reset_index(drop=True)
             df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -991,6 +1045,35 @@ def get_nifty_52w_high_from_db() -> float:
         return float(r[0]) if r and r[0] else 1.0
     except Exception:
         return 1.0
+    finally:
+        conn.close()
+
+
+def get_nifty_close_from_db() -> float:
+    """Most recent NIFTY 50 close price.
+
+    v12.7 (#8 FIX): added so master_funnel can populate `nifty_close`
+    correctly. Pre-fix, master_funnel mapped both `nifty_close` and
+    `nifty_52w_high` to get_nifty_52w_high_from_db() — semantically
+    wrong (nifty_close should be today's close, not the 52-week max).
+    The daily_report_generator computed mood as
+        "BULLISH" if nifty > sma200 else "BEARISH"
+    so the mood was always wrong: with nifty == 52w_high (always >=
+    sma200), mood would be BULLISH; or with both queries returning 0
+    (NIFTY isn't ingested into daily_prices), mood was always BEARISH.
+    Returns 0.0 if no NIFTY data is in the DB — daily_report_generator
+    is patched in v12.7 to render "—" mood when both nifty fields are 0.
+    """
+    conn = sqlite3.connect("market_data.db")
+    try:
+        c = conn.cursor()
+        c.execute("SELECT close FROM daily_prices "
+                  "WHERE symbol='NIFTY 50' "
+                  "ORDER BY date DESC LIMIT 1")
+        r = c.fetchone()
+        return float(r[0]) if r and r[0] else 0.0
+    except Exception:
+        return 0.0
     finally:
         conn.close()
 

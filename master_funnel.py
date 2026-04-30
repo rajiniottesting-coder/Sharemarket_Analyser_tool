@@ -31,7 +31,7 @@ from ingestion.harvester import (
 from database.data_bridge import (
     save_to_database, check_data_integrity,
     get_historical_quarter_data,
-    get_symbol_history, get_nifty_52w_high_from_db,
+    get_symbol_history, get_nifty_52w_high_from_db, get_nifty_close_from_db,
     get_today_consolidated_data, get_latest_fii_net_cash, get_nifty_200_sma,
     initialize_v7_tables,
 )
@@ -684,6 +684,28 @@ def run_master_pipeline():
                 _sh.rmtree(_bf_tmp, ignore_errors=True)
             except Exception as _gfe:
                 print(f"   ⚠️  Gap fill error (non-critical): {_gfe}")
+
+        # ─────────────────────────────────────────────────────────────────────
+        # SECTION 1.5 (v12.7 #12 FIX): DAILY TECHNICAL RECOMPUTE
+        # Pre-v12.7 the daily flow saved today's NSE+BSE prices to
+        # daily_prices but never re-ran _compute_all_indicators unless
+        # gap-fill triggered. Result: technical_indicators / weekly_momentum
+        # stayed pinned to the last backfill date, so SMA200 / RSI / MACD
+        # / R1/S1/R2/S2 / chg_2w/chg_4w in the Excel were one trading day
+        # stale (and for dual-listed stocks, the values were also wrong
+        # for separate reasons fixed in #1/#2/#5). After this refresh the
+        # daily Excel uses today's prices in every rolling window.
+        # Skipped if gap-fill already ran the recompute above.
+        if _missed_trading_days < 2:
+            try:
+                from backfill_history import _compute_all_indicators as _ci_daily
+                import sqlite3 as _sq_daily
+                _daily_conn = _sq_daily.connect("market_data.db")
+                print("📊 [Section 1.5] Refreshing technicals with today's prices...")
+                _ci_daily(_daily_conn)
+                _daily_conn.close()
+            except Exception as _rfe:
+                print(f"   ⚠️  Daily technical refresh skipped (non-critical): {_rfe}")
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 0: PRE-SCREENING FUNNEL (STAGES 1–3)
@@ -2981,7 +3003,15 @@ def run_master_pipeline():
         date_str = target_date.strftime("%Y%m%d")
 
         market_stats = {
-            "nifty_close":   get_nifty_52w_high_from_db(),
+            # v12.7 (#8 FIX): nifty_close now reads the most recent NIFTY 50
+            # close, not the 52-week high. Pre-fix both fields mapped to
+            # get_nifty_52w_high_from_db() — daily_report_generator mood
+            # logic ("BULLISH" if nifty > sma200) was therefore always
+            # wrong. NIFTY 50 isn't ingested into daily_prices today, so
+            # both fields legitimately return 0.0 — daily_report_generator
+            # is patched alongside this to render "—" when both are 0
+            # (instead of misleading "BEARISH").
+            "nifty_close":   get_nifty_close_from_db(),
             "sensex_close":  0,
             "nifty_52w_high": get_nifty_52w_high_from_db(),
             "fii_net":       get_latest_fii_net_cash(),

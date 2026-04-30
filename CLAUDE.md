@@ -1998,4 +1998,277 @@ Group 56 added (8 tests) — locks the `400` default, locks all four `KEEP-252/3
 
 ---
 
-*Last updated: April 2026 · v12.6.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 29. v12.7 RELEASE — Comprehensive dual-listed integrity fix set (12 bugs)
+
+**Date:** April 30, 2026.
+**Trigger:** v12.6.1 production audit revealed only 4 of 99 stocks had technicals (SMA200, RSI, MACD, ADX, OBV, S1/S2/R1/R2) populated in the Excel.
+**Tests:** 509 passing (483 v12.6.1 carry-forward + 26 v12.7 in new Group 57, including 57.15 which locks all 13 user-facing `technical_indicators` columns populate end-to-end for DUAL_LISTED stocks).
+
+### Root cause shared across all 12 bugs
+
+`daily_prices` PRIMARY KEY is `(symbol, date, exchange)`. Dual-listed symbols (98 of 99 funnel rows in v12.6.1 production) have 2× rows on every trading date — one for `exchange='NSE'`, one for `exchange='BSE'`. Pre-v12.7, several functions ran `groupby('symbol')` / `WHERE symbol=?` without an exchange filter. Consequences:
+
+- **Silent crashes** — `compute_technicals`' v12.4-introduced `reindex(method='ffill')` raised "ValueError: index must be monotonic" because post-`sort_values('date')` the integer index of a duplicate-date series was non-monotonic. The per-symbol `except: pass` swallowed it. 95/99 stocks went missing from `technical_indicators`.
+- **Half-period rolling windows** — `compute_weekly_momentum`'s `iloc[-11/21/31/41]` walked back N rows = ~N/2 trading days because rows were doubled. `enrich_prices`' `grp.tail(252)` was effectively the last 126 trading days. `get_20d_avg_vol`'s `LIMIT 20` was 10 NSE + 10 BSE rows.
+- **6-month-stale price series** — `get_symbol_history`'s `ORDER BY date ASC LIMIT 250` (a separate bug: should have been DESC) returned the OLDEST 250 rows; combined with the dual-listed bug, `iloc[-1]['close']` was a price from ~6 months ago. **This was the actual source of wrong 2W/4W/6W/8W changes shown in the Excel for 95/99 stocks** — master_funnel:1198 used `get_symbol_history` to build the chg_2w / chg_4w / chg_6w / chg_8w fields that ended up in the dashboard.
+- **Marginally wrong CMP lookups** — earnings yield computation got whichever exchange's row was inserted last (NSE close vs BSE close, ± 0.1-0.5%).
+
+### The 12 fixes
+
+#### Fix #1 — `_compute_all_indicators` chunk SQL + dedupe
+
+```python
+# backfill_history.py (post-v12.7)
+chunk_hist = pd.read_sql(
+    f"SELECT symbol, exchange, date, open, high, low, close, volume "  # added exchange
+    f"FROM daily_prices "
+    f"WHERE symbol IN ({placeholders}) "
+    f"ORDER BY symbol, date ASC",
+    conn, params=chunk_syms
+)
+
+# Dedupe (symbol, date) preferring NSE rows.
+if not chunk_hist.empty:
+    chunk_hist['_exch_pref'] = (chunk_hist['exchange'] != 'NSE').astype(int)
+    chunk_hist = (chunk_hist
+                  .sort_values(['symbol', '_exch_pref', 'date'])
+                  .drop_duplicates(['symbol', 'date'], keep='first')
+                  .drop(columns=['_exch_pref'])
+                  .reset_index(drop=True))
+```
+
+NSE row wins per `(symbol, date)`. Falls through cleanly for `NSE_ONLY` (no BSE rows to drop), `BSE_ONLY` (no NSE rows → BSE row kept), and `DUAL_LISTED` (NSE wins, BSE dropped).
+
+#### Fix #2 — Replace silent except-pass with structured counter
+
+```python
+# pre-v12.7
+except Exception:
+    pass
+
+# post-v12.7
+except Exception as _ti_e:
+    _ti_errors += 1
+    if len(_ti_err_samples) < 3:
+        _ti_err_samples.append(f"{sym}: {type(_ti_e).__name__}: {str(_ti_e)[:80]}")
+
+# at end of loop:
+if _ti_errors > 0:
+    print(f"   ⚠️  compute_technicals: {_ti_errors} symbols failed "
+          f"(swallowed pre-v12.7). First 3: {'; '.join(_ti_err_samples)}")
+```
+
+A spike in this counter is the canary for "something upstream changed shape." The pre-v12.7 silent pass is what made bug #1 invisible for so long.
+
+#### Fix #3 — `enrich_prices` filters NSE before groupby
+
+```python
+# pre-v12.7
+df = pd.read_sql(
+    "SELECT symbol, exchange, date, high, low, close, prev_close, volume "
+    "FROM daily_prices WHERE date <= ? ORDER BY symbol, date",
+    conn, params=(date_iso,)
+)
+
+# post-v12.7
+df = pd.read_sql(
+    "SELECT symbol, exchange, date, high, low, close, prev_close, volume "
+    "FROM daily_prices WHERE date <= ? AND exchange='NSE' "
+    "ORDER BY symbol, date",
+    conn, params=(date_iso,)
+)
+```
+
+Pre-fix the values written to `daily_prices.week_high_52` / `week_low_52` / `vol_50d_avg` were half-period for the picked exchange row and stale (never written) for the other. Master_funnel reads these via its own NSE-filtered SQL so user-facing Excel was unaffected pre-fix, but the DB columns were wrong for any future consumer.
+
+#### Fix #4 — Delivery UPDATE scoped to NSE
+
+```python
+# pre-v12.7
+"UPDATE daily_prices SET delivery_pct=? WHERE symbol=? AND date=?"
+
+# post-v12.7
+"UPDATE daily_prices SET delivery_pct=? "
+"WHERE symbol=? AND date=? AND exchange='NSE'"
+```
+
+Pre-fix this UPDATE had no exchange filter, so for dual-listed symbols it also over-wrote the BSE row's `delivery_pct` with the NSE delivery number. Dormant — no downstream consumer reads BSE `delivery_pct` — but it silently broke the BSE side of the price store.
+
+#### Fix #5 — `get_symbol_history`: NSE filter + ORDER BY DESC
+
+```python
+# pre-v12.7  (TWO bugs combined)
+df = pd.read_sql_query(
+    "SELECT date, open, high, low, close, volume "
+    "FROM daily_prices WHERE symbol=? "                # bug 5a: no exchange filter
+    "ORDER BY date ASC LIMIT ?",                       # bug 5b: returns OLDEST N
+    conn, params=(symbol, limit),
+)
+
+# post-v12.7
+df = pd.read_sql_query(
+    "SELECT date, open, high, low, close, volume "
+    "FROM daily_prices WHERE symbol=? AND exchange='NSE' "
+    "ORDER BY date DESC LIMIT ?",
+    conn, params=(symbol, limit),
+)
+if not df.empty:
+    df = df.sort_values("date").reset_index(drop=True)   # preserve ascending API
+```
+
+This is **the most user-visible fix**. Pre-fix, `master_funnel.py:1198` did `history.iloc[-1]["close"]` which returned a price from ~November 2025 (the first 125 trading days of NSE+BSE pairs from the 247×2 = 494 row series), not "today". Then `_chg(11)` walked back from that stale point. Every dual-listed stock's 2W/4W/6W/8W in the Excel was wrong.
+
+#### Fix #6 — `get_20d_avg_vol` filters NSE
+
+```python
+# post-v12.7
+"SELECT volume FROM daily_prices "
+"WHERE symbol=? AND exchange='NSE' "
+"ORDER BY date DESC LIMIT 20"
+```
+
+Pre-fix, dual-listed: 10 NSE rows + 10 BSE rows. Since BSE volumes are typically 5–10× smaller than NSE, AVG was dragged DOWN, inflating `vol_spike_ratio = current_vol / avg_vol` in priority_ranker — biasing Stage 3 selection toward dual-listed stocks (almost the entire universe).
+
+#### Fix #7 — `get_20d_avg_vol_batch` CTE filters NSE
+
+```python
+# post-v12.7
+WITH ranked AS (
+    SELECT symbol, volume,
+           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+    FROM daily_prices
+    WHERE symbol IN ({placeholders})
+      AND exchange='NSE'                                  -- v12.7 added
+)
+```
+
+Same root cause as #6 in the v10.13 batch path.
+
+#### Fix #8 — `nifty_close` uses correct function + graceful mood degradation
+
+```python
+# pre-v12.7
+"nifty_close":   get_nifty_52w_high_from_db(),     # WRONG — returns 52w high
+"nifty_52w_high": get_nifty_52w_high_from_db(),
+
+# post-v12.7
+"nifty_close":   get_nifty_close_from_db(),        # NEW helper, correct semantic
+"nifty_52w_high": get_nifty_52w_high_from_db(),
+```
+
+And in `daily_report_generator.py`:
+
+```python
+# pre-v12.7
+mood = "BULLISH" if nifty > sma200 else "BEARISH"
+
+# post-v12.7
+if nifty > 0 and sma200 > 0:
+    mood = "BULLISH" if nifty > sma200 else "BEARISH"
+else:
+    mood = "—"   # no NIFTY data available
+```
+
+NIFTY 50 isn't ingested into `daily_prices` today, so both queries return 0. Pre-fix, the mood was always BEARISH (`0 > 0` is False). Post-fix, it renders "—" honestly. The new `get_nifty_close_from_db()` in `data_bridge.py` will start returning real data the moment NIFTY ingestion is added.
+
+#### Fix #9 — Earnings-yield CMP lookup (×2 places) filters NSE
+
+```python
+# post-v12.7  (both places in fetch_nse_fundamentals)
+cmp = float((conn.execute(
+    "SELECT close FROM daily_prices WHERE symbol=? "
+    "AND exchange='NSE' ORDER BY date DESC LIMIT 1", (sym,)
+).fetchone() or (0,))[0])
+```
+
+Pre-fix, for dual-listed symbols this returned whichever exchange's row was inserted last (BSE close ≈ NSE close, but typically off by 0.1–0.5%). Earnings yield computation got a marginally wrong CMP.
+
+#### Fix #10 — `active_syms` anchored to MAX(date), not date('now')
+
+```python
+# pre-v12.7
+"WHERE date >= date('now', '-7 days')"   # SQLite date('now') = UTC
+
+# post-v12.7
+_max_date_row = conn.execute("SELECT MAX(date) FROM daily_prices").fetchone()
+_anchor_date = _max_date_row[0] if _max_date_row and _max_date_row[0] else None
+if _anchor_date:
+    active_syms = pd.read_sql(
+        "SELECT DISTINCT symbol FROM daily_prices "
+        "WHERE date >= date(?, '-7 days') ORDER BY symbol",
+        conn, params=(_anchor_date,)
+    )['symbol'].tolist()
+```
+
+On GitHub Actions runs that cross midnight UTC, `date('now')` shifts vs. IST. Anchoring to data's MAX(date) eliminates the wallclock dependency.
+
+#### Fix #11 — `save_to_database` DELETE scoped to data's actual dates
+
+```python
+# pre-v12.7
+"DELETE FROM daily_prices WHERE date = ?", (today_str,)
+# today_str = _date.today() — server wallclock
+
+# post-v12.7
+_data_dates = sorted({str(d) for d in combined["date"].unique() if d})
+if _data_dates:
+    _ph = ",".join(["?"] * len(_data_dates))
+    conn.execute(
+        f"DELETE FROM daily_prices WHERE date IN ({_ph})",
+        _data_dates
+    )
+```
+
+Pre-fix, on weekend or gap-fill runs where target_date != server-today, the DELETE could remove a different day's rows than what was being inserted. Then `_safe_insert` (INSERT OR IGNORE) would skip on PK conflict for the actual target_date. Edge case, but real.
+
+#### Fix #12 — Daily technical refresh (architectural)
+
+```python
+# master_funnel.py (post-v12.7) — new Section 1.5
+if _missed_trading_days < 2:
+    try:
+        from backfill_history import _compute_all_indicators as _ci_daily
+        import sqlite3 as _sq_daily
+        _daily_conn = _sq_daily.connect("market_data.db")
+        print("📊 [Section 1.5] Refreshing technicals with today's prices...")
+        _ci_daily(_daily_conn)
+        _daily_conn.close()
+    except Exception as _rfe:
+        print(f"   ⚠️  Daily technical refresh skipped (non-critical): {_rfe}")
+```
+
+Pre-v12.7 the daily flow saved today's NSE+BSE prices to `daily_prices` but never re-ran `_compute_all_indicators` unless gap-fill triggered. Result: `technical_indicators` / `weekly_momentum` stayed pinned to the last backfill date — SMA200 / RSI / MACD / R1/S1/R2/S2 / chg_2w / chg_4w / chg_6w / chg_8w in the Excel were one trading day stale (and for dual-listed stocks, the values were also wrong for separate reasons fixed in #1/#2/#5). After Section 1.5 the daily Excel uses today's prices in every rolling window.
+
+### Group 57 test coverage (26 tests)
+
+Code-shape locks (16 tests):
+- 57.1a–c: chunk SELECT exchange, drop_duplicates, NSE preference
+- 57.2a: structured error counter present
+- 57.3a, 57.4a: enrich_prices + delivery UPDATE NSE-scoped
+- 57.5a–7a: get_symbol_history / get_20d_avg_vol / batch all NSE-filtered
+- 57.8a–c: get_nifty_close_from_db helper, master_funnel mapping, daily_report mood logic
+- 57.9a: both CMP lookups patched (cross-line string match)
+- 57.10a–11a: MAX(date) anchor, DELETE-by-data-dates
+- 57.12a: Section 1.5 daily refresh present
+- 57.13a: workflow YAML passes 400 (carry-over from v12.6.1 follow-through)
+
+End-to-end behaviour (10 tests, 57.14a–g + 57.15a–b):
+- Synthetic DB with DUAL_LISTED + NSE_ONLY + BSE_ONLY symbols populates technicals correctly for all three
+- DUAL_LISTED has non-zero SMA200, RSI14, distinct R1 vs R2
+- chg_2w matches NSE-only ground truth (within 0.05%)
+- get_symbol_history's iloc[-1] returns today's NSE close (within 0.01)
+- get_20d_avg_vol / get_20d_avg_vol_batch return NSE-only volume
+- **57.15a — locks all 13 `technical_indicators` columns populate for DUAL_LISTED** (SMA200, Supertrend, ADX, RSI14, MACD signal, Stoch %K, MFI, OBV signal, Above VWAP, S1, S2, R1, R2). This is the test that would have caught the v12.6.1 production bug immediately. Chart Pattern (the 14th column) is covered separately — it's computed from today's OHLC in master_funnel and was never affected by the dual-listed bug.
+- 57.15b — locks distinct S1/S2 and R1/R2 levels for DUAL_LISTED (proves dedup gave a real 247-day series, not a 494-row half-period one).
+
+### Action required at deploy
+
+Delete `market_data.db` (or truncate `daily_prices` / `technical_indicators` / `weekly_momentum`) before the next pipeline run so all rolling windows recompute cleanly under the patched logic. Without this, existing `technical_indicators` / `weekly_momentum` rows keep their old (buggy) values until they're rewritten.
+
+### Issue #3 (0-vs-missing ambiguity) status
+
+Still deferred. SQL-layer COALESCE rewrite (~12 queries) plus Python-layer `_fvn(v)` consumer refactor remains too risky to bundle. Tracked as candidate for a future dedicated release. All 15 audit issues from earlier rounds are now resolved; #3 is the last open item from the original v12.4 audit list.
+
+---
+
+*Last updated: April 30, 2026 · v12.7 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
