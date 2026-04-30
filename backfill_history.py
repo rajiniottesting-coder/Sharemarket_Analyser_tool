@@ -773,6 +773,22 @@ def compute_technicals(hist):
         val = s.iloc[-1]
         return float(val) if not pd.isna(val) else 0.0
 
+    # v12.6 (#6): if the prior-window max is within 0.5 % of the recent
+    # 20-day swing high (i.e., R1 ≈ R2), return NaN for R2 / S2 so the
+    # cell renders "—". Audit of v12.5 production showed 86 % of stocks
+    # with R1 == R2 — mathematically correct (prior window happens to
+    # have the same max as recent) but visually unhelpful: users can't
+    # tell which stocks have a meaningful prior ceiling vs which don't.
+    # Falling back to "—" honestly signals "no prior ceiling distinct
+    # from the recent swing high — treat R1 as both T1 and T2/T3".
+    _r1_v, _r2_v = _v(res1), _v(res2)
+    _s1_v, _s2_v = _v(sup1), _v(sup2)
+    _R2_TOLERANCE = 0.005   # within 0.5 % counts as "indistinct"
+    if _r1_v > 0 and _r2_v > 0 and abs(_r1_v - _r2_v) / _r1_v < _R2_TOLERANCE:
+        res2 = pd.Series([float("nan")] * len(h), index=h.index)
+    if _s1_v > 0 and _s2_v > 0 and abs(_s1_v - _s2_v) / _s1_v < _R2_TOLERANCE:
+        sup2 = pd.Series([float("nan")] * len(l), index=l.index)
+
     lc   = _v(c)
     lv   = _v(vwap)
     mv   = _v(macd_l)

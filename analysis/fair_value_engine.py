@@ -390,7 +390,18 @@ class FairValueEngine:
         v12.2: unknown model keys get weight 0 (excluded) rather than a
         phantom 0.10 default. This also means metadata keys like
         '_sector_resolutions' (Round 1) are correctly ignored.
+
+        v12.6: emits a `cfv_thin_models` flag and zeroes `score_adjustment`
+        when fewer than MIN_MODELS valuation lenses fired — prevents thin
+        FV evidence (1-2 models) from driving false BUYs via score adj.
+        Also stops setting `mos_label` here — master_funnel is the single
+        source of truth for the user-facing label scheme (#2 deduplication).
+        Engine's bucket scheme is gone; engine still emits the numeric
+        `mos_pct`, `cfv`, `cfv_capped`, `cfv_thin_models`, and `score_adjustment`
+        fields that downstream code reads.
         """
+        MIN_MODELS = 3   # v12.6: minimum model count for full-confidence CFV
+
         base_weights = {
             "M1_DCF":    0.30,
             "M2_Graham": 0.15,
@@ -405,6 +416,7 @@ class FairValueEngine:
                      if isinstance(v, (int, float)) and v > 0
                      and k in base_weights}
         total_w = sum(base_weights[k] for k in available)
+        n_models = len(available)
 
         if total_w > 0 and available:
             cfv = sum(v * base_weights[k] for k, v in available.items()) / total_w
@@ -426,36 +438,36 @@ class FairValueEngine:
 
         mos = round(((cfv - cmp) / cmp * 100), 2) if cmp > 0 else 0
 
+        # v12.6: thin-model guard — fewer than MIN_MODELS valuation lenses
+        # fired means the CFV is based on an unusually narrow basis. We
+        # still display CFV/MoS so the user can decide, but we suppress the
+        # automatic `score_adjustment` (which would otherwise drive a +12
+        # bonus into composite_score on noisy 1-2-model evidence).
+        cfv_thin_models = (n_models < MIN_MODELS)
+
         score_adj = 0
-        if   mos > 40:         score_adj = 12
-        elif mos > 25:         score_adj = 8
-        elif mos > 10:         score_adj = 4
-        elif mos < -30:        score_adj = -10
-        elif mos < -15:        score_adj = -5
+        if not cfv_thin_models:
+            if   mos > 40:         score_adj = 12
+            elif mos > 25:         score_adj = 8
+            elif mos > 10:         score_adj = 4
+            elif mos < -30:        score_adj = -10
+            elif mos < -15:        score_adj = -5
 
         upside = round(((cfv - cmp) / cmp * 100), 2) if cmp > 0 else -100
         upside = max(upside, -100)
 
-        if   mos > 40:  mos_lbl = "EXCEPTIONAL VALUE"
-        elif mos > 25:  mos_lbl = "STRONG VALUE"
-        elif mos > 10:  mos_lbl = "GOOD VALUE"
-        elif mos > 0:   mos_lbl = "FAIR VALUE"
-        elif mos > -15: mos_lbl = "SLIGHT PREMIUM"
-        elif mos > -30: mos_lbl = "OVERVALUED"
-        else:           mos_lbl = "SIGNIFICANTLY OVERVALUED"
-
-        # v12.5: append `*` to the label when the 3× CMP cap fired so users
-        # can tell genuine high-MoS value-plays apart from clipped extremes.
-        if cfv_capped:
-            mos_lbl = mos_lbl + "*"
+        # v12.6 (#2): mos_label is no longer set here — master_funnel is the
+        # single source of truth for the user-facing bucket scheme. Engine
+        # output drives the numeric values + flags; funnel renders the label.
 
         return {
             "cfv":              cfv,
             "cfv_low":          round(cfv * 0.85, 2) if cfv > 0 else 0,
             "cfv_high":         round(cfv * 1.15, 2) if cfv > 0 else 0,
-            "mos_label":        mos_lbl,
             "mos_pct":          mos,
             "score_adjustment": score_adj,
             "upside":           upside,
-            "cfv_capped":       cfv_capped,    # v12.5: surfaced for display layer
+            "cfv_capped":       cfv_capped,        # v12.5: surfaced for display
+            "cfv_thin_models":  cfv_thin_models,   # v12.6: surfaced for display
+            "n_models":         n_models,          # v12.6: count for diagnostics
         }

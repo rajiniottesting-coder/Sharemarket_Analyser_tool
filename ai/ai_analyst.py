@@ -253,8 +253,9 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
     for idx, batch in enumerate(batches):
         # Skip remaining batches if quota exhausted
         if quota_exhausted:
+            # v12.6 (#14): standardised "[AI <verb> — <reason>]" format.
             all_investor_cards.append(
-                f"[Batch {idx + 1} skipped — Gemini quota exhausted. "
+                f"[AI skipped — Gemini API quota exhausted (batch {idx + 1}). "
                 f"Check quota/billing at https://aistudio.google.com/apikey]"
             )
             continue
@@ -288,10 +289,11 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                 finish = getattr(
                     getattr(response, "candidates", [None])[0], "finish_reason", "UNKNOWN"
                 ) if getattr(response, "candidates", None) else "UNKNOWN"
+                # v12.6 (#14): standardised "[AI <verb> — <reason>]" format.
                 card_text = (
-                    f"[Batch {idx + 1}: Gemini returned empty response "
-                    f"(finish_reason={finish}). The batch may have been blocked "
-                    f"by safety filters or truncated.]"
+                    f"[AI unavailable — Gemini returned empty response for batch "
+                    f"{idx + 1} (finish_reason={finish}). The batch may have been "
+                    f"blocked by safety filters or truncated.]"
                 )
             all_investor_cards.append(card_text)
             print(f"   ✅ Batch {idx + 1} complete.")
@@ -305,7 +307,7 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                 print(f"   ⚠️  Gemini quota exhausted — skipping all remaining batches.")
                 print(f"      Check quota at: https://aistudio.google.com/apikey")
                 all_investor_cards.append(
-                    f"[AI analysis unavailable — Gemini quota exhausted. "
+                    f"[AI unavailable — Gemini API quota exhausted. "
                     f"Please check your quota/billing at aistudio.google.com/apikey. "
                     f"All other Excel data is complete and accurate.]"
                 )

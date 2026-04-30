@@ -1765,4 +1765,186 @@ Test 44.2 was also updated — the FV composite output now has 8 keys (added `cf
 
 ---
 
-*Last updated: April 2026 · v12.5 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 27. v12.6 RELEASE — Final-round judgment-call fixes
+
+Five fixes from the residual list that needed a product decision rather than just a code patch. Total scope: 5 fixes, 7 source files touched, 30 new tests. Final test count: **475/475 PASS**.
+
+### Why these fixes shipped together
+
+After the v12.5 audit confirmed all 10 prior fixes were working in production data, the remaining issues from the original v12.4 audit were all **judgment calls** rather than clear bugs. Each needed a "which scheme do we adopt" or "what's the threshold" answer that the data alone couldn't determine. v12.6 collects those decisions into one bundle.
+
+### #6 follow-up — Resist 2 / Support 2 fall back to "—" when ≈ R1 / S1
+
+**File: `backfill_history.py::compute_technicals`**
+
+The v12.4 patch made `Resist 2` use the prior-window rolling max (excluding the last 20 bars). v12.5 production-data audit found that 86 of 99 stocks still showed `R1 == R2` — but investigation confirmed this was **legitimate post-patch behavior**: for stocks bouncing in a narrow range for 9+ months, the prior 252-day window's rolling max happened to equal the recent 20-day swing high.
+
+Mathematically correct, visually unhelpful. A trader scanning the dashboard sees two columns showing the same number and gets no additional information.
+
+**v12.6 fix**: after computing R2/S2, check if they're within 0.5 % of R1/S1 — if so, return NaN, which `_v(.)` converts to 0.0 in the DB; `master_funnel` then renders the cell as `"—"` (string).
+
+```python
+_R2_TOLERANCE = 0.005
+if _r1_v > 0 and _r2_v > 0 and abs(_r1_v - _r2_v) / _r1_v < _R2_TOLERANCE:
+    res2 = pd.Series([float("nan")] * len(h), index=h.index)
+```
+
+**Display side** (`master_funnel.py:1781-1787`):
+```python
+stock["support_2"] = round(float(s2), 2) if s2 else "—"
+stock["resist_2"]  = round(float(r2), 2) if r2 else "—"
+```
+
+The user sees "no prior ceiling distinct from the recent swing high — treat R1 as both T1 and T2/T3." That's an honest signal.
+
+**Why 0.5 % and not exact equality**: synthetic test confirmed that minor floating-point drift in the rolling-max computation occasionally produces R1=49.39 and R2=49.395-ish on stocks that should match exactly. 0.5 % is tight enough to never trigger on genuinely-distinct ceilings (the 12 separated rows in production showed gaps of 0.5%-15%) and forgiving enough to catch all the legitimate-coincidence cases.
+
+### #2 — `mos_label` dead engine code removed
+
+**File: `analysis/fair_value_engine.py::get_composite_fair_value`**
+
+The FV engine was setting its own 7-bucket `mos_label` (`EXCEPTIONAL VALUE` / `STRONG VALUE` / `GOOD VALUE` / `FAIR VALUE` / `SLIGHT PREMIUM` / `OVERVALUED` / `SIGNIFICANTLY OVERVALUED`). But `master_funnel` always overwrote it with a different 6-bucket scheme (`EXCEPTIONAL` / `STRONG` / `ADEQUATE` / `THIN` / `SLIGHT PREMIUM` / `SIGNIFICANT PREMIUM`).
+
+The engine's bucket-assignment code was dead. Three concerns this raised:
+
+1. Future maintenance hazard — someone reads the engine code, assumes it's authoritative, modifies the buckets there, and is confused when production output doesn't change.
+2. Test surface area — the engine code had its own test coverage that was orthogonal to what users actually saw.
+3. The `*` marker for capped CFV (v12.5) had to be applied in both places — the engine code wasn't reachable, so the funnel duplicated the logic.
+
+**v12.6 fix**: delete the bucket-assignment block in `get_composite_fair_value`. Engine output dict no longer contains `mos_label`. Funnel is the single source of truth.
+
+The funnel's bucket scheme (kept):
+```
+mos_pct > 40   → "EXCEPTIONAL"
+mos_pct > 25   → "STRONG"
+mos_pct > 10   → "ADEQUATE"
+mos_pct > 0    → "THIN"
+mos_pct > -15  → "SLIGHT PREMIUM"
+mos_pct ≤ -15  → "SIGNIFICANT PREMIUM"
+```
+
+The funnel still appends `*` for `cfv_capped` and (new in v12.6) `†` for `cfv_thin_models`.
+
+**Why funnel scheme over engine scheme**: the funnel's labels use single-word value labels (`EXCEPTIONAL`, `STRONG`, `ADEQUATE`, `THIN`) and paired-word premium labels (`SLIGHT PREMIUM`, `SIGNIFICANT PREMIUM`). It reads as a hierarchy. The engine's scheme had `OVERVALUED` and `SIGNIFICANTLY OVERVALUED` as separate buckets — more granular but probably more nuance than retail traders need at a glance. Plus: the funnel scheme is what users see today; switching would visually change every dashboard going forward.
+
+### #4 — Fair-value thin-model quality guard
+
+**File: `analysis/fair_value_engine.py::get_composite_fair_value`**
+
+Pre-v12.6 the engine accepted however many of M1–M7 fired (could be 1, could be 7) and produced a CFV with re-normalised weights. A stock with only M1 (DCF) firing got a "CFV" that was effectively just the DCF target. If that 1-model output happened to imply +50 % MoS, the engine would emit `score_adjustment = +12` — driving the composite score up by 12 points on extremely thin evidence.
+
+This was the false-BUY hazard. A stock with no PE multiple data, no PB data, no EV data, no dividend yield, no PEG — i.e., a stock where most fundamental valuation lenses didn't apply or had missing inputs — could still get the maximum FV-driven score bonus.
+
+**v12.6 fix**:
+
+```python
+MIN_MODELS = 3   # minimum model count for full-confidence CFV
+
+# ... compute cfv as before ...
+
+cfv_thin_models = (n_models < MIN_MODELS)
+
+score_adj = 0
+if not cfv_thin_models:
+    if   mos > 40:   score_adj = 12
+    elif mos > 25:   score_adj = 8
+    elif mos > 10:   score_adj = 4
+    elif mos < -30:  score_adj = -10
+    elif mos < -15:  score_adj = -5
+```
+
+CFV is still shown to the user (so they can decide for themselves). `mos_pct` is still emitted for the dashboard. But the automatic +12 bonus to composite_score is suppressed when fewer than 3 models fired.
+
+**Display side** (`master_funnel.py`): when `cfv_thin_models` is True, the funnel appends `†` to `mos_label` (after `*` for capped). So the user sees something like `"EXCEPTIONAL†"` or `"EXCEPTIONAL*†"` and the tooltip explains: "trailing `†` = CFV based on fewer than 3 valuation models — treat with caution."
+
+**Why MIN_MODELS = 3** (not 2 and not 4):
+- 2 is too permissive — a 2-model average is barely better than 1.
+- 4 is too strict — would lose the score bonus for stocks where M5 (EV/EBITDA) genuinely doesn't apply (financials), M6 (DDM) genuinely doesn't apply (no dividends), or M7 (PEG) genuinely doesn't apply (no growth data). A typical industrial mid-cap legitimately fires 4-5 of M1–M7, not all 7.
+- 3 forces multiple independent valuation lenses (DCF + multiple-based + book-based) without requiring all of them.
+
+**Behavior change in production**:
+- Stocks with **full FV** (≥3 models): zero change. Score adjustment fires as before.
+- Stocks with **thin FV** (1-2 models): composite score drops by 4-12 points, depending on what the score bonus would have been. Some borderline-BUY stocks become NEUTRAL. Some borderline-NEUTRAL become AVOID. Direction is always toward less-confident verdict — none promoted up.
+
+Sanity check verified: a thin-FV mid-cap with MoS +50 % gets `composite=48.26` and `verdict=NEUTRAL` post-v12.6 (was `composite=60.26` and `verdict=BUY` pre-fix in our synthetic test).
+
+### #11 — NPM Q1/Q2/Q3 column rename
+
+**Files: `reporting/excel_generator.py`, `reporting/tooltip_formatter.py`**
+
+The column headers `NPM Q1 %`, `NPM Q2 %`, `NPM Q3 %` had the data in inverse-chronological order (`Q1 = most recent quarter`, `Q3 = oldest`) but the left-to-right reading order suggested chronological. Users repeatedly read it as "Q1 was three quarters ago, Q3 was the latest."
+
+**v12.6 fix**: rename column headers only.
+
+```
+Old: NPM Q1 %     →  New: NPM Q (latest) %
+Old: NPM Q2 %     →  New: NPM Q-1 %
+Old: NPM Q3 %     →  New: NPM Q-2 %
+```
+
+Reads as "this quarter / one ago / two ago" — chronologically unambiguous.
+
+**Crucial implementation detail**: the **DB column keys** (`npm_q1`, `npm_q2`, `npm_q3`) are deliberately **unchanged**. Only the display labels change. This means:
+- Zero schema migration
+- Zero scoring-logic change (margin_expansion still reads `npm_q1 > npm_q2 > npm_q3` to detect the rising trend; that's still correct because `npm_q1` is still the latest quarter in the data)
+- The Excel column tuple format `("display_label", width, db_key)` was the only place that needed to change
+
+All glossary entries (2 blocks), tooltip dict entries, Margin Expansion narrative (2 places), section narrative, and `_ICON_FAMILIES` set were updated to reflect the new labels while preserving the data semantics.
+
+### #14 — "[AI <verb> — <reason>]" placeholder format
+
+**Files: `master_funnel.py`, `ai/ai_analyst.py`**
+
+There were 4 different "no AI analysis" placeholder strings, each with a slightly different format:
+
+- `"Analysis pending."` (default — never analyzed)
+- `"[AI Skipped — verdict=AVOID: composite score below 38 floor. ...]"` (intentional skip)
+- `"[Batch N skipped — Gemini quota exhausted. ...]"` (quota skip in middle of run)
+- `"[AI analysis unavailable — Gemini quota exhausted. ...]"` (quota skip after exhaustion)
+
+Mixed punctuation, mixed capitalisation, inconsistent prefixes. Hard to grep, hard to filter, hard for users to interpret.
+
+**v12.6 fix**: standardize all to `[AI <verb> — <reason>]` format. The distinct meanings are preserved (so users can still tell intentional-skip from quota-skip from default-pending) but the format is now consistent.
+
+```
+Default:        "[AI not yet generated — Analysis pending]"
+AVOID skip:     "[AI skipped — verdict AVOID, score below 38 floor. ...]"
+Batch quota:    "[AI skipped — Gemini API quota exhausted (batch N). ...]"
+Final quota:    "[AI unavailable — Gemini API quota exhausted. ...]"
+Empty response: "[AI unavailable — Gemini returned empty response for batch N (...)]"
+```
+
+Every placeholder now starts with `[AI ` (literal). `grep '\[AI ' Excel_export.txt` cleanly retrieves all of them.
+
+### Files touched in v12.6
+
+```
+master_funnel.py                            (#4 †-marker, #6 "—" rendering, #14 AVOID + default)
+backfill_history.py                         (#6 R2/S2 NaN fallback)
+analysis/fair_value_engine.py               (#2 dead code removal, #4 thin-model guard)
+reporting/excel_generator.py                (#11 NPM Q rename — headers + glossary + narrative)
+reporting/tooltip_formatter.py              (#11 NPM Q tooltip rename)
+ai/ai_analyst.py                            (#14 4 placeholder strings standardized)
+test_v11.0.2_full_withdummies.py            (Group 41/42/44.2/54.1 updates + Group 55 added)
+readme.md                                   (v12.6 row at top of version table)
+CLAUDE.md                                   (this section)
+scoring_logic_3Stagefunnel_explained.md     (footer changelog appended)
+```
+
+### Issues remaining
+
+- **#3** (0-vs-missing ambiguity) — the only original audit issue not addressed. Architectural fix; requires SQL `COALESCE` rewrite across multiple queries plus downstream `None`-handling refactor. Tracked as candidate for a future dedicated release.
+
+All other 15 audit issues are now resolved as of v12.6.
+
+### Operational notes
+
+- The `†` marker on thin-FV stocks is informational — the CFV value is still displayed, the user can still decide to act on it. The change is that the AUTOMATIC score bonus is suppressed.
+- The `*` and `†` markers can stack: `EXCEPTIONAL*†` means "CFV hit the 3× CMP cap AND was based on fewer than 3 valuation models — treat with extreme caution."
+- The R2/S2 fallback to "—" only fires when R1/S1 are themselves valid numeric values. If R1 is itself missing (e.g., insufficient history), R2 follows the same path and also renders "—" via the existing pre-v12.4 logic.
+- The placeholder format change is **display-only**. Anything downstream that pattern-matches the old strings (e.g., the dashboard banner heuristics, the alert log filter) needs to be re-tested. Group 55.5 verifies all four standardized strings start with `[AI ` and that the old prefixes are gone.
+- The NPM Q rename is **display-only**. Scoring engine, margin-expansion detector, and tests all read the underlying `npm_q1/q2/q3` keys, which are unchanged.
+
+---
+
+*Last updated: April 2026 · v12.6 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

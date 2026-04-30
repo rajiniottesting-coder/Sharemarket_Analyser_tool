@@ -73,7 +73,14 @@ FULL_COLS = [
     ("PEG Ratio",10,"peg"),("P/B",9,"pb"),("P/S",9,"ps"),("EV/EBITDA",11,"ev_ebitda"),
     ("ROE %",9,"roe"),("ROCE %",9,"roce"),("ROA %",9,"roa"),
     ("Gross Mgn %",11,"gross_margin"),("EBITDA Mgn %",12,"ebitda_margin"),("NPM %",9,"npm"),
-    ("NPM Q1 %",9,"npm_q1"),("NPM Q2 %",9,"npm_q2"),("NPM Q3 %",9,"npm_q3"),
+    # v12.6 (#11): renamed from NPM Q1/Q2/Q3 → NPM Q (latest)/Q-1/Q-2 to
+    # eliminate the inverse-chronological confusion. Pre-v12.6 labels read
+    # left-to-right as "Q1 Q2 Q3" which suggested chronological order, but
+    # the data was actually most-recent-first (Q1 = latest quarter). New
+    # labels make the time order unambiguous: "(latest) → -1 → -2" reads
+    # as "this quarter / one ago / two ago". DB keys (npm_q1/q2/q3) and
+    # all scoring logic unchanged.
+    ("NPM Q (latest) %",13,"npm_q1"),("NPM Q-1 %",10,"npm_q2"),("NPM Q-2 %",10,"npm_q3"),
     ("Margin Expansion",17,"margin_expansion"),
     ("Rev CAGR 1Y %",12,"rev_cagr_1y"),("Rev CAGR 3Y %",12,"rev_cagr_3y"),
     ("PAT CAGR 1Y %",12,"pat_cagr_1y"),("PAT CAGR 3Y %",12,"pat_cagr_3y"),
@@ -318,25 +325,29 @@ GLOSSARY_DATA = [
      "REDINGTON 157 %, RELIGARE 128 %, GCSL −145 %) — thin-revenue "
      "/ one-time-gain rows where the math is meaningless.",
      "All sheets"),
-    ("PROFITABILITY","NPM Q1 %",
-     "Most recent quarter's Net Profit Margin = (Q1 PAT ÷ Q1 Revenue) × 100. "
+    ("PROFITABILITY","NPM Q (latest) %",
+     "Most recent quarter's Net Profit Margin = (Q(latest) PAT ÷ Q(latest) Revenue) × 100. "
      "Source: yfinance quarterly_income_stmt most-recent column. "
+     "v12.6 (#11): renamed from 'NPM Q1 %' for clarity — Q1=most-recent in old "
+     "scheme but the L→R reading order suggested chronological (oldest→newest). "
      "v10.15 FIX #2: capped at ±500% to prevent tiny-revenue-denominator "
-     "distortions (EMAMIREAL Q1 hit −762% pre-clamp). Same design as v10.14 "
+     "distortions (EMAMIREAL Q(latest) hit −762% pre-clamp). Same design as v10.14 "
      "CAGR clamp. Real businesses don't sustain >500% margin even briefly.",
      "Full Dashboard"),
-    ("PROFITABILITY","NPM Q2 %",
-     "Previous quarter's NPM. Track Q3 → Q2 → Q1 trend to catch margin "
-     "expansion early. v10.15 FIX #2: capped at ±500% (EMAMIREAL Q2 hit "
-     "−387% pre-clamp).",
+    ("PROFITABILITY","NPM Q-1 %",
+     "Previous quarter's NPM (one quarter before the latest report). Track "
+     "Q-2 → Q-1 → Q(latest) trend to catch margin expansion early. "
+     "v12.6 (#11): renamed from 'NPM Q2 %'. "
+     "v10.15 FIX #2: capped at ±500% (EMAMIREAL Q-1 hit −387% pre-clamp).",
      "Full Dashboard"),
-    ("PROFITABILITY","NPM Q3 %",
-     "3rd-most-recent quarter's NPM. Rising Q3 < Q2 < Q1 triggers "
-     "'Margin Expansion = YES' — strong compounder signal. "
-     "v10.15 FIX #2: capped at ±500% (EMAMIREAL Q3 hit −845% pre-clamp).",
+    ("PROFITABILITY","NPM Q-2 %",
+     "NPM from two quarters before the latest report. Rising "
+     "Q-2 < Q-1 < Q(latest) triggers 'Margin Expansion = YES' — strong "
+     "compounder signal. v12.6 (#11): renamed from 'NPM Q3 %'. "
+     "v10.15 FIX #2: capped at ±500% (EMAMIREAL Q-2 hit −845% pre-clamp).",
      "Full Dashboard"),
     ("PROFITABILITY","Margin Expansion",
-     "YES when NPM has risen for 3 consecutive quarters (Q3 < Q2 < Q1). "
+     "YES when NPM has risen for 3 consecutive quarters (Q-2 < Q-1 < Q(latest)). "
      "Strong operating leverage / pricing power signal. "
      "Score: Fundamental +5, Safety +3, Storm +1.",
      "All sheets"),
@@ -585,12 +596,15 @@ GLOSSARY_DATA = [
     # (kept single authoritative entry rather than two).
     ("FAIR VALUE","MoS Label",
      "Text label for MoS %: "
-     "EXCEPTIONAL VALUE (>40%) | STRONG VALUE (>25%) | GOOD VALUE (>10%) | "
-     "FAIR VALUE (0–10%) | SLIGHT PREMIUM (0 to -15%) | OVERVALUED (-15% to -30%) | "
-     "SIGNIFICANTLY OVERVALUED (<-30%). "
-     "v12.5: a trailing '*' on the label (e.g., 'EXCEPTIONAL VALUE*') signals "
-     "the CFV hit the 3× CMP safety cap — the underlying models projected even "
-     "higher upside but the cap fired. Treat such cells with extra scrutiny.","All sheets"),
+     "EXCEPTIONAL (>40%) | STRONG (>25%) | ADEQUATE (>10%) | THIN (0–10%) | "
+     "SLIGHT PREMIUM (0 to −15%) | SIGNIFICANT PREMIUM (<−15%). "
+     "v12.5: trailing '*' (e.g., 'EXCEPTIONAL*') signals the CFV hit the 3× CMP "
+     "safety cap — the underlying models projected even higher upside but the "
+     "cap fired. Treat such cells with extra scrutiny. "
+     "v12.6: trailing '†' (e.g., 'EXCEPTIONAL†') signals the CFV is based on "
+     "fewer than 3 valuation models (M1–M7) firing — the FV evidence is thin. "
+     "The CFV value is still shown but the automatic +score bonus is suppressed. "
+     "Markers can stack: '*†' means BOTH conditions fired.","All sheets"),
     ("FAIR VALUE","M1: DCF FV (₹)","3-Stage Discounted Cash Flow. WACC = 10Y GSec + Beta×5.5%. Terminal growth 4.5%. Best for steady compounders. Session 19 cap: M1 limited to 4× CMP so low-beta stocks (e.g., SBIN β=0.2) don't produce absurd DCF outputs. v12.2: eps now sanitized via _sf() (handles '—' / 'N/A' / None).","Full Dashboard"),
     ("FAIR VALUE","M2: Graham FV (₹)","Graham Number = √(22.5 × EPS × BVPS). Benjamin Graham's intrinsic value formula. Best for value stocks with positive EPS. v12.2: eps/bvps sanitized via _sf(); BVPS fallback derives from close/PB if missing.","Full Dashboard"),
     ("FAIR VALUE","M3: PE FV (₹)","EPS × Sector 5yr median P/E. Mean-reversion model — assumes P/E reverts to sector norm. v12.2: 28-sector benchmarks via SECTOR_ALIASES — production sectors (Basic Materials → Metals PE 12, Industrials → Infra PE 22, Communication Services → Telecom PE 22, Consumer Cyclical/Defensive → Consumer PE 40, Financial Services → Financial PE 20, Real Estate → Realty PE 25) now resolve correctly.","Full Dashboard"),
@@ -649,12 +663,12 @@ GLOSSARY_DATA = [
      "Net Profit Margin = Net Income ÷ Revenue × 100. Bottom-line profitability after everything. "
      ">15% = excellent | 8–15% = good | 3–8% = average | <3% = thin (watch for debt servicing risk). "
      "v12.4: clamped to ±100 % (filters thin-revenue artefacts).","Full Dashboard"),
-    ("PROFITABILITY","NPM Q1 %","Net Profit Margin for most recent quarter (Q1). Source: yfinance quarterly_income_stmt. Rising trend across Q1→Q2→Q3 signals Margin Expansion.","Full Dashboard"),
-    ("PROFITABILITY","NPM Q2 %","Net Profit Margin for second most recent quarter (Q2). Source: yfinance quarterly_income_stmt. Compare with Q1 and Q3 for trend.","Full Dashboard"),
-    ("PROFITABILITY","NPM Q3 %","Net Profit Margin for third most recent quarter (Q3). Source: yfinance quarterly_income_stmt. Oldest of the 3 quarters shown.","Full Dashboard"),
+    ("PROFITABILITY","NPM Q (latest) %","Net Profit Margin for the most recent reported quarter. Source: yfinance quarterly_income_stmt. Rising trend across Q-2 → Q-1 → Q(latest) signals Margin Expansion. v12.6 (#11): renamed from 'NPM Q1 %' for chronological clarity.","Full Dashboard"),
+    ("PROFITABILITY","NPM Q-1 %","Net Profit Margin for the previous quarter (one before latest). Source: yfinance quarterly_income_stmt. Compare with Q(latest) and Q-2 for trend. v12.6 (#11): renamed from 'NPM Q2 %'.","Full Dashboard"),
+    ("PROFITABILITY","NPM Q-2 %","Net Profit Margin for two quarters before the latest report. Source: yfinance quarterly_income_stmt. Oldest of the 3 quarters shown. v12.6 (#11): renamed from 'NPM Q3 %'.","Full Dashboard"),
     ("PROFITABILITY","Margin Expansion",
-     "YES = NPM has risen for 3 consecutive quarters (Q3→Q2→Q1, oldest to newest). "
-     "Source: derived from NPM Q1/Q2/Q3 via yfinance. Strong signal of operational leverage or pricing power.","Full Dashboard"),
+     "YES = NPM has risen for 3 consecutive quarters (Q-2 → Q-1 → Q(latest), oldest to newest). "
+     "Source: derived from NPM Q (latest) / Q-1 / Q-2 via yfinance. Strong signal of operational leverage or pricing power.","Full Dashboard"),
 
     # ── GROWTH ────────────────────────────────────────────────────────────────
     # v10.14: The complete GROWTH glossary entries (10 fields with TTM-vs-FY
@@ -966,8 +980,9 @@ NO_FREE_SOURCE_COLS = {
     "OB/Bill Ratio","Pipeline Vis","L1 Wins 90D","L1 Est (₹Cr)","New Mkt Entry",
     # AI-generated text fields (needs Gemini credits — separate amber set below)
     "Key Catalyst","News Sentiment","Primary Risk","SEBI Flags",
-    # NOTE: NPM Q1/Q2/Q3, Margin Expansion, CAGRs, Q3 Rev/PAT/EBITDA
+    # NOTE: NPM Q (latest)/Q-1/Q-2, Margin Expansion, CAGRs, Q3 Rev/PAT/EBITDA
     # were previously red but are now calculated via yfinance — moved to normal.
+    # (Pre-v12.6 these were labelled NPM Q1/Q2/Q3.)
 }
 # Needs Gemini API credits — amber highlight
 NEEDS_AI_CREDITS = {"View Analysis Summary"}
@@ -1030,7 +1045,7 @@ _HDR_TIPS = {
     "FV Low (\u20b9)":("Conservative FV = CFV x0.85","CMP below FV Low=very deeply undervalued"),
     "FV High (\u20b9)":("Optimistic FV = CFV x1.15","CMP above FV High=significantly overvalued"),
     "MoS %":(">25% strong buy | <-15% overvalued","(CFV-CMP)/CMP*100\n>40%:Exceptional(+12) | >25%:Strong(+8) | 10-25%:Adequate(+4)\n-15 to -30%:Overvalued(-5) | <-30%:Significant premium(-10)"),
-    "MoS Label":("Valuation summary","EXCEPTIONAL>40%|STRONG>25%|ADEQUATE>10%|THIN 0-10%|PREMIUM<0%"),    "P/E TTM":("<20 cheap | 20-40 fair | >40 expensive","Score: <=20=+12 | <=40=+7 | >60=-8"),
+    "MoS Label":("Valuation summary (* = capped, † = thin-FV)","EXCEPTIONAL>40%|STRONG>25%|ADEQUATE>10%|THIN 0-10%|PREMIUM<0%; *=CFV hit 3× cap; †=<3 models fired"),    "P/E TTM":("<20 cheap | 20-40 fair | >40 expensive","Score: <=20=+12 | <=40=+7 | >60=-8"),
     "Earn Yield %":(">6% undervalued vs bonds","EPS/CMP*100. >6%:Cheap. Compare to 10Y bond yield"),
     "P/CF":("<15 value | >25 expensive","More reliable than P/E(cash harder to fake)"),
     "PEG Ratio":("<1 undervalued | >2 expensive","P/E / Growth. <1:Undervalued(Peter Lynch favourite)"),
@@ -1043,9 +1058,9 @@ _HDR_TIPS = {
     "Gross Mgn %":(">40% strong moat | >20% decent","Score: >40%=+8 | >20%=+4"),
     "EBITDA Mgn %":(">25% excellent | >15% good",">30%:Excellent | >20%:Good | <10%:Tight"),
     "NPM %":(">15% excellent | <5% thin","Score: >15%=+8 | >5%=+4 | <0%=-8"),
-    "NPM Q1 %":("Most recent quarter margin vs TTM","Q1>NPM(TTM):margins accelerating"),
-    "NPM Q2 %":("Previous quarter margin","Track Q3->Q2->Q1 trend for margin direction"),
-    "NPM Q3 %":("3rd quarter-rising=Margin Expansion","Rising Q3->Q2->Q1 triggers Margin Expansion=YES"),
+    "NPM Q (latest) %":("Most recent quarter margin vs TTM","Q(latest)>NPM(TTM):margins accelerating"),
+    "NPM Q-1 %":("Previous quarter margin","Track Q-2 → Q-1 → Q(latest) trend for margin direction"),
+    "NPM Q-2 %":("Quarter from 2 reports ago — rising = Margin Expansion","Rising Q-2 → Q-1 → Q(latest) triggers Margin Expansion=YES"),
     "Margin Expansion":("YES=3 consecutive qtrs of rising NPM","Score: Fundamental+5 | Safety+3 | Storm+1. YES is rare(~10%)"),
     "Rev CAGR 1Y %":(">20% high growth | >10% good","1Y>3Y CAGR=growth accelerating"),
     "Rev CAGR 3Y %":(">15% strong | >8% decent","Score: >15%=+5 | >8%=+3. More reliable than 1Y."),

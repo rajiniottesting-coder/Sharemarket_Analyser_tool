@@ -191,13 +191,20 @@ TIPS: Dict[str, Tuple[str, str]] = {
               "Effectively capped near 200% because CFV is capped at 3× CMP\n"
               "(Session 19 safety net). If MoS ≈200%, verify inputs rather\n"
               "than treating it as a guaranteed bargain."),
-    "MoS Label": ("Valuation summary (*=CFV hit 3× CMP cap)",
+    "MoS Label": ("Valuation summary (* = capped CFV, † = thin-FV evidence)",
                   "EXCEPTIONAL >40% | STRONG >25% | ADEQUATE >10% | THIN 0-10%\n"
                   "SLIGHT PREMIUM −10% to 0% | SIGNIFICANT PREMIUM <−10%\n"
-                  "v12.5: a trailing `*` (e.g., 'EXCEPTIONAL*') means CFV was\n"
+                  "v12.5: trailing `*` (e.g., 'EXCEPTIONAL*') means CFV was\n"
                   "clipped to 3× CMP — the underlying models projected even\n"
                   "higher upside but the safety cap fired. Treat with extra\n"
-                  "scrutiny: the model average is unusually optimistic."),
+                  "scrutiny: the model average is unusually optimistic.\n"
+                  "v12.6: trailing `†` (e.g., 'EXCEPTIONAL†') means CFV was\n"
+                  "based on fewer than 3 valuation models (M1–M7) firing —\n"
+                  "the FV evidence is thin. The CFV value is still shown so\n"
+                  "you can decide for yourself, but the automatic +score bonus\n"
+                  "(+4 to +12) is suppressed in composite_score to prevent\n"
+                  "thin-evidence false BUYs. Markers can stack: '*†' means\n"
+                  "BOTH conditions fired — treat with extreme caution."),
     # v10.8: 'Upside to FV %' and 'Upside %' removed entirely — duplicated MoS %
     # (same formula, same number). MoS % is the single source of truth now.
     "M1: DCF FV (₹)": ("Discounted Cash Flow fair value — 30% weight in CFV",
@@ -339,22 +346,28 @@ TIPS: Dict[str, Tuple[str, str]] = {
              "v12.4: clamped to ±100 %. yfinance occasionally feeds\n"
              "values >100 % on thin-revenue / one-time-gain rows\n"
              "(DGCONTENT 126 %, AMAGI 189 % pre-clamp)."),
-    "NPM Q1 %": ("Most recent quarter margin vs TTM",
-                 "Q1 > NPM(TTM): margins accelerating.\n"
+    "NPM Q (latest) %": ("Most recent quarter margin vs TTM",
+                 "Q(latest) > NPM(TTM): margins accelerating.\n"
                  "Source: (Quarterly PAT / Quarterly Revenue) × 100\n"
                  "from yfinance quarterly_income_stmt.\n"
+                 "v12.6 (#11): renamed from 'NPM Q1 %' for chronological\n"
+                 "clarity — old labels read L→R as Q1 Q2 Q3 suggesting\n"
+                 "chronological, but Q1 was actually the LATEST quarter.\n"
                  "Display: v10.15 caps at ±500% — tiny-revenue denominator\n"
                  "(₹0.13 Cr quarterly rev for micro-caps like EMAMIREAL)\n"
                  "produced −762% NPM in prior runs. Same clamp pattern as\n"
                  "v10.14 CAGR fix."),
-    "NPM Q2 %": ("Previous quarter margin",
-                 "Track Q3→Q2→Q1 trend. Source: quarterly_income_stmt\n"
-                 "2nd-most-recent quarter. Display: v10.15 caps at ±500%\n"
-                 "(EMAMIREAL Q2 hit −387% pre-clamp)."),
-    "NPM Q3 %": ("3rd quarter — rising = Margin Expansion",
-                 "Rising Q3→Q2→Q1 triggers Margin Expansion = YES.\n"
+    "NPM Q-1 %": ("Previous quarter margin",
+                 "Track Q-2 → Q-1 → Q(latest) trend. Source:\n"
+                 "quarterly_income_stmt 2nd-most-recent quarter.\n"
+                 "v12.6 (#11): renamed from 'NPM Q2 %'.\n"
+                 "Display: v10.15 caps at ±500%\n"
+                 "(EMAMIREAL Q-1 hit −387% pre-clamp)."),
+    "NPM Q-2 %": ("Two quarters ago — rising = Margin Expansion",
+                 "Rising Q-2 → Q-1 → Q(latest) triggers Margin Expansion = YES.\n"
                  "Source: quarterly_income_stmt 3rd-most-recent quarter.\n"
-                 "Display: v10.15 caps at ±500% (EMAMIREAL Q3 hit\n"
+                 "v12.6 (#11): renamed from 'NPM Q3 %'.\n"
+                 "Display: v10.15 caps at ±500% (EMAMIREAL Q-2 hit\n"
                  "−845% pre-clamp)."),
     "Margin Expansion": ("YES = 3 consecutive qtrs of rising NPM",
                          "Score: Fundamental +5 | Safety +3 | Storm +1."),
@@ -843,8 +856,10 @@ GROUP_TIPS: Dict[str, Tuple[str, str]] = {
     "PROFITABILITY": ("How well the business makes money",
                       "ROE, ROCE, ROA, Gross/EBITDA/Net margins, quarterly NPM trend.\n"
                       "Higher + improving = higher fundamental score.\n"
-                      "v10.15: NPM Q1/Q2/Q3 capped at ±500% (tiny-revenue\n"
+                      "v10.15: NPM quarterly columns capped at ±500% (tiny-revenue\n"
                       "distortion — EMAMIREAL hit −845% on a tiny-rev quarter).\n"
+                      "v12.6: NPM quarterly columns relabelled to NPM Q (latest)\n"
+                      "/ Q-1 / Q-2 (chronological clarity; was Q1/Q2/Q3).\n"
                       "ROE/ROA stored as floats (were strings pre-v10.15 —\n"
                       "broke Excel sort/filter on those columns)."),
     "GROWTH": ("Revenue & earnings trajectory",
@@ -937,7 +952,7 @@ _ICON_FAMILIES = {
     "🚀": {"Rev CAGR 1Y %", "Rev CAGR 3Y %", "PAT CAGR 1Y %", "PAT CAGR 3Y %",
            "EBITDA CAGR 1Y %", "Rev YoY %", "PAT YoY %", "Margin Expansion",
            "Q3 Rev (₹Cr)", "Q3 PAT (₹Cr)", "Q3 EBITDA (₹Cr)",
-           "Gross Mgn %", "EBITDA Mgn %", "NPM %", "NPM Q1 %", "NPM Q2 %", "NPM Q3 %",
+           "Gross Mgn %", "EBITDA Mgn %", "NPM %", "NPM Q (latest) %", "NPM Q-1 %", "NPM Q-2 %",
            "ROE %", "ROCE %", "ROA %", "Early Signals", "Sector Stage",
            "OB/Bill Ratio", "Pipeline Vis", "L1 Wins 90D", "L1 Est (₹Cr)",
            "New Mkt Entry", "Capex / Rev %", "Key Catalyst"},

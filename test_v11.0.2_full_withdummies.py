@@ -1943,45 +1943,78 @@ _fv_check("40.5", "Upside floored at -100%", _result['upside'] >= -100, True)
 print("\n" + "═" * 70)
 print("GROUP 41 — Score adjustment bands")
 print("═" * 70)
+# v12.6: with thin-model guard, score_adjustment is zeroed when fewer than
+# MIN_MODELS=3 valuation lenses fired. Use ≥3 models for band tests.
+# ≥3-model setup: M1_DCF + M3_PE + M4_PB all fire with the same target value
+# so the weighted blend lands at the target.
+def _make_models_for_target(target):
+    return {"M1_DCF": target, "M3_PE": target, "M4_PB": target}
 
-_result = _fv.get_composite_fair_value({"M1_DCF": 1500}, cmp=1000)  # +50%
-_fv_check("41.1", "MoS > 40 → +12 score adj", _result['score_adjustment'], 12)
+_result = _fv.get_composite_fair_value(_make_models_for_target(1500), cmp=1000)  # +50%
+_fv_check("41.1", "MoS > 40 → +12 score adj (3 models)", _result['score_adjustment'], 12)
 
-_result = _fv.get_composite_fair_value({"M1_DCF": 1300}, cmp=1000)  # +30%
-_fv_check("41.2", "25 < MoS ≤ 40 → +8 score adj", _result['score_adjustment'], 8)
+_result = _fv.get_composite_fair_value(_make_models_for_target(1300), cmp=1000)  # +30%
+_fv_check("41.2", "25 < MoS ≤ 40 → +8 score adj (3 models)", _result['score_adjustment'], 8)
 
-_result = _fv.get_composite_fair_value({"M1_DCF": 1180}, cmp=1000)  # +18%
-_fv_check("41.3", "10 < MoS ≤ 25 → +4 score adj", _result['score_adjustment'], 4)
+_result = _fv.get_composite_fair_value(_make_models_for_target(1180), cmp=1000)  # +18%
+_fv_check("41.3", "10 < MoS ≤ 25 → +4 score adj (3 models)", _result['score_adjustment'], 4)
 
-_result = _fv.get_composite_fair_value({"M1_DCF": 1050}, cmp=1000)  # +5%
-_fv_check("41.4", "Neutral MoS band → 0 score adj", _result['score_adjustment'], 0)
+_result = _fv.get_composite_fair_value(_make_models_for_target(1050), cmp=1000)  # +5%
+_fv_check("41.4", "Neutral MoS band → 0 score adj (3 models)", _result['score_adjustment'], 0)
 
-_result = _fv.get_composite_fair_value({"M1_DCF": 800}, cmp=1000)  # -20%
-_fv_check("41.5", "-30 ≤ MoS < -15 → -5 score adj", _result['score_adjustment'], -5)
+_result = _fv.get_composite_fair_value(_make_models_for_target(800), cmp=1000)  # -20%
+_fv_check("41.5", "-30 ≤ MoS < -15 → -5 score adj (3 models)", _result['score_adjustment'], -5)
 
-_result = _fv.get_composite_fair_value({"M1_DCF": 600}, cmp=1000)  # -40%
-_fv_check("41.6", "MoS < -30 → -10 score adj", _result['score_adjustment'], -10)
+_result = _fv.get_composite_fair_value(_make_models_for_target(600), cmp=1000)  # -40%
+_fv_check("41.6", "MoS < -30 → -10 score adj (3 models)", _result['score_adjustment'], -10)
+
+# v12.6 #4: thin-model guard tests — score_adjustment must be zeroed when
+# n_models < 3, regardless of MoS magnitude.
+_result = _fv.get_composite_fair_value({"M1_DCF": 1500}, cmp=1000)  # 1 model, +50%
+_fv_check("41.7", "v12.6 thin-model: 1 model + MoS>40 → score_adj=0",
+          _result['score_adjustment'], 0)
+_fv_check("41.7b", "v12.6 thin-model: cfv_thin_models flag = True",
+          _result['cfv_thin_models'], True)
+
+_result = _fv.get_composite_fair_value({"M1_DCF": 1500, "M2_Graham": 1500}, cmp=1000)  # 2 models
+_fv_check("41.8", "v12.6 thin-model: 2 models + MoS>40 → score_adj=0",
+          _result['score_adjustment'], 0)
+_fv_check("41.8b", "v12.6 thin-model: 2-model cfv_thin_models flag = True",
+          _result['cfv_thin_models'], True)
+
+_result = _fv.get_composite_fair_value(_make_models_for_target(1500), cmp=1000)  # 3 models
+_fv_check("41.9", "v12.6 thin-model: 3 models + MoS>40 → score_adj=12 (full)",
+          _result['score_adjustment'], 12)
+_fv_check("41.9b", "v12.6 thin-model: 3-model cfv_thin_models flag = False",
+          _result['cfv_thin_models'], False)
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# GROUP 42: MoS Labels
+# GROUP 42: MoS Labels — REMOVED in v12.6 (#2)
 # ──────────────────────────────────────────────────────────────────────────
 print("\n" + "═" * 70)
-print("GROUP 42 — MoS labels")
+print("GROUP 42 — MoS labels (v12.6: engine no longer emits mos_label)")
 print("═" * 70)
-
+# v12.6 (#2): the FV engine used to set its own mos_label bucket scheme
+# (EXCEPTIONAL VALUE / STRONG VALUE / ...) — but master_funnel always
+# overwrote it with a different scheme (EXCEPTIONAL / STRONG / ADEQUATE /
+# THIN / SLIGHT PREMIUM / SIGNIFICANT PREMIUM). The engine's code was
+# unreachable in production. v12.6 deletes the dead engine code: funnel is
+# the single source of truth for the user-facing label.
+# These tests now assert the engine NO LONGER emits mos_label.
 _label_cases = [
-    ({"M1_DCF": 1500}, 1000, "EXCEPTIONAL VALUE"),         # +50%
-    ({"M1_DCF": 1300}, 1000, "STRONG VALUE"),              # +30%
-    ({"M1_DCF": 1180}, 1000, "GOOD VALUE"),                # +18%
-    ({"M1_DCF": 1050}, 1000, "FAIR VALUE"),                # +5%
-    ({"M1_DCF":  900}, 1000, "SLIGHT PREMIUM"),            # -10%
-    ({"M1_DCF":  800}, 1000, "OVERVALUED"),                # -20%
-    ({"M1_DCF":  600}, 1000, "SIGNIFICANTLY OVERVALUED"),  # -40%
+    ({"M1_DCF": 1500}, 1000, "+50%"),
+    ({"M1_DCF": 1300}, 1000, "+30%"),
+    ({"M1_DCF": 1180}, 1000, "+18%"),
+    ({"M1_DCF": 1050}, 1000, "+5%"),
+    ({"M1_DCF":  900}, 1000, "-10%"),
+    ({"M1_DCF":  800}, 1000, "-20%"),
+    ({"M1_DCF":  600}, 1000, "-40%"),
 ]
-for _i, (_models, _cmp, _want_label) in enumerate(_label_cases, 1):
+for _i, (_models, _cmp, _mos_desc) in enumerate(_label_cases, 1):
     _result = _fv.get_composite_fair_value(_models, cmp=_cmp)
-    _fv_check(f"42.{_i}", f"label = {_want_label}", _result['mos_label'], _want_label)
+    _fv_check(f"42.{_i}", f"v12.6: engine output has no mos_label key ({_mos_desc})",
+              "mos_label" in _result, False)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -2038,11 +2071,14 @@ _fv_check("44.1", "All 7 model keys present (excluding diagnostic metadata)",
           _model_keys, _expected_keys)
 
 _result = _fv.get_composite_fair_value(m, cmp=1000)
-# v12.5: added `cfv_capped` flag (True when CFV hit 3× CMP cap, drives `*`
-# marker on MoS Label). Output dict now has 8 keys, not 7.
-_expected_keys = {"cfv", "cfv_low", "cfv_high", "mos_label",
-                  "mos_pct", "score_adjustment", "upside", "cfv_capped"}
-_fv_check("44.2", "Composite output has all 8 expected keys",
+# v12.5 added `cfv_capped` flag.
+# v12.6 (#2): removed `mos_label` — funnel is single source of truth.
+# v12.6 (#4): added `cfv_thin_models` flag and `n_models` count.
+# Output dict now has 9 keys.
+_expected_keys = {"cfv", "cfv_low", "cfv_high",
+                  "mos_pct", "score_adjustment", "upside",
+                  "cfv_capped", "cfv_thin_models", "n_models"}
+_fv_check("44.2", "Composite output has all 9 expected keys (v12.6)",
           set(_result.keys()), _expected_keys)
 
 _fv_check("44.3a", "cfv_low ≈ 0.85 × cfv",
@@ -3122,13 +3158,14 @@ if _proj_root not in _sys54.path:
     _sys54.path.insert(0, _proj_root)
 
 # ── 54.1: MoS cap marker (#5) ───────────────────────────────────────────
-# When CFV > 3 × CMP, engine clips to 3×, sets cfv_capped=True, and
-# appends `*` to the MoS Label so users can tell genuine high-MoS
-# value-plays apart from clipped extremes.
+# v12.5: When CFV > 3 × CMP, engine clips to 3× and sets cfv_capped=True.
+# v12.6: engine no longer emits mos_label — master_funnel applies the `*`
+# marker downstream when it sees cfv_capped=True. So engine-level tests
+# verify the FLAG; funnel-level integration verifies the marker (53.x style).
 from analysis.fair_value_engine import FairValueEngine as _FVE54
 _fv54 = _FVE54()
 
-# Synthetic models that produce CFV > 3 × CMP
+# Synthetic models that produce CFV > 3 × CMP (3 models, so not thin-flagged)
 _capped_models = {"M1_DCF": 600, "M2_Graham": 0, "M3_PE": 600, "M4_PB": 600,
                   "M5_EV": 0, "M6_DDM": 0, "M7_PEG": 0}
 _capped_out = _fv54.get_composite_fair_value(_capped_models, cmp=100)
@@ -3146,25 +3183,27 @@ if _capped_out["cfv"] == 300:
 else:
     failed += 1
     failures.append(f"54.1b: CFV={_capped_out['cfv']} (want 300)")
-if _capped_out["mos_label"].endswith("*"):
+# v12.6: engine no longer emits mos_label — the * marker is applied by
+# master_funnel. Engine output should NOT have mos_label key.
+if "mos_label" not in _capped_out:
     passed += 1
-    print(f"  ✓ 54.1c MoS Label has `*` marker: {_capped_out['mos_label']!r}")
+    print(f"  ✓ 54.1c v12.6: engine output has no mos_label key (funnel applies marker)")
 else:
     failed += 1
-    failures.append(f"54.1c: mos_label={_capped_out['mos_label']!r} missing `*` marker")
+    failures.append(f"54.1c: engine still emits mos_label={_capped_out.get('mos_label')!r} "
+                    "(should be removed in v12.6 #2)")
 
-# Negative case — CFV ≤ 3× CMP shouldn't get the marker
+# Negative case — CFV ≤ 3× CMP shouldn't have cfv_capped=True
 _normal_models = {"M1_DCF": 120, "M3_PE": 120, "M4_PB": 120,
                   "M2_Graham": 0, "M5_EV": 0, "M6_DDM": 0, "M7_PEG": 0}
 _normal_out = _fv54.get_composite_fair_value(_normal_models, cmp=100)
-if _normal_out["cfv_capped"] is False and not _normal_out["mos_label"].endswith("*"):
+if _normal_out["cfv_capped"] is False:
     passed += 1
-    print(f"  ✓ 54.1d Non-capped case: cfv_capped=False, no `*` on label "
-          f"({_normal_out['mos_label']!r})")
+    print(f"  ✓ 54.1d Non-capped case: cfv_capped=False (cfv={_normal_out['cfv']})")
 else:
     failed += 1
-    failures.append(f"54.1d: cfv_capped={_normal_out['cfv_capped']} "
-                    f"label={_normal_out['mos_label']!r} (expected no marker)")
+    failures.append(f"54.1d: cfv_capped={_normal_out['cfv_capped']} (expected False); "
+                    f"cfv={_normal_out['cfv']}")
 
 # Source-marker check
 _fve_path = _os54.path.join(_proj_root, "analysis", "fair_value_engine.py")
@@ -3453,6 +3492,358 @@ if "_is_finance" in _fe_src and "Banks / NBFCs" in _fe_src:
 else:
     failed += 1
     failures.append("54.6h: forensics_engine.py missing _is_finance CCC guard")
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+# GROUP 55 — v12.6 Final-Round Fixes (Issues #2, #4, #6, #11, #14)
+# ══════════════════════════════════════════════════════════════════════
+# Five fixes from the residual judgment-call list, plus #6 follow-up
+# (R2 fallback to "—" when prior-window max ≈ recent 20-day max).
+#
+#   55.1  R2 fallback to "—"      (#6 follow-up: prior_h ≈ recent → NaN)
+#   55.2  Engine no mos_label     (#2: master_funnel is single source)
+#   55.3  Thin-model FV guard     (#4: cfv_thin_models flag + † marker)
+#   55.4  NPM Q rename            (#11: Q (latest) / Q-1 / Q-2)
+#   55.5  Placeholder format      (#14: [AI <verb> — <reason>])
+# ══════════════════════════════════════════════════════════════════════
+print("\n" + "═" * 70)
+print("GROUP 55 — v12.6 Final-round fixes")
+print("═" * 70)
+
+import os as _os55
+import sys as _sys55
+_proj_root55 = _os55.path.dirname(_os55.path.abspath(__file__))
+if _proj_root55 not in _sys55.path:
+    _sys55.path.insert(0, _proj_root55)
+
+# ── 55.1: R2 fallback to "—" when prior-window max ≈ recent 20-day max ──
+import pandas as _pd55
+import numpy as _np55
+from backfill_history import compute_technicals as _ct55
+
+# Case A: stock in narrow trading range — prior 232-day max ≈ recent 20-day max
+# Patched code should set R2 to NaN → DB stores 0 → funnel renders "—"
+# Construct a series where the all-time max equals the recent 20-day max
+# exactly (both have an explicit peak at 100.0); prior-window rolling max
+# will be 100.0, recent rolling max will be 100.0 — within 0.5% tolerance.
+_np55.random.seed(42)
+n = 252
+prices_flat = 95 + _np55.random.randn(n) * 0.5    # tight range around 95
+prices_flat[100] = 100.0                            # peak in old window (day 100)
+prices_flat[-5]  = 100.0                            # same peak in recent 20
+hist_flat = _pd55.DataFrame({
+    'symbol': ['NARROW']*n,
+    'date': _pd55.date_range('2025-04-30', periods=n, freq='D'),
+    'open': prices_flat, 'high': prices_flat + 0.1, 'low': prices_flat - 0.1,
+    'close': prices_flat, 'volume': [1e5]*n,
+})
+ti_flat = _ct55(hist_flat)
+# When R1 ≈ R2, R2 should fall back to 0 (NaN converted by _v())
+if ti_flat['resist2'] == 0.0:
+    passed += 1
+    print(f"  ✓ 55.1a Narrow-range stock: R2 falls back to 0 → '—' "
+          f"(R1={ti_flat['resist1']:.2f})")
+else:
+    failed += 1
+    failures.append(f"55.1a: narrow-range R2={ti_flat['resist2']} (want 0.0); "
+                    f"R1={ti_flat['resist1']}")
+
+# Case B: stock with clear trend — prior max meaningfully different from recent
+# R2 should be a real number, not 0
+_np55.random.seed(7)
+prices_trend = _np55.zeros(n)
+prices_trend[:60]   = _np55.linspace(150, 80, 60)        # decline
+prices_trend[60:]   = 80 + _np55.random.randn(n-60) * 1.5 # range around 80
+hist_trend = _pd55.DataFrame({
+    'symbol': ['TREND']*n,
+    'date': _pd55.date_range('2025-04-30', periods=n, freq='D'),
+    'open': prices_trend, 'high': prices_trend + 1, 'low': prices_trend - 1,
+    'close': prices_trend, 'volume': [1e5]*n,
+})
+ti_trend = _ct55(hist_trend)
+if ti_trend['resist2'] > 0 and abs(ti_trend['resist2'] - ti_trend['resist1']) > 1.0:
+    passed += 1
+    print(f"  ✓ 55.1b Trending stock: R2 ({ti_trend['resist2']:.2f}) "
+          f"distinct from R1 ({ti_trend['resist1']:.2f}) → real value kept")
+else:
+    failed += 1
+    failures.append(f"55.1b: trend R1={ti_trend['resist1']} R2={ti_trend['resist2']} "
+                    "(want R2 > 0 and distinct from R1)")
+
+# Case C: master_funnel renders "—" for r2 == 0 in production (string output)
+# Verify the funnel logic by checking source — funnel sets resist_2 = "—" when r2 falsy
+_mf_v126_path = _os55.path.join(_proj_root55, "master_funnel.py")
+with open(_mf_v126_path) as _fh:
+    _mf_v126_src = _fh.read()
+if 'stock["resist_2"]   = round(float(r2), 2) if r2 else "—"' in _mf_v126_src:
+    passed += 1
+    print("  ✓ 55.1c master_funnel renders resist_2 as '—' when DB stores 0")
+else:
+    failed += 1
+    failures.append("55.1c: master_funnel doesn't render resist_2 as '—' for falsy values")
+if 'stock["support_2"]  = round(float(s2), 2) if s2 else "—"' in _mf_v126_src:
+    passed += 1
+    print("  ✓ 55.1d master_funnel renders support_2 as '—' when DB stores 0")
+else:
+    failed += 1
+    failures.append("55.1d: master_funnel doesn't render support_2 as '—' for falsy values")
+
+# Source-marker check
+_bf_v126_path = _os55.path.join(_proj_root55, "backfill_history.py")
+with open(_bf_v126_path) as _fh:
+    _bf_v126_src = _fh.read()
+if "_R2_TOLERANCE" in _bf_v126_src and "v12.6" in _bf_v126_src:
+    passed += 1
+    print("  ✓ 55.1e backfill_history.py has _R2_TOLERANCE marker + v12.6")
+else:
+    failed += 1
+    failures.append("55.1e: backfill_history.py missing _R2_TOLERANCE / v12.6 marker")
+
+# ── 55.2: Engine no longer emits mos_label ─────────────────────────────
+# Pre-v12.6: engine set its own bucket scheme (EXCEPTIONAL VALUE / etc.),
+# but master_funnel always overwrote with a different scheme. The engine
+# code was unreachable. v12.6 deletes the dead engine code.
+
+from analysis.fair_value_engine import FairValueEngine as _FVE55
+_fv55 = _FVE55()
+
+# Test with full models
+_full_models = {"M1_DCF": 1500, "M3_PE": 1500, "M4_PB": 1500}
+_full_out = _fv55.get_composite_fair_value(_full_models, cmp=1000)
+if "mos_label" not in _full_out:
+    passed += 1
+    print("  ✓ 55.2a Engine output has no mos_label key (full-model case)")
+else:
+    failed += 1
+    failures.append(f"55.2a: engine still emits mos_label={_full_out.get('mos_label')!r}")
+
+# Test with thin models
+_thin_models = {"M1_DCF": 1500}
+_thin_out = _fv55.get_composite_fair_value(_thin_models, cmp=1000)
+if "mos_label" not in _thin_out:
+    passed += 1
+    print("  ✓ 55.2b Engine output has no mos_label key (thin-model case)")
+else:
+    failed += 1
+    failures.append(f"55.2b: engine still emits mos_label (thin case)={_thin_out.get('mos_label')!r}")
+
+# Test with empty models
+_empty_out = _fv55.get_composite_fair_value({}, cmp=1000)
+if "mos_label" not in _empty_out:
+    passed += 1
+    print("  ✓ 55.2c Engine output has no mos_label key (empty-model case)")
+else:
+    failed += 1
+    failures.append(f"55.2c: engine still emits mos_label (empty case)={_empty_out.get('mos_label')!r}")
+
+# Source-marker: dead engine code (the 7 mos_lbl branches) should be gone
+_fve_path55 = _os55.path.join(_proj_root55, "analysis", "fair_value_engine.py")
+with open(_fve_path55) as _fh:
+    _fve_src55 = _fh.read()
+if 'mos_lbl = "EXCEPTIONAL VALUE"' not in _fve_src55:
+    passed += 1
+    print("  ✓ 55.2d Dead engine bucket-scheme code removed (no 'EXCEPTIONAL VALUE' literal)")
+else:
+    failed += 1
+    failures.append("55.2d: dead engine bucket-scheme code still present")
+
+# ── 55.3: Thin-model FV quality guard ─────────────────────────────────
+# When n_models < 3, score_adjustment is zeroed regardless of MoS magnitude.
+# cfv_thin_models flag is True. master_funnel appends '†' to mos_label.
+
+# 55.3a: n_models field exists and reports correctly
+if _full_out.get("n_models") == 3:
+    passed += 1
+    print(f"  ✓ 55.3a Full-model case: n_models = {_full_out['n_models']}")
+else:
+    failed += 1
+    failures.append(f"55.3a: full-model n_models={_full_out.get('n_models')} (want 3)")
+
+if _thin_out.get("n_models") == 1:
+    passed += 1
+    print(f"  ✓ 55.3b Thin-model case: n_models = {_thin_out['n_models']}")
+else:
+    failed += 1
+    failures.append(f"55.3b: thin-model n_models={_thin_out.get('n_models')} (want 1)")
+
+# 55.3c: cfv_thin_models flag set correctly
+if _full_out.get("cfv_thin_models") is False:
+    passed += 1
+    print("  ✓ 55.3c Full-model: cfv_thin_models = False")
+else:
+    failed += 1
+    failures.append(f"55.3c: full-model cfv_thin_models={_full_out.get('cfv_thin_models')}")
+
+if _thin_out.get("cfv_thin_models") is True:
+    passed += 1
+    print("  ✓ 55.3d Thin-model: cfv_thin_models = True")
+else:
+    failed += 1
+    failures.append(f"55.3d: thin-model cfv_thin_models={_thin_out.get('cfv_thin_models')}")
+
+# 55.3e: score_adjustment zeroed for thin-model rows even when MoS is high
+# +50% MoS would normally trigger score_adj=12, but with only 1 model → 0
+if _thin_out.get("score_adjustment") == 0:
+    passed += 1
+    print(f"  ✓ 55.3e Thin-model: score_adjustment=0 even with MoS={_thin_out['mos_pct']}% "
+          "(prevents thin-evidence false BUYs)")
+else:
+    failed += 1
+    failures.append(f"55.3e: thin-model score_adjustment={_thin_out.get('score_adjustment')} "
+                    f"(want 0); MoS={_thin_out.get('mos_pct')}%")
+
+# 55.3f: 2-model case also thin
+_two_models = {"M1_DCF": 1500, "M3_PE": 1500}
+_two_out = _fv55.get_composite_fair_value(_two_models, cmp=1000)
+if _two_out.get("cfv_thin_models") is True and _two_out.get("score_adjustment") == 0:
+    passed += 1
+    print(f"  ✓ 55.3f 2-model case: cfv_thin_models=True, score_adj=0")
+else:
+    failed += 1
+    failures.append(f"55.3f: 2-model thin={_two_out.get('cfv_thin_models')} "
+                    f"score_adj={_two_out.get('score_adjustment')}")
+
+# 55.3g: 3-model case is NOT thin (boundary)
+if _full_out.get("score_adjustment") == 12:
+    passed += 1
+    print(f"  ✓ 55.3g 3-model boundary: full score_adj fires (12 for MoS>40)")
+else:
+    failed += 1
+    failures.append(f"55.3g: 3-model score_adj={_full_out.get('score_adjustment')} (want 12)")
+
+# 55.3h: source-marker — funnel appends † for thin-model rows
+if 'cfv_thin_models' in _mf_v126_src and '"†"' in _mf_v126_src:
+    passed += 1
+    print("  ✓ 55.3h master_funnel appends '†' marker for thin-model rows")
+else:
+    failed += 1
+    failures.append("55.3h: master_funnel missing '†' marker logic for thin-model")
+
+# 55.3i: source-marker — engine has MIN_MODELS = 3 constant
+if "MIN_MODELS = 3" in _fve_src55:
+    passed += 1
+    print("  ✓ 55.3i fair_value_engine has MIN_MODELS = 3 constant")
+else:
+    failed += 1
+    failures.append("55.3i: fair_value_engine missing MIN_MODELS = 3 constant")
+
+# ── 55.4: NPM Q rename to Q (latest) / Q-1 / Q-2 ───────────────────────
+_eg_v126_path = _os55.path.join(_proj_root55, "reporting", "excel_generator.py")
+with open(_eg_v126_path) as _fh:
+    _eg_v126_src = _fh.read()
+
+# 55.4a: new column headers present
+if '"NPM Q (latest) %"' in _eg_v126_src:
+    passed += 1
+    print("  ✓ 55.4a 'NPM Q (latest) %' header present in excel_generator")
+else:
+    failed += 1
+    failures.append("55.4a: 'NPM Q (latest) %' header missing")
+if '"NPM Q-1 %"' in _eg_v126_src and '"NPM Q-2 %"' in _eg_v126_src:
+    passed += 1
+    print("  ✓ 55.4b 'NPM Q-1 %' and 'NPM Q-2 %' headers present")
+else:
+    failed += 1
+    failures.append("55.4b: NPM Q-1 / Q-2 headers missing")
+
+# 55.4c: old labels gone from FULL_COLS tuple format
+if '"NPM Q1 %",9,"npm_q1"' in _eg_v126_src:
+    failed += 1
+    failures.append("55.4c: old 'NPM Q1 %' tuple still present in FULL_COLS")
+else:
+    passed += 1
+    print("  ✓ 55.4c Old 'NPM Q1 %' FULL_COLS tuple removed")
+
+# 55.4d: tooltip_formatter has new keys
+_tf_v126_path = _os55.path.join(_proj_root55, "reporting", "tooltip_formatter.py")
+with open(_tf_v126_path) as _fh:
+    _tf_v126_src = _fh.read()
+if '"NPM Q (latest) %": (' in _tf_v126_src:
+    passed += 1
+    print("  ✓ 55.4d Tooltip dict has 'NPM Q (latest) %' entry")
+else:
+    failed += 1
+    failures.append("55.4d: 'NPM Q (latest) %' tooltip entry missing")
+
+# 55.4e: old tooltip keys removed
+if '"NPM Q1 %": (' in _tf_v126_src:
+    failed += 1
+    failures.append("55.4e: old '\"NPM Q1 %\":' tooltip dict entry still present")
+else:
+    passed += 1
+    print("  ✓ 55.4e Old 'NPM Q1 %' tooltip dict entry removed")
+
+# 55.4f: DB column names UNCHANGED (npm_q1/q2/q3 are still the keys)
+if '"npm_q1"' in _eg_v126_src and '"npm_q2"' in _eg_v126_src and '"npm_q3"' in _eg_v126_src:
+    passed += 1
+    print("  ✓ 55.4f DB column keys (npm_q1/q2/q3) preserved (only display labels changed)")
+else:
+    failed += 1
+    failures.append("55.4f: DB column keys changed — would require schema migration")
+
+# ── 55.5: Placeholder string standardization ──────────────────────────
+# All three "no analysis" cases use [AI <verb> — <reason>] format.
+
+# 55.5a: AVOID-skip placeholder uses standardized format
+if '[AI skipped — verdict AVOID' in _mf_v126_src:
+    passed += 1
+    print("  ✓ 55.5a AVOID-skip placeholder: '[AI skipped — verdict AVOID, ...]'")
+else:
+    failed += 1
+    failures.append("55.5a: AVOID-skip placeholder not in standardized format")
+
+# 55.5b: Default Analysis pending uses standardized format
+if '[AI not yet generated — Analysis pending]' in _mf_v126_src:
+    passed += 1
+    print("  ✓ 55.5b Default placeholder: '[AI not yet generated — Analysis pending]'")
+else:
+    failed += 1
+    failures.append("55.5b: Default Analysis pending not in standardized format")
+
+# 55.5c: Old "Analysis pending." (with trailing period, no brackets) is gone
+if '"Analysis pending."' in _mf_v126_src:
+    failed += 1
+    failures.append("55.5c: old 'Analysis pending.' string still present")
+else:
+    passed += 1
+    print("  ✓ 55.5c Old 'Analysis pending.' (un-bracketed) removed")
+
+# 55.5d: ai_analyst quota-skip placeholder uses standardized format
+_ai_path = _os55.path.join(_proj_root55, "ai", "ai_analyst.py")
+with open(_ai_path) as _fh:
+    _ai_src = _fh.read()
+if '[AI skipped — Gemini API quota exhausted' in _ai_src:
+    passed += 1
+    print("  ✓ 55.5d Quota-skip placeholder: '[AI skipped — Gemini API quota exhausted ...]'")
+else:
+    failed += 1
+    failures.append("55.5d: quota-skip placeholder not in standardized format")
+
+# 55.5e: Old "[Batch N skipped" prefix is gone
+if '[Batch ' in _ai_src and 'skipped' in _ai_src:
+    # check more precisely
+    import re as _re55
+    if _re55.search(r'\[Batch \d+ skipped', _ai_src):
+        failed += 1
+        failures.append("55.5e: old '[Batch N skipped' prefix still present in ai_analyst")
+    else:
+        passed += 1
+        print("  ✓ 55.5e Old '[Batch N skipped — ...]' prefix removed")
+else:
+    passed += 1
+    print("  ✓ 55.5e Old '[Batch N skipped' prefix removed")
+
+# 55.5f: All standardized strings start with "[AI " literal
+import re as _re55b
+_ai_placeholders = _re55b.findall(r'"\[AI [^"]*"', _mf_v126_src + _ai_src)
+if len(_ai_placeholders) >= 3:
+    passed += 1
+    print(f"  ✓ 55.5f Found {len(_ai_placeholders)} placeholders starting with '[AI ' "
+          "(consistent format)")
+else:
+    failed += 1
+    failures.append(f"55.5f: only {len(_ai_placeholders)} '[AI ' placeholders found")
 
 
 

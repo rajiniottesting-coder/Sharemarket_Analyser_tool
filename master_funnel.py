@@ -1778,9 +1778,13 @@ def run_master_pipeline():
                 stock["obv_signal"] = obv_s or "—"
                 stock["above_vwap"] = vwap_s or "—"
                 stock["support_1"]  = round(float(s1), 2) if s1 else 0
-                stock["support_2"]  = round(float(s2), 2) if s2 else 0
+                # v12.6 (#6): support_2/resist_2 may legitimately be 0 in
+                # the DB when (a) history is too short, or (b) prior-window
+                # max ≈ recent 20-day max (collapsed-into-R1). In both cases
+                # we want the cell to render "—" rather than "0.00".
+                stock["support_2"]  = round(float(s2), 2) if s2 else "—"
                 stock["resist_1"]   = round(float(r1), 2) if r1 else 0
-                stock["resist_2"]   = round(float(r2), 2) if r2 else 0
+                stock["resist_2"]   = round(float(r2), 2) if r2 else "—"
 
             # ── Technical alignment bonus for priority_score ─────────────────
             # Rewards stocks where Supertrend AND MACD are both BUY
@@ -2706,6 +2710,13 @@ def run_master_pipeline():
             # 200 % MoS value-play apart from a clipped model output.
             if stock.get("cfv_capped"):
                 stock["mos_label"] = stock["mos_label"] + "*"
+            # v12.6 (#4): append `†` when the FV engine fired fewer than
+            # MIN_MODELS valuation lenses (n_models < 3). The CFV value
+            # is still shown but the user is alerted that the FV evidence
+            # is thin — and the engine has already zeroed score_adjustment
+            # so the composite score doesn't get a false-confidence bonus.
+            if stock.get("cfv_thin_models"):
+                stock["mos_label"] = stock["mos_label"] + "†"
 
             # Chart Pattern — simple candle pattern from OHLC (no external data needed)
             if not stock.get("chart_pattern") or stock.get("chart_pattern") == "—":
@@ -2904,10 +2915,14 @@ def run_master_pipeline():
         # Saves Gemini quota (observed ~8-10% waste on stocks the scoring
         # engine already flagged below the 38 AVOID floor). The skipped stocks
         # receive a fixed placeholder message for Block H instead of a blank.
+        # v12.6 (#14): standardised placeholder format. All three "no
+        # analysis" cases (default-pending / AVOID-skip / quota-skip) now
+        # start with "[AI " and bracket the reason — easier to grep and
+        # filter, easier for users to interpret at a glance.
         _AVOID_PLACEHOLDER = (
-            "[AI Skipped — verdict=AVOID: composite score below 38 floor. "
-            "Stock failed the universal quality bar — no research value in "
-            "generating a Block H narrative. See the Verdict, Score, and "
+            "[AI skipped — verdict AVOID, score below 38 floor. "
+            "No research value in generating a Block H narrative for a stock "
+            "that failed the universal quality bar — see Verdict, Score, and "
             "forensic columns for the drop reasons.]"
         )
         _ai_input_stocks = []   # stocks that will be sent to Gemini
@@ -2943,7 +2958,7 @@ def run_master_pipeline():
                 stock["Analysis_Summary_Block_H"] = ai_lines[_ai_cursor]
                 _ai_cursor += 1
             else:
-                stock["Analysis_Summary_Block_H"] = "Analysis pending."
+                stock["Analysis_Summary_Block_H"] = "[AI not yet generated — Analysis pending]"
 
         # Format investor cards for text report
         final_cards_for_display = []
