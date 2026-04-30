@@ -141,7 +141,10 @@ GOLD_COLS = [
     # Kept in stock dict as 'upside' key for backward compat with scorer and Trade Summary.
     ("MoS Label",20,"mos_label"),("P/E",9,"pe"),("PEG",9,"peg"),
     ("ROE %",9,"roe"),("D/E",9,"debt_equity"),("PAT YoY %",10,"pat_yoy"),
-    ("F-Score /9",11,"piotroski_f"),
+    # v12.5: renamed from "F-Score /9" to "Piotroski F /9" to match the
+    # Full Dashboard. Same data, same key — just a label sync so the
+    # Glossary entry "Piotroski F /9" applies to both sheets.
+    ("Piotroski F /9",13,"piotroski_f"),
     ("Early Signals",42,"early_signals"),("Smart Money",28,"smart_money_signals"),
     ("Sector Stage",11,"rotation_stage"),("Supertrend",12,"supertrend"),
     ("RSI (14)",9,"rsi"),("Pattern",24,"chart_pattern"),
@@ -416,7 +419,10 @@ GLOSSARY_DATA = [
      "Source: (inventory + receivables − payables) / revenue × 365. "
      "v10.15 FIX #3: capped at ±500 days. Computation skipped when revenue "
      "< ₹0.1 Cr (prevents arithmetic noise — EMAMIREAL was showing 16,821 "
-     "days = 46 years before fix).",
+     "days = 46 years before fix). "
+     "v12.5: skipped entirely (renders '—') for Banks / NBFCs / HFCs / "
+     "Insurance — the metric is meaningless for finance-sector stocks. "
+     "TATACAP showed 7,739 days, FUSION 3,216 in prior runs.",
      "Full Dashboard"),
     ("SHAREHOLDING","Promoter %",
      "Promoter holding share. <25% = low conviction (consider Ownership "
@@ -477,7 +483,7 @@ GLOSSARY_DATA = [
      "more volatile; higher = more liquid but less concentrated control.",
      "Full Dashboard"),
     ("QUALITY SCORES","Piotroski F /9","9-point business health score computed from free yfinance data (Session 14 wire-up). ≥7=strong, ≤3=weak. Typical distribution on a real run: 4-8 range","All sheets"),
-    ("QUALITY SCORES","Altman Z","Bankruptcy predictor. >2.99=safe, <1.81=distress zone. Requires paid balance-sheet feed (working capital, retained earnings, EBIT, total liabilities, total assets) — displays '—' when missing","Full Dashboard"),
+    ("QUALITY SCORES","Altman Z","Bankruptcy predictor. >2.99=safe, <1.81=distress zone. Requires paid balance-sheet feed (working capital, retained earnings, EBIT, total liabilities, total assets) — displays '—' when missing. v12.5: clamped at 10 (Z>7 already signals exceptional safety; >10 values in production were typically unit-mismatch artefacts in the X4 = mcap/total_liab component).","Full Dashboard"),
     ("QUALITY SCORES","Beneish M","Manipulation risk score. >-2.22=risk, <-2.22=clean. Requires paid balance-sheet feed (NI from ops, CFO, total assets) — displays '—' when missing","Full Dashboard"),
     ("PIPELINE / OB","OB/Bill Ratio","Order Book ÷ Revenue. >1.5× = strong pipeline","All sheets"),
     ("EARLY DETECTION","Early Entry /100","12 signals: quiet accum, SME migration, analyst imminent, sector Stage 1. Session 23: low EE on Gold is OK — VALUE archetype (high Score + MoS + clean safety) qualifies without momentum signals","All sheets"),
@@ -581,7 +587,10 @@ GLOSSARY_DATA = [
      "Text label for MoS %: "
      "EXCEPTIONAL VALUE (>40%) | STRONG VALUE (>25%) | GOOD VALUE (>10%) | "
      "FAIR VALUE (0–10%) | SLIGHT PREMIUM (0 to -15%) | OVERVALUED (-15% to -30%) | "
-     "SIGNIFICANTLY OVERVALUED (<-30%)","All sheets"),
+     "SIGNIFICANTLY OVERVALUED (<-30%). "
+     "v12.5: a trailing '*' on the label (e.g., 'EXCEPTIONAL VALUE*') signals "
+     "the CFV hit the 3× CMP safety cap — the underlying models projected even "
+     "higher upside but the cap fired. Treat such cells with extra scrutiny.","All sheets"),
     ("FAIR VALUE","M1: DCF FV (₹)","3-Stage Discounted Cash Flow. WACC = 10Y GSec + Beta×5.5%. Terminal growth 4.5%. Best for steady compounders. Session 19 cap: M1 limited to 4× CMP so low-beta stocks (e.g., SBIN β=0.2) don't produce absurd DCF outputs. v12.2: eps now sanitized via _sf() (handles '—' / 'N/A' / None).","Full Dashboard"),
     ("FAIR VALUE","M2: Graham FV (₹)","Graham Number = √(22.5 × EPS × BVPS). Benjamin Graham's intrinsic value formula. Best for value stocks with positive EPS. v12.2: eps/bvps sanitized via _sf(); BVPS fallback derives from close/PB if missing.","Full Dashboard"),
     ("FAIR VALUE","M3: PE FV (₹)","EPS × Sector 5yr median P/E. Mean-reversion model — assumes P/E reverts to sector norm. v12.2: 28-sector benchmarks via SECTOR_ALIASES — production sectors (Basic Materials → Metals PE 12, Industrials → Infra PE 22, Communication Services → Telecom PE 22, Consumer Cyclical/Defensive → Consumer PE 40, Financial Services → Financial PE 20, Real Estate → Realty PE 25) now resolve correctly.","Full Dashboard"),
@@ -676,7 +685,8 @@ GLOSSARY_DATA = [
      "Often proxy-computed from Operating Cash Flow when FCF not available.","Full Dashboard"),
     ("FIN HEALTH","CCC Days",
      "Cash Conversion Cycle = DIO + DSO − DPO. Days to convert inventory investment into cash. "
-     "Lower = better. <30 days = excellent. No free source — requires AR/AP/inventory data.","Full Dashboard"),
+     "Lower = better. <30 days = excellent. No free source — requires AR/AP/inventory data. "
+     "v12.5: renders '—' for Banks/NBFCs/HFCs/Insurance (metric not meaningful for finance sector).","Full Dashboard"),
 
     # ── CAP ALLOC ─────────────────────────────────────────────────────────────
     ("CAP ALLOC","Div Yield %",
@@ -824,11 +834,10 @@ GLOSSARY_DATA = [
      "Requires Gemini API credits.","Full Dashboard"),
 
     # ── GOLD SHEET SPECIFIC ────────────────────────────────────────────────────
-    ("SCORES","F-Score /9",
-     "Proxy Financial Health Score (0–9) computed from available data. "
-     "P1: ROA>0 | P2: FCF>0 | P3: PAT YoY>0 | P4: D/E<1 | P5: Current Ratio>1 | "
-     "P6: Gross Margin>15% | P7: Rev YoY>0 | P8: ROE>10% | P9: Cash>0. "
-     "≥7=Strong | 4–6=Average | ≤3=Weak | —=Insufficient data.","Gold Sheet"),
+    # v12.5: removed the duplicate "F-Score /9" glossary entry that used
+    # to live here for the Gold sheet. The Gold column is now labelled
+    # "Piotroski F /9" (matches Full Dashboard), so the QUALITY SCORES
+    # entry above this block applies to both sheets.
     ("SCORES","Spike /6",
      "Spike Score 0–6: count of institutional triggers fired. "
      "Triggers: Value Breakout | Perfect Storm | Institutional Accumulation | "
@@ -1621,12 +1630,38 @@ class ExcelGeneratorV6:
                 _gcol_color[_ci] = _col
 
         ws.row_dimensions[5].height=38
+
+        # v12.5: dynamic red-header demotion — same coverage logic as the
+        # Full Dashboard (≥30 % of rows must carry real data). Pre-v12.5
+        # the Gold sheet used a static `if h in NO_FREE_SOURCE_COLS` check,
+        # which made columns red even when populated. Now matches the
+        # Full Dashboard so a column populated for the (small) Gold cohort
+        # demotes from red regardless of its NO_FREE_SOURCE_COLS membership.
+        _gold_preview = gdf.to_dict("records")
+        _gold_total   = max(1, len(_gold_preview))
+        _GOLD_COV_MIN = 0.30
+        _gold_has_data = {}
+        for (_h, _w, _key) in GOLD_COLS:
+            if _h not in NO_FREE_SOURCE_COLS:
+                continue
+            _real = 0
+            for _stk in _gold_preview:
+                _v = _stk.get(_key)
+                if _v is None: continue
+                if _v in ("", "—", "--", "N/A", "STABLE"): continue
+                if _v in (0, 0.0, "0", "0.0"): continue
+                _real += 1
+            _gold_has_data[_h] = (_real / _gold_total) >= _GOLD_COV_MIN
+
         for i,(h,w,_) in enumerate(GOLD_COLS,1):
             ws.column_dimensions[get_column_letter(i)].width=w
             hdr_bg = _gcol_color.get(i, "92400E")
-            if h in NO_FREE_SOURCE_COLS:
+            if h in NO_FREE_SOURCE_COLS and not _gold_has_data.get(h, False):
+                # Bold red — column has no real data in this run
                 c=ws.cell(5,i,h); c.fill=_f("991B1B"); c.font=_ft(True,"FEE2E2",8)
             else:
+                # Normal section colour — includes previously-red cols that
+                # NOW have data on the Gold cohort.
                 c=ws.cell(5,i,h); c.fill=_f(hdr_bg); c.font=_ft(True,WHITE,8)
             c.border=_border()
             c.alignment=_al("center","center",True)

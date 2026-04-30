@@ -1554,4 +1554,215 @@ These remain follow-up candidates:
 
 ---
 
-*Last updated: April 2026 · v12.4 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 26. v12.5 RELEASE — Quality-of-life fixes
+
+### Summary
+
+Six follow-up fixes from the post-v12.4 issue list. Where v12.4 was production-blocker triage, v12.5 is the next layer down — visual polish, dedup correctness, sanity caps. None of these are scoring-behavior changes.
+
+| Fix | Issue | File(s) touched |
+|---|---|---|
+| #5  MoS cap marker (`*` on label)   | `analysis/fair_value_engine.py` + `master_funnel.py` |
+| #7  Gold sheet dynamic red headers  | `reporting/excel_generator.py` |
+| #8  Gold rename F-Score → Piotroski | `reporting/excel_generator.py` + `reporting/tooltip_formatter.py` |
+| #10 Early Mover dedup prefix-match  | `master_funnel.py` |
+| #12 Altman Z sanity cap at 10       | `analysis/forensics_engine.py` |
+| #13 CCC Days `—` for finance sector | `analysis/forensics_engine.py` |
+
+All are locked behind 30 new regression tests in **Group 54** of `test_v11.0.2_full_withdummies.py`. Total test count: **409 → 439**, all passing.
+
+### v12.5 changes
+
+#### 26.1 MoS cap marker (Issue #5)
+
+The FV engine has a Session 19 safety cap: when composite CFV exceeds 3× CMP, it gets clipped to exactly 3× CMP. Pre-v12.5, this was silent — a row showing `EXCEPTIONAL VALUE` could either be a genuine deep-value play (CFV / CMP = 1.6× say) or a clipped extreme where the underlying models were projecting 5× or 10× upside.
+
+```python
+# analysis/fair_value_engine.py — v12.5 patch
+cfv_capped = False
+if cmp > 0 and cfv > cmp * 3:
+    cfv = cmp * 3
+    cfv_capped = True
+# ... build mos_lbl from mos buckets ...
+if cfv_capped:
+    mos_lbl = mos_lbl + "*"
+return {
+    ...
+    "mos_label":  mos_lbl,
+    "cfv_capped": cfv_capped,    # NEW: surfaced for display layer
+}
+```
+
+`master_funnel.py` overwrites `mos_label` with its own (shorter) bucket scheme — the patch checks the engine's flag and re-applies the `*`:
+
+```python
+if   mos > 40:  stock["mos_label"] = "EXCEPTIONAL"
+# ... rest of buckets ...
+if stock.get("cfv_capped"):
+    stock["mos_label"] = stock["mos_label"] + "*"
+```
+
+So the user now sees `EXCEPTIONAL*` for clipped rows and `EXCEPTIONAL` for genuine high-MoS plays.
+
+**Tooltip + glossary** updated in both `tooltip_formatter.py:194` and `excel_generator.py:583` to explain the `*` marker.
+
+#### 26.2 Gold sheet dynamic red headers (Issue #7)
+
+Pre-v12.5 Gold sheet:
+
+```python
+for i,(h,w,_) in enumerate(GOLD_COLS,1):
+    if h in NO_FREE_SOURCE_COLS:
+        c=ws.cell(5,i,h); c.fill=_f("991B1B")    # always red
+    else:
+        c=ws.cell(5,i,h); c.fill=_f(hdr_bg)
+```
+
+The Full Dashboard already had coverage-based dynamic detection (v12.4 Issue #1 fix) — Gold didn't. Result: any column in `NO_FREE_SOURCE_COLS` was always red on Gold even when populated for the (small) gold cohort.
+
+Post-v12.5 — Gold sheet uses the same coverage logic with `_GOLD_COV_MIN = 0.30`:
+
+```python
+_gold_preview = gdf.to_dict("records")
+_gold_total   = max(1, len(_gold_preview))
+_GOLD_COV_MIN = 0.30
+_gold_has_data = {}
+for (_h, _w, _key) in GOLD_COLS:
+    if _h not in NO_FREE_SOURCE_COLS: continue
+    _real = 0
+    for _stk in _gold_preview:
+        # ... same exclusion logic as Full Dashboard ...
+    _gold_has_data[_h] = (_real / _gold_total) >= _GOLD_COV_MIN
+
+for i,(h,w,_) in enumerate(GOLD_COLS,1):
+    if h in NO_FREE_SOURCE_COLS and not _gold_has_data.get(h, False):
+        c=ws.cell(5,i,h); c.fill=_f("991B1B")
+    else:
+        c=ws.cell(5,i,h); c.fill=_f(hdr_bg)
+```
+
+#### 26.3 Gold rename F-Score → Piotroski (Issue #8)
+
+Pre-v12.5: Full Dashboard had `"Piotroski F /9"` (width 13), Gold had `"F-Score /9"` (width 11). Same data, same `piotroski_f` key — different label.
+
+Post-v12.5: both sheets use `"Piotroski F /9"` (width 13). Three orphaned doc entries cleaned up:
+
+- `excel_generator.py:830` — Gold-only GLOSSARY tuple `("SCORES","F-Score /9", …)` removed
+- `tooltip_formatter.py:125` — orphaned `"F-Score /9": (…)` tooltip removed
+- `tooltip_formatter.py:902` — `"F-Score /9"` removed from `_ICON_FAMILIES["🎯"]` set
+
+The existing `"Piotroski F /9"` entries in both files now serve both sheets.
+
+#### 26.4 Early Mover dedup prefix-match (Issue #10)
+
+Pre-v12.5 dedup in `master_funnel.py`:
+
+```python
+_early_badge = stock.get("early_mover_badge", "")
+if _early_badge and _early_badge not in _early_sigs:
+    _early_sigs.append(str(_early_badge))
+_early_label = stock.get("early_label", "")
+if (_early_label and _early_label not in ("EMERGING", "—", "")
+        and _early_label not in _early_sigs):
+    _early_sigs.append(str(_early_label))
+```
+
+Bug: the badge is `"EARLY MOVER"` and the label is `"EARLY MOVER — Act before the crowd"`. They are different strings so exact-match dedup didn't catch the overlap. Production: 8 stocks in the prior run had both appended, e.g.:
+
+`spike_triggers | EARLY MOVER | EARLY MOVER — Act before the crowd`
+
+Post-v12.5:
+
+```python
+def _has_prefix(sig_list, prefix):
+    return any(s.upper().startswith(prefix.upper()) for s in sig_list)
+
+_early_badge = stock.get("early_mover_badge", "")
+if _early_badge and not _has_prefix(_early_sigs, "EARLY MOVER"):
+    _early_sigs.append(str(_early_badge))
+_early_label = stock.get("early_label", "")
+if (_early_label and _early_label not in ("EMERGING", "—", "")
+        and not _has_prefix(_early_sigs, "EARLY MOVER")):
+    _early_sigs.append(str(_early_label))
+```
+
+If any signal already starts with `"EARLY MOVER"`, neither the badge nor the label gets appended again.
+
+#### 26.5 Altman Z sanity cap at 10 (Issue #12)
+
+`forensics_engine.py:251` `calculate_altman_z` produces a 5-component sum. The X4 component (`mcap / total_liab`) is the unit-mismatch hot spot — when one figure is in raw rupees and the other in Cr, X4 explodes. Production audit: ALIVUS 14.69, GOPAL 17.27, CPEDU 26.70 (typical max for healthy companies is 5–7).
+
+Post-v12.5: Z clamped to `[0, 10]` after the weighted sum:
+
+```python
+z = 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
+if z > 10:
+    z = 10
+return round(z, 2)
+```
+
+The existing `if ta <= 0 or tl <= 0: return 0.0` insufficient-data path is preserved unchanged. Distressed stocks (Z < 1.81) are unaffected — the clamp only fires on the upper end.
+
+**Tooltip + glossary** updated in `tooltip_formatter.py:552` and `excel_generator.py:483` to explain the cap.
+
+#### 26.6 CCC Days finance-sector skip (Issue #13)
+
+CCC = `inventory_days + receivable_days − payable_days` is meaningless for Banks / NBFCs / HFCs / Insurance. They don't carry inventory, and their "receivables" are loans measured by a different convention. Production audit: TATACAP showed 7,739 days, FUSION (microfinance) 3,216 days, LICHSGFIN −267 days.
+
+Post-v12.5: `calculate_accounting_forensics` reads `row.get('sector', '')`, lower-cases it, and checks for any of these keywords:
+
+```python
+_sector_raw = str(row.get('sector', '') or '').lower()
+_is_finance = any(kw in _sector_raw for kw in (
+    'financial', 'finance', 'bank', 'nbfc', 'insurance', 'housing finance'
+))
+if _is_finance:
+    results['ccc']      = "—"
+    results['ccc_days'] = "—"
+else:
+    # ... existing computation ...
+```
+
+Match is substring-based and case-insensitive, so `"Financial Services"`, `"FINANCIAL SERVICES"`, `"Bank"`, `"Insurance"`, `"Housing Finance"`, `"NBFC"` all hit. Non-finance sectors compute CCC normally.
+
+**Tooltip + glossary** updated in `tooltip_formatter.py:464` and `excel_generator.py:415, 686` (two glossary blocks).
+
+### What was tested
+
+`test_v11.0.2_full_withdummies.py` Group 54 — 30 new tests:
+
+- **54.1 (a–f)** MoS cap marker: capped case (cfv_capped=True, cfv=300, label has `*`), non-capped case (cfv_capped=False, no `*`), source-marker checks (6 tests)
+- **54.2 (a–b)** Gold sheet dynamic headers: source-marker + threshold consistency (2 tests)
+- **54.3 (a–d)** F-Score rename: `"Piotroski F /9"` appears in both lists, orphaned glossary tuple absent, orphaned tooltip absent, no leftover literal in `tooltip_formatter.py` (4 tests)
+- **54.4 (a–e)** Early Mover dedup: badge prevents label, label prevents badge, case-insensitivity, no false-positives, source-marker (5 tests)
+- **54.5 (a–e)** Altman Z clamp: unit-mismatch case clamped to 10, healthy company unchanged, distressed company unchanged, insufficient-data still 0.0, source-marker (5 tests)
+- **54.6 (a–h)** CCC finance-sector skip: NBFC/Bank/Insurance/HFC all skip, Consumer Cyclical computes normally, empty sector computes, case-insensitivity, source-marker (8 tests)
+
+Test 44.2 was also updated — the FV composite output now has 8 keys (added `cfv_capped`) instead of 7.
+
+### Verification matrix
+
+| Configuration | Group 1–53 | Group 54 | Final |
+|---|---|---|---|
+| Patched code + Group 54 | 409 ✓ | 30 ✓ | **439 / 439** pass, exit 0 |
+
+### Issues attempted but deferred
+
+- **Issue #3** (0 vs missing ambiguity) — investigated. The root cause is `COALESCE(fm.field, 0)` at the SQL level in `master_funnel.py:1041–1063`, which destroys the distinction before data reaches Python. Fixing it requires removing those `COALESCE`s and reworking every downstream `_fvn(v)` / `_pct(v)` consumer to handle `None` — too risky for a quality-of-life release. Documented as a candidate for a dedicated future release.
+
+### Issues remaining as judgment calls
+
+- **#2** mos_label dual-defined (engine + funnel use different bucket schemes) — pick a canonical scheme
+- **#4** FV CFV thin-model guard (currently produces a CFV from 1–2 models with no quality threshold) — pick min_models threshold and below-threshold behaviour
+- **#11** NPM Q1/Q2/Q3 column-label readability (Q1 is most-recent per tooltip but L→R reading order is chronological) — rename labels OR swap data
+- **#14** three different "no analysis" placeholder strings — pick canonical string
+
+### Operational notes
+
+- The `*` marker on `mos_label` is purely informational — does not affect scoring or verdict logic. Stocks that hit the cap still get their normal MoS-bucket-based `score_adjustment`. The marker is a transparency signal so users can interpret the displayed CFV correctly.
+- The CCC sector check is keyword-based, not exact-match. If a new sector taxonomy introduces sectors like `"Financial Technology"` (fintech), the keyword `"financial"` will match it and skip CCC. If that's wrong, the sector check will need to be tightened.
+- The Altman Z clamp at 10 is specifically for the upper end. The model's distress-zone semantics (Z < 1.81 = distress, Z < 2.99 = grey zone) are unchanged. The clamp doesn't affect any existing scoring logic that thresholds against these zones — they all sit well below 10.
+
+---
+
+*Last updated: April 2026 · v12.5 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

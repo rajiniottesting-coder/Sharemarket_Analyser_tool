@@ -2701,6 +2701,11 @@ def run_master_pipeline():
             elif mos > 0:   stock["mos_label"] = "THIN"
             elif mos > -15: stock["mos_label"] = "SLIGHT PREMIUM"
             else:           stock["mos_label"] = "SIGNIFICANT PREMIUM"
+            # v12.5: preserve the cfv_capped marker (set by FV engine when
+            # CFV hit the 3× CMP cap) — append `*` so users can tell a
+            # 200 % MoS value-play apart from a clipped model output.
+            if stock.get("cfv_capped"):
+                stock["mos_label"] = stock["mos_label"] + "*"
 
             # Chart Pattern — simple candle pattern from OHLC (no external data needed)
             if not stock.get("chart_pattern") or stock.get("chart_pattern") == "—":
@@ -2868,12 +2873,20 @@ def run_master_pipeline():
                     s = s.strip()
                     if s and s not in _early_sigs:
                         _early_sigs.append(s)
+            # v12.5: prefix-match dedup — pre-fix, the badge ("EARLY MOVER")
+            # and the label ("EARLY MOVER — Act before the crowd") were
+            # different strings, so both got appended for 8 stocks in the
+            # production run. Now we skip the badge if any existing signal
+            # already starts with "EARLY MOVER" (and same for the label).
+            def _has_prefix(sig_list, prefix):
+                return any(s.upper().startswith(prefix.upper()) for s in sig_list)
+
             _early_badge = stock.get("early_mover_badge", "")
-            if _early_badge and _early_badge not in _early_sigs:
+            if _early_badge and not _has_prefix(_early_sigs, "EARLY MOVER"):
                 _early_sigs.append(str(_early_badge))
             _early_label = stock.get("early_label", "")
             if (_early_label and _early_label not in ("EMERGING", "—", "")
-                    and _early_label not in _early_sigs):
+                    and not _has_prefix(_early_sigs, "EARLY MOVER")):
                 _early_sigs.append(str(_early_label))
             stock["early_signals"] = " | ".join(_early_sigs) if _early_sigs else "—"
 

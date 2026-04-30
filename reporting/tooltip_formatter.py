@@ -122,9 +122,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
                         "Promoter QoQ up +1, FII buying 3Q +1."),
     "Storm /10": ("≥8 Storm Safe | ≥5 Moderate | <5 High Risk",
                   "Defensive quality — higher score = more resilient in downturns."),
-    "F-Score /9": ("≥7 strong | ≤3 weak",
-                   "Piotroski F-Score — 9 criteria across Profitability (4),\n"
-                   "Leverage/Liquidity (3), and Operating Efficiency (2)."),
+    # v12.5: F-Score column renamed to Piotroski F /9 (matches Full
+    # Dashboard); the tooltip entry that used to live here was removed.
+    # The Piotroski F /9 tooltip below now serves both sheets.
 
     # ── Price / momentum ────────────────────────────────────────────────────
     "CMP (₹)": ("Current market price",
@@ -191,9 +191,13 @@ TIPS: Dict[str, Tuple[str, str]] = {
               "Effectively capped near 200% because CFV is capped at 3× CMP\n"
               "(Session 19 safety net). If MoS ≈200%, verify inputs rather\n"
               "than treating it as a guaranteed bargain."),
-    "MoS Label": ("Valuation summary",
+    "MoS Label": ("Valuation summary (*=CFV hit 3× CMP cap)",
                   "EXCEPTIONAL >40% | STRONG >25% | ADEQUATE >10% | THIN 0-10%\n"
-                  "SLIGHT PREMIUM −10% to 0% | SIGNIFICANT PREMIUM <−10%"),
+                  "SLIGHT PREMIUM −10% to 0% | SIGNIFICANT PREMIUM <−10%\n"
+                  "v12.5: a trailing `*` (e.g., 'EXCEPTIONAL*') means CFV was\n"
+                  "clipped to 3× CMP — the underlying models projected even\n"
+                  "higher upside but the safety cap fired. Treat with extra\n"
+                  "scrutiny: the model average is unusually optimistic."),
     # v10.8: 'Upside to FV %' and 'Upside %' removed entirely — duplicated MoS %
     # (same formula, same number). MoS % is the single source of truth now.
     "M1: DCF FV (₹)": ("Discounted Cash Flow fair value — 30% weight in CFV",
@@ -457,7 +461,7 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "Score: >0 = +2 Storm, +3 Safety | <0: cash consuming."),
     "FCF Yield %": (">6% undervalued | >3% fair",
                     "Score: >6% = +6 | >3% = +3 | <0% = −5"),
-    "CCC Days": ("Lower / negative = more efficient",
+    "CCC Days": ("Lower / negative = more efficient ('—' for finance sector)",
                  "Cash Conversion Cycle = DIO + DSO − DPO.\n"
                  "Negative CCC = collects cash before paying suppliers.\n"
                  "Source: (inventory + receivables − payables) / revenue × 365\n"
@@ -466,7 +470,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "Display: v10.15 caps at ±500 days. Tiny-revenue denominators\n"
                  "previously produced 16,821 days (EMAMIREAL = 46 years —\n"
                  "arithmetic noise, not signal). If totalRevenue < 1000 the\n"
-                 "computation is skipped entirely and shown as 0 or '—'."),
+                 "computation is skipped entirely and shown as 0 or '—'.\n"
+                 "v12.5: skipped entirely for Banks/NBFCs/HFCs/Insurance —\n"
+                 "the metric is meaningless for finance-sector stocks (no\n"
+                 "inventory; loans aren't 'receivables' in the same sense).\n"
+                 "TATACAP showed 7,739 days, FUSION 3,216 in prior runs."),
     "Div Yield %": (">2% good income | >4% check sustainability",
                     ">2%: +1 Storm Score.\n"
                     "Display: '—' means company pays no dividend (v10.9).\n"
@@ -545,12 +553,17 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "Safety impact: F≥7 → +6, F=5–6 → +3.\n"
                        "Computed from free yfinance data (Session 14+20);\n"
                        "typical run distribution: 4–8, quality stocks 6–8."),
-    "Altman Z": (">2.99 safe | <1.81 distress zone",
+    "Altman Z": (">2.99 safe | <1.81 distress zone (capped at 10)",
                  "<1.81: Triggers anti-trigger guard (Spike suppressed).\n"
                  "Requires balance-sheet inputs (working capital, retained\n"
                  "earnings, EBIT, total assets, total liabilities) which\n"
                  "yfinance free data doesn't provide. Column displays '—'\n"
-                 "(em-dash) for stocks without the required BS feed."),
+                 "(em-dash) for stocks without the required BS feed.\n"
+                 "v12.5: clamped at 10 — values >10 (ALIVUS 14.69, GOPAL\n"
+                 "17.27, CPEDU 26.70 in prior runs) are typically\n"
+                 "unit-mismatch artefacts in the X4 component (mcap /\n"
+                 "total_liab) where one figure is in raw rupees and the\n"
+                 "other in Cr. Z>7 already signals exceptional safety."),
     "Beneish M": ("<−2.22 honest | >−2.22 possible manipulation",
                   ">−2.22: Triggers anti-trigger guard (Spike suppressed).\n"
                   "Requires net income, cash flow from operations, and total\n"
@@ -899,7 +912,7 @@ GROUP_TIPS: Dict[str, Tuple[str, str]] = {
 # ════════════════════════════════════════════════════════════════════════════
 _ICON_FAMILIES = {
     "🎯": {"Verdict", "Score /100", "Early Entry /100", "Spike Score /6", "Spike /6",
-           "Storm Score /10", "Storm /10", "F-Score /9", "Action Required",
+           "Storm Score /10", "Storm /10", "Action Required",
            "Gold-Tier Filter"},
     "💰": {"CFV (₹)", "FV Low (₹)", "FV High (₹)", "MoS %", "MoS Label",
            "P/E TTM", "P/E", "Earn Yield %",

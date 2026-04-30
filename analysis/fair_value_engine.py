@@ -414,8 +414,13 @@ class FairValueEngine:
             cfv = 0
 
         # Session 19: cap composite CFV at 3× CMP.
+        # v12.5: surface a `cfv_capped` flag so downstream display can mark
+        # the MoS Label with `*` — users can tell that 200 % MoS was clipped
+        # rather than the underlying model genuinely projecting 3× upside.
+        cfv_capped = False
         if cmp > 0 and cfv > cmp * 3:
             cfv = cmp * 3
+            cfv_capped = True
 
         cfv = round(cfv, 2)
 
@@ -439,6 +444,11 @@ class FairValueEngine:
         elif mos > -30: mos_lbl = "OVERVALUED"
         else:           mos_lbl = "SIGNIFICANTLY OVERVALUED"
 
+        # v12.5: append `*` to the label when the 3× CMP cap fired so users
+        # can tell genuine high-MoS value-plays apart from clipped extremes.
+        if cfv_capped:
+            mos_lbl = mos_lbl + "*"
+
         return {
             "cfv":              cfv,
             "cfv_low":          round(cfv * 0.85, 2) if cfv > 0 else 0,
@@ -447,4 +457,5 @@ class FairValueEngine:
             "mos_pct":          mos,
             "score_adjustment": score_adj,
             "upside":           upside,
+            "cfv_capped":       cfv_capped,    # v12.5: surfaced for display layer
         }

@@ -249,7 +249,15 @@ class ForensicsEngine:
     # ──────────────────────────────────────────────────────────────────────
     @staticmethod
     def calculate_altman_z(data):
-        """Altman Z-Score (5-variable). 0.0 = insufficient data."""
+        """Altman Z-Score (5-variable). 0.0 = insufficient data.
+
+        v12.5: capped at 10 — Z > 7 already signals exceptional safety, and
+        values 14-26 observed in production (ALIVUS 14.69, GOPAL 17.27,
+        CPEDU 26.70) are typically unit-mismatch artefacts in the X4
+        component (mcap / total_liabilities) where one figure is in raw
+        rupees and the other in Cr. Capping protects downstream scoring
+        without losing the "very safe" signal at the high end.
+        """
         ta = _num(data, 'total_assets', 'total_assets_cr')
         tl = _num(data, 'total_liabilities', 'total_liab_cr', 'total_liabilities_cr')
         if ta <= 0 or tl <= 0:
@@ -261,6 +269,11 @@ class ForensicsEngine:
             x4 = _num(data, 'mcap', 'mcap_cr') / tl
             x5 = _num(data, 'sales', 'revenue', 'q_rev_cr', 'total_revenue') / ta
             z = 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
+            # v12.5: clamp to [0, 10] — preserves negative-Z distress
+            # signals (returned 0 when ta or tl <= 0 above) and caps the
+            # implausible 15+ outliers from unit-mismatch artefacts.
+            if z > 10:
+                z = 10
             return round(z, 2)
         except (TypeError, ValueError, ZeroDivisionError):
             return 0.0
@@ -323,16 +336,30 @@ class ForensicsEngine:
         results = {}
 
         # 1. CASH CONVERSION CYCLE
-        inv = _num(row, 'inventory_days')
-        rec = _num(row, 'receivable_days')
-        pay = _num(row, 'payable_days')
-        if inv > 0 or rec > 0 or pay > 0:
-            _ccc = inv + rec - pay
-            results['ccc']      = round(_ccc, 1)
-            results['ccc_days'] = round(_ccc, 1)
-        else:
+        # v12.5: skip for finance-sector stocks. CCC = Inventory + Receivable
+        # − Payable days is meaningless for Banks / NBFCs / HFCs / Insurance:
+        # they don't carry inventory, and their "receivables" are loans
+        # measured by a different convention. Production audit showed
+        # TATACAP at 7,739 days, FUSION at 3,216 days (microfinance),
+        # LICHSGFIN at −267 days — all finance-sector outliers.
+        _sector_raw = str(row.get('sector', '') or '').lower()
+        _is_finance = any(kw in _sector_raw for kw in (
+            'financial', 'finance', 'bank', 'nbfc', 'insurance', 'housing finance'
+        ))
+        if _is_finance:
             results['ccc']      = "—"
             results['ccc_days'] = "—"
+        else:
+            inv = _num(row, 'inventory_days')
+            rec = _num(row, 'receivable_days')
+            pay = _num(row, 'payable_days')
+            if inv > 0 or rec > 0 or pay > 0:
+                _ccc = inv + rec - pay
+                results['ccc']      = round(_ccc, 1)
+                results['ccc_days'] = round(_ccc, 1)
+            else:
+                results['ccc']      = "—"
+                results['ccc_days'] = "—"
 
         # 2. SOLVENCY & COVERAGE
         total_debt = _num(row, 'total_debt_cr', 'total_debt')

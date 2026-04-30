@@ -2038,9 +2038,11 @@ _fv_check("44.1", "All 7 model keys present (excluding diagnostic metadata)",
           _model_keys, _expected_keys)
 
 _result = _fv.get_composite_fair_value(m, cmp=1000)
+# v12.5: added `cfv_capped` flag (True when CFV hit 3× CMP cap, drives `*`
+# marker on MoS Label). Output dict now has 8 keys, not 7.
 _expected_keys = {"cfv", "cfv_low", "cfv_high", "mos_label",
-                  "mos_pct", "score_adjustment", "upside"}
-_fv_check("44.2", "Composite output has all 7 expected keys",
+                  "mos_pct", "score_adjustment", "upside", "cfv_capped"}
+_fv_check("44.2", "Composite output has all 8 expected keys",
           set(_result.keys()), _expected_keys)
 
 _fv_check("44.3a", "cfv_low ≈ 0.85 × cfv",
@@ -3091,6 +3093,366 @@ if "last_claude_score" in _db_src and "claude_analysed" in _db_src:
 else:
     failed += 1
     failures.append("53.4e: DB column names changed — would require migration; revert if unintended")
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+# GROUP 54 — v12.5 Quality-of-Life Fixes (Issues #5, #7, #8, #10, #12, #13)
+# ══════════════════════════════════════════════════════════════════════
+# Six fixes from the residual-issue list. Issue #3 (0-vs-missing) was
+# attempted but deferred — it requires a SQL-layer COALESCE rewrite that
+# is too risky for a quality-of-life release. Issues #2, #4, #11, #14
+# remain as judgment calls awaiting product input.
+#
+#   54.1  MoS cap marker (#5)             — `*` flag on MoS Label
+#   54.2  Gold sheet dynamic headers (#7) — coverage-based demotion
+#   54.3  Gold F-Score → Piotroski (#8)   — label sync with Full Dashboard
+#   54.4  Early Mover dedup (#10)         — prefix-match vs exact-match
+#   54.5  Altman Z sanity cap (#12)       — clamp at 10
+#   54.6  CCC finance-sector skip (#13)   — `—` for Banks/NBFCs/HFCs/Insurance
+# ══════════════════════════════════════════════════════════════════════
+print("\n" + "═" * 70)
+print("GROUP 54 — v12.5 Quality-of-life fixes")
+print("═" * 70)
+
+import os as _os54
+import sys as _sys54
+_proj_root = _os54.path.dirname(_os54.path.abspath(__file__))
+if _proj_root not in _sys54.path:
+    _sys54.path.insert(0, _proj_root)
+
+# ── 54.1: MoS cap marker (#5) ───────────────────────────────────────────
+# When CFV > 3 × CMP, engine clips to 3×, sets cfv_capped=True, and
+# appends `*` to the MoS Label so users can tell genuine high-MoS
+# value-plays apart from clipped extremes.
+from analysis.fair_value_engine import FairValueEngine as _FVE54
+_fv54 = _FVE54()
+
+# Synthetic models that produce CFV > 3 × CMP
+_capped_models = {"M1_DCF": 600, "M2_Graham": 0, "M3_PE": 600, "M4_PB": 600,
+                  "M5_EV": 0, "M6_DDM": 0, "M7_PEG": 0}
+_capped_out = _fv54.get_composite_fair_value(_capped_models, cmp=100)
+if _capped_out["cfv_capped"] is True:
+    passed += 1
+    print(f"  ✓ 54.1a cfv_capped=True when CFV would exceed 3× CMP "
+          f"(cfv={_capped_out['cfv']}, cmp=100)")
+else:
+    failed += 1
+    failures.append(f"54.1a: cfv_capped={_capped_out['cfv_capped']} (want True); "
+                    f"cfv={_capped_out['cfv']} on cmp=100")
+if _capped_out["cfv"] == 300:
+    passed += 1
+    print(f"  ✓ 54.1b CFV correctly clipped to 3× CMP = 300")
+else:
+    failed += 1
+    failures.append(f"54.1b: CFV={_capped_out['cfv']} (want 300)")
+if _capped_out["mos_label"].endswith("*"):
+    passed += 1
+    print(f"  ✓ 54.1c MoS Label has `*` marker: {_capped_out['mos_label']!r}")
+else:
+    failed += 1
+    failures.append(f"54.1c: mos_label={_capped_out['mos_label']!r} missing `*` marker")
+
+# Negative case — CFV ≤ 3× CMP shouldn't get the marker
+_normal_models = {"M1_DCF": 120, "M3_PE": 120, "M4_PB": 120,
+                  "M2_Graham": 0, "M5_EV": 0, "M6_DDM": 0, "M7_PEG": 0}
+_normal_out = _fv54.get_composite_fair_value(_normal_models, cmp=100)
+if _normal_out["cfv_capped"] is False and not _normal_out["mos_label"].endswith("*"):
+    passed += 1
+    print(f"  ✓ 54.1d Non-capped case: cfv_capped=False, no `*` on label "
+          f"({_normal_out['mos_label']!r})")
+else:
+    failed += 1
+    failures.append(f"54.1d: cfv_capped={_normal_out['cfv_capped']} "
+                    f"label={_normal_out['mos_label']!r} (expected no marker)")
+
+# Source-marker check
+_fve_path = _os54.path.join(_proj_root, "analysis", "fair_value_engine.py")
+with open(_fve_path) as _fh:
+    _fve_src = _fh.read()
+if "cfv_capped" in _fve_src and "v12.5" in _fve_src:
+    passed += 1
+    print("  ✓ 54.1e fair_value_engine.py has cfv_capped + v12.5 marker")
+else:
+    failed += 1
+    failures.append("54.1e: fair_value_engine.py missing cfv_capped or v12.5 marker")
+
+_mf_v125_path = _os54.path.join(_proj_root, "master_funnel.py")
+with open(_mf_v125_path) as _fh:
+    _mf_v125_src = _fh.read()
+if 'stock.get("cfv_capped")' in _mf_v125_src:
+    passed += 1
+    print("  ✓ 54.1f master_funnel.py preserves cfv_capped flag in label override")
+else:
+    failed += 1
+    failures.append("54.1f: master_funnel.py doesn't preserve cfv_capped flag")
+
+# ── 54.2: Gold sheet dynamic headers (#7) ───────────────────────────────
+_eg_v125_path = _os54.path.join(_proj_root, "reporting", "excel_generator.py")
+with open(_eg_v125_path) as _fh:
+    _eg_v125_src = _fh.read()
+if "_GOLD_COV_MIN" in _eg_v125_src and "_gold_has_data" in _eg_v125_src:
+    passed += 1
+    print("  ✓ 54.2a Gold sheet uses dynamic coverage-based header demotion")
+else:
+    failed += 1
+    failures.append("54.2a: Gold sheet still uses static red headers — patch reverted?")
+
+if _eg_v125_src.count("0.30") >= 2:
+    passed += 1
+    print("  ✓ 54.2b Both Full and Gold sheets reference the 0.30 coverage threshold")
+else:
+    failed += 1
+    failures.append("54.2b: 0.30 threshold not consistently used across both sheets")
+
+# ── 54.3: Gold F-Score → Piotroski rename (#8) ──────────────────────────
+if '"Piotroski F /9"' in _eg_v125_src:
+    _piotr_count = _eg_v125_src.count('"Piotroski F /9"')
+    if _piotr_count >= 2:
+        passed += 1
+        print(f"  ✓ 54.3a 'Piotroski F /9' appears in {_piotr_count} places (Full + Gold)")
+    else:
+        failed += 1
+        failures.append(f"54.3a: 'Piotroski F /9' only in {_piotr_count} place; Gold rename incomplete")
+else:
+    failed += 1
+    failures.append("54.3a: 'Piotroski F /9' not found in excel_generator.py")
+
+# Orphaned tuple check — be careful not to match the v12.5 comment block
+if '("SCORES","F-Score /9",' in _eg_v125_src:
+    failed += 1
+    failures.append("54.3b: Orphaned GLOSSARY tuple ('SCORES','F-Score /9',…) still present")
+else:
+    passed += 1
+    print("  ✓ 54.3b Orphaned GLOSSARY 'F-Score /9' tuple removed")
+
+_tf_v125_path = _os54.path.join(_proj_root, "reporting", "tooltip_formatter.py")
+with open(_tf_v125_path) as _fh:
+    _tf_v125_src = _fh.read()
+if '"F-Score /9": (' in _tf_v125_src:
+    failed += 1
+    failures.append("54.3c: Orphaned tooltip entry '\"F-Score /9\":' still in tooltip_formatter.py")
+else:
+    passed += 1
+    print("  ✓ 54.3c Orphaned 'F-Score /9' tooltip entry removed")
+
+if '"F-Score /9"' in _tf_v125_src:
+    failed += 1
+    failures.append("54.3d: '\"F-Score /9\"' literal still appears in tooltip_formatter.py code")
+else:
+    passed += 1
+    print("  ✓ 54.3d '\"F-Score /9\"' literal fully removed from tooltip_formatter.py code")
+
+# ── 54.4: Early Mover dedup (#10) ───────────────────────────────────────
+def _has_prefix54(sig_list, prefix):
+    return any(s.upper().startswith(prefix.upper()) for s in sig_list)
+
+# 54.4a: badge present + label tries to add → label rejected
+_sigs_a = ["VOL SURGE", "EARLY MOVER"]
+if _has_prefix54(_sigs_a, "EARLY MOVER"):
+    passed += 1
+    print("  ✓ 54.4a Existing 'EARLY MOVER' badge prevents label from being appended")
+else:
+    failed += 1
+    failures.append("54.4a: prefix dedup didn't detect existing EARLY MOVER badge")
+
+# 54.4b: label present + badge tries to add → badge rejected
+_sigs_b = ["EARLY MOVER — Act before the crowd"]
+if _has_prefix54(_sigs_b, "EARLY MOVER"):
+    passed += 1
+    print("  ✓ 54.4b Existing 'EARLY MOVER — …' label prevents badge from being appended")
+else:
+    failed += 1
+    failures.append("54.4b: prefix dedup didn't detect existing EARLY MOVER label")
+
+# 54.4c: case-insensitive
+_sigs_c = ["early mover badge"]
+if _has_prefix54(_sigs_c, "EARLY MOVER"):
+    passed += 1
+    print("  ✓ 54.4c Prefix dedup is case-insensitive")
+else:
+    failed += 1
+    failures.append("54.4c: prefix dedup is case-sensitive (should be insensitive)")
+
+# 54.4d: unrelated signals don't trigger false positives
+_sigs_d = ["VOL SURGE + RSI ACCUMULATION", "TREND CONFLUENCE"]
+if not _has_prefix54(_sigs_d, "EARLY MOVER"):
+    passed += 1
+    print("  ✓ 54.4d Unrelated signals don't trigger EARLY MOVER prefix match")
+else:
+    failed += 1
+    failures.append("54.4d: false-positive prefix match on unrelated signal")
+
+if "_has_prefix" in _mf_v125_src and "v12.5" in _mf_v125_src:
+    passed += 1
+    print("  ✓ 54.4e master_funnel.py has _has_prefix dedup helper + v12.5 marker")
+else:
+    failed += 1
+    failures.append("54.4e: master_funnel.py missing _has_prefix or v12.5 marker")
+
+# ── 54.5: Altman Z sanity cap (#12) ─────────────────────────────────────
+from analysis.forensics_engine import ForensicsEngine as _FE54
+
+# Synthetic stock with X4 unit-mismatch — mcap_cr=50000, total_liab_cr=100
+# → X4 = 500, Z would be ~300 pre-clamp. With clamp, Z should be 10.
+_z_unit_mismatch = {
+    'total_assets_cr':       1000,
+    'total_liab_cr':         100,
+    'working_cap_cr':        0,
+    'retained_earnings_cr':  0,
+    'ebit_cr':               0,
+    'mcap_cr':               50000,
+    'q_rev_cr':              0,
+}
+_z_cap = _FE54.calculate_altman_z(_z_unit_mismatch)
+if _z_cap == 10:
+    passed += 1
+    print(f"  ✓ 54.5a Altman Z unit-mismatch case clamped to 10 (would be ~300 pre-fix)")
+else:
+    failed += 1
+    failures.append(f"54.5a: Altman Z={_z_cap} (want 10) for unit-mismatch input")
+
+# Healthy company should get its real Z value, not be clamped
+_z_healthy = {
+    'total_assets_cr':       1000,
+    'total_liab_cr':         400,
+    'working_cap_cr':        200,
+    'retained_earnings_cr':  300,
+    'ebit_cr':               150,
+    'mcap_cr':               2000,
+    'q_rev_cr':              250,
+}
+_z_h = _FE54.calculate_altman_z(_z_healthy)
+if 3.5 <= _z_h <= 6.0:
+    passed += 1
+    print(f"  ✓ 54.5b Healthy company gets real Z value ({_z_h}), not clamped")
+else:
+    failed += 1
+    failures.append(f"54.5b: healthy-company Altman Z={_z_h} (want 3.5–6.0)")
+
+# Distressed company keeps low Z
+_z_distress = {
+    'total_assets_cr':       1000,
+    'total_liab_cr':         900,
+    'working_cap_cr':        50,
+    'retained_earnings_cr':  10,
+    'ebit_cr':               20,
+    'mcap_cr':               300,
+    'q_rev_cr':              100,
+}
+_z_d = _FE54.calculate_altman_z(_z_distress)
+if 0 < _z_d < 2.5:
+    passed += 1
+    print(f"  ✓ 54.5c Distressed company keeps low Z ({_z_d}), no upward clamp")
+else:
+    failed += 1
+    failures.append(f"54.5c: distressed Altman Z={_z_d} (want 0–2.5)")
+
+# Insufficient data still returns 0.0
+_z_empty = {'total_assets_cr': 0, 'total_liab_cr': 0}
+_z_e = _FE54.calculate_altman_z(_z_empty)
+if _z_e == 0.0:
+    passed += 1
+    print("  ✓ 54.5d Insufficient-data case still returns 0.0 (unchanged)")
+else:
+    failed += 1
+    failures.append(f"54.5d: empty Altman Z={_z_e} (want 0.0)")
+
+_fe_path = _os54.path.join(_proj_root, "analysis", "forensics_engine.py")
+with open(_fe_path) as _fh:
+    _fe_src = _fh.read()
+if "z > 10" in _fe_src and "v12.5" in _fe_src:
+    passed += 1
+    print("  ✓ 54.5e forensics_engine.py has Altman Z clamp + v12.5 marker")
+else:
+    failed += 1
+    failures.append("54.5e: forensics_engine.py missing Altman Z clamp marker")
+
+# ── 54.6: CCC Days finance-sector skip (#13) ────────────────────────────
+# Pre-fix: TATACAP showed 7,739 CCC days. Post-fix: any sector containing
+# 'financial', 'finance', 'bank', 'nbfc', 'insurance', 'housing finance'
+# → CCC renders '—'.
+
+_ccc_nbfc = _FE54.calculate_accounting_forensics({
+    'sector': 'Financial Services',
+    'inventory_days': 100, 'receivable_days': 5000, 'payable_days': 50,
+})
+if _ccc_nbfc['ccc_days'] == "—":
+    passed += 1
+    print("  ✓ 54.6a NBFC ('Financial Services') correctly skips CCC → '—'")
+else:
+    failed += 1
+    failures.append(f"54.6a: NBFC ccc_days={_ccc_nbfc['ccc_days']!r} (want '—')")
+
+_ccc_bank = _FE54.calculate_accounting_forensics({
+    'sector': 'Bank', 'inventory_days': 0, 'receivable_days': 100, 'payable_days': 30,
+})
+if _ccc_bank['ccc_days'] == "—":
+    passed += 1
+    print("  ✓ 54.6b Bank correctly skips CCC")
+else:
+    failed += 1
+    failures.append(f"54.6b: Bank ccc_days={_ccc_bank['ccc_days']!r} (want '—')")
+
+_ccc_ins = _FE54.calculate_accounting_forensics({
+    'sector': 'Insurance', 'inventory_days': 0, 'receivable_days': 200, 'payable_days': 40,
+})
+if _ccc_ins['ccc_days'] == "—":
+    passed += 1
+    print("  ✓ 54.6c Insurance correctly skips CCC")
+else:
+    failed += 1
+    failures.append(f"54.6c: Insurance ccc_days={_ccc_ins['ccc_days']!r} (want '—')")
+
+_ccc_hfc = _FE54.calculate_accounting_forensics({
+    'sector': 'Housing Finance', 'inventory_days': 0,
+    'receivable_days': 800, 'payable_days': 100,
+})
+if _ccc_hfc['ccc_days'] == "—":
+    passed += 1
+    print("  ✓ 54.6d Housing Finance correctly skips CCC")
+else:
+    failed += 1
+    failures.append(f"54.6d: HFC ccc_days={_ccc_hfc['ccc_days']!r} (want '—')")
+
+_ccc_normal = _FE54.calculate_accounting_forensics({
+    'sector': 'Consumer Cyclical',
+    'inventory_days': 30, 'receivable_days': 45, 'payable_days': 60,
+})
+if _ccc_normal['ccc_days'] == 15.0:
+    passed += 1
+    print(f"  ✓ 54.6e Consumer Cyclical computes CCC normally ({_ccc_normal['ccc_days']} days)")
+else:
+    failed += 1
+    failures.append(f"54.6e: Consumer Cyclical ccc_days={_ccc_normal['ccc_days']} (want 15.0)")
+
+_ccc_no_sec = _FE54.calculate_accounting_forensics({
+    'sector': '', 'inventory_days': 25, 'receivable_days': 40, 'payable_days': 55,
+})
+if _ccc_no_sec['ccc_days'] == 10.0:
+    passed += 1
+    print(f"  ✓ 54.6f Empty sector → CCC computed normally ({_ccc_no_sec['ccc_days']} days)")
+else:
+    failed += 1
+    failures.append(f"54.6f: empty-sector ccc_days={_ccc_no_sec['ccc_days']} (want 10.0)")
+
+_ccc_upper = _FE54.calculate_accounting_forensics({
+    'sector': 'FINANCIAL SERVICES',
+    'inventory_days': 0, 'receivable_days': 1000, 'payable_days': 50,
+})
+if _ccc_upper['ccc_days'] == "—":
+    passed += 1
+    print("  ✓ 54.6g Sector match is case-insensitive ('FINANCIAL SERVICES' → skip)")
+else:
+    failed += 1
+    failures.append(f"54.6g: uppercase Financial Services ccc_days={_ccc_upper['ccc_days']!r}")
+
+if "_is_finance" in _fe_src and "Banks / NBFCs" in _fe_src:
+    passed += 1
+    print("  ✓ 54.6h forensics_engine.py has _is_finance check for CCC")
+else:
+    failed += 1
+    failures.append("54.6h: forensics_engine.py missing _is_finance CCC guard")
 
 
 
