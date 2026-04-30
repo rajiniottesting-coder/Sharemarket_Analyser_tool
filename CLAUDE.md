@@ -2271,4 +2271,162 @@ Still deferred. SQL-layer COALESCE rewrite (~12 queries) plus Python-layer `_fvn
 
 ---
 
-*Last updated: April 30, 2026 · v12.7 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 30. v12.8 RELEASE — Bug #13 (dedup ordering) + Bug #14 (yfinance 404 cache)
+
+**Date:** April 30, 2026 (same day as v12.7 — follow-up fix-set discovered in v12.7 production audit).
+**Trigger:** v12.7 production run successfully populated 92/99 stocks (vs 4/99 in v12.6.1) BUT (a) 7 specific dual-listed stocks still showed blank technicals — HALEOSLABS, PICCADIL, SKYGOLD, GCSL, SGFIN, RAYMONDREL, BIL — and (b) the v12.7 fix #2 structured error counter surfaced `compute_technicals: 495 symbols failed — ValueError: index must be monotonic increasing or decreasing`. Plus repeated `HTTP Error 404` log noise from yfinance for delisted/renamed Indian tickers (TATAMOTORS.NS, DHANI.NS, ESILVER.BO) added ~30–90s per run.
+**Tests:** 519 passing (509 v12.7 carry-forward + 10 v12.8 in new Group 58, including end-to-end synthetic verification of the 13-day-fragmented-NSE pattern that triggered the production failure).
+
+### Bug #13 — the 494-victim dedup ordering
+
+**Root cause.** v12.7's `_compute_all_indicators` chunk dedup logic was:
+
+```python
+chunk_hist = (chunk_hist
+              .sort_values(['symbol', '_exch_pref', 'date'])
+              .drop_duplicates(['symbol', 'date'], keep='first')
+              .drop(columns=['_exch_pref'])
+              .reset_index(drop=True))
+```
+
+The intent: for each `(symbol, date)` keep the NSE row, drop the BSE duplicate. The dedup KEY's sort is correct — it clusters all NSE rows of a symbol first (because `_exch_pref=0` sorts before `=1`), so `drop_duplicates(keep='first')` picks NSE.
+
+**The bug.** Sorting by `(_exch_pref, date)` clusters BY EXCHANGE first, then date within each exchange. Result row order:
+- positions 0..222: NSE rows (in date order, but only on the 222 days NSE bhavcopy succeeded)
+- positions 223..235: BSE rows (only the dates NSE failed — scattered throughout the year, not at the end)
+
+Post-`drop_duplicates(keep='first')`, the survivors are: 222 NSE rows (date-ordered) followed by 13 BSE rows (date-scattered). After `reset_index(drop=True)`, the integer index is `0..234` but the **date column is no longer monotonic**.
+
+`compute_technicals` then does `df = hist.sort_values('date').copy()`. This re-sorts by date — but `sort_values` reshuffles the integer index to whatever positions the rows came from. Result: integer index becomes `[222, 0, 1, 2, ..., 221, 223, 9, 224, ...]` — non-monotonic.
+
+The v12.4-introduced lines 794-795 are:
+```python
+sup2 = sup2.reindex(l.index, method="ffill")
+res2 = res2.reindex(h.index, method="ffill")
+```
+
+`reindex(method='ffill')` requires the target index to be monotonic. Non-monotonic input raises `ValueError: index must be monotonic increasing or decreasing`. Pre-v12.7, this was caught by `except: pass` and silently swallowed. v12.7 fix #2 surfaced it via the `_ti_errors` counter — that's how we learned 494 stocks were affected.
+
+**Why v12.6.1 production showed 4/99 but v12.7 showed 7/99 affected by this specific bug.** v12.6.1 had the SAME bug PLUS the original "all dual-listed stocks fail dedup entirely" bug. v12.7 fixed the 95-of-99 dual-listed-completely-missing bug but exposed the smaller 7-of-99 fragmented-NSE-coverage subset. They're both manifestations of the same dedup invariant being broken.
+
+**The fix — single line added.**
+
+```python
+chunk_hist = (chunk_hist
+              .sort_values(['symbol', '_exch_pref', 'date'])
+              .drop_duplicates(['symbol', 'date'], keep='first')
+              .drop(columns=['_exch_pref'])
+              .sort_values(['symbol', 'date'])    # v12.8 #13 FIX
+              .reset_index(drop=True))
+```
+
+Re-sorting by `(symbol, date)` AFTER `drop_duplicates` makes each per-symbol slice already date-ordered. `compute_technicals`' internal sort is then a no-op and the index stays monotonic.
+
+**Defense in depth in `compute_technicals`.** Even if a future caller's dedup is broken, the function shouldn't raise:
+
+```python
+def compute_technicals(hist):
+    if hist is None or len(hist) < 20:
+        return {}
+    # v12.8 (#13 hardening): reset the integer index AFTER sort_values so
+    # the post-sort index is guaranteed monotonic regardless of upstream
+    # ordering quirks.
+    df = hist.sort_values('date').reset_index(drop=True)
+    df = df.dropna(subset=['close', 'high', 'low']).reset_index(drop=True)
+```
+
+`reset_index(drop=True)` after sort produces a fresh `0..N-1` index that's always monotonic. The reindex calls at lines 794-795 then never fail.
+
+### Bug #14 — yfinance 404 noise + delay
+
+**Root cause.** yfinance 1.x has no batch API (`yf.Tickers().info` is unreliable in 1.x — confirmed by upstream issue tracker), so we do per-symbol `.info` HTTP calls. Yahoo Finance's `quoteSummary` endpoint returns 404 for delisted/renamed Indian tickers — observed in production: TATAMOTORS.NS (split into TATAMOTORS + TATAMTRDVR in 2024 then re-merged 2024-2025; ticker may have been renamed to TATAMOTORSDM), DHANI.NS (multiple corporate actions, possibly delisted from Yahoo's universe), ESILVER.BO (delisted SME).
+
+Each 404 takes ~5–8s wall-clock (vs ~1.5–2.5s for a 200) because yfinance's session retries internally. Plus yfinance's internal logger prints `HTTP Error 404: {"quoteSummary": ...}` — pollutes log output. With ~5-15 stale tickers per run, total wasted time is ~30–90s.
+
+**Fix architecture (Option C — both cache + silence).**
+
+1. **New table** `failed_yfinance_lookups (symbol, suffix, failed_on, error_type)` with composite PK `(symbol, suffix)`. Created in `init_all_tables`.
+
+2. **Three helpers** in `backfill_history.py`:
+   - `_silence_yfinance_logger()` — sets `yfinance`, `yfinance.scrapers.quote`, `yfinance.data` loggers to CRITICAL. Idempotent.
+   - `_load_yf_404_cache(conn) -> set` — returns set of `(symbol, suffix)` tuples with `failed_on >= today - 30 days`.
+   - `_record_yf_404(conn, symbol, suffix)` — INSERT OR REPLACE the (symbol, suffix) row with today's date.
+
+3. **Three call-site integrations** in `_fetch_yfinance_data`:
+   - Pre-loop: `_yf_skip = _load_yf_404_cache(conn)` if conn provided.
+   - Skip-check: `if (sym, ".NS") in _yf_skip: continue`.
+   - Empty-result + exception → `_record_yf_404(conn, sym, ".NS")` (detect 404 via "404" or "not found" in error string).
+
+4. **CR-fallback path** (`.NS/.BO` loop for current_ratio computation, line 1714+): same pattern — skip if `(sym, suffix) in _yf_skip`, record on 404 exception.
+
+5. **Income-statement path** (line 1857+): skip + record.
+
+6. **`forensics_engine.py::fetch_forensic_inputs`**: signature now accepts `skip_set` parameter. Inside the `.NS/.BO` loop, `if (symbol, suffix) in _skip: continue`. Module-import-time logger silencing too.
+
+7. **`master_funnel.py`**: pre-loads `_yf_skip_set` once before the per-stock loop, passes `skip_set=_yf_skip_set` to `ForensicsEngine.fetch_forensic_inputs`. Logs cache size at start of run if non-zero.
+
+**TTL design choice.** 30 days picks up corporate actions that eventually propagate to Yahoo's universe (e.g., a renamed ticker might appear in Yahoo's data 2-4 weeks after NSE updates symbols). Self-healing: cached 404s automatically retry after 30 days, so we never permanently exclude a symbol.
+
+**Why not switch APIs.** Alpha Vantage / Polygon either rate-limit aggressively at the free tier or are paid. Twelve Data is reasonable but requires migrating 30+ field mappings. yfinance covers ~95% of NSE for free; the 5% delisted/renamed tail is what we're caching.
+
+**Why not parallelize fetches.** yfinance 1.x rate-limits aggressively when concurrent — the per-symbol loop with `time.sleep(0.3-0.5)` between calls is intentional, confirmed by upstream issue tracker.
+
+### Group 58 test coverage (10 tests)
+
+Code-shape locks (5 tests):
+- 58.1a: dedup re-sorts by (symbol, date) AFTER drop_duplicates
+- 58.2a: compute_technicals resets index after sort_values
+- 58.4a: failed_yfinance_lookups table exists with (symbol, suffix) PK
+- 58.7a: ForensicsEngine.fetch_forensic_inputs accepts skip_set parameter
+- 58.8a: master_funnel pre-loads cache + passes skip_set
+
+End-to-end behaviour (5 tests):
+- 58.3a — synthetic 3 stocks with NSE missing on the same 13 specific dates as production (2025-03-31, 2025-04-10/14/18, 2025-05-01, 2025-08-15/27, 2025-10-02/22, 2025-11-05, 2025-12-25, 2026-01-15/26 — represented by index positions {0, 24, 48, 72, 96, 120, 144, 168, 192, 216, 230, 240, 246} in the 247-day series), all 3 populate.
+- 58.3b — zero `compute_technicals: N symbols failed` log line (was 494 → 495 in v12.7 production)
+- 58.5a — cache record + load works end-to-end
+- 58.5b — TTL filter excludes 31-day-old entries
+- 58.6a — yfinance logger silenced (level=CRITICAL after `_silence_yfinance_logger()`)
+
+### Action required at deploy
+
+Delete `market_data.db` (or truncate `daily_prices` / `technical_indicators` / `weekly_momentum`) before the next pipeline run so all rolling windows recompute under the patched logic. Then trigger the workflow manually.
+
+### Expected after first v12.8 run
+
+| Metric | v12.7 (last run) | v12.8 expected |
+|---|---|---|
+| Excel "SMA 200" populated | 88/99 | 99/99 (or ≥97/99 — 2 may legitimately be NEW IPOs with <200 days) |
+| Excel "Resist 1" populated | 92/99 | 99/99 |
+| Excel "Resist 2" populated | 88/99 | 90-99 (some legitimately "—" per v12.6 R2 collapse fix) |
+| Stocks fully missing technicals (HALEOSLABS et al.) | 7/99 | 0/99 |
+| `compute_technicals: N symbols failed` | 494→495 | 0 (or single-digit edge cases) |
+| HTTP Error 404 lines in run log | 3-5 visible | 0 (logger silenced) |
+| 404 cache size after first run | 0 (table empty) | 5-15 (TATAMOTORS, DHANI, ESILVER + others) |
+| Subsequent run latency saved | n/a | ~30-90s (skip cached 404s) |
+
+### Combined v12.7 + v12.8 column verification
+
+All 14 user-asked technical Excel columns post-v12.8:
+
+| Column | Source | Expected coverage |
+|---|---|---|
+| SMA 200 | `technical_indicators.sma_200` | 99/99 (or ≥97 for new IPOs) |
+| Supertrend | `technical_indicators.supertrend` | 99/99 |
+| ADX | `technical_indicators.adx` | 99/99 |
+| RSI (14) | `technical_indicators.rsi_14` | 99/99 |
+| MACD Signal | `technical_indicators.macd_signal_txt` | 99/99 |
+| Stoch %K | `technical_indicators.stoch_k` | 99/99 |
+| MFI | `technical_indicators.mfi_14` | 99/99 |
+| OBV Signal | `technical_indicators.obv_signal` | 99/99 |
+| Above VWAP | `technical_indicators.above_vwap` | 99/99 |
+| Chart Pattern | `master_funnel:2743` (today's OHLC) | 99/99 (was already working pre-v12.8) |
+| Support 1 (₹) | `technical_indicators.support1` | 99/99 |
+| Support 2 (₹) | `technical_indicators.support2` | 90-99 ("—" honestly when prior 252d max ≈ recent 20d max — v12.6 design) |
+| Resist 1 (₹) | `technical_indicators.resist1` | 99/99 |
+| Resist 2 (₹) | `technical_indicators.resist2` | 90-99 (same as S2) |
+
+If any column is below this expected coverage after the v12.8 deploy, the v12.7 fix #2 structured counter will surface the failing symbols in the run log. That's the canary for "investigate next session."
+
+---
+
+*Last updated: April 30, 2026 · v12.8 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

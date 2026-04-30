@@ -375,6 +375,26 @@ def init_all_tables(conn):
         )
     """)
 
+    # v12.8 (#14): cache symbols that 404'd from yfinance so we don't re-query
+    # them every run. yfinance does per-symbol HTTP calls (no batch in 1.x);
+    # each 404 takes ~5-8s vs ~1.5-2.5s for 200, AND yfinance's internal
+    # logger prints "HTTP Error 404: ..." adding log noise. Real-world
+    # offenders observed in production: TATAMOTORS.NS (renamed in
+    # demerger), DHANI.NS (corporate action), ESILVER.BO (delisted).
+    # 30-day TTL means corporate actions that eventually propagate to
+    # Yahoo's universe will be retried automatically. Composite key on
+    # (symbol, suffix) lets us cache .NS-fail-only stocks separately
+    # from .BO-fail-only ones.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS failed_yfinance_lookups (
+            symbol     TEXT NOT NULL,
+            suffix     TEXT NOT NULL,
+            failed_on  TEXT NOT NULL,
+            error_type TEXT DEFAULT '404',
+            PRIMARY KEY (symbol, suffix)
+        )
+    """)
+
     # ── Migrate existing daily_prices: add new columns if they don't exist ──────
     # This handles the case where daily_prices already exists with the old
     # 14-column schema from data_bridge.py and needs the 4 new columns added.
@@ -726,8 +746,19 @@ def compute_technicals(hist):
     if hist is None or len(hist) < 20:
         return {}
 
-    df = hist.sort_values('date').copy()
-    df = df.dropna(subset=['close', 'high', 'low'])
+    # v12.8 (#13 hardening): reset the integer index AFTER sort_values so
+    # the post-sort index is guaranteed monotonic regardless of what the
+    # caller passed. Pre-v12.8, if the caller's DataFrame rows weren't
+    # already date-sorted (e.g., the v12.7 dedup output for stocks with
+    # fragmented NSE coverage where BSE rows filled the gaps),
+    # sort_values('date') here would scramble the integer index → the
+    # later reindex(method='ffill') call would raise
+    # "ValueError: index must be monotonic increasing or decreasing"
+    # → 494 production stocks silently dropped from technical_indicators.
+    # Defense in depth: even if a future caller's preprocessing is broken,
+    # this function now produces a clean monotonic index every time.
+    df = hist.sort_values('date').reset_index(drop=True)
+    df = df.dropna(subset=['close', 'high', 'low']).reset_index(drop=True)
 
     c  = df['close'].astype(float)
     h  = df['high'].astype(float)
@@ -1244,10 +1275,29 @@ def _compute_all_indicators(conn):
         # board, so no real impact, just code uniformity).
         if not chunk_hist.empty:
             chunk_hist['_exch_pref'] = (chunk_hist['exchange'] != 'NSE').astype(int)
+            # v12.8 (#13): The .sort_values(['symbol','date']) AT THE END is
+            # critical. v12.7's dedup sorted by (symbol, _exch_pref, date)
+            # for the dedup key, which clusters all NSE rows first then all
+            # BSE rows. For stocks where NSE bhavcopy was missing on some
+            # dates (typical: ~13 days/year due to NSE site outages on
+            # holidays-by-error like 2025-03-31, 2025-04-10/14/18, etc.),
+            # BSE rows fill those dates. Pre-v12.8, post-dedup order was
+            # NSE-NSE-…-NSE-BSE-BSE (BSE rows clustered at end with
+            # scattered dates). compute_technicals' internal
+            # df.sort_values('date') then produced a non-monotonic
+            # integer index → reindex(method='ffill') raised
+            # "ValueError: index must be monotonic increasing or
+            # decreasing" → swallowed by the per-symbol try/except →
+            # 494 stocks silently dropped from technical_indicators in
+            # v12.7 production. The trailing sort_values(['symbol','date'])
+            # makes each per-symbol slice already date-ordered, so
+            # compute_technicals' internal sort is a no-op and the index
+            # stays monotonic.
             chunk_hist = (chunk_hist
                           .sort_values(['symbol', '_exch_pref', 'date'])
                           .drop_duplicates(['symbol', 'date'], keep='first')
                           .drop(columns=['_exch_pref'])
+                          .sort_values(['symbol', 'date'])
                           .reset_index(drop=True))
 
         for sym, hist in chunk_hist.groupby('symbol', sort=False):
@@ -1463,7 +1513,52 @@ def _fetch_nse_index_sectors() -> dict:
     return result
 
 
-def _fetch_yfinance_data(symbols: list) -> dict:
+# ────────────────────────────────────────────────────────────────────────────
+# v12.8 (#14): yfinance 404-cache helpers + noisy-logger silencing.
+# Real-world offenders in production logs: TATAMOTORS.NS (demerger rename),
+# DHANI.NS (corporate action), ESILVER.BO (delisted). Each 404 takes
+# ~5-8s of wall-clock (vs ~1.5-2.5s for a 200). Skipping known-bad symbols
+# saves ~30-90s per run on a typical day, more on fresh-DB runs where
+# the 200-symbol fundamentals batch hits multiple stale tickers.
+# ────────────────────────────────────────────────────────────────────────────
+_YF_404_TTL_DAYS = 30   # Re-try after 30 days in case Yahoo catches up
+
+def _silence_yfinance_logger():
+    """Suppress yfinance's noisy 'HTTP Error 404: ...' prints. Idempotent."""
+    try:
+        import logging
+        for name in ("yfinance", "yfinance.scrapers.quote", "yfinance.data"):
+            logging.getLogger(name).setLevel(logging.CRITICAL)
+    except Exception:
+        pass
+
+def _load_yf_404_cache(conn) -> set:
+    """Return set of (symbol, suffix) tuples that 404'd within TTL."""
+    try:
+        cutoff = (datetime.datetime.now(IST) - timedelta(days=_YF_404_TTL_DAYS)).strftime("%Y-%m-%d")
+        rows = conn.execute(
+            "SELECT symbol, suffix FROM failed_yfinance_lookups WHERE failed_on >= ?",
+            (cutoff,)
+        ).fetchall()
+        return {(r[0], r[1]) for r in rows}
+    except Exception:
+        return set()
+
+def _record_yf_404(conn, symbol: str, suffix: str):
+    """Record a 404 lookup so we skip it on subsequent runs (within TTL)."""
+    try:
+        today = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+        conn.execute(
+            "INSERT OR REPLACE INTO failed_yfinance_lookups (symbol, suffix, failed_on, error_type) "
+            "VALUES (?, ?, ?, ?)",
+            (symbol, suffix, today, "404")
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
+def _fetch_yfinance_data(symbols: list, conn=None) -> dict:
     """
     Fetch PE, EPS, PB, Beta, MCap, Sector via yfinance (Yahoo Finance).
     Works on GitHub Actions — Yahoo Finance has no bot detection for data APIs.
@@ -1474,6 +1569,15 @@ def _fetch_yfinance_data(symbols: list) -> dict:
     except ImportError:
         return {}
 
+    # v12.8 (#14): silence yfinance's noisy logger so 'HTTP Error 404' lines
+    # don't pollute production run logs.
+    _silence_yfinance_logger()
+
+    # v12.8 (#14): pre-load 404 cache. Skip symbols that 404'd within TTL.
+    _yf_skip = _load_yf_404_cache(conn) if conn is not None else set()
+    _yf_404_skipped = 0
+    _yf_404_new = 0
+
     # NOTE: yfinance 1.3.0 does NOT accept a session= parameter in Ticker().
     # Passing session= raises TypeError → all symbols silently fail.
     # Plain yf.Ticker(sym) works reliably — confirmed by test_yfinance.py (165 keys).
@@ -1481,15 +1585,27 @@ def _fetch_yfinance_data(symbols: list) -> dict:
     result = {}
     # Per-symbol loop — yf.Tickers() batch is unreliable in yfinance 1.x.
     for sym in symbols:
+        # v12.8 (#14): skip if recently 404'd
+        if (sym, ".NS") in _yf_skip:
+            _yf_404_skipped += 1
+            continue
         try:
             info = yf.Ticker(sym + ".NS").info
             # yfinance >=0.2 uses "currentPrice"; older used "regularMarketPrice"
             if not info:
+                # Empty info → likely a 404. Cache it.
+                if conn is not None:
+                    _record_yf_404(conn, sym, ".NS")
+                    _yf_404_new += 1
                 continue
             _price = (info.get("currentPrice") or
                       info.get("regularMarketPrice") or
                       info.get("previousClose") or 0)
             if not _price:
+                # Truly no data → likely a 404 surfaced as empty. Cache.
+                if conn is not None:
+                    _record_yf_404(conn, sym, ".NS")
+                    _yf_404_new += 1
                 continue
             mcap_inr = float(info.get("marketCap", 0) or 0)
             def _yf(k, m=1.0, d=0.0):
@@ -1559,9 +1675,19 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                 "promoter_pct":  _yf("heldPercentInsiders", m=100),
                 "inst_pct":      _yf("heldPercentInstitutions", m=100),
             }
-        except Exception:
-            pass
+        except Exception as _yfe:
+            # v12.8 (#14): cache 404s so we skip them next run.
+            # Detect 404 by error string (yfinance wraps urllib HTTPError).
+            _es = str(_yfe).lower()
+            if conn is not None and ("404" in _es or "not found" in _es):
+                _record_yf_404(conn, sym, ".NS")
+                _yf_404_new += 1
         time.sleep(0.5)  # polite delay per symbol
+
+    # v12.8 (#14): summary line so user sees the cache effect
+    if _yf_404_skipped or _yf_404_new:
+        print(f"      yfinance 404 cache: {_yf_404_skipped} skipped (recently failed), "
+              f"{_yf_404_new} newly recorded")
 
     # Second pass: balance_sheet fetch for stocks still missing CR
     # Fixes: correct row names (no 'Total' prefix), .NS + .BO, quarterly fallback,
@@ -1589,6 +1715,9 @@ def _fetch_yfinance_data(symbols: list) -> dict:
             _cr_val = 0.0
             _qr_val = 0.0
             for suffix in (".NS", ".BO"):
+                # v12.8 (#14): skip if this (symbol, suffix) recently 404'd
+                if (sym, suffix) in _yf_skip:
+                    continue
                 try:
                     _tk = _yf2.Ticker(sym + suffix)
                     for _bs in [_tk.balance_sheet, _tk.quarterly_balance_sheet]:
@@ -1612,8 +1741,11 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                     if _cr_val > 0:
                         break
                     time.sleep(0.2)
-                except Exception:
-                    pass
+                except Exception as _bse:
+                    # v12.8 (#14): cache 404s from CR-fallback path too
+                    _es = str(_bse).lower()
+                    if conn is not None and ("404" in _es or "not found" in _es):
+                        _record_yf_404(conn, sym, suffix)
 
             if _cr_val > 0:
                 result[sym]["current_ratio"] = _cr_val
@@ -1723,6 +1855,9 @@ def _fetch_yfinance_data(symbols: list) -> dict:
         # that "normalized" is NOT in the row name for the first attempt.
 
         for _sym in _syms_for_income:
+            # v12.8 (#14): skip if recently 404'd
+            if (_sym, ".NS") in _yf_skip:
+                continue
             try:
                 _tk3 = _yf3.Ticker(_sym + ".NS")
 
@@ -1819,8 +1954,12 @@ def _fetch_yfinance_data(symbols: list) -> dict:
                         if _pc3 != 0: result[_sym]["pat_cagr_3y"] = _pc3
 
                 time.sleep(0.3)   # polite rate-limit delay per symbol
-            except Exception:
-                pass   # never break the outer loop — missing data is fine
+            except Exception as _ie:
+                # v12.8 (#14): cache 404s
+                _es = str(_ie).lower()
+                if conn is not None and ("404" in _es or "not found" in _es):
+                    _record_yf_404(conn, _sym, ".NS")
+                # never break the outer loop — missing data is fine
 
     return result
 
@@ -1891,7 +2030,7 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
         print("   ⚠️  NSE index CSVs unavailable")
 
     # ── SOURCE 3: yfinance → PE, EPS, PB, Beta, MCap ─────────────────────────
-    yf_data = _fetch_yfinance_data(to_fetch)
+    yf_data = _fetch_yfinance_data(to_fetch, conn=conn)   # v12.8 (#14): pass conn for 404 cache
     print(f"   ✅ yfinance: {len(yf_data)}/{len(to_fetch)} symbols fetched")
 
     today_str2 = datetime.datetime.now(IST).strftime("%Y-%m-%d")

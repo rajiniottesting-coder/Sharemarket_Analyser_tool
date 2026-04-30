@@ -741,6 +741,25 @@ def run_master_pipeline():
             [s.get("symbol", "") for s in final_100_list]
         )
 
+        # v12.8 (#14): pre-load yfinance 404 cache once so forensics fetch
+        # skips recently-failed symbols. Saves ~5-8s per cached symbol.
+        _yf_skip_set = set()
+        try:
+            import sqlite3 as _sq_yfc
+            _yfc = _sq_yfc.connect("market_data.db")
+            from datetime import datetime as _dt_yfc, timedelta as _td_yfc
+            _cutoff = (_dt_yfc.now() - _td_yfc(days=30)).strftime("%Y-%m-%d")
+            _yf_skip_set = {(r[0], r[1]) for r in _yfc.execute(
+                "SELECT symbol, suffix FROM failed_yfinance_lookups WHERE failed_on >= ?",
+                (_cutoff,)
+            ).fetchall()}
+            _yfc.close()
+            if _yf_skip_set:
+                print(f"   ℹ️  yfinance 404 cache: {len(_yf_skip_set)} (symbol, suffix) "
+                      f"entries will be skipped this run")
+        except Exception:
+            pass
+
         for stock in final_100_list:
             sym = stock.get("symbol", "")
             h_data = historical_map.get(sym) or {}   # None-safe: key exists with None value
@@ -826,7 +845,7 @@ def run_master_pipeline():
             # receivable_days, payable_days) that Altman Z / Beneish M / CCC /
             # Int Coverage need. Without this, those columns show '—'.
             try:
-                _forensic_inputs = ForensicsEngine.fetch_forensic_inputs(sym)
+                _forensic_inputs = ForensicsEngine.fetch_forensic_inputs(sym, skip_set=_yf_skip_set)
                 if _forensic_inputs:
                     # Merge but don't overwrite existing valid values
                     for _fk, _fv in _forensic_inputs.items():

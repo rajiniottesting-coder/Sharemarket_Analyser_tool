@@ -48,7 +48,7 @@ class ForensicsEngine:
     # v10.4 INLINE FETCHER
     # ──────────────────────────────────────────────────────────────────────
     @staticmethod
-    def fetch_forensic_inputs(symbol, timeout_sec=15):
+    def fetch_forensic_inputs(symbol, timeout_sec=15, skip_set=None):
         """
         Pulls forensic inputs DIRECTLY from yfinance for ONE symbol.
         Returns a dict that can be .update()'d onto a stock dict before
@@ -63,11 +63,24 @@ class ForensicsEngine:
 
         Returns {} if the symbol can't be fetched.
         Never raises — swallows all Yahoo errors.
+
+        v12.8 (#14): accepts optional skip_set of (symbol, suffix) tuples
+        from failed_yfinance_lookups cache to skip recently-404'd lookups.
         """
         try:
             import yfinance as yf
         except ImportError:
             return {}
+
+        # v12.8 (#14): suppress yfinance's 'HTTP Error 404: ...' logger
+        try:
+            import logging
+            for _name in ("yfinance", "yfinance.scrapers.quote", "yfinance.data"):
+                logging.getLogger(_name).setLevel(logging.CRITICAL)
+        except Exception:
+            pass
+
+        _skip = skip_set or set()
 
         _INR_CR = 1e7
         out = {}
@@ -106,6 +119,9 @@ class ForensicsEngine:
             bs = cf = inc = None
             info = {}
             for suffix in (".NS", ".BO"):
+                # v12.8 (#14): skip if recently 404'd
+                if (symbol, suffix) in _skip:
+                    continue
                 try:
                     tk = yf.Ticker(symbol + suffix)
                     bs = getattr(tk, "balance_sheet", None)

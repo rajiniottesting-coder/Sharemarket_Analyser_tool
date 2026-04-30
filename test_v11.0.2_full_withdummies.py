@@ -4412,6 +4412,268 @@ except Exception as _e57:
                     + _tb57.format_exc()[:500])
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# GROUP 58 — v12.8 release: Bug #13 (494-victim dedup ordering) + Bug #14 (404 cache)
+# ════════════════════════════════════════════════════════════════════════════
+print("\n--- Group 58: v12.8 release (Bug #13 + Bug #14) ---")
+
+import sys as _sys58, os as _os58, tempfile as _tf58
+import io as _io58, contextlib as _cl58, sqlite3 as _sq58
+import pandas as _pd58, numpy as _np58
+from datetime import date as _dt58, timedelta as _td58, datetime as _dtm58
+
+_proj_root58 = _os58.path.dirname(_os58.path.abspath(__file__))
+
+# Re-load backfill_history fresh
+if _proj_root58 not in _sys58.path:
+    _sys58.path.insert(0, _proj_root58)
+for _m58 in list(_sys58.modules):
+    if 'backfill_history' in _m58:
+        del _sys58.modules[_m58]
+
+# ── 58.1 — Bug #13: Dedup re-sort by (symbol,date) AFTER drop_duplicates ──
+# Code-shape lock — the trailing sort_values(['symbol','date']) MUST be
+# present in _compute_all_indicators's chunk dedup block, or stocks with
+# fragmented NSE coverage will produce non-monotonic post-dedup order.
+try:
+    with open(_os58.path.join(_proj_root58, "backfill_history.py")) as _f58:
+        _bf58_src = _f58.read()
+
+    # The dedup sequence must include both drop_duplicates AND a trailing
+    # sort_values(['symbol','date']) in the same expression chain.
+    _has_dedup_resort = (
+        ".drop_duplicates(['symbol', 'date'], keep='first')" in _bf58_src
+        and ".sort_values(['symbol', 'date'])" in _bf58_src
+    )
+    if _has_dedup_resort:
+        # Stronger check: the sort_values(['symbol','date']) must appear
+        # AFTER drop_duplicates in the source order.
+        _idx_dd = _bf58_src.find(".drop_duplicates(['symbol', 'date'], keep='first')")
+        _idx_sv = _bf58_src.find(".sort_values(['symbol', 'date'])", _idx_dd)
+        if _idx_sv > _idx_dd > 0:
+            passed += 1
+            print("  ✓ 58.1a Dedup re-sorts by (symbol,date) AFTER drop_duplicates")
+        else:
+            failed += 1
+            failures.append("58.1a: sort_values(['symbol','date']) does not follow drop_duplicates")
+    else:
+        failed += 1
+        failures.append("58.1a: missing trailing sort_values after dedup in _compute_all_indicators")
+except Exception as _e58:
+    failed += 1
+    failures.append(f"58.1a: scan failed — {_e58}")
+
+# ── 58.2 — Bug #13 hardening: compute_technicals resets index ──
+# compute_technicals must call .reset_index(drop=True) after sort_values('date')
+# so the internal index is always monotonic regardless of caller correctness.
+try:
+    # Search for the specific pattern in compute_technicals
+    if "df = hist.sort_values('date').reset_index(drop=True)" in _bf58_src:
+        passed += 1
+        print("  ✓ 58.2a compute_technicals resets index after sort_values (defense in depth)")
+    else:
+        failed += 1
+        failures.append("58.2a: compute_technicals missing reset_index after sort_values")
+except Exception as _e58:
+    failed += 1
+    failures.append(f"58.2a: scan failed — {_e58}")
+
+# ── 58.3 — Bug #13 end-to-end: fragmented NSE coverage ──
+# This is the test that would have caught the v12.7 production bug
+# immediately. Build a synthetic stock with NSE missing on multiple dates
+# (matching production: 13 days/year), BSE filling the gaps. Pre-v12.8
+# this raised "ValueError: index must be monotonic increasing or
+# decreasing" inside compute_technicals → swallowed → 494 production
+# stocks dropped from technical_indicators.
+try:
+    import backfill_history as _bf58
+    _np58.random.seed(123)
+    _all_dates_58 = _pd58.bdate_range("2025-04-01", "2026-04-30")[-247:]
+    # NSE fails on 13 specific dates spread across the year
+    _nse_fail_set = {0, 24, 48, 72, 96, 120, 144, 168, 192, 216, 230, 240, 246}
+
+    with _tf58.TemporaryDirectory() as _td_58:
+        _orig_cwd_58 = _os58.getcwd()
+        try:
+            _os58.chdir(_td_58)
+            _conn58 = _sq58.connect("market_data.db")
+            _bf58.init_all_tables(_conn58)
+
+            _rows_58 = []
+            for _sym58 in ['FRAGSTK1', 'FRAGSTK2', 'FRAGSTK3']:
+                _base = 50 + (hash(_sym58) % 100)
+                for _i58, _d58 in enumerate(_all_dates_58):
+                    _ds58 = _d58.strftime('%Y-%m-%d')
+                    _p58 = _base + _i58 * 0.1
+                    if _i58 not in _nse_fail_set:
+                        _rows_58.append((_sym58, 'NSE', _ds58, _p58, _p58*1.01, _p58*0.99, _p58, 100000))
+                    _rows_58.append((_sym58, 'BSE', _ds58, _p58*1.001, _p58*1.011, _p58*0.991, _p58*1.001, 50000))
+
+            _df58 = _pd58.DataFrame(_rows_58, columns=[
+                'symbol','exchange','date','open','high','low','close','volume'])
+            _df58.to_sql('daily_prices', _conn58, if_exists='append', index=False)
+
+            _buf58 = _io58.StringIO()
+            with _cl58.redirect_stdout(_buf58):
+                _bf58._compute_all_indicators(_conn58)
+
+            _ti_count58 = _conn58.execute(
+                "SELECT COUNT(DISTINCT symbol) FROM technical_indicators"
+            ).fetchone()[0]
+            _conn58.close()
+        finally:
+            _os58.chdir(_orig_cwd_58)
+
+    if _ti_count58 == 3:
+        passed += 1
+        print(f"  ✓ 58.3a All 3 fragmented-NSE stocks populated (the 494-victim pattern fixed)")
+    else:
+        failed += 1
+        failures.append(f"58.3a: only {_ti_count58}/3 fragmented stocks populated — Bug #13 incomplete")
+
+    # 58.3b: log shows ZERO _ti_errors (was 494 in v12.7 production)
+    _log58 = _buf58.getvalue()
+    if "compute_technicals: 0 symbols failed" in _log58 or "compute_technicals:" not in _log58:
+        passed += 1
+        print(f"  ✓ 58.3b Zero compute_technicals errors logged (was 494 in v12.7)")
+    else:
+        failed += 1
+        failures.append(f"58.3b: log shows compute_technicals errors — {_log58[-200:]}")
+
+except Exception as _e58:
+    import traceback as _tb58
+    failed += 1
+    failures.append(f"58.3: end-to-end test crashed — {type(_e58).__name__}: {_e58}\n"
+                    + _tb58.format_exc()[:500])
+
+# ── 58.4 — Bug #14: failed_yfinance_lookups table exists ──
+try:
+    with _tf58.TemporaryDirectory() as _td_yfc:
+        _orig_cwd_yfc = _os58.getcwd()
+        try:
+            _os58.chdir(_td_yfc)
+            _conn_yfc = _sq58.connect("market_data.db")
+            _bf58.init_all_tables(_conn_yfc)
+            _tbl = _conn_yfc.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='failed_yfinance_lookups'"
+            ).fetchone()
+            _conn_yfc.close()
+        finally:
+            _os58.chdir(_orig_cwd_yfc)
+
+    if _tbl and "PRIMARY KEY (symbol, suffix)" in _tbl[0]:
+        passed += 1
+        print(f"  ✓ 58.4a failed_yfinance_lookups table exists with (symbol, suffix) PK")
+    else:
+        failed += 1
+        failures.append(f"58.4a: failed_yfinance_lookups missing or wrong PK")
+except Exception as _e58:
+    failed += 1
+    failures.append(f"58.4a: scan failed — {_e58}")
+
+# ── 58.5 — Bug #14: cache helpers (record + load + TTL) ──
+try:
+    with _tf58.TemporaryDirectory() as _td_yfh:
+        _orig_cwd_yfh = _os58.getcwd()
+        try:
+            _os58.chdir(_td_yfh)
+            _conn_yfh = _sq58.connect("market_data.db")
+            _bf58.init_all_tables(_conn_yfh)
+
+            # Record 3 fresh failures
+            _bf58._record_yf_404(_conn_yfh, "TATAMOTORS", ".NS")
+            _bf58._record_yf_404(_conn_yfh, "DHANI", ".NS")
+            _bf58._record_yf_404(_conn_yfh, "ESILVER", ".BO")
+
+            _cache = _bf58._load_yf_404_cache(_conn_yfh)
+
+            # 58.5a: cache contains all 3
+            _all_present = (
+                ("TATAMOTORS", ".NS") in _cache
+                and ("DHANI", ".NS") in _cache
+                and ("ESILVER", ".BO") in _cache
+            )
+            if _all_present:
+                passed += 1
+                print(f"  ✓ 58.5a yfinance 404 cache record+load works ({len(_cache)} entries)")
+            else:
+                failed += 1
+                failures.append(f"58.5a: cache missing entries — {sorted(_cache)}")
+
+            # 58.5b: TTL filter works (insert 31-day-old, should be excluded)
+            _old_date = (_dtm58.now() - _td58(days=31)).strftime("%Y-%m-%d")
+            _conn_yfh.execute(
+                "INSERT INTO failed_yfinance_lookups VALUES (?, ?, ?, ?)",
+                ("OLDFAIL", ".NS", _old_date, "404")
+            )
+            _conn_yfh.commit()
+            _cache2 = _bf58._load_yf_404_cache(_conn_yfh)
+            if ("OLDFAIL", ".NS") not in _cache2 and len(_cache2) == 3:
+                passed += 1
+                print(f"  ✓ 58.5b TTL filter excludes 31-day-old entries (cache stable at {len(_cache2)})")
+            else:
+                failed += 1
+                failures.append(f"58.5b: TTL filter broken — cache={sorted(_cache2)}")
+
+            _conn_yfh.close()
+        finally:
+            _os58.chdir(_orig_cwd_yfh)
+except Exception as _e58:
+    failed += 1
+    failures.append(f"58.5: cache helper test crashed — {type(_e58).__name__}: {_e58}")
+
+# ── 58.6 — Bug #14: yfinance logger silenced ──
+try:
+    import logging as _log58
+    _bf58._silence_yfinance_logger()
+    _yf_logger = _log58.getLogger("yfinance")
+    if _yf_logger.level == _log58.CRITICAL:
+        passed += 1
+        print(f"  ✓ 58.6a yfinance logger silenced (level=CRITICAL)")
+    else:
+        failed += 1
+        failures.append(f"58.6a: yfinance logger level={_yf_logger.level} (expected 50/CRITICAL)")
+except Exception as _e58:
+    failed += 1
+    failures.append(f"58.6a: logger silence test crashed — {_e58}")
+
+# ── 58.7 — Bug #14: forensics_engine accepts skip_set parameter ──
+try:
+    import inspect as _ins58
+    if 'analysis.forensics_engine' in _sys58.modules:
+        del _sys58.modules['analysis.forensics_engine']
+    from analysis.forensics_engine import ForensicsEngine as _FE58
+    _sig = _ins58.signature(_FE58.fetch_forensic_inputs)
+    if 'skip_set' in _sig.parameters:
+        passed += 1
+        print(f"  ✓ 58.7a ForensicsEngine.fetch_forensic_inputs accepts skip_set param")
+    else:
+        failed += 1
+        failures.append(f"58.7a: skip_set param missing from fetch_forensic_inputs signature")
+except Exception as _e58:
+    failed += 1
+    failures.append(f"58.7a: signature check crashed — {_e58}")
+
+# ── 58.8 — Bug #14: master_funnel pre-loads skip_set before forensics loop ──
+try:
+    with open(_os58.path.join(_proj_root58, "master_funnel.py")) as _f58:
+        _mf58_src = _f58.read()
+
+    # Both the load query AND the call-site with skip_set= must be present
+    _has_load = "FROM failed_yfinance_lookups" in _mf58_src
+    _has_pass = "skip_set=_yf_skip_set" in _mf58_src
+
+    if _has_load and _has_pass:
+        passed += 1
+        print(f"  ✓ 58.8a master_funnel pre-loads cache + passes skip_set to forensics")
+    else:
+        failed += 1
+        failures.append(f"58.8a: master_funnel missing load_query={_has_load} pass={_has_pass}")
+except Exception as _e58:
+    failed += 1
+    failures.append(f"58.8a: master_funnel scan crashed — {_e58}")
+
+
 print("\n" + "═" * 70)
 print(f"FINAL: {passed} passed, {failed} failed")
 print("═" * 70)
