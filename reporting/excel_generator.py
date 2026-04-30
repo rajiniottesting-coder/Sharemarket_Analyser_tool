@@ -286,7 +286,9 @@ GLOSSARY_DATA = [
      ">10% efficient | 5–10% acceptable | <5% poor (but normal for "
      "banks/utilities which use high leverage). "
      "Source: yfinance .info['returnOnAssets'] × 100 when available; "
-     "else derived as ROE / (1 + D/E). v10.15: stored as FLOAT, not string.",
+     "else derived as ROE / (1 + D/E). v10.15: stored as FLOAT, not string. "
+     "v12.4: clamped to ±100 % (yfinance returned 189 % for M&MFIN, "
+     "181 % for TATACAP pre-clamp — finance/NBFC unit-mismatch artefacts).",
      "All sheets"),
     ("PROFITABILITY","ROCE %",
      "Return on Capital Employed. ROCE > cost of capital = value-creating. "
@@ -295,16 +297,23 @@ GLOSSARY_DATA = [
      "Full Dashboard"),
     ("PROFITABILITY","Gross Mgn %",
      "Revenue − COGS, ÷ Revenue × 100. >40% = strong moat; >20% = decent. "
-     "Source: yfinance .info['grossMargins'] × 100.",
+     "Source: yfinance .info['grossMargins'] × 100. "
+     "v12.4: clamped to [0, 100] % to filter unit-mismatch outliers.",
      "Full Dashboard"),
     ("PROFITABILITY","EBITDA Mgn %",
      "EBITDA ÷ Revenue × 100. >25% excellent | >15% good | <10% tight. "
-     "Source: yfinance .info['ebitdaMargins'] × 100.",
+     "Source: yfinance .info['ebitdaMargins'] × 100. "
+     "v12.4: clamped to ±100 % (POWERGRID showed 83.4 %; legitimate values "
+     "stay; absurd >100 % values get capped).",
      "Full Dashboard"),
     ("PROFITABILITY","NPM %",
      "Net Profit Margin TTM = Net Income ÷ Revenue × 100. "
      ">15% excellent | >5% decent | <0% unprofitable. "
-     "Source: yfinance .info['profitMargins'] × 100.",
+     "Source: yfinance .info['profitMargins'] × 100. "
+     "v12.4: clamped to ±100 %. Six stocks in the prior run had NPM "
+     "126–189 % (DGCONTENT 126 %, AMAGI 189 %, MEGASTAR 165 %, "
+     "REDINGTON 157 %, RELIGARE 128 %, GCSL −145 %) — thin-revenue "
+     "/ one-time-gain rows where the math is meaningless.",
      "All sheets"),
     ("PROFITABILITY","NPM Q1 %",
      "Most recent quarter's Net Profit Margin = (Q1 PAT ÷ Q1 Revenue) × 100. "
@@ -617,16 +626,20 @@ GLOSSARY_DATA = [
     ("PROFITABILITY","ROA %",
      "Return on Assets = Net Income ÷ Total Assets × 100. "
      ">10% = excellent | 5–10% = good | <5% = poor. "
-     "Derived as ROE ÷ (1 + D/E) when direct data unavailable.","Full Dashboard"),
+     "Derived as ROE ÷ (1 + D/E) when direct data unavailable. "
+     "v12.4: clamped to ±100 % (filters unit-mismatch outliers).","Full Dashboard"),
     ("PROFITABILITY","Gross Mgn %",
      "Gross Profit ÷ Revenue × 100. Revenue minus direct costs (raw materials, COGS). "
-     ">50% = high-margin business (software, pharma) | >30% = good | <15% = commodity/trading","Full Dashboard"),
+     ">50% = high-margin business (software, pharma) | >30% = good | <15% = commodity/trading. "
+     "v12.4: clamped to [0, 100] %.","Full Dashboard"),
     ("PROFITABILITY","EBITDA Mgn %",
      "EBITDA ÷ Revenue × 100. Operating profitability before interest, tax, depreciation. "
-     ">25% = excellent | 15–25% = good | 8–15% = average | <8% = tight","Full Dashboard"),
+     ">25% = excellent | 15–25% = good | 8–15% = average | <8% = tight. "
+     "v12.4: clamped to ±100 %.","Full Dashboard"),
     ("PROFITABILITY","NPM %",
      "Net Profit Margin = Net Income ÷ Revenue × 100. Bottom-line profitability after everything. "
-     ">15% = excellent | 8–15% = good | 3–8% = average | <3% = thin (watch for debt servicing risk)","Full Dashboard"),
+     ">15% = excellent | 8–15% = good | 3–8% = average | <3% = thin (watch for debt servicing risk). "
+     "v12.4: clamped to ±100 % (filters thin-revenue artefacts).","Full Dashboard"),
     ("PROFITABILITY","NPM Q1 %","Net Profit Margin for most recent quarter (Q1). Source: yfinance quarterly_income_stmt. Rising trend across Q1→Q2→Q3 signals Margin Expansion.","Full Dashboard"),
     ("PROFITABILITY","NPM Q2 %","Net Profit Margin for second most recent quarter (Q2). Source: yfinance quarterly_income_stmt. Compare with Q1 and Q3 for trend.","Full Dashboard"),
     ("PROFITABILITY","NPM Q3 %","Net Profit Margin for third most recent quarter (Q3). Source: yfinance quarterly_income_stmt. Oldest of the 3 quarters shown.","Full Dashboard"),
@@ -750,15 +763,21 @@ GLOSSARY_DATA = [
      "Short-term support = 20-day rolling low. Nearest price floor — "
      "place stop loss slightly below Support 1.","Full Dashboard"),
     ("TECHNICAL","Support 2 (₹)",
-     "Major long-term support = 52-week low (v10.9; was 40d before). "
+     "Major long-term support = prior 52-week low (v12.4; excludes last 20d). "
+     "Computed as the rolling 252-day min over bars BEFORE the most recent 20, "
+     "so a fresh breakdown doesn't make S1 == S2. "
      "If price breaks Support 1 with volume, next target is Support 2. "
-     "Meaningful distance from Support 1 for most stocks now.","Full Dashboard"),
+     "Falls back to '—' for stocks with < 80 days of price history.","Full Dashboard"),
     ("TECHNICAL","Resist 1 (₹)",
      "Short-term resistance = 20-day rolling high. Nearest price ceiling — "
      "Target 1 is typically set at Resist 1.","Full Dashboard"),
     ("TECHNICAL","Resist 2 (₹)",
-     "Major long-term resistance = 52-week high (v10.9; was 40d before, "
-     "which caused R1==R2 for 87% of stocks). Target 2/T3 set at Resist 2.","Full Dashboard"),
+     "Major long-term resistance = prior 52-week high (v12.4; excludes last 20d). "
+     "Computed as the rolling 252-day max over bars BEFORE the most recent 20. "
+     "Earlier v10.9 logic (rolling-252 over the full series) silently mirrored "
+     "Resist 1 whenever the 52-week max landed inside the last 20 days — "
+     "observed in 87.9 % of production rows. v12.4 separates them. "
+     "Target 2 / T3 set at Resist 2.","Full Dashboard"),
 
     # ── BALANCE SHEET ─────────────────────────────────────────────────────────
     ("BALANCE SHEET","BS Health Note",
@@ -790,19 +809,19 @@ GLOSSARY_DATA = [
     ("NEWS & RISK","Key Catalyst",
      "Primary upcoming event that could trigger price re-rating. "
      "Examples: order win, product launch, QIP, promoter buyback, index inclusion. "
-     "Requires Anthropic API credits — populated by AI analyst.","Full Dashboard"),
+     "Requires Gemini API credits — populated by AI analyst (aistudio.google.com).","Full Dashboard"),
     ("NEWS & RISK","News Sentiment",
      "AI-assessed recent news tone: BULLISH / NEUTRAL / BEARISH. "
      "Based on last 30 days of BSE announcements and news. "
-     "Requires Anthropic API credits.","Full Dashboard"),
+     "Requires Gemini API credits.","Full Dashboard"),
     ("NEWS & RISK","Primary Risk",
      "The single most important risk factor for this stock right now. "
      "Examples: regulatory overhang, promoter pledge, client concentration, commodity exposure. "
-     "Requires Anthropic API credits.","Full Dashboard"),
+     "Requires Gemini API credits.","Full Dashboard"),
     ("NEWS & RISK","SEBI Flags",
      "Any active SEBI actions, adjudication orders, or exchange surveillance flags. "
      "NONE = clean | Any other value = investigate before investing. "
-     "Requires Anthropic API credits.","Full Dashboard"),
+     "Requires Gemini API credits.","Full Dashboard"),
 
     # ── GOLD SHEET SPECIFIC ────────────────────────────────────────────────────
     ("SCORES","F-Score /9",
@@ -936,12 +955,12 @@ NO_FREE_SOURCE_COLS = {
     "Altman Z","Beneish M","Earn Quality",
     # Intelligence / pipeline (needs company-specific filed data)
     "OB/Bill Ratio","Pipeline Vis","L1 Wins 90D","L1 Est (₹Cr)","New Mkt Entry",
-    # AI-generated text fields (needs Anthropic credits — separate amber set below)
+    # AI-generated text fields (needs Gemini credits — separate amber set below)
     "Key Catalyst","News Sentiment","Primary Risk","SEBI Flags",
     # NOTE: NPM Q1/Q2/Q3, Margin Expansion, CAGRs, Q3 Rev/PAT/EBITDA
     # were previously red but are now calculated via yfinance — moved to normal.
 }
-# Needs Anthropic API credits — amber highlight
+# Needs Gemini API credits — amber highlight
 NEEDS_AI_CREDITS = {"View Analysis Summary"}
 
 def _sf(val, default=0.0):
@@ -1092,7 +1111,7 @@ _HDR_TIPS = {
     "News Sentiment":("POSITIVE=tailwind | NEGATIVE=headwind","POSITIVE:Favourable | NEUTRAL:No news | NEGATIVE:Headwinds"),
     "Primary Risk":("Biggest downside risk","Always read before investing"),
     "SEBI Flags":("NONE=clean | Any flag=investigate first","Any flag=investigate before buying"),
-    "View Analysis Summary":("Claude AI investor narrative(150-250 words)","Business quality,ratios,risks,catalysts,verdict rationale.\nGenerated fresh each trading day."),
+    "View Analysis Summary":("Gemini AI investor narrative(150-250 words)","Business quality,ratios,risks,catalysts,verdict rationale.\nGenerated fresh each trading day."),
 }
 
 
@@ -1453,7 +1472,7 @@ class ExcelGeneratorV6:
         ws.row_dimensions[1].height=34
         # R2
         ws.merge_cells(start_row=2,start_column=1,end_row=2,end_column=N)
-        c2=ws.cell(2,1,"AutoFilter (row 4): Exchange · Cap Category · Sector · Verdict · MoS Label · BS Flag · Risk · Storm · Sector Stage · Weekly Change   |  Last column = 'View Analysis Summary' — scroll right to see full AI reasoning with recent company facts   |  GOLD=Early Mover · GREEN=Deep Value · BLUE=Buy · AMBER=Watch · RED=Avoid   |  RED column header = No free data source (requires paid API / BSE filings). AMBER header = Needs Anthropic API credits. Normal header = calculated from free sources (yfinance / NSE).")
+        c2=ws.cell(2,1,"AutoFilter (row 4): Exchange · Cap Category · Sector · Verdict · MoS Label · BS Flag · Risk · Storm · Sector Stage · Weekly Change   |  Last column = 'View Analysis Summary' — scroll right to see full AI reasoning with recent company facts   |  GOLD=Early Mover · GREEN=Deep Value · BLUE=Buy · AMBER=Watch · RED=Avoid   |  RED column header = No free data source (requires paid API / BSE filings). AMBER header = Needs Gemini API credits. Normal header = calculated from free sources (yfinance / NSE).")
         c2.fill=_f(LG); c2.font=_ft(False,"475569",8,True); c2.alignment=_al("left","center")
         ws.row_dimensions[2].height=16
         # R3 groups
@@ -1474,11 +1493,16 @@ class ExcelGeneratorV6:
 
         ws.row_dimensions[4].height=40
 
-        # v10.4: Dynamically detect which NO_FREE_SOURCE_COLS actually have
-        # populated data in this run. If a column has >=1 real value across
-        # the top-100, remove the red header — the data IS populated.
+        # v12.4: Dynamically detect which NO_FREE_SOURCE_COLS actually have
+        # populated data in this run. A column is considered "covered" only
+        # when at least 30 % of rows carry real data — a single fluke value
+        # used to be enough to demote (v10.4 bug), which hid sparse columns
+        # like Pro QoQ Δ (2/99 populated) and FII QoQ Δ (22/99) behind a
+        # normal-coloured header.
         _stks_preview = self.df.to_dict("records")
-        _header_has_data = {}   # header_name → True if any row has real data
+        _row_total    = max(1, len(_stks_preview))
+        _COVERAGE_MIN = 0.30   # ≥30 % of rows must carry real data
+        _header_has_data = {}   # header_name → True if column meets coverage
         for (_h, _w, _key) in FULL_COLS:
             if _h not in NO_FREE_SOURCE_COLS:
                 continue
@@ -1492,9 +1516,7 @@ class ExcelGeneratorV6:
                 if _v in (0, 0.0, "0", "0.0"):
                     continue
                 _real_count += 1
-                if _real_count >= 1:
-                    break   # just need one populated value to demote from red
-            _header_has_data[_h] = (_real_count >= 1)
+            _header_has_data[_h] = (_real_count / _row_total) >= _COVERAGE_MIN
 
         for i,(h,w,_) in enumerate(FULL_COLS,1):
             ws.column_dimensions[get_column_letter(i)].width=w
@@ -1504,7 +1526,7 @@ class ExcelGeneratorV6:
                 c=ws.cell(4,i,h); c.fill=_f("991B1B"); c.font=_ft(True,"FEE2E2",8)
                 c.alignment=_al("center","center",True); c.border=_border()
             elif h in NEEDS_AI_CREDITS:
-                # Amber — populated only when Anthropic API credits are loaded
+                # Amber — populated only when Gemini API credits are loaded
                 c=ws.cell(4,i,h); c.fill=_f("92400E"); c.font=_ft(True,"FEF3C7",8)
                 c.alignment=_al("center","center",True); c.border=_border()
             else:

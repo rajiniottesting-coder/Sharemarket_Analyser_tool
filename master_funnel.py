@@ -1419,7 +1419,13 @@ def run_master_pipeline():
                 stock["roe_num"] = round(_roe_num_val, 2)
 
                 if _roa_direct != 0:
-                    stock.setdefault("roa", _pct(roa))
+                    # v12.4: inline clamp — _clamp_pct is defined below this
+                    # block, so we apply the bound here directly. Same
+                    # [-100, 100] window as npm/ebitda_margin for consistency.
+                    _roa_disp = _pct(roa)
+                    if isinstance(_roa_disp, (int, float)):
+                        _roa_disp = round(max(-100, min(100, _roa_disp)), 2)
+                    stock.setdefault("roa", _roa_disp)
                 elif _roe_num_val > 0 and _de_ratio >= 0:
                     # Derived: ROA ≈ ROE / (1 + D/E)
                     _roa_derived = round(_roe_num_val / (1 + _de_ratio), 2)
@@ -1459,17 +1465,40 @@ def run_master_pipeline():
                             stock.setdefault("roce", "—")
                     else:
                         stock.setdefault("roce", "—")
-                stock.setdefault("gross_margin", _pct(gm))
-                stock.setdefault("ebitda_margin",_pct(em))
-                stock.setdefault("npm",          _pct(nm))
+                # v12.4: bounds-clamp profitability to plausible margins.
+                # yfinance occasionally feeds absurd values (NPM > 100 %,
+                # ROA > 100 %) on thin-revenue / one-time-gain rows; six
+                # stocks in the previous run had NPM 126–189 %. Clamp the
+                # display string AND the numeric scoring inputs.
+                def _clamp_pct(raw, lo, hi):
+                    """Run raw through _pct, then clamp to [lo, hi]; preserve '—'."""
+                    out = _pct(raw)
+                    if isinstance(out, (int, float)):
+                        if out > hi: return round(hi, 2)
+                        if out < lo: return round(lo, 2)
+                    return out
+
+                stock.setdefault("gross_margin",  _clamp_pct(gm,    0,  100))
+                stock.setdefault("ebitda_margin", _clamp_pct(em, -100,  100))
+                stock.setdefault("npm",           _clamp_pct(nm, -100,  100))
+
                 # Numeric versions for scoring (never "—", always float)
                 _roe_raw = _fvn(roe)
                 _gm_raw  = _fvn(gm)
                 _nm_raw  = _fvn(nm)
-                # Convert fractions to % if needed
-                stock["roe_num"] = round(_roe_raw * 100, 2) if 0 < abs(_roe_raw) < 2.0 else round(_roe_raw, 2)
-                stock["gm_num"]  = round(_gm_raw  * 100, 2) if 0 < abs(_gm_raw)  < 2.0 else round(_gm_raw,  2)
-                stock["nm_num"]  = round(_nm_raw  * 100, 2) if 0 < abs(_nm_raw)  < 2.0 else round(_nm_raw,  2)
+
+                def _to_pct(raw):
+                    return raw * 100 if 0 < abs(raw) < 2.0 else raw
+
+                # Same bounds clamp on numeric copies so scoring isn't
+                # blown up by outliers.
+                _roe_pct = _to_pct(_roe_raw)
+                _gm_pct  = _to_pct(_gm_raw)
+                _nm_pct  = _to_pct(_nm_raw)
+
+                stock["roe_num"] = round(max(-100, min(100,  _roe_pct)), 2)
+                stock["gm_num"]  = round(max(   0, min(100,  _gm_pct)),  2)
+                stock["nm_num"]  = round(max(-100, min(100,  _nm_pct)),  2)
                 # ── Proxy F-Score (0-9) ──────────────────────────────────────
                 # IMPORTANT: use local tuple variables (roa, fcf, de, cr, gm,
                 # roe, cash_v, rev_yoy_v, pat_yoy_v) — they are unpacked from

@@ -1,4 +1,4 @@
-# Scoring · Verdict · Funnel — Complete Logic Explained (Post-v12.3)
+# Scoring · Verdict · Funnel — Complete Logic Explained (Post-v12.4)
 
 This is the single source of truth for how the pipeline turns ~5,150 daily bhav rows into **100 final stocks**, each with a **Composite Score (0–100)** and a **Verdict (BUY / OVERVALUED / WATCHLIST / NEUTRAL / AVOID)**.
 
@@ -588,15 +588,17 @@ Imagine INFY trades today with:
 
 Beyond scoring, v10.9 also improved three other analyses:
 
-### A. Resist 2 / Support 2 — now 52-week levels
+### A. Resist 2 / Support 2 — now prior 52-week levels (v12.4)
 
-**Before v10.9:** `res2 = rolling(40).max()` — for momentum stocks near highs, R1 and R2 were identical (87% of stocks).
+**Before v10.9:** `res2 = rolling(40).max()` — for momentum stocks near highs, R1 and R2 were identical (87 % of stocks).
 
-**After v10.9:** `res2 = rolling(252).max()` — 52-week high, genuinely distinct long-term resistance. Same for `sup2` (52-week low).
+**v10.9 attempted fix:** `res2 = rolling(252).max()` over the full series — *but* whenever the 52-week max landed inside the most recent 20 trading days (a fresh breakout), the 252-day max equalled the 20-day max and **R1==R2 still collapsed for ~88 % of production rows**. The bug returned silently because of momentum-stock concentration in the funnel.
+
+**v12.4 fix:** `res2` now rolls over `h.iloc[:-20]` — the bars BEFORE the most recent 20. R2 represents the *prior* 52-week ceiling, genuinely separate from R1's short-term swing. Same for `sup2` (prior 52-week low). Stocks with < 80 days of history fall back to NaN → cell renders `"—"` via the standard `_g` default.
 
 **Why this matters for traders:**
 - **R1 (20d high)**: nearest swing ceiling — Target 1 territory
-- **R2 (52w high)**: major supply zone — Target 2/3 and breakout watch-level
+- **R2 (prior 52w high, excludes last 20d)**: major supply zone — Target 2/3 and breakout watch-level. When CMP is breaking above R2, the breakout has cleared the older 52-week supply.
 
 ### B. Pro / FII / DII QoQ Δ — placement fix
 
@@ -792,4 +794,4 @@ A user hovering over the **Score /100** or **Verdict** column headers sees exact
 
 ---
 
-**Document version:** reflects code as of v12.1 (post-reconciler-empty-ISIN-hotfix). Scoring logic (Parts 2-3) unchanged since v10.9 except for v10.16 PE-scoring-neutrality-for-clamped-values addition. Funnel (Part 1) last changed in v10.13. v10.14 added GROWTH field clamps + tooltips. v10.15 extended clamp discipline to PROFITABILITY/FIN-HEALTH/VALUATION/SHAREHOLDING + fixed ROE/ROA numeric storage + honest "—" display for Pledge%/DII%/QoQ. v10.16 replaced v10.15's numeric clamp for valuation ratios with honest "—" display (raw ≥ 500 / PEG ≥ 50) and added scoring neutrality for clamped PE (pe_num ≥ 500 = neutral, not penalized). v11.0.1 corrected EE threshold from ≥70 to ≥50 in daily report and Section D rotation_stage matching. v11.0.2 added 4 features: allowlist auto-add (A1), allowlist auto-prune (A2), chronic-AVOID demotion (B), turnaround flag (C). v12.0 added BSE bhavcopy 3-tier Cloudflare-resilient cascade (bse → cloudscraper → curl_cffi) in `master_funnel._bse_bhav` and removed the silent NEUTRAL filter in `ExcelGeneratorV6.__init__` so Stage 3 is now the single quality gate. **v12.1** is a reconciler hotfix preventing the empty-ISIN Cartesian-merge false positive that surfaced once v12.0 restored real BSE data: empty-ISIN rows now default to NSE_ONLY/BSE_ONLY instead of being incorrectly tagged DUAL_LISTED via symbol-match. Locked behind 7 new regression tests (Group 31 in `test_v11.0.2_full_withdummies.py`). Zero DB schema change, zero scoring behaviour change.
+**Document version:** reflects code as of v12.4 (production-blocker patch set). Scoring logic (Parts 2-3) unchanged since v10.9 except for v10.16 PE-scoring-neutrality-for-clamped-values addition. Funnel (Part 1) last changed in v10.13. v10.14 added GROWTH field clamps + tooltips. v10.15 extended clamp discipline to PROFITABILITY/FIN-HEALTH/VALUATION/SHAREHOLDING + fixed ROE/ROA numeric storage + honest "—" display for Pledge%/DII%/QoQ. v10.16 replaced v10.15's numeric clamp for valuation ratios with honest "—" display (raw ≥ 500 / PEG ≥ 50) and added scoring neutrality for clamped PE (pe_num ≥ 500 = neutral, not penalized). v11.0.1 corrected EE threshold from ≥70 to ≥50 in daily report and Section D rotation_stage matching. v11.0.2 added 4 features: allowlist auto-add (A1), allowlist auto-prune (A2), chronic-AVOID demotion (B), turnaround flag (C). v12.0 added BSE bhavcopy 3-tier Cloudflare-resilient cascade (bse → cloudscraper → curl_cffi) in `master_funnel._bse_bhav` and removed the silent NEUTRAL filter in `ExcelGeneratorV6.__init__` so Stage 3 is now the single quality gate. **v12.1** is a reconciler hotfix preventing the empty-ISIN Cartesian-merge false positive that surfaced once v12.0 restored real BSE data: empty-ISIN rows now default to NSE_ONLY/BSE_ONLY instead of being incorrectly tagged DUAL_LISTED via symbol-match. **v12.4** ships four production-blocker fixes: (1) header-demotion threshold raised from ≥1 row to ≥30 % of rows so sparse columns (Pro QoQ Δ, FII QoQ Δ) correctly stay red; (2) Resist 2 / Support 2 now compute over bars BEFORE the most recent 20, fixing the 87.9 % R1==R2 collapse on fresh breakouts that the v10.9 attempt missed; (3) profitability values (NPM / ROA / Gross / EBITDA margins) clamped to ±100 % with display + numeric guards, eliminating six rows of impossible >100 % margins; (4) all user-facing strings switched from "Anthropic API credits" / "Claude AI" to "Gemini API credits" / "Gemini AI" to match the actual provider (DB column names `last_claude_score`, `claude_analysed` deliberately preserved to avoid a schema migration). Locked behind 41 new regression tests (Group 53 in `test_v11.0.2_full_withdummies.py`). Zero DB schema change, zero scoring behaviour change beyond the bounded inputs to roe_num/gm_num/nm_num.

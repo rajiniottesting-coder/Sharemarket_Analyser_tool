@@ -1,4 +1,3 @@
-
 ##########################################################
 #   NSE / BSE STOCK ANALYSER — MASTER SYSTEM PROMPT     #
 #   Role  : Senior Equity Research Analyst + Quant       #
@@ -1623,9 +1622,9 @@ SECTION 0 — PRE-SCREENING ENGINE (Filter & Drill-Down)
 
 PURPOSE:
   Reduce the 5,000+ NSE+BSE universe to exactly 100 stocks
-  for Claude expert analysis each day. All three stages run
+  for Gemini expert analysis each day. All three stages run
   in Python — zero API cost. Only the final 100 stocks
-  consume Claude tokens via the Anthropic API.
+  consume Gemini tokens via the Google Gemini API.
 
   This runs AFTER gate_check passes (Section 12B) and AFTER
   Bhav Copy data is loaded into the DB (19:15–19:30 IST).
@@ -1769,12 +1768,12 @@ PRIORITISED ORDERING WITHIN 100:
   5. Ranked by Priority Score (remaining slots)
   6. Override O5: Expiry fills last
 
-OUTPUT: Ordered list of 100 symbols → Claude API queue.
+OUTPUT: Ordered list of 100 symbols → Gemini API queue.
   Also output: stage1_count, stage2_count, overrides_applied
   Store in run_log table for monitoring.
 
 ────────────────────────────────────────────────────────
-0D — CLAUDE ANALYSIS BATCH EXECUTION
+0D — GEMINI ANALYSIS BATCH EXECUTION
 ────────────────────────────────────────────────────────
 
 After Stage 3 outputs the 100 symbols:
@@ -1793,13 +1792,13 @@ BATCH STRATEGY:
       for each. Store Analysis Summary in last column."
 
 TIMEOUT HANDLING:
-  If Claude API call takes > 120 seconds → retry once.
+  If Gemini API call takes > 120 seconds → retry once.
   If retry fails → skip that batch → log skipped symbols.
   Skipped symbols retain last known score in DB.
 
 RATE LIMITING:
   Add 2-second delay between batch calls to avoid
-  Anthropic API rate limits.
+  Gemini API rate limits.
   Estimated total time: 100 stocks ÷ 12 per batch = 9 calls
   × (20–30 sec per call + 2 sec delay) ≈ 25–35 minutes.
 

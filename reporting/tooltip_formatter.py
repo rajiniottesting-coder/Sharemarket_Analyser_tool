@@ -321,13 +321,20 @@ TIPS: Dict[str, Tuple[str, str]] = {
              "Low for Banks/Utilities is normal.\n"
              "Source: yfinance .info['returnOnAssets'] × 100 when\n"
              "available; else derived as ROE / (1 + D/E).\n"
-             "Display: v10.15 FIX #1 stores as FLOAT (was string)."),
+             "Display: v10.15 FIX #1 stores as FLOAT (was string).\n"
+             "v12.4: clamped to ±100 % — yfinance occasionally returns\n"
+             "absurd values for finance/NBFC stocks (M&MFIN had 189 %)."),
     "Gross Mgn %": (">40% strong moat | >20% decent",
-                    "Score: >40% = +8 | >20% = +4"),
+                    "Score: >40% = +8 | >20% = +4\n"
+                    "v12.4: clamped to [0, 100] %."),
     "EBITDA Mgn %": (">25% excellent | >15% good",
-                     ">30%: Excellent | >20%: Good | <10%: Tight"),
+                     ">30%: Excellent | >20%: Good | <10%: Tight\n"
+                     "v12.4: clamped to ±100 %."),
     "NPM %": (">15% excellent | <5% thin",
-             "Score: >15% = +8 | >5% = +4 | <0% = −8"),
+             "Score: >15% = +8 | >5% = +4 | <0% = −8\n"
+             "v12.4: clamped to ±100 %. yfinance occasionally feeds\n"
+             "values >100 % on thin-revenue / one-time-gain rows\n"
+             "(DGCONTENT 126 %, AMAGI 189 % pre-clamp)."),
     "NPM Q1 %": ("Most recent quarter margin vs TTM",
                  "Q1 > NPM(TTM): margins accelerating.\n"
                  "Source: (Quarterly PAT / Quarterly Revenue) × 100\n"
@@ -636,18 +643,24 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # ── Support / resistance ────────────────────────────────────────────────
     "Support 1 (₹)": ("Nearest support = buy zone floor",
                       "20-day rolling low. Breach = bearish. Used for Stop Loss."),
-    "Support 2 (₹)": ("Major floor — 52-week low",
-                      "Lowest price in the last 252 trading days (~52 weeks).\n"
-                      "v10.9: was 40-day min; now a genuine long-term support\n"
-                      "level, distinct from Support 1 (20d swing low)."),
+    "Support 2 (₹)": ("Major floor — prior 52-week low",
+                      "Lowest price in the 252 trading days BEFORE the\n"
+                      "most recent 20 — i.e., the prior major floor.\n"
+                      "v12.4: excludes the last 20 days so a fresh\n"
+                      "breakdown to a new low doesn't make S1 == S2.\n"
+                      "Falls back to '—' for stocks with < 80 days\n"
+                      "of price history."),
     "Resist 1 (₹)": ("First resistance = Target 1",
                      "20-day rolling high. Breakout with volume = bullish."),
-    "Resist 2 (₹)": ("Major supply ceiling — 52-week high",
-                     "Highest price in the last 252 trading days (~52 weeks).\n"
-                     "v10.9: was 40-day max in prior versions; 87% of stocks\n"
-                     "had R1=R2 because a 40d max often coincides with 20d.\n"
-                     "Now a genuine long-term resistance level, meaningfully\n"
-                     "distinct from Resist 1 (20d swing high)."),
+    "Resist 2 (₹)": ("Major supply ceiling — prior 52-week high",
+                     "Highest price in the 252 trading days BEFORE the\n"
+                     "most recent 20 — i.e., the prior major ceiling.\n"
+                     "v12.4: excludes the last 20 days so a fresh\n"
+                     "breakout to a new high doesn't make R1 == R2\n"
+                     "(the v10.9 logic collapsed for 87.9 % of rows\n"
+                     "when the 52-week max landed inside the last 20 d).\n"
+                     "Falls back to '—' for stocks with < 80 days\n"
+                     "of price history."),
 
     # ── Balance sheet health ────────────────────────────────────────────────
     "BS Health Flag": ("HEALTHY = safe | WATCH = monitor | ALERT = danger",
@@ -697,7 +710,7 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Primary Risk": ("Biggest downside risk", "Always read before investing."),
     "SEBI Flags": ("NONE = clean | Any flag = investigate first",
                    "Any flag = investigate before buying."),
-    "View Analysis Summary": ("Claude AI investor narrative (150–250 words)",
+    "View Analysis Summary": ("Gemini AI investor narrative (150–250 words)",
                               "Business quality, ratios, risks, catalysts, verdict rationale.\n"
                               "Generated fresh each trading day."),
 
@@ -872,7 +885,7 @@ GROUP_TIPS: Dict[str, Tuple[str, str]] = {
     "NEWS": ("Sentiment + risk summary",
              "Key catalyst, news sentiment, primary risk."),
     "ANALYSIS SUMMARY": ("Full AI-written investor memo",
-                         "150–250-word narrative from Claude AI covering quality,\n"
+                         "150–250-word narrative from Gemini AI covering quality,\n"
                          "ratios, risks, catalysts, and verdict rationale.\n"
                          "Generated fresh each trading day."),
     "KEY METRICS": ("Essential ratios for gold-tier candidates",

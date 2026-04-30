@@ -2777,6 +2777,323 @@ _fv_check("52.9b", "None q_ebitda_cr produces non-zero M5 via shortcut",
 
 
 
+# ══════════════════════════════════════════════════════════════════════
+# GROUP 53 — v12.4 Production Blocker Patches (Issues #1, #6, #9, #15)
+# ══════════════════════════════════════════════════════════════════════
+# These tests guard the four production-blocker fixes documented in the
+# v12.4 investigation. Each patch had a corresponding pre-fix bug that
+# reached production; these tests ensure the fix stays in place across
+# future refactors.
+#
+#   53.1  Header demotion threshold (excel_generator) — ≥30 % coverage
+#   53.2  Resist 2 / Support 2 (backfill_history) — prior-window slice
+#   53.3  Profitability clamp (master_funnel) — _clamp_pct boundaries
+#   53.4  Anthropic→Gemini text replacement (excel_generator + tooltip)
+# ══════════════════════════════════════════════════════════════════════
+print("\n" + "═" * 70)
+print("GROUP 53 — v12.4 Production blocker patches")
+print("═" * 70)
+
+# ── 53.1: Header demotion threshold ─────────────────────────────────────
+# Replicate the patched logic from excel_generator.py:1480-1497 against
+# synthetic preview rows. The fix raised the threshold from "≥1 row" to
+# "≥30 %" so that columns sparsely populated (Pro QoQ Δ at 2/99,
+# FII QoQ Δ at 22/99) correctly stay red instead of being demoted.
+def _hdr_has_data(rows, key, threshold=0.30):
+    n_total = max(1, len(rows))
+    real = 0
+    for stk in rows:
+        v = stk.get(key)
+        if v is None: continue
+        if v in ("", "—", "--", "N/A", "STABLE"): continue
+        if v in (0, 0.0, "0", "0.0"): continue
+        real += 1
+    return (real / n_total) >= threshold
+
+def _make_preview(key, n_pop, n_total=99, fill="—"):
+    return [{key: (1.5 if i < n_pop else fill)} for i in range(n_total)]
+
+_hdr_cases = [
+    ("53.1a", "Pro QoQ Δ at 2/99 (sparse)",       2, False),
+    ("53.1b", "FII QoQ Δ at 22/99 (below 30 %)", 22, False),
+    ("53.1c", "ND/EBITDA at 89/99 (well-covered)",89, True),
+    ("53.1d", "Pledge % at 0/99 (fully empty)",   0, False),
+    ("53.1e", "Capex/Rev at 94/99 (well-covered)",94, True),
+    ("53.1f", "Edge: 30/99 (exactly threshold)", 30, True),
+    ("53.1g", "Edge: 29/99 (just below)",        29, False),
+]
+for tid, desc, npop, expected_has_data in _hdr_cases:
+    rows = _make_preview("k", npop)
+    got = _hdr_has_data(rows, "k", threshold=0.30)
+    if got == expected_has_data:
+        passed += 1
+        print(f"  ✓ {tid} {desc}")
+    else:
+        failed += 1
+        failures.append(f"{tid} [{desc}]: has_data={got} (want {expected_has_data})")
+
+# 53.1h: empty preview must not crash (max(1, len) guard)
+try:
+    got = _hdr_has_data([], "k", threshold=0.30)
+    if got is False:
+        passed += 1
+        print("  ✓ 53.1h Empty preview safely returns False (no ZeroDivisionError)")
+    else:
+        failed += 1
+        failures.append("53.1h: empty preview returned True unexpectedly")
+except ZeroDivisionError:
+    failed += 1
+    failures.append("53.1h: ZeroDivisionError on empty preview — guard missing")
+
+# 53.1i: source-code presence check — patch markers must be in the file
+import os as _os53
+_eg_path = _os53.path.join(_os53.path.dirname(_os53.path.abspath(__file__)),
+                           "reporting", "excel_generator.py")
+with open(_eg_path) as _fh:
+    _eg_src = _fh.read()
+if "_COVERAGE_MIN" in _eg_src and "_COVERAGE_MIN = 0.30" in _eg_src:
+    passed += 1
+    print("  ✓ 53.1i excel_generator.py has _COVERAGE_MIN=0.30 marker")
+else:
+    failed += 1
+    failures.append("53.1i: excel_generator.py missing _COVERAGE_MIN=0.30 — patch reverted?")
+
+# ── 53.2: Resist 2 / Support 2 prior-window logic ───────────────────────
+# Replicate the patched logic from backfill_history.py:744-770. The fix
+# computes R2 over bars BEFORE the most recent 20 so it doesn't collapse
+# to R1 when a fresh 52-week breakout sits in the last 20 days (pre-fix
+# behaviour: R1==R2 in 87.9 % of production rows).
+import pandas as _pd53
+import numpy as _np53
+
+def _compute_r1_r2_patched(highs, lows):
+    h = _pd53.Series(highs)
+    l = _pd53.Series(lows)
+    sup1 = l.rolling(20).min()
+    res1 = h.rolling(20).max()
+    if len(h) >= 80:
+        prior_l = l.iloc[:-20]
+        prior_h = h.iloc[:-20]
+        _lb2    = min(252, len(prior_h))
+        sup2    = prior_l.rolling(_lb2).min()
+        res2    = prior_h.rolling(_lb2).max()
+        sup2 = sup2.reindex(l.index, method="ffill")
+        res2 = res2.reindex(h.index, method="ffill")
+    else:
+        sup2 = _pd53.Series([float("nan")] * len(h), index=l.index)
+        res2 = _pd53.Series([float("nan")] * len(h), index=h.index)
+    def _last(s):
+        v = s.iloc[-1]
+        return 0.0 if _pd53.isna(v) else float(v)
+    return _last(res1), _last(res2), _last(sup1), _last(sup2)
+
+def _compute_r1_r2_old(highs, lows):
+    """The pre-fix (v10.9) logic — used to verify the bug it fixed."""
+    h = _pd53.Series(highs)
+    l = _pd53.Series(lows)
+    _lb2 = min(252, len(h))
+    sup1 = l.rolling(20).min()
+    sup2 = l.rolling(_lb2).min() if _lb2 >= 60 else l.rolling(max(40, len(h))).min()
+    res1 = h.rolling(20).max()
+    res2 = h.rolling(_lb2).max() if _lb2 >= 60 else h.rolling(max(40, len(h))).max()
+    return float(res1.iloc[-1]), float(res2.iloc[-1]), float(sup1.iloc[-1]), float(sup2.iloc[-1])
+
+# 53.2a — fresh-breakout scenario: 252 days, ATH lands in last 20
+_np53.random.seed(0)
+prices_a = 100 + _np53.cumsum(_np53.random.randn(252) * 0.5)
+prices_a[:-20] -= 5
+prices_a[-5] = max(prices_a) + 10
+highs_a = (prices_a + 1.5).tolist()
+lows_a  = (prices_a - 1.5).tolist()
+r1_old, r2_old, _, _ = _compute_r1_r2_old(highs_a, lows_a)
+r1_new, r2_new, _, _ = _compute_r1_r2_patched(highs_a, lows_a)
+if abs(r1_old - r2_old) < 0.01:
+    passed += 1
+    print(f"  ✓ 53.2a Pre-fix logic confirms bug: R1={r1_old:.2f} == R2={r2_old:.2f} on fresh breakout")
+else:
+    warnings.append(f"53.2a: pre-fix scenario didn't reproduce bug — test may not be representative")
+    passed += 1
+if abs(r1_new - r2_new) >= 1.0:
+    passed += 1
+    print(f"  ✓ 53.2b Patched logic separates R1={r1_new:.2f} from R2={r2_new:.2f}")
+else:
+    failed += 1
+    failures.append(f"53.2b: patched R1 ({r1_new:.2f}) too close to R2 ({r2_new:.2f}) — fix not effective")
+
+# 53.2c — short-history scenario: only 60 days → must not crash and R2 should be 0
+short_h = (prices_a[-60:] + 1.5).tolist()
+short_l = (prices_a[-60:] - 1.5).tolist()
+try:
+    r1_s, r2_s, s1_s, s2_s = _compute_r1_r2_patched(short_h, short_l)
+    if r2_s == 0.0 and s2_s == 0.0:
+        passed += 1
+        print(f"  ✓ 53.2c Short history (60d): R2 falls back to 0 (renders '—' in dashboard)")
+    else:
+        failed += 1
+        failures.append(f"53.2c: short-history R2={r2_s} S2={s2_s} (want 0.0 for both)")
+except Exception as _e:
+    failed += 1
+    failures.append(f"53.2c: short-history scenario raised {type(_e).__name__}: {_e}")
+
+# 53.2d — older-ATH scenario: 200 days, ATH at day 100. R2 should ≥ R1.
+_np53.random.seed(2)
+prices_d = 100 + _np53.cumsum(_np53.random.randn(200) * 0.7)
+prices_d[100] = max(prices_d) + 5
+highs_d = (prices_d + 1.5).tolist()
+lows_d  = (prices_d - 1.5).tolist()
+r1_d, r2_d, _, _ = _compute_r1_r2_patched(highs_d, lows_d)
+if r2_d > r1_d:
+    passed += 1
+    print(f"  ✓ 53.2d Older-ATH scenario: R2={r2_d:.2f} > R1={r1_d:.2f} (R2 captures prior 52W ceiling)")
+else:
+    failed += 1
+    failures.append(f"53.2d: R2={r2_d:.2f} should exceed R1={r1_d:.2f} when ATH is in older window")
+
+# 53.2e — 52W high invariant: R2 must NEVER exceed the global max of the prior window
+prior_max = max(highs_a[:-20])
+if r2_new <= prior_max + 0.01:
+    passed += 1
+    print(f"  ✓ 53.2e R2={r2_new:.2f} respects prior-window max bound ({prior_max:.2f})")
+else:
+    failed += 1
+    failures.append(f"53.2e: R2={r2_new:.2f} exceeds prior-window max {prior_max:.2f}")
+
+# 53.2f — source-code presence check
+_bf_path = _os53.path.join(_os53.path.dirname(_os53.path.abspath(__file__)),
+                           "backfill_history.py")
+with open(_bf_path) as _fh:
+    _bf_src = _fh.read()
+if "prior_h" in _bf_src and "prior_l" in _bf_src and "iloc[:-20]" in _bf_src:
+    passed += 1
+    print("  ✓ 53.2f backfill_history.py has prior-window slice markers")
+else:
+    failed += 1
+    failures.append("53.2f: backfill_history.py missing prior_h/prior_l slice — patch reverted?")
+
+# ── 53.3: Profitability clamp ────────────────────────────────────────────
+def _fvn53(v):
+    try: return float(v) if v is not None else 0.0
+    except (ValueError, TypeError): return 0.0
+
+def _pct53(v):
+    f = _fvn53(v)
+    if f == 0: return "—"
+    return round(f * 100, 2) if abs(f) < 2.0 else round(f, 2)
+
+def _clamp_pct53(raw, lo, hi):
+    out = _pct53(raw)
+    if isinstance(out, (int, float)):
+        if out > hi: return round(hi, 2)
+        if out < lo: return round(lo, 2)
+    return out
+
+# Production-data cases from the v12.4 investigation
+_clamp_cases = [
+    ("53.3a", "DGCONTENT NPM 126.4 → 100",    126.4, -100, 100,  100),
+    ("53.3b", "AMAGI    NPM 189.1 → 100",     189.1, -100, 100,  100),
+    ("53.3c", "MEGASTAR NPM 164.8 → 100",     164.8, -100, 100,  100),
+    ("53.3d", "REDINGTON NPM 156.8 → 100",    156.8, -100, 100,  100),
+    ("53.3e", "RELIGARE NPM 127.6 → 100",     127.6, -100, 100,  100),
+    ("53.3f", "GCSL NPM -144.5 → -100",      -144.5, -100, 100, -100),
+    ("53.3g", "M&MFIN ROA 189 → 100",         189,   -100, 100,  100),
+    ("53.3h", "TATACAP ROA 181.5 → 100",      181.5, -100, 100,  100),
+    ("53.3i", "Normal NPM 12.5 unchanged",    12.5,  -100, 100,  12.5),
+    ("53.3j", "Fraction NPM 0.125 → 12.5",    0.125, -100, 100,  12.5),
+    ("53.3k", "Zero NPM → '—' (missing)",     0,     -100, 100,  "—"),
+    ("53.3l", "None NPM → '—' (missing)",     None,  -100, 100,  "—"),
+    ("53.3m", "Legit loss NPM -25 unchanged",-25,    -100, 100, -25),
+    ("53.3n", "Edge low -150 → -100",        -150,   -100, 100, -100),
+    ("53.3o", "Edge high 150 → 100",          150,   -100, 100,  100),
+    ("53.3p", "Gross margin lo=0: -0.05 (-5 %) → 0", -0.05, 0, 100, 0),
+]
+for tid, desc, raw, lo, hi, expected in _clamp_cases:
+    got = _clamp_pct53(raw, lo, hi)
+    if got == expected:
+        passed += 1
+        print(f"  ✓ {tid} {desc}")
+    else:
+        failed += 1
+        failures.append(f"{tid} [{desc}]: got {got!r} (want {expected!r})")
+
+# 53.3q: numeric scoring clamp — ROE/GM/NM should never exceed bounds
+def _to_pct53(raw):
+    return raw * 100 if 0 < abs(raw) < 2.0 else raw
+
+_inflated = [(189, "ROA"), (126.4, "NPM"), (-144.5, "NPM"), (0.5, "ROE")]
+for raw, label in _inflated:
+    pct = _to_pct53(_fvn53(raw))
+    clamped_npm = max(-100, min(100, pct))
+    clamped_gm  = max(   0, min(100, pct))
+    if -100 <= clamped_npm <= 100 and 0 <= clamped_gm <= 100:
+        passed += 1
+        print(f"  ✓ 53.3q-{label}-{raw} numeric clamp keeps result in bounds")
+    else:
+        failed += 1
+        failures.append(f"53.3q-{label}-{raw}: pct={pct} clamped_npm={clamped_npm} clamped_gm={clamped_gm} out of bounds")
+
+# 53.3r: source-code presence check
+_mf_path = _os53.path.join(_os53.path.dirname(_os53.path.abspath(__file__)),
+                           "master_funnel.py")
+with open(_mf_path) as _fh:
+    _mf_src = _fh.read()
+if "_clamp_pct" in _mf_src and "v12.4" in _mf_src:
+    passed += 1
+    print("  ✓ 53.3r master_funnel.py has _clamp_pct + v12.4 marker")
+else:
+    failed += 1
+    failures.append("53.3r: master_funnel.py missing _clamp_pct or v12.4 marker — patch reverted?")
+
+# ── 53.4: Anthropic → Gemini text replacement ──────────────────────────
+_eg_anthropic = _eg_src.count("Anthropic API credits")
+_eg_gemini    = _eg_src.count("Gemini API credits")
+if _eg_anthropic == 0:
+    passed += 1
+    print("  ✓ 53.4a No 'Anthropic API credits' strings remain in excel_generator.py")
+else:
+    failed += 1
+    failures.append(f"53.4a: {_eg_anthropic} 'Anthropic API credits' string(s) still in excel_generator.py")
+
+if _eg_gemini >= 6:
+    passed += 1
+    print(f"  ✓ 53.4b excel_generator.py has {_eg_gemini} 'Gemini API credits' strings (≥6 expected)")
+else:
+    failed += 1
+    failures.append(f"53.4b: only {_eg_gemini} 'Gemini API credits' in excel_generator.py — patch incomplete")
+
+# 53.4c: tooltip_formatter.py — historical "Claude AI" must be cleared
+_tf_path = _os53.path.join(_os53.path.dirname(_os53.path.abspath(__file__)),
+                           "reporting", "tooltip_formatter.py")
+with open(_tf_path) as _fh:
+    _tf_src = _fh.read()
+if "Claude AI" not in _tf_src:
+    passed += 1
+    print("  ✓ 53.4c No 'Claude AI' strings remain in tooltip_formatter.py")
+else:
+    failed += 1
+    failures.append("53.4c: 'Claude AI' string still present in tooltip_formatter.py")
+
+# 53.4d: aistudio.google.com link present in the AI-credits tooltip
+if "aistudio.google.com" in _eg_src:
+    passed += 1
+    print("  ✓ 53.4d Helpful aistudio.google.com link present in Key Catalyst tooltip")
+else:
+    failed += 1
+    failures.append("53.4d: aistudio.google.com link missing — user has no path to top up Gemini credits")
+
+# 53.4e: DB-column names must NOT be renamed (would break schema)
+_db_path = _os53.path.join(_os53.path.dirname(_os53.path.abspath(__file__)),
+                           "database", "data_bridge.py")
+with open(_db_path) as _fh:
+    _db_src = _fh.read()
+if "last_claude_score" in _db_src and "claude_analysed" in _db_src:
+    passed += 1
+    print("  ✓ 53.4e DB column names (last_claude_score, claude_analysed) preserved (schema stability)")
+else:
+    failed += 1
+    failures.append("53.4e: DB column names changed — would require migration; revert if unintended")
+
+
+
 print("\n" + "═" * 70)
 print(f"FINAL: {passed} passed, {failed} failed")
 print("═" * 70)

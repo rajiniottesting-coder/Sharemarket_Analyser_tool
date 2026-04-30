@@ -424,17 +424,29 @@ for each sh_row in sh_rows[:100] where dii_pct == 0:
 
 Console output: `NSE shareholding: enriched DII for N/M symbols`. On GitHub Actions runners, NSE API is often blocked by Akamai; on local Windows it usually works.
 
-### Resistance / Support formula (v10.9 corrected)
+### Resistance / Support formula (v12.4 corrected)
 
 ```python
-_lb2  = min(252, len(h))               # 52 weeks, with graceful degradation
-sup1  = l.rolling(20).min()            # short-term swing low
-sup2  = l.rolling(_lb2).min()          # 52-week low (major floor)
-res1  = h.rolling(20).max()            # short-term swing high
-res2  = h.rolling(_lb2).max()          # 52-week high (major ceiling)
+sup1 = l.rolling(20).min()                       # short-term swing low
+res1 = h.rolling(20).max()                       # short-term swing high
+if len(h) >= 80:                                 # need ≥ 60 prior + 20 recent
+    prior_l = l.iloc[:-20]                       # bars BEFORE last 20d
+    prior_h = h.iloc[:-20]
+    _lb2    = min(252, len(prior_h))
+    sup2    = prior_l.rolling(_lb2).min()        # prior 52-week low
+    res2    = prior_h.rolling(_lb2).max()        # prior 52-week high
+    sup2    = sup2.reindex(l.index, method="ffill")
+    res2    = res2.reindex(h.index, method="ffill")
+else:
+    sup2 = pd.Series([float("nan")] * len(h), index=l.index)
+    res2 = pd.Series([float("nan")] * len(h), index=h.index)
 ```
 
-Pre-v10.9 had `sup2 = rolling(40).min()` / `res2 = rolling(40).max()`. Because the screener targets momentum stocks near highs, 87% of stocks had `res1 == res2` — the 20-day high WAS the 40-day high. Now R2 is a genuinely different long-term reference level.
+**Evolution of this code:**
+
+- **Pre-v10.9** had `sup2 = rolling(40).min()` / `res2 = rolling(40).max()`. Because the screener targets momentum stocks near highs, 87 % of stocks had `res1 == res2` — the 20-day high WAS the 40-day high.
+- **v10.9** changed the window to 252 trading days (~52 weeks), expecting that to give a genuinely different long-term reference. It silently failed for the same 87.9 % of rows whenever the 252-day max landed inside the most recent 20 days (a fresh breakout — common pattern for the momentum stocks the funnel concentrates on). Production audit of the v12.3 Excel showed 79/99 rows where `52W High > Resist 2 by >5 %`, which is mathematically impossible if R2 truly were the rolling-252 max.
+- **v12.4** computes R2 / S2 over `iloc[:-20]` — bars BEFORE the most recent 20 — so they represent the *prior* 52-week ceiling/floor, genuinely separate from R1's recent-swing high regardless of whether a fresh breakout sits in the last 20 days. Forward-fill back to the original index keeps `_v(...)` working unchanged. Stocks with < 80 days of history fall back to NaN → cell renders `"—"` via the standard `_g` default.
 
 ### Supertrend formula (corrected)
 
@@ -1346,4 +1358,200 @@ These remain Round 3 candidates:
 
 ---
 
-*Last updated: April 2026 · v12.3 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 25. v12.4 RELEASE — Production blocker patch set
+
+### Summary
+
+A full audit of the v12.3 Excel output (`NSE_BSE_Full_Dashboard_20260429.xlsx`, 99 stocks × 123 columns) surfaced four production-blocker issues that needed patching before the next push:
+
+1. **Header demotion threshold too lax** (`reporting/excel_generator.py`)
+2. **Resist 2 / Support 2 collapse to R1 / S1 for 87.9 % of rows** (`backfill_history.py`)
+3. **Profitability values >100 % slipping through unchecked** (`master_funnel.py`)
+4. **UI strings still reference Anthropic; actual provider is Google Gemini** (multiple files)
+
+All four are now fixed and locked behind 41 new regression tests in **Group 53** of `test_v11.0.2_full_withdummies.py`. Total test count: **368 → 409**, all passing.
+
+### v12.4 changes
+
+#### 25.1 Header demotion threshold (Issue #1)
+
+Pre-v12.4 logic in `_full_sheet`:
+
+```python
+for _stk in _stks_preview:
+    _v = _stk.get(_key)
+    # ... empty/dash checks ...
+    _real_count += 1
+    if _real_count >= 1:
+        break   # just need one populated value to demote from red
+_header_has_data[_h] = (_real_count >= 1)
+```
+
+A single fluke value out of 99 was enough to demote a NO_FREE_SOURCE column from red to its normal section colour. In the production run this hid:
+
+- **Pro QoQ Δ**: 2/99 populated (97 dashes) → header showed normal SHAREHOLDING orange instead of red
+- **FII QoQ Δ**: 22/99 populated (77 dashes) → same issue
+
+Post-v12.4:
+
+```python
+_row_total    = max(1, len(_stks_preview))
+_COVERAGE_MIN = 0.30   # ≥30 % of rows must carry real data
+# ... loop over all rows, no early break ...
+_header_has_data[_h] = (_real_count / _row_total) >= _COVERAGE_MIN
+```
+
+The threshold of 30 % cleanly separates the broken-coverage cases (2 %, 22 %) from genuinely-populated columns (89 %, 90 %, 94 %, etc.). The `max(1, len(...))` guards against `ZeroDivisionError` on empty previews.
+
+#### 25.2 Resist 2 / Support 2 prior-window slice (Issue #6)
+
+Pre-v12.4 logic in `backfill_history.py::compute_technicals` (the v10.9 attempt):
+
+```python
+_lb2 = min(252, len(h))
+res2 = h.rolling(_lb2).max() if _lb2 >= 60 else h.rolling(max(40, len(h))).max()
+```
+
+The bug: when a stock's 52-week high lies inside the most recent 20 trading days (a fresh breakout — common for the momentum stocks the funnel concentrates on), the 252-day rolling max equals the 20-day rolling max, so `R1 == R2` and the cell pair gives no separate signal.
+
+Production verification: 87 / 99 stocks had `R1 == R2` exactly, and 79 / 99 had `52W High > Resist 2 by >5 %` — the latter is mathematically impossible if R2 is the rolling-252 max from the same `daily_prices` data, which means the rolling window was effectively shorter than advertised for many stocks.
+
+Post-v12.4:
+
+```python
+sup1 = l.rolling(20).min()
+res1 = h.rolling(20).max()
+if len(h) >= 80:                       # need ≥ 60 prior + 20 recent
+    prior_l = l.iloc[:-20]
+    prior_h = h.iloc[:-20]
+    _lb2    = min(252, len(prior_h))
+    sup2    = prior_l.rolling(_lb2).min()
+    res2    = prior_h.rolling(_lb2).max()
+    sup2 = sup2.reindex(l.index, method="ffill")
+    res2 = res2.reindex(h.index, method="ffill")
+else:
+    sup2 = pd.Series([float("nan")] * len(h), index=l.index)
+    res2 = pd.Series([float("nan")] * len(h), index=h.index)
+```
+
+R2 now rolls over `h.iloc[:-20]` — bars BEFORE the most recent 20 — so it represents the *prior* 52-week ceiling, genuinely separate from R1's recent-swing high. Forward-fill back to the original index keeps `_v(...)` working unchanged. Stocks with < 80 days of history fall back to NaN → renders `"—"` via the standard `_g` default.
+
+Tooltip + glossary text in `reporting/excel_generator.py` and `reporting/tooltip_formatter.py` updated to describe the new "prior 52-week" semantics. The dashboard shows R2 as a meaningfully different price level for the first time since v10.9.
+
+#### 25.3 Profitability clamps (Issue #9)
+
+Pre-v12.4 `_pct(v)` in `master_funnel.py` performed unit conversion (fraction → percent for `0 < |v| < 2.0`) but no bounds clamp:
+
+```python
+stock.setdefault("npm", _pct(nm))
+stock["nm_num"] = round(_nm_raw * 100, 2) if 0 < abs(_nm_raw) < 2.0 else round(_nm_raw, 2)
+```
+
+yfinance occasionally returns absurd values for thin-revenue or one-time-gain rows. Six stocks in the prior run had impossible NPM and three had ROA outside plausible bounds:
+
+| Stock      | NPM     | ROA     |
+|------------|---------|---------|
+| DGCONTENT  | 126.4   | —       |
+| AMAGI      | 189.1   | —       |
+| MEGASTAR   | 164.8   | —       |
+| REDINGTON  | 156.8   | —       |
+| RELIGARE   | 127.6   | —       |
+| GCSL       | −144.5  | —       |
+| M&MFIN     | —       | 189     |
+| TATACAP    | —       | 181.5   |
+| J&KBANK    | —       | 126.4   |
+
+These then fed into `nm_num` and `roe_num` and inflated the composite score downstream.
+
+Post-v12.4:
+
+```python
+def _clamp_pct(raw, lo, hi):
+    out = _pct(raw)
+    if isinstance(out, (int, float)):
+        if out > hi: return round(hi, 2)
+        if out < lo: return round(lo, 2)
+    return out
+
+stock.setdefault("gross_margin",  _clamp_pct(gm,    0,  100))
+stock.setdefault("ebitda_margin", _clamp_pct(em, -100,  100))
+stock.setdefault("npm",           _clamp_pct(nm, -100,  100))
+# Numeric scoring inputs clamped the same way:
+stock["roe_num"] = round(max(-100, min(100,  _roe_pct)), 2)
+stock["gm_num"]  = round(max(   0, min(100,  _gm_pct)),  2)
+stock["nm_num"]  = round(max(-100, min(100,  _nm_pct)),  2)
+```
+
+Bounds: `[-100, 100]` for NPM / EBITDA Mgn / ROA / ROE numeric, `[0, 100]` for Gross Mgn (margins can't be negative). `_pct`'s sentinel-`"—"` for missing values is preserved by the `isinstance(out, (int, float))` guard.
+
+ROA gets an inline clamp at line ~1422 (since `_clamp_pct` is defined further down in the same block; rather than hoisting the function, we inline the same `[-100, 100]` clamp there).
+
+#### 25.4 Anthropic → Gemini text replacement (Issue #15)
+
+Switching the AI provider from Anthropic Claude to Google Gemini happened in v10.1 — but the user-facing strings never followed:
+
+| File | Line(s) | Before | After |
+|------|---------|--------|-------|
+| `reporting/excel_generator.py` | 793 | "Requires Anthropic API credits — populated by AI analyst." | "Requires Gemini API credits — populated by AI analyst (aistudio.google.com)." |
+| `reporting/excel_generator.py` | 797, 801, 805 | "Requires Anthropic API credits." | "Requires Gemini API credits." |
+| `reporting/excel_generator.py` | 939 | "AI-generated text fields (needs Anthropic credits…)" | "AI-generated text fields (needs Gemini credits…)" |
+| `reporting/excel_generator.py` | 944 | "# Needs Anthropic API credits" | "# Needs Gemini API credits" |
+| `reporting/excel_generator.py` | 1095 | "Claude AI investor narrative" | "Gemini AI investor narrative" |
+| `reporting/excel_generator.py` | 1456 | banner: "AMBER header = Needs Anthropic API credits" | "AMBER header = Needs Gemini API credits" |
+| `reporting/excel_generator.py` | 1507 | "# Amber — populated only when Anthropic API credits are loaded" | "# Amber — populated only when Gemini API credits are loaded" |
+| `reporting/tooltip_formatter.py` | 700 | "Claude AI investor narrative (150–250 words)" | "Gemini AI investor narrative (150–250 words)" |
+| `reporting/tooltip_formatter.py` | 875 | "150–250-word narrative from Claude AI…" | "150–250-word narrative from Gemini AI…" |
+| `master_prompt/NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt` | 1626, 1628, 1772, 1777, 1796, 1802 | Claude / Anthropic | Gemini |
+
+**Deliberately preserved** to avoid a DB migration:
+
+- `database/data_bridge.py` SQL column `claude_analysed` (line 72) and references at line 1017
+- `screening/priority_ranker.py` field name `last_claude_score` (lines 12, 140, 141, 182, 186)
+
+These are SQL column names; renaming them would require an ALTER TABLE migration and a data-bridge refactor. Test 53.4e explicitly verifies these are **still present** to flag any unintended rename.
+
+### What was tested
+
+`test_v11.0.2_full_withdummies.py` Group 53 — 41 new tests:
+
+- **53.1 (a–i)** Header demotion threshold: 7 coverage cases (sparse / well-covered / edge 30 % / edge 29 % / fully empty), empty-preview safety, source-marker check (9 tests)
+- **53.2 (a–f)** Resist 2 / Support 2: pre-fix bug reproduction, fresh-breakout fix, short-history fallback, older-ATH separation, sanity bound, source-marker check (6 tests)
+- **53.3 (a–r)** Profitability clamp: all 6 production NPM extremes + 2 ROA extremes + normal values + fractions + missing + edges + numeric scoring clamp + source-marker check (18 tests)
+- **53.4 (a–e)** Anthropic→Gemini: no Anthropic remains, ≥6 Gemini replacements, no Claude AI in tooltips, aistudio link present, DB column names preserved (5 tests)
+
+Behaviour tests (53.1a–h, 53.2a–e, 53.3a–q) replicate the patched logic in isolation — they verify the algorithm is correct independent of file contents. Source-marker tests (53.1i, 53.2f, 53.3r, 53.4a–d) act as canary tests that flag a reverted patch.
+
+### Verification matrix
+
+| Configuration | Group 1–52 | Group 53 | Final |
+|---------------|------------|----------|-------|
+| Patched code + Group 53 | 368 ✓ | 41 ✓ | **409 / 409** pass, exit 0 |
+| Unpatched code + Group 53 | 368 ✓ | 34 ✓ + 7 ❌ | 402 / 409, exit 1 |
+
+The 7 expected failures on unpatched code are exactly the source-marker checks — confirming Group 53 will detect a future revert.
+
+### Known limitations carried into v12.4
+
+These remain follow-up candidates:
+
+1. **`mos_label` is computed twice** with conflicting bucket schemes (engine sets `EXCEPTIONAL VALUE / STRONG VALUE / …`, master_funnel overwrites with `EXCEPTIONAL / STRONG / …`). Engine output is dead code.
+2. **0 vs missing ambiguity** — `_fv()` renders any 0 as `"—"`, collapsing legitimate zeros (PAT YoY = 0 %) and missing data.
+3. **FV CFV computed from ≤ 2 models has no quality guard** — composite still produces a CFV with re-normalised weights; thin-model rows then drive false BUY signals.
+4. **MoS clipped to 200 % silently** (`cfv > cmp × 3` cap) — no `*` flag indicating clipping.
+5. **Gold sheet uses STATIC red headers** — `_gold_ws` doesn't share Full Dashboard's dynamic detection.
+6. **`Piotroski F /9` vs `F-Score /9`** — same data, different label across sheets.
+7. **Duplicate "EARLY MOVER" entries** in `early_signals` — badge and label both append.
+8. **`NPM Q1 / Q2 / Q3` column-label readability** — Q1 = most recent (per tooltip) but the L→R order looks chronological.
+9. **Altman Z unit-mismatch** — values 14–26 for high-cap healthcare (X4 = mcap / total_liab unit collision).
+10. **CCC Days meaningless for finance-sector stocks** — TATACAP showed 7,739 days.
+11. **Three different "no analysis" placeholder strings** in `View Analysis Summary` — should be unified.
+
+### Operational notes
+
+- The `_COVERAGE_MIN = 0.30` constant in `_full_sheet` is the lever for tightening or loosening the red-header rule. If users complain too many columns are red, raise it (more permissive); if columns slip through, lower it.
+- The `iloc[:-20]` slice in `compute_technicals` is the lever for the R2/S2 separation. If 20 days is too short (R1 still occasionally equals R2 for very-fast-moving stocks), increase to 30–40 days; the `len(h) >= 80` threshold should also be increased correspondingly.
+- The `[-100, 100]` profitability bounds match the values displayed in the Excel; they don't apply to ROCE (which has its own existing `[0, 200]` clamp at line ~1457) or to `*_num` for ROCE (no `roce_num` exists).
+
+---
+
+*Last updated: April 2026 · v12.4 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

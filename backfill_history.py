@@ -744,15 +744,30 @@ def compute_technicals(hist):
     _sell_mask = c < (sma20_st - 0.5 * atr14)
     supertr[_buy_mask]  = 'BUY'
     supertr[_sell_mask] = 'SELL'
-    # v10.9: Resist/Support 1 = short-term swing (20d), Resist/Support 2 = 52-week.
-    # Pre-v10.9 used 20d vs 40d which produced R1==R2 for 87% of stocks (any stock
-    # at/near 40-day high has the same 20-day high too — common in trending stocks).
-    # 52-week provides a genuinely separate "major ceiling / floor" reference.
-    _lb2 = min(252, len(h))   # 252 trading days = 52 weeks; degrade gracefully
-    sup1    = l.rolling(20).min()
-    sup2    = l.rolling(_lb2).min() if _lb2 >= 60 else l.rolling(max(40, len(h))).min()
-    res1    = h.rolling(20).max()
-    res2    = h.rolling(_lb2).max() if _lb2 >= 60 else h.rolling(max(40, len(h))).max()
+    # v12.4: Resist/Support 1 = short-term swing (20d).
+    # Resist/Support 2 = 52-week high/low computed over the bars BEFORE
+    # the most recent 20 — so R2/S2 represent the *prior* major ceiling/
+    # floor and don't collapse to R1/S1 when a fresh breakout sits inside
+    # the last 20 days.
+    # Earlier v10.9 logic (rolling(252) over the full series) silently
+    # mirrored R1 whenever the 252-day max landed in the last 20 bars;
+    # observed in 87.9 % of production rows.
+    sup1 = l.rolling(20).min()
+    res1 = h.rolling(20).max()
+    if len(h) >= 80:                       # need ≥ 60 prior + 20 recent
+        prior_l = l.iloc[:-20]
+        prior_h = h.iloc[:-20]
+        _lb2    = min(252, len(prior_h))
+        sup2    = prior_l.rolling(_lb2).min()
+        res2    = prior_h.rolling(_lb2).max()
+        # Re-index back so .iloc[-1] still picks the latest row in _v(...)
+        sup2 = sup2.reindex(l.index, method="ffill")
+        res2 = res2.reindex(h.index, method="ffill")
+    else:
+        # Insufficient history — return NaN so _v(...) falls back to 0
+        # and the cell renders as "—" via the standard _g default.
+        sup2 = pd.Series([float("nan")] * len(h), index=l.index)
+        res2 = pd.Series([float("nan")] * len(h), index=h.index)
 
     def _v(s):
         val = s.iloc[-1]
