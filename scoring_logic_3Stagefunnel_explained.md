@@ -1,4 +1,4 @@
-# Scoring · Verdict · Funnel — Complete Logic Explained (Post-v12.6)
+# Scoring · Verdict · Funnel — Complete Logic Explained (Post-v12.6.1)
 
 This is the single source of truth for how the pipeline turns ~5,150 daily bhav rows into **100 final stocks**, each with a **Composite Score (0–100)** and a **Verdict (BUY / OVERVALUED / WATCHLIST / NEUTRAL / AVOID)**.
 
@@ -800,4 +800,4 @@ A user hovering over the **Score /100** or **Verdict** column headers sees exact
 
 ---
 
-**Document version:** reflects code as of v12.6 (final-round judgment-call fixes). Scoring logic (Parts 2-3) unchanged since v10.9 except for v10.16 PE-scoring-neutrality-for-clamped-values addition AND v12.6 thin-model FV guard. Funnel (Part 1) last changed in v10.13.
+**Document version:** reflects code as of v12.6.1 (backfill window bumped 365 → 400 calendar days for R2/S2 rolling-window headroom; no scoring/verdict logic change). Scoring logic (Parts 2-3) unchanged since v10.9 except for v10.16 PE-scoring-neutrality-for-clamped-values addition AND v12.6 thin-model FV guard. Funnel (Part 1) last changed in v10.13.

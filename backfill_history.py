@@ -1,5 +1,5 @@
 """
-backfill_history.py  —  365-day Market Data Backfill
+backfill_history.py  —  400-day Market Data Backfill
 ======================================================
 Populates ALL tables needed to make the Excel dashboard show real values:
 
@@ -43,8 +43,16 @@ import sys
 
 IST     = pytz.timezone('Asia/Kolkata')
 DB_NAME = "market_data.db"
-# Accept days as command-line arg: python backfill_history.py 365
-DAYS_TO_BACKFILL = int(sys.argv[1]) if len(sys.argv) > 1 else 365
+# Accept days as command-line arg: python backfill_history.py 400
+# v12.6.1: bumped default 365 → 400 to give the 252-trading-day rolling
+# windows in compute_technicals (R2/S2 prior_h) a comfortable headroom.
+# 400 calendar days ≈ 275 trading days; prior_h (excluding last 20) ≈ 255
+# trading days, so the rolling(252) max computes cleanly without falling
+# into the len(h) < 80 fallback branch on stocks with full backfill.
+# Other "1-year" references in the codebase deliberately stay at 252
+# (trading days) and 365 (calendar days) — those encode the financial
+# definition of "52-week", not the data-fetch knob.
+DAYS_TO_BACKFILL = int(sys.argv[1]) if len(sys.argv) > 1 else 400
 
 NSE_HEADERS = {
     'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -493,7 +501,7 @@ def _safe_float(s):
 #   - The bse package uses BSE's internal reports API (not archive ZIPs)
 #     and handles auth correctly for ALL dates, not just recent ones.
 #
-# SOLUTION: Use `bse` package exclusively for ALL 365 days.
+# SOLUTION: Use `bse` package exclusively for ALL 400 days.
 # ══════════════════════════════════════════════════════════════════════════════
 
 BSE_COL_MAP = {

@@ -3847,6 +3847,108 @@ else:
 
 
 
+# ══════════════════════════════════════════════════════════════════════
+# GROUP 56 — v12.6.1 Backfill-window bump (365 → 400 calendar days)
+# ══════════════════════════════════════════════════════════════════════
+# Single-fix release: bumped DAYS_TO_BACKFILL default from 365 → 400 to
+# give the 252-trading-day rolling windows in compute_technicals headroom.
+# 400 calendar days ≈ 275 trading days → prior_h (excl. last 20) ≈ 255 →
+# rolling(252).max() computes cleanly without falling into the
+# `len(h) < 80` fallback branch on stocks with the full backfill.
+#
+# Tests verify:
+#   56.1  DAYS_TO_BACKFILL default is 400 (not 365)
+#   56.2  Other "1-year" references stay at 252 (trading days) /
+#         365 (calendar days) — those encode "52-week" definition
+# ══════════════════════════════════════════════════════════════════════
+print("\n" + "═" * 70)
+print("GROUP 56 — v12.6.1 Backfill window bump")
+print("═" * 70)
+
+import os as _os56
+_proj_root56 = _os56.path.dirname(_os56.path.abspath(__file__))
+_bf_path56 = _os56.path.join(_proj_root56, "backfill_history.py")
+with open(_bf_path56) as _fh:
+    _bf_src56 = _fh.read()
+
+# 56.1a: Default is now 400
+if "DAYS_TO_BACKFILL = int(sys.argv[1]) if len(sys.argv) > 1 else 400" in _bf_src56:
+    passed += 1
+    print("  ✓ 56.1a DAYS_TO_BACKFILL default = 400 calendar days")
+else:
+    failed += 1
+    failures.append("56.1a: DAYS_TO_BACKFILL default is not 400")
+
+# 56.1b: Old default of 365 is gone
+if "else 365" in _bf_src56 and "DAYS_TO_BACKFILL" in _bf_src56:
+    # Look specifically for the variable assignment line
+    import re as _re56
+    _old_default = _re56.search(r'DAYS_TO_BACKFILL\s*=.*else\s*365', _bf_src56)
+    if _old_default:
+        failed += 1
+        failures.append("56.1b: DAYS_TO_BACKFILL still has 'else 365' default")
+    else:
+        passed += 1
+        print("  ✓ 56.1b Old 'else 365' default removed from DAYS_TO_BACKFILL line")
+else:
+    passed += 1
+    print("  ✓ 56.1b Old 'else 365' default removed from DAYS_TO_BACKFILL line")
+
+# 56.1c: Docstring reflects 400
+if "400-day Market Data Backfill" in _bf_src56:
+    passed += 1
+    print("  ✓ 56.1c Module docstring says '400-day Market Data Backfill'")
+else:
+    failed += 1
+    failures.append("56.1c: docstring not updated to 400-day")
+
+# 56.1d: v12.6.1 marker comment present
+if "v12.6.1" in _bf_src56 and "365 → 400" in _bf_src56:
+    passed += 1
+    print("  ✓ 56.1d v12.6.1 changelog comment present (365 → 400)")
+else:
+    failed += 1
+    failures.append("56.1d: v12.6.1 changelog comment missing")
+
+# 56.2a: 252 trading-day rolling window in compute_technicals UNCHANGED
+# This is the financial definition of "52 weeks", not a knob.
+if "min(252, len(prior_h))" in _bf_src56:
+    passed += 1
+    print("  ✓ 56.2a R2/S2 rolling-252 trading-day window preserved")
+else:
+    failed += 1
+    failures.append("56.2a: R2/S2 rolling-252 window changed (should stay 252)")
+
+# 56.2b: 252 trading-day window in enrich_prices (52W high/low calc) UNCHANGED
+if "grp.tail(252)" in _bf_src56:
+    passed += 1
+    print("  ✓ 56.2b 52W high/low tail(252) trading-day window preserved")
+else:
+    failed += 1
+    failures.append("56.2b: tail(252) for 52W high/low changed (should stay 252)")
+
+# 56.2c: 365 calendar-day annualisation factor in CCC formula UNCHANGED
+# DIO/DSO/DPO are by financial definition annualised over 365 days.
+if "* 365" in _bf_src56:
+    passed += 1
+    print("  ✓ 56.2c CCC formula × 365 annualisation factor preserved")
+else:
+    failed += 1
+    failures.append("56.2c: CCC formula × 365 changed (should stay 365)")
+
+# 56.2d: 365 calendar-day SQL filter for 52W high/low in master_funnel UNCHANGED
+_mf_path56 = _os56.path.join(_proj_root56, "master_funnel.py")
+with open(_mf_path56) as _fh:
+    _mf_src56 = _fh.read()
+if "'-365 days'" in _mf_src56:
+    passed += 1
+    print("  ✓ 56.2d master_funnel '-365 days' SQL filter preserved")
+else:
+    failed += 1
+    failures.append("56.2d: master_funnel '-365 days' SQL filter changed (should stay 365)")
+
+
+
 print("\n" + "═" * 70)
 print(f"FINAL: {passed} passed, {failed} failed")
 print("═" * 70)

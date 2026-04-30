@@ -1947,4 +1947,55 @@ All other 15 audit issues are now resolved as of v12.6.
 
 ---
 
-*Last updated: April 2026 · v12.6 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 28. v12.6.1 RELEASE — Backfill window bumped to 400 calendar days
+
+Single-line release. Bumped `DAYS_TO_BACKFILL` default from 365 → 400 in `backfill_history.py:55` to give the rolling-252-trading-day windows in `compute_technicals` (used by the v12.6 R2/S2 fallback) comfortable headroom.
+
+### Why
+
+After v12.6 shipped, fresh-data testing revealed that with exactly 365 calendar days of bhavcopy data per symbol, `daily_prices` ends up with ~250 trading-day rows. Then `prior_h = h.iloc[:-20]` has ~230 trading-day rows. The `rolling(min(252, len(prior_h))).max()` computation works but tightly — the 252-day rolling window is only fully populated at the very last position of `prior_h`. Stocks with even slightly less history (~245 trading days from holiday clusters) would silently fall into the `len(h) < 80` fallback branch on edge cases, returning NaN R2/S2.
+
+### What changed
+
+```python
+# Before (v12.6):
+DAYS_TO_BACKFILL = int(sys.argv[1]) if len(sys.argv) > 1 else 365
+
+# After (v12.6.1):
+DAYS_TO_BACKFILL = int(sys.argv[1]) if len(sys.argv) > 1 else 400
+```
+
+400 calendar days ≈ 275 trading days → `prior_h` ≈ 255 trading days → `rolling(252)` has 3 days of headroom, computes cleanly for every stock with the full backfill.
+
+Plus 3 cosmetic comment/docstring updates in the same file to match the new constant.
+
+### What deliberately did NOT change
+
+The codebase has 4 other "1-year" references that look similar but encode the financial definition of "52 weeks", not the data-fetch knob:
+
+| Location | Value | Why kept |
+|---|---|---|
+| `backfill_history.py:768` `_lb2 = min(252, len(prior_h))` | 252 trading days | "Prior 52-week" rolling window — by financial convention 52 weeks = 252 trading days |
+| `backfill_history.py:926` `last_252 = grp.tail(252)` | 252 trading days | "52W High / 52W Low" — same convention |
+| `backfill_history.py:1993` `* 365` (CCC formula) | 365 calendar days | DIO/DSO/DPO are by-definition annualised over 365 days — every accounting textbook on Earth uses this |
+| `master_funnel.py:1153-55` `'-365 days'` SQL filter | 365 calendar days | SQL equivalent of "52W high/low" — calendar arithmetic to bound the same trading-day window |
+
+Changing any of these would silently redefine what columns like "52W High (₹)" mean, breaking trader expectations and tooltip accuracy.
+
+### Action required at deploy time
+
+The DB needs to be deleted (or `daily_prices` truncated) and the next pipeline run will populate it with 400 days of fresh history. This also activates the v12.6 R2/S2 fallback because `technical_indicators` will be recomputed from scratch under the v12.6 patched `compute_technicals` logic.
+
+### Tests
+
+Group 56 added (8 tests) — locks the `400` default, locks all four `KEEP-252/365` lines so future "consistency" passes can't silently break the financial convention. Total test count: **483 / 483 PASS**.
+
+### Operational notes
+
+- The DB will be ~10 % larger after this change (400/365 ratio). For the production DB at ~80 MB, that's ~88 MB. Negligible.
+- yfinance backfill calls don't have a "fetch exactly N days" mode; they use start/end dates. The script computes `start = today - DAYS_TO_BACKFILL` and asks for everything in that range. With holidays + weekends, the actual row count per symbol will vary slightly day-to-day but average ~275 trading days.
+- BSE bhavcopy fetches one date at a time. `DAYS_TO_BACKFILL = 400` means ~400 BSE bhavcopy zip downloads on first run. Subsequent runs only fetch the latest day. First run after the bump will be slower than usual.
+
+---
+
+*Last updated: April 2026 · v12.6.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
