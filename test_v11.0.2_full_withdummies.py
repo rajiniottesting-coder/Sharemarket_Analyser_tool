@@ -4674,6 +4674,314 @@ except Exception as _e58:
     failures.append(f"58.8a: master_funnel scan crashed — {_e58}")
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# GROUP 59 — v12.9 release: Real 8-variable Beneish M-Score
+# ════════════════════════════════════════════════════════════════════════════
+print("\n--- Group 59: v12.9 release (Beneish M real formula) ---")
+
+import sys as _sys59
+if 'analysis.forensics_engine' in _sys59.modules:
+    del _sys59.modules['analysis.forensics_engine']
+from analysis.forensics_engine import ForensicsEngine as _FE59
+
+# ── 59.1 — Real Beneish M produces continuous values for honest companies ──
+try:
+    honest = {
+        'beneish_sales_t': 1000, 'beneish_sales_t1': 900,
+        'beneish_ta_t': 1500, 'beneish_ta_t1': 1400,
+        'beneish_tl_t': 600, 'beneish_tl_t1': 580,
+        'beneish_receivables_t': 100, 'beneish_receivables_t1': 95,
+        'beneish_cogs_t': 600, 'beneish_cogs_t1': 540,
+        'beneish_ppe_t': 800, 'beneish_ppe_t1': 750,
+        'beneish_ca_t': 400, 'beneish_ca_t1': 380,
+        'beneish_dep_t': 80, 'beneish_dep_t1': 75,
+        'beneish_sga_t': 100, 'beneish_sga_t1': 90,
+        'beneish_icop_t': 100, 'beneish_cfo_t': 110,
+        'total_assets_cr': 1500
+    }
+    _m_honest = _FE59.calculate_beneish_m(honest)
+    # Honest stocks should score below -2.22 (Beneish threshold) and not be
+    # one of the 3 hardcoded proxy buckets
+    if -3.5 < _m_honest < -2.22 and _m_honest not in (-2.5, -2.22, -1.5):
+        passed += 1
+        print(f"  ✓ 59.1a Honest stock real M-score = {_m_honest} (continuous, < -2.22)")
+    else:
+        failed += 1
+        failures.append(f"59.1a: honest M = {_m_honest} (expected continuous < -2.22)")
+except Exception as _e59:
+    failed += 1
+    failures.append(f"59.1a: crashed — {_e59}")
+
+# ── 59.2 — Real Beneish M flags manipulation-pattern stocks ──
+try:
+    manip = {
+        'beneish_sales_t': 1500, 'beneish_sales_t1': 1000,
+        'beneish_ta_t': 2200, 'beneish_ta_t1': 1500,
+        'beneish_tl_t': 1400, 'beneish_tl_t1': 700,
+        'beneish_receivables_t': 350, 'beneish_receivables_t1': 100,
+        'beneish_cogs_t': 700, 'beneish_cogs_t1': 550,
+        'beneish_ppe_t': 800, 'beneish_ppe_t1': 750,
+        'beneish_ca_t': 600, 'beneish_ca_t1': 400,
+        'beneish_dep_t': 50, 'beneish_dep_t1': 80,
+        'beneish_sga_t': 200, 'beneish_sga_t1': 100,
+        'beneish_icop_t': 150, 'beneish_cfo_t': 30,
+        'total_assets_cr': 2200
+    }
+    _m_manip = _FE59.calculate_beneish_m(manip)
+    if _m_manip > -2.22:
+        passed += 1
+        print(f"  ✓ 59.2a Aggressive accrual stock M-score = {_m_manip} > -2.22 (flagged)")
+    else:
+        failed += 1
+        failures.append(f"59.2a: aggressive M = {_m_manip} (expected > -2.22)")
+except Exception as _e59:
+    failed += 1
+    failures.append(f"59.2a: crashed — {_e59}")
+
+# ── 59.3 — Single-period accrual proxy still works as fallback ──
+try:
+    thin = {
+        'total_assets_cr': 1000,
+        'q_pat_cr': 100,
+        'operating_cf_cr': 80,
+    }
+    _m_thin = _FE59.calculate_beneish_m(thin)
+    # Should hit the 3-bucket proxy: tata = (100-80)/1000 = 0.02, < 0.05, returns -2.22
+    if _m_thin == -2.22:
+        passed += 1
+        print(f"  ✓ 59.3a Thin-data fallback returns proxy bucket {_m_thin}")
+    else:
+        failed += 1
+        failures.append(f"59.3a: thin-data M = {_m_thin} (expected -2.22)")
+except Exception as _e59:
+    failed += 1
+    failures.append(f"59.3a: crashed — {_e59}")
+
+# ── 59.4 — Empty data returns 0.0 (insufficient) ──
+try:
+    _m_empty = _FE59.calculate_beneish_m({})
+    if _m_empty == 0.0:
+        passed += 1
+        print(f"  ✓ 59.4a Empty data returns 0.0 (insufficient marker)")
+    else:
+        failed += 1
+        failures.append(f"59.4a: empty M = {_m_empty} (expected 0.0)")
+except Exception as _e59:
+    failed += 1
+    failures.append(f"59.4a: crashed — {_e59}")
+
+# ── 59.5 — M-score is monotonic in TATA (accrual ratio) ──
+# As accruals grow (NI > CFO), M-score should rise — this is the core
+# academic property of the Beneish formula. Locks against accidental
+# coefficient-sign regressions.
+try:
+    base = dict({
+        'beneish_sales_t': 1000, 'beneish_sales_t1': 900,
+        'beneish_ta_t': 1500, 'beneish_ta_t1': 1400,
+        'beneish_tl_t': 600, 'beneish_tl_t1': 580,
+        'beneish_receivables_t': 100, 'beneish_receivables_t1': 95,
+        'beneish_cogs_t': 600, 'beneish_cogs_t1': 540,
+        'beneish_ppe_t': 800, 'beneish_ppe_t1': 750,
+        'beneish_ca_t': 400, 'beneish_ca_t1': 380,
+        'beneish_dep_t': 80, 'beneish_dep_t1': 75,
+        'beneish_sga_t': 100, 'beneish_sga_t1': 90,
+        'total_assets_cr': 1500,
+    })
+    _ms = []
+    for tata_target in [-0.05, 0, 0.05, 0.1, 0.15]:
+        d = dict(base)
+        d['beneish_icop_t'] = 100
+        d['beneish_cfo_t']  = 100 - tata_target * 1500
+        _ms.append(_FE59.calculate_beneish_m(d))
+    # Each M should be strictly greater than the previous (monotone increasing)
+    _is_monotone = all(_ms[i] < _ms[i+1] for i in range(len(_ms)-1))
+    if _is_monotone:
+        passed += 1
+        print(f"  ✓ 59.5a M-score monotone in TATA: {[round(m,2) for m in _ms]}")
+    else:
+        failed += 1
+        failures.append(f"59.5a: M-score not monotone — {_ms}")
+except Exception as _e59:
+    failed += 1
+    failures.append(f"59.5a: crashed — {_e59}")
+
+# ── 59.6 — Beneish M fields extracted by fetch_forensic_inputs ──
+# Code-shape lock: the prior-period field-extraction block must exist.
+try:
+    with open(_os58.path.join(_proj_root58, "analysis/forensics_engine.py")) as _f59:
+        _fe_src = _f59.read()
+    _required_keys = [
+        "beneish_sales_t", "beneish_sales_t1",
+        "beneish_ta_t", "beneish_ta_t1",
+        "beneish_tl_t", "beneish_tl_t1",
+        "beneish_receivables_t", "beneish_receivables_t1",
+        "beneish_ppe_t", "beneish_ppe_t1",
+        "beneish_dep_t", "beneish_cfo_t",
+    ]
+    _missing = [k for k in _required_keys if k not in _fe_src]
+    if not _missing:
+        passed += 1
+        print(f"  ✓ 59.6a fetch_forensic_inputs extracts all 12 Beneish prior-period fields")
+    else:
+        failed += 1
+        failures.append(f"59.6a: forensics_engine missing Beneish fields: {_missing}")
+except Exception as _e59:
+    failed += 1
+    failures.append(f"59.6a: scan crashed — {_e59}")
+
+# ── 59.7 — Output is bounded (sanity clamp) ──
+# Test that extreme/corrupt input doesn't produce M-scores like 100 or -100.
+try:
+    extreme = {
+        'beneish_sales_t': 1, 'beneish_sales_t1': 1,
+        'beneish_ta_t': 1, 'beneish_ta_t1': 1,
+        'beneish_tl_t': 1, 'beneish_tl_t1': 1,
+        'beneish_receivables_t': 1000, 'beneish_receivables_t1': 1,  # 1000x rec growth
+        'beneish_cogs_t': 0.1, 'beneish_cogs_t1': 0.9,
+        'beneish_ppe_t': 1, 'beneish_ppe_t1': 1,
+        'beneish_ca_t': 1, 'beneish_ca_t1': 1,
+        'beneish_dep_t': 0.001, 'beneish_dep_t1': 0.999,
+        'beneish_sga_t': 100, 'beneish_sga_t1': 0.01,
+        'beneish_icop_t': 1000, 'beneish_cfo_t': -1000,
+        'total_assets_cr': 1
+    }
+    _m_ext = _FE59.calculate_beneish_m(extreme)
+    if -10 <= _m_ext <= 10:
+        passed += 1
+        print(f"  ✓ 59.7a Extreme input clamped to [-10, 10] (got {_m_ext})")
+    else:
+        failed += 1
+        failures.append(f"59.7a: extreme M = {_m_ext} (expected within [-10, 10])")
+except Exception as _e59:
+    failed += 1
+    failures.append(f"59.7a: crashed — {_e59}")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# GROUP 60 — v12.9 release: Earn Quality unit-mismatch fix + Spike Score guard refresh
+# ════════════════════════════════════════════════════════════════════════════
+print("\n--- Group 60: v12.9 release (Earn Quality + Spike guard refresh) ---")
+
+# ── 60.1 — Earn Quality uses annualized PAT, not quarterly ──
+# Pre-v12.9 bug: cfo (annual TTM) / pat (q_pat_cr quarterly) gave 4× inflated
+# ratio, causing 70% of stocks to falsely score HIGH (NESTLEIND showed 4.41,
+# JKCEMENT 4.73, etc.). v12.9 annualizes PAT (× 4) before the ratio.
+try:
+    if 'analysis.forensics_engine' in _sys59.modules:
+        del _sys59.modules['analysis.forensics_engine']
+    from analysis.forensics_engine import ForensicsEngine as _FE60
+    _fe60 = _FE60()
+
+    # Marginal stock: q_pat 200, annual CFO 250 — pre-v12.9 = 1.25 (HIGH);
+    # post-v12.9 = 0.31 (LOW, honest)
+    _r1 = _fe60.calculate_accounting_forensics({
+        'operating_cf_cr': 250, 'q_pat_cr': 200, 'total_assets_cr': 5000
+    })
+    if _r1.get('earnings_quality') == "LOW" and _r1.get('cfo_pat_ratio', 0) < 0.5:
+        passed += 1
+        print(f"  ✓ 60.1a Earn Quality correctly LOW for marginal stock "
+              f"(ratio={_r1.get('cfo_pat_ratio')}, was 1.25 pre-v12.9)")
+    else:
+        failed += 1
+        failures.append(f"60.1a: marginal stock got {_r1.get('earnings_quality')} "
+                        f"ratio={_r1.get('cfo_pat_ratio')} (expected LOW < 0.5)")
+except Exception as _e60:
+    failed += 1
+    failures.append(f"60.1a: crashed — {_e60}")
+
+# ── 60.2 — Earn Quality prefers annual NI when available ──
+try:
+    _r2 = _fe60.calculate_accounting_forensics({
+        'operating_cf_cr': 3850, 'net_income_annual': 3500, 'total_assets_cr': 100000
+    })
+    # Should use NI directly: 3850/3500 = 1.10 → HIGH
+    if _r2.get('earnings_quality') == "HIGH" and abs(_r2.get('cfo_pat_ratio', 0) - 1.1) < 0.01:
+        passed += 1
+        print(f"  ✓ 60.2a Earn Quality uses annual NI directly when available "
+              f"(ratio={_r2.get('cfo_pat_ratio')}, expected ~1.1)")
+    else:
+        failed += 1
+        failures.append(f"60.2a: annual-NI path produced {_r2.get('earnings_quality')} "
+                        f"ratio={_r2.get('cfo_pat_ratio')}")
+except Exception as _e60:
+    failed += 1
+    failures.append(f"60.2a: crashed — {_e60}")
+
+# ── 60.3 — Earn Quality returns "—" for stocks with no PAT data ──
+try:
+    _r3 = _fe60.calculate_accounting_forensics({
+        'operating_cf_cr': 100, 'total_assets_cr': 5000
+    })  # no q_pat_cr, no net_income_annual
+    if _r3.get('earnings_quality') == "—":
+        passed += 1
+        print(f"  ✓ 60.3a Earn Quality returns '—' when no PAT data")
+    else:
+        failed += 1
+        failures.append(f"60.3a: no-PAT path produced {_r3.get('earnings_quality')} (expected '—')")
+except Exception as _e60:
+    failed += 1
+    failures.append(f"60.3a: crashed — {_e60}")
+
+# ── 60.4 — fetch_forensic_inputs sets net_income_annual ──
+try:
+    with open(_os58.path.join(_proj_root58, "analysis/forensics_engine.py")) as _f60:
+        _fe_src60 = _f60.read()
+    if 'out["net_income_annual"]' in _fe_src60 or "out['net_income_annual']" in _fe_src60:
+        passed += 1
+        print(f"  ✓ 60.4a fetch_forensic_inputs populates net_income_annual key")
+    else:
+        failed += 1
+        failures.append("60.4a: net_income_annual not assigned in fetch_forensic_inputs")
+except Exception as _e60:
+    failed += 1
+    failures.append(f"60.4a: scan crashed — {_e60}")
+
+# ── 60.5 — master_funnel re-runs 3H guard with fresh forensics before spike suppression ──
+# Code-shape lock: the spike-score block must contain a fresh re-evaluation
+# of the guards reading current stock["altman_z"] / ["beneish_m"] / ["pledge_pct"].
+try:
+    with open(_os58.path.join(_proj_root58, "master_funnel.py")) as _f60:
+        _mf_src60 = _f60.read()
+
+    # The fix re-reads altman_z, beneish_m, pledge_pct INSIDE the spike block
+    # (look for the v12.9 anchor comment + the refresh logic).
+    _has_refresh_anchor = "v12.9 FIX: re-run 3H guard" in _mf_src60
+    _has_alt_re   = "_alt_re" in _mf_src60
+    _has_ben_re   = "_ben_re" in _mf_src60
+    _has_pl_re    = "_pl_re"  in _mf_src60
+
+    if _has_refresh_anchor and _has_alt_re and _has_ben_re and _has_pl_re:
+        passed += 1
+        print(f"  ✓ 60.5a master_funnel re-runs 3H guard with fresh forensics")
+    else:
+        failed += 1
+        failures.append(f"60.5a: refresh-guard block missing — anchor={_has_refresh_anchor} "
+                        f"alt={_has_alt_re} ben={_has_ben_re} pl={_has_pl_re}")
+except Exception as _e60:
+    failed += 1
+    failures.append(f"60.5a: scan crashed — {_e60}")
+
+# ── 60.6 — Refreshed guard correctly suppresses Altman-distress stocks ──
+# Simulate: stock with stale "—" altman initially, then real -0.5 after re-run.
+# Pre-v12.9: spike_suppressed stayed False (set with stale data) → spike survives.
+# Post-v12.9: re-evaluation catches Altman < 1.81 → suppressed → score=0.
+# Shape test: the refresh logic must be inside the spike-score try-block.
+try:
+    # Find indices of the spike block and verify the refresh occurs before
+    # the suppression check.
+    _idx_anchor = _mf_src60.find("v12.9 FIX: re-run 3H guard")
+    _idx_suppress = _mf_src60.find("if stock.get(\"spike_suppressed\"):", _idx_anchor)
+    if _idx_anchor > 0 and _idx_suppress > _idx_anchor:
+        passed += 1
+        print(f"  ✓ 60.6a Refresh runs BEFORE spike-suppression check")
+    else:
+        failed += 1
+        failures.append(f"60.6a: refresh block ordering wrong (anchor={_idx_anchor}, supp={_idx_suppress})")
+except Exception as _e60:
+    failed += 1
+    failures.append(f"60.6a: ordering check crashed — {_e60}")
+
+
 print("\n" + "═" * 70)
 print(f"FINAL: {passed} passed, {failed} failed")
 print("═" * 70)

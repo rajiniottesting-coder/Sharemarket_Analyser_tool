@@ -108,7 +108,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "T1: CMP near 52W High + vol>2×. T2: MACD+ST=BUY + vol>1.5×.\n"
                        "T3: ADX>25 + delivery>60%. T4: RSI 45–65 + vol>2×.\n"
                        "T5: vol>3× + delivery>60%. T6: 2w_chg>3% + 2w>4w + vol>1.5×.\n"
-                       "Suppressed to 0 if pledge>20% or Altman/Beneish flags fire.\n"
+                       "Suppressed to 0 if pledge>20% or Altman<1.81 or Beneish>-2.22.\n"
+                       "v12.9: guard re-evaluated with FRESH forensics post-Section\n"
+                       "5A.5 to prevent stale spike_suppressed flags (BANARISUG-class\n"
+                       "false suppression on stocks where forensics weren't computed\n"
+                       "yet at the original 3H guard pass).\n"
                        "Low Spike on a Gold stock is fine (VALUE archetype)."),
     "Spike /6": ("≥2 notable | ≥4 strong | 6 very rare",
                  "Six momentum triggers — how many fire simultaneously.\n"
@@ -579,16 +583,30 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "other in Cr. Z>7 already signals exceptional safety."),
     "Beneish M": ("<−2.22 honest | >−2.22 possible manipulation",
                   ">−2.22: Triggers anti-trigger guard (Spike suppressed).\n"
-                  "Requires net income, cash flow from operations, and total\n"
-                  "assets from the balance sheet — yfinance free data doesn't\n"
-                  "provide these. Column displays '—' (em-dash) for stocks\n"
-                  "without the required BS feed."),
+                  "v12.9: Real 8-variable Beneish (1999) formula:\n"
+                  "  M = -4.84 + 0.92·DSRI + 0.528·GMI + 0.404·AQI\n"
+                  "      + 0.892·SGI + 0.115·DEPI - 0.172·SGAI\n"
+                  "      + 4.679·TATA - 0.327·LVGI\n"
+                  "Each index compares current year to prior year using\n"
+                  "yfinance balance-sheet, income-statement, and cashflow\n"
+                  "feeds. DSRI flags revenue stuffing (receivables growing\n"
+                  "faster than sales), TATA flags accruals divergence from\n"
+                  "cash flow. Falls back to 3-bucket accrual proxy when\n"
+                  "only current-year data available (newly-listed stocks,\n"
+                  "sparse small-caps). Pre-v12.9 was proxy-only — only 4\n"
+                  "unique values across 100 stocks. Column displays '—'\n"
+                  "(em-dash) when total_assets unavailable."),
     "Earn Quality": ("HIGH = cash-backed earnings",
-                     "CFO / PAT ratio bucketed into HIGH / MODERATE / LOW.\n"
+                     "CFO / annualized-PAT ratio bucketed into HIGH / MODERATE / LOW.\n"
                      "HIGH (≥0.8): Cash flow matches profits — healthy earnings.\n"
                      "MODERATE (0.5-0.8): Some divergence — worth monitoring.\n"
                      "LOW (<0.5): Accounting concern — profits aren't backed by cash.\n"
-                     "— : PAT is zero/negative (ratio undefined)."),
+                     "— : PAT is zero/negative (ratio undefined).\n"
+                     "v12.9: PAT now annualized (q_pat × 4) to match yfinance's\n"
+                     "annual CFO. Pre-v12.9 used quarterly PAT directly,\n"
+                     "giving 4× inflated ratios that falsely scored 70% of\n"
+                     "stocks as HIGH (NESTLEIND showed ratio 4.41,\n"
+                     "JKCEMENT 4.73, etc.)."),
 
     # ── Catalysts ───────────────────────────────────────────────────────────
     "OB/Bill Ratio": (">1 strong pipeline | >3 excellent visibility",

@@ -2429,4 +2429,149 @@ If any column is below this expected coverage after the v12.8 deploy, the v12.7 
 
 ---
 
-*Last updated: April 30, 2026 · v12.8 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 31. v12.9 RELEASE — QUALITY SCORES section overhaul (Beneish M + Earn Quality + Spike refresh)
+
+**Date:** April 30, 2026 (same day as v12.7 + v12.8 — follow-up after user audit of QUALITY SCORES + SCORES sections).
+**Trigger:** User flagged Beneish M as showing only 4 unique values across 100 stocks (72% at -2.50, 10% at -2.22, 10% at -1.50, 8% at "—"). Comprehensive audit of all 8 scoring fields (Piotroski/Altman/Beneish/Earn Quality + Score/Early Entry/Spike/Storm) surfaced 3 fixable bugs.
+**Tests:** 532 passing (519 v12.8 carry-forward + 7 v12.9 Beneish in Group 59 + 6 v12.9 Earn Quality / Spike refresh in Group 60).
+
+### What was working correctly (no changes needed)
+
+- **Piotroski F /9** — 6 unique values (5,6,7,8,9,—), bell-shaped distribution centered at 7. Proper 9-criterion implementation in `master_funnel.py:2462-2478`.
+- **Altman Z** — 59 unique values, range -9.15 to 10. The 34/100 stocks at the cap of 10 are genuinely large-cap defensives (NESTLEIND, HDFCAMC, SUNPHARMA, etc.); cap is correct v12.5 design.
+- **Score /100 (composite)** — 94 unique values, healthy bell distribution from 13.82 to 100, median 62.31. Weighted sum of fundamental/technical/EE/sentiment/safety + spike bonus + MoS adjustment.
+- **Storm Score /10** — 8 unique values, range 1-8, median 5. Defensive-quality counter (max 11 by formula but production caps at 8). Working correctly.
+- **Early Entry /100** — 22 unique non-zero values + 31 stocks at 0. The zeros are correctly distributed across AVOID/OVERVALUED/WATCHLIST verdicts (stocks past entry zone) — by-design conditional scoring.
+
+### Bug #1 — Beneish M proxy (3-bucket discrete instead of real formula)
+
+The v10.3 implementation was a placeholder using only TATA = (NI-CFO)/TA, bucketed into 3 hardcoded values (-2.50, -2.22, -1.50). Lost all the discriminating power of the real formula — a stock with rapidly-growing receivables relative to sales (DSRI spike — classic revenue-stuffing signal) was invisible.
+
+**Fix:** Real 8-variable Beneish (1999) formula:
+```
+M = -4.84 + 0.92·DSRI + 0.528·GMI + 0.404·AQI + 0.892·SGI
+    + 0.115·DEPI - 0.172·SGAI + 4.679·TATA - 0.327·LVGI
+```
+
+Each index compares current year (`_t`) to prior year (`_t1`):
+- DSRI = Days Sales in Receivables (rec_t/sales_t) ÷ (rec_t1/sales_t1) — flags revenue stuffing
+- GMI = Gross Margin Index (prior/current) — flags margin pressure
+- AQI = Asset Quality Index (1 - (CA+PPE)/TA)_t / same_t1
+- SGI = Sales Growth Index
+- DEPI = Depreciation Index (prior rate / current rate)
+- SGAI = SG&A Index (current % / prior %)
+- LVGI = Leverage Index (TL/TA)_t / same_t1
+- TATA = Total Accruals to Total Assets (current period only)
+
+**Implementation: 2-path with fallback.**
+- Path 1 (preferred): Real formula. Requires foundational fields in BOTH periods (sales_t/t1, ta_t/t1, tl_t/t1). Each ratio uses neutral 1.0 fallback when its component data is missing.
+- Path 2 (fallback): v10.3 single-period accrual proxy. Used for newly-listed stocks, sparse small-caps where yfinance returns only 1 year of data.
+
+**18 new prior-period fields** extracted in `fetch_forensic_inputs` under prefix `beneish_*_t` (current) and `beneish_*_t1` (prior): receivables, total assets, total liabilities, PPE, current assets, sales, COGS, gross profit, SG&A, income from continuing operations, depreciation, operating cash flow.
+
+**New helper `_val_cr_at(df, row_label, col_idx)`** reads a specific column position from yfinance financial DataFrames (col 0 = current year, col 1 = prior).
+
+**Sanity clamp [-10, 10]** — real Beneish values empirically range -8 to +5; outside ±10 indicates input corruption.
+
+**Threshold unchanged** at > -2.22 → manipulation flag. Downstream consumers (`pre_screener.py`, `master_funnel.py:2280`, `spike_screener.py`) all preserve their existing logic.
+
+### Bug #2 — Earn Quality unit mismatch (HIGH inflation)
+
+70% of stocks were scoring HIGH because the v10.8 calculation compared `cfo` (annual TTM from yfinance income_stmt) against `q_pat_cr` (quarterly PAT from quarterly_income_stmt). This 4× unit mismatch made the 0.8 HIGH threshold effectively 0.2 in real annualized terms — nearly everything qualified.
+
+Production examples:
+- NESTLEIND: q_pat=873 Cr, CFO=3850 Cr → ratio 4.41 → HIGH (real annualized: 1.10 — still HIGH but barely)
+- JKCEMENT: q_pat=360 Cr, CFO=1704 Cr → ratio 4.73 → HIGH (real: 1.18)
+- A marginal stock with q_pat=200 Cr, CFO=250 Cr (annual) → ratio 1.25 → HIGH (real: 0.31 → LOW, honest)
+
+**Fix:** annualize PAT before the ratio calculation. Prefer annual `net_income_annual` (now exposed by `fetch_forensic_inputs`) directly; fall back to `q_pat × 4` when only quarterly is available. Also exposes `cfo_pat_ratio` as a numeric field for downstream consumers (spike_screener guard reads this).
+
+```python
+cfo  = _num(row, 'operating_cf_cr', 'cfo', 'operating_cf')
+pat_annual = _num(row, 'net_income_annual', 'ni_annual')
+if pat_annual <= 0:
+    _pat_q = _num(row, 'q_pat_cr', 'net_profit', 'net_income')
+    pat_annual = _pat_q * 4 if _pat_q > 0 else 0
+if pat_annual > 0 and cfo != 0:
+    _eq_ratio = cfo / pat_annual
+    if   _eq_ratio >= 0.8: results['earnings_quality'] = "HIGH"
+    elif _eq_ratio <  0.5: results['earnings_quality'] = "LOW"
+    else:                  results['earnings_quality'] = "MODERATE"
+    results['cfo_pat_ratio'] = round(_eq_ratio, 3)
+```
+
+**Expected post-deploy:** HIGH count drops from 70% → ~30-40% (true cash-backed earners), MODERATE rises from 1% → ~25%, LOW grows from 14% → ~25-30%.
+
+### Bug #3 — Spike Score stale-data guard (BANARISUG-class false suppression)
+
+The 3H anti-trigger guard (`v7_engine.apply_section_3H_guards`) runs at `master_funnel:871` BEFORE Section 5A.5 forensics re-run (line ~1971). For stocks where Altman Z and Beneish M were computed only after the FM-enriched forensics pass, the guard's spike_suppressed flag was set with stale data (default zeros, treated as "unknown" so suppression skipped). But for stocks where forensics actually were already populated at the first pass and showed real distress signals, the original suppression decision could become wrong by the time spike scoring runs.
+
+Production example: BANARISUG (Altman 7.15 — clean, Beneish -2.5 — clean, no pledge) showed Spike Score = 0 in v12.8 production despite having 3+ triggers (MACD+ST BUY + vol 3.96, ADX low, RSI 63.9 + vol > 2, vol > 3 + deliv > 60). Manual recompute showed 3 triggers. The flag had been set with stale defaults at the first 3H pass, then later forensics CONFIRMED clean — but the stale flag wasn't refreshed.
+
+**Fix:** Re-evaluate the 3H guard in `master_funnel.py` immediately before applying spike suppression, using the LATEST in-stock `altman_z`, `beneish_m`, `pledge_pct` values. Updates `spike_suppressed`, `risk_flag_active`, and `guard_reasons` with the fresh evaluation.
+
+```python
+# v12.9 FIX: re-run 3H guard with FRESH forensics values
+_alt_re = float(str(stock.get('altman_z', 0) or 0).replace("—","0") or 0)
+_ben_re = float(str(stock.get('beneish_m', 0) or 0).replace("—","0") or 0)
+_pl_re  = float(str(stock.get('pledge_pct', 0) or 0).replace("—","0") or 0)
+_refresh_suppress = False
+_refresh_reasons  = []
+if _pl_re > 20:
+    _refresh_suppress = True; _refresh_reasons.append("Pledge > 20%")
+if _alt_re != 0 and _alt_re < 1.81:
+    _refresh_suppress = True; _refresh_reasons.append("Altman Z < 1.81")
+if _ben_re != 0 and _ben_re > -2.22:
+    _refresh_suppress = True; _refresh_reasons.append("Beneish M > -2.22")
+stock["spike_suppressed"] = _refresh_suppress
+stock["risk_flag_active"] = _refresh_suppress
+stock["guard_reasons"]    = ", ".join(_refresh_reasons)
+```
+
+**Expected post-deploy:** Stocks like BANARISUG/MOHITIND with clean forensics now correctly show their spike triggers; stocks with real Altman/Beneish distress continue to be suppressed (zeroed out).
+
+### Test coverage (Group 59 + Group 60 = 13 new tests)
+
+**Group 59 — Beneish M (7 tests):**
+- 59.1a: Honest stock continuous output between -3.5 and -2.22
+- 59.2a: Aggressive-accrual stock → M > -2.22 (flagged)
+- 59.3a: Thin-data → proxy fallback bucket
+- 59.4a: Empty data → 0.0 (insufficient marker)
+- 59.5a: M-score monotone in TATA (locks academic core property)
+- 59.6a: Code-shape — 12 required Beneish field assignments present
+- 59.7a: Extreme/corrupt input clamped to [-10, 10]
+
+**Group 60 — Earn Quality + Spike refresh (6 tests):**
+- 60.1a: Marginal stock (q_pat=200, CFO=250) → LOW (post-fix), was HIGH pre-fix
+- 60.2a: Annual NI path used directly when available
+- 60.3a: Returns "—" when no PAT data
+- 60.4a: `fetch_forensic_inputs` populates `net_income_annual`
+- 60.5a: master_funnel re-runs 3H guard with fresh forensics
+- 60.6a: Refresh runs BEFORE spike-suppression check (ordering lock)
+
+### Action required at deploy
+
+**No DB delete required.** v12.9 only modifies in-memory computation. Existing `fundamental_metrics.beneish_m` and `earnings_quality` values refresh automatically on the next pipeline run via Section 5A.5 forensics re-run.
+
+### Expected after first v12.9 run
+
+| Metric | v12.8 (last run) | v12.9 expected |
+|---|---|---|
+| Beneish M unique values | 4 | ~80-95 (continuous) |
+| Beneish distribution shape | 3-bucket (-2.5/-2.22/-1.5) | Bell-shaped, center -2.0 to -2.5 |
+| Earn Quality HIGH count | 70/100 | 30-40/100 |
+| Earn Quality MODERATE count | 1/100 | ~25/100 |
+| Earn Quality LOW count | 14/100 | 25-30/100 |
+| Spike Score for BANARISUG-class | 0 (false-suppressed) | 2-3 (real triggers honored) |
+
+If Beneish distribution still shows 4-bucket pattern, check that yfinance returns 2+ years of balance-sheet data for the funnel stocks. The v12.8 404 cache might be incorrectly skipping symbols whose `.NS` info call fails but whose balance_sheet would succeed — review `failed_yfinance_lookups` table.
+
+### Open known issues (deferred from v12.8)
+
+1. 0-vs-missing ambiguity (original v12.4 audit issue) — still deferred
+2. NIFTY 50 not ingested — daily report mood renders "—" honestly
+3. Altman Z capping at 10 (v12.5 behavior) — 34/100 hit cap. Future work: uncap and fix X4 unit-mismatch root cause.
+
+---
+
+*Last updated: April 30, 2026 · v12.9 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

@@ -113,6 +113,27 @@ class ForensicsEngine:
             except Exception:
                 return 0.0
 
+        def _val_cr_at(df, row_label, col_idx):
+            """v12.9: Return the value at a specific column position (in ₹Cr).
+            col_idx=0 is most recent, col_idx=1 is prior year, etc.
+            Returns 0 if column doesn't exist or value is missing.
+            Used for Beneish M-Score's year-over-year indices.
+            """
+            if df is None or row_label is None:
+                return 0.0
+            try:
+                if hasattr(df, 'empty') and df.empty:
+                    return 0.0
+                cols = list(df.columns)
+                if col_idx >= len(cols):
+                    return 0.0
+                v = df.loc[row_label].iloc[col_idx]
+                if v is None or str(v) == "nan":
+                    return 0.0
+                return round(float(v) / _INR_CR, 2)
+            except Exception:
+                return 0.0
+
         try:
             # Try .NS first, fall back to .BO if nothing
             tk = None
@@ -253,7 +274,120 @@ class ForensicsEngine:
                                    excludes=["non controlling", "minority"]) or \
                          _find_row(inc.index, ["netincome"])
                 ni = _val_cr(inc, ni_row)
-                if ni != 0: out["q_pat_cr"] = ni
+                if ni != 0:
+                    out["q_pat_cr"] = ni
+                    # v12.9: also expose under canonical "annual NI" key for
+                    # Earn Quality calculation. yfinance's income_stmt is
+                    # annual (vs quarterly_income_stmt which is per-quarter).
+                    # The legacy "q_pat_cr" key name is misleading but
+                    # preserved for backwards compatibility with downstream
+                    # consumers that already read it.
+                    out["net_income_annual"] = ni
+
+            # ── BENEISH M-SCORE INPUTS (v12.9) ───────────────────────────
+            # Beneish requires year-over-year comparisons across 8 variables.
+            # We extract current (col 0) AND prior (col 1) period values from
+            # the SAME yfinance balance_sheet / income_stmt / cashflow frames.
+            # Stored under "beneish_*_t" (current) and "beneish_*_t1" (prior).
+            # If prior-period data is unavailable (only 1 year on file),
+            # calculate_beneish_m falls back to the single-period accrual proxy.
+            try:
+                # Receivables (BS)
+                if bs is not None and hasattr(bs, 'empty') and not bs.empty:
+                    _rec_row = _find_row(bs.index, ["receivable"], excludes=["non"]) or \
+                               _find_row(bs.index, ["accountsreceivable"])
+                    if _rec_row is not None:
+                        out["beneish_receivables_t"]  = _val_cr_at(bs, _rec_row, 0)
+                        out["beneish_receivables_t1"] = _val_cr_at(bs, _rec_row, 1)
+
+                    # Total Assets t-1 (current is already in out["total_assets_cr"])
+                    _ta_row = _find_row(bs.index, ["total", "assets"],
+                                        excludes=["current", "non", "intangible"]) or \
+                              _find_row(bs.index, ["totalassets"])
+                    if _ta_row is not None:
+                        out["beneish_ta_t"]  = _val_cr_at(bs, _ta_row, 0)
+                        out["beneish_ta_t1"] = _val_cr_at(bs, _ta_row, 1)
+
+                    # Total Liabilities (current and prior, for LVGI)
+                    _tl_row = _find_row(bs.index, ["total", "liabilit"],
+                                        excludes=["current", "non"]) or \
+                              _find_row(bs.index, ["totalliab"])
+                    if _tl_row is not None:
+                        out["beneish_tl_t"]  = _val_cr_at(bs, _tl_row, 0)
+                        out["beneish_tl_t1"] = _val_cr_at(bs, _tl_row, 1)
+
+                    # PPE (Property Plant Equipment) — for AQI, DEPI
+                    _ppe_row = _find_row(bs.index, ["net", "ppe"]) or \
+                               _find_row(bs.index, ["netppe"]) or \
+                               _find_row(bs.index, ["property", "plant"]) or \
+                               _find_row(bs.index, ["propertyplantequipment"])
+                    if _ppe_row is not None:
+                        out["beneish_ppe_t"]  = _val_cr_at(bs, _ppe_row, 0)
+                        out["beneish_ppe_t1"] = _val_cr_at(bs, _ppe_row, 1)
+
+                    # Current Assets (for AQI)
+                    _ca_row = _find_row(bs.index, ["current", "assets"],
+                                        excludes=["non current", "noncurrent", "other"])
+                    if _ca_row is not None:
+                        out["beneish_ca_t"]  = _val_cr_at(bs, _ca_row, 0)
+                        out["beneish_ca_t1"] = _val_cr_at(bs, _ca_row, 1)
+
+                # Income Statement: Sales, COGS, SGA, Depreciation
+                if inc is not None and hasattr(inc, 'empty') and not inc.empty:
+                    # Sales (= Total Revenue)
+                    _rev_row = _find_row(inc.index, ["total", "revenue"]) or \
+                               _find_row(inc.index, ["revenue"])
+                    if _rev_row is not None:
+                        out["beneish_sales_t"]  = _val_cr_at(inc, _rev_row, 0)
+                        out["beneish_sales_t1"] = _val_cr_at(inc, _rev_row, 1)
+
+                    # COGS — for Gross Margin
+                    _cogs_row = _find_row(inc.index, ["cost", "revenue"]) or \
+                                _find_row(inc.index, ["costofrevenue"]) or \
+                                _find_row(inc.index, ["cost", "good", "sold"])
+                    if _cogs_row is not None:
+                        out["beneish_cogs_t"]  = _val_cr_at(inc, _cogs_row, 0)
+                        out["beneish_cogs_t1"] = _val_cr_at(inc, _cogs_row, 1)
+
+                    # Gross Profit (alternative path if COGS missing)
+                    _gp_row = _find_row(inc.index, ["gross", "profit"]) or \
+                              _find_row(inc.index, ["grossprofit"])
+                    if _gp_row is not None:
+                        out["beneish_gp_t"]  = _val_cr_at(inc, _gp_row, 0)
+                        out["beneish_gp_t1"] = _val_cr_at(inc, _gp_row, 1)
+
+                    # SG&A
+                    _sga_row = _find_row(inc.index, ["selling", "general"]) or \
+                               _find_row(inc.index, ["sellinggeneraladministration"]) or \
+                               _find_row(inc.index, ["sga"])
+                    if _sga_row is not None:
+                        out["beneish_sga_t"]  = _val_cr_at(inc, _sga_row, 0)
+                        out["beneish_sga_t1"] = _val_cr_at(inc, _sga_row, 1)
+
+                    # Income from Continuing Operations (preferred for Beneish TATA)
+                    _icop_row = _find_row(inc.index, ["income", "continuing"]) or \
+                                _find_row(inc.index, ["netincomecontinuingoperations"])
+                    if _icop_row is not None:
+                        out["beneish_icop_t"] = _val_cr_at(inc, _icop_row, 0)
+
+                # Cash Flow: Depreciation
+                if cf is not None and hasattr(cf, 'empty') and not cf.empty:
+                    _dep_row = _find_row(cf.index, ["depreciation", "amortization"]) or \
+                               _find_row(cf.index, ["depreciation"])
+                    if _dep_row is not None:
+                        out["beneish_dep_t"]  = _val_cr_at(cf, _dep_row, 0)
+                        out["beneish_dep_t1"] = _val_cr_at(cf, _dep_row, 1)
+
+                    # Operating CF for both years (TATA uses CFO)
+                    _ocf_row = _find_row(cf.index, ["operating", "cash"]) or \
+                               _find_row(cf.index, ["operatingcashflow"]) or \
+                               _find_row(cf.index, ["cashflowfromcontinuingoperatingactivities"])
+                    if _ocf_row is not None:
+                        out["beneish_cfo_t"]  = _val_cr_at(cf, _ocf_row, 0)
+                        out["beneish_cfo_t1"] = _val_cr_at(cf, _ocf_row, 1)
+
+            except Exception:
+                pass   # Beneish data extraction never blocks main forensics path
 
             return out
 
@@ -295,13 +429,145 @@ class ForensicsEngine:
             return 0.0
 
     @staticmethod
+    @staticmethod
     def calculate_beneish_m(data):
-        """Beneish M-Score via accrual-quality proxy. 0.0 = insufficient data."""
-        ta = _num(data, 'total_assets', 'total_assets_cr')
+        """Beneish M-Score (8-variable formula).
+
+        v12.9: implements the real 8-variable Beneish formula when
+        prior-year data is available from yfinance. Falls back to the
+        v10.3 single-period accrual proxy when only current-year data
+        exists (newly-listed stocks, sparse yfinance coverage).
+
+        Formula:
+          M = -4.84 + 0.92*DSRI + 0.528*GMI + 0.404*AQI + 0.892*SGI
+              + 0.115*DEPI - 0.172*SGAI + 4.679*TATA - 0.327*LVGI
+
+        DSRI = (Rec_t / Sales_t) / (Rec_{t-1} / Sales_{t-1})
+        GMI  = GM_{t-1} / GM_t                  where GM = (Sales-COGS)/Sales
+        AQI  = (1 - (CA+PPE)/TA)_t / same_{t-1}
+        SGI  = Sales_t / Sales_{t-1}
+        DEPI = (Dep_{t-1} / (Dep_{t-1} + PPE_{t-1})) / same_t
+        SGAI = (SGA/Sales)_t / (SGA/Sales)_{t-1}
+        LVGI = (TL/TA)_t / (TL/TA)_{t-1}
+        TATA = (Income_from_Cont_Ops - CFO) / TA   (current period)
+
+        Threshold: M > -2.22 → manipulation flag (Beneish original threshold).
+
+        Returns:
+          - Real M-score (continuous float) when prior-year data available
+          - Proxy buckets (-2.50 / -2.22 / -1.50) when only current data
+          - 0.0 when insufficient data even for proxy
+        """
+        ta = _num(data, 'total_assets', 'total_assets_cr', 'beneish_ta_t')
         if ta <= 0:
             return 0.0
+
+        # ── Path 1: Real 8-variable formula (preferred) ──────────────
         try:
-            ni = _num(data, 'ni_from_ops', 'net_income', 'q_pat_cr', 'net_profit')
+            sales_t  = _num(data, 'beneish_sales_t')
+            sales_t1 = _num(data, 'beneish_sales_t1')
+            ta_t     = _num(data, 'beneish_ta_t', 'total_assets_cr')
+            ta_t1    = _num(data, 'beneish_ta_t1')
+            tl_t     = _num(data, 'beneish_tl_t', 'total_liab_cr')
+            tl_t1    = _num(data, 'beneish_tl_t1')
+
+            # Need both periods of sales, TA, TL — these are the foundational
+            # variables. If any is missing we can't compute the real formula.
+            _have_full = (sales_t > 0 and sales_t1 > 0 and
+                          ta_t > 0 and ta_t1 > 0 and
+                          tl_t > 0 and tl_t1 > 0)
+
+            if _have_full:
+                # DSRI: Days Sales in Receivables Index
+                rec_t  = _num(data, 'beneish_receivables_t')
+                rec_t1 = _num(data, 'beneish_receivables_t1')
+                if rec_t > 0 and rec_t1 > 0:
+                    dsri = (rec_t / sales_t) / (rec_t1 / sales_t1)
+                else:
+                    dsri = 1.0   # neutral when receivables data absent
+
+                # GMI: Gross Margin Index (PRIOR / CURRENT — flip detects margin compression)
+                cogs_t  = _num(data, 'beneish_cogs_t')
+                cogs_t1 = _num(data, 'beneish_cogs_t1')
+                gp_t    = _num(data, 'beneish_gp_t')
+                gp_t1   = _num(data, 'beneish_gp_t1')
+                if cogs_t > 0 and cogs_t1 > 0:
+                    gm_t  = (sales_t  - cogs_t)  / sales_t
+                    gm_t1 = (sales_t1 - cogs_t1) / sales_t1
+                elif gp_t > 0 and gp_t1 > 0:
+                    gm_t  = gp_t  / sales_t
+                    gm_t1 = gp_t1 / sales_t1
+                else:
+                    gm_t = gm_t1 = 0
+                gmi = (gm_t1 / gm_t) if gm_t > 0 and gm_t1 > 0 else 1.0
+
+                # AQI: Asset Quality Index
+                ppe_t  = _num(data, 'beneish_ppe_t')
+                ppe_t1 = _num(data, 'beneish_ppe_t1')
+                ca_t   = _num(data, 'beneish_ca_t')
+                ca_t1  = _num(data, 'beneish_ca_t1')
+                if ppe_t > 0 and ppe_t1 > 0 and ca_t > 0 and ca_t1 > 0:
+                    aq_t  = 1 - (ca_t  + ppe_t)  / ta_t
+                    aq_t1 = 1 - (ca_t1 + ppe_t1) / ta_t1
+                    aqi = (aq_t / aq_t1) if aq_t1 > 0 else 1.0
+                else:
+                    aqi = 1.0
+
+                # SGI: Sales Growth Index
+                sgi = sales_t / sales_t1
+
+                # DEPI: Depreciation Index (PRIOR rate / CURRENT rate)
+                dep_t  = _num(data, 'beneish_dep_t')
+                dep_t1 = _num(data, 'beneish_dep_t1')
+                if dep_t > 0 and dep_t1 > 0 and ppe_t > 0 and ppe_t1 > 0:
+                    dr_t  = dep_t  / (dep_t  + ppe_t)
+                    dr_t1 = dep_t1 / (dep_t1 + ppe_t1)
+                    depi = (dr_t1 / dr_t) if dr_t > 0 else 1.0
+                else:
+                    depi = 1.0
+
+                # SGAI: SG&A Index
+                sga_t  = _num(data, 'beneish_sga_t')
+                sga_t1 = _num(data, 'beneish_sga_t1')
+                if sga_t > 0 and sga_t1 > 0:
+                    sgai = (sga_t / sales_t) / (sga_t1 / sales_t1)
+                else:
+                    sgai = 1.0
+
+                # LVGI: Leverage Index
+                lvgi = (tl_t / ta_t) / (tl_t1 / ta_t1)
+
+                # TATA: Total Accruals to Total Assets
+                # Use Income from Continuing Operations if available, else net_income
+                ico_t = _num(data, 'beneish_icop_t', 'q_pat_cr', 'net_income')
+                cfo_t = _num(data, 'beneish_cfo_t', 'operating_cf_cr', 'cfo')
+                tata = (ico_t - cfo_t) / ta_t if ta_t > 0 else 0
+
+                # Compute M
+                m = (-4.84
+                     + 0.92  * dsri
+                     + 0.528 * gmi
+                     + 0.404 * aqi
+                     + 0.892 * sgi
+                     + 0.115 * depi
+                     - 0.172 * sgai
+                     + 4.679 * tata
+                     - 0.327 * lvgi)
+
+                # Sanity clamp: real Beneish M-scores observed in empirical
+                # research range from roughly -8 (very honest) to +5 (high
+                # manipulation risk). Values outside ±10 indicate input
+                # data corruption (unit mismatches in receivables/sales) so
+                # we clamp without losing the directional signal.
+                if m > 10:  m = 10
+                if m < -10: m = -10
+                return round(m, 2)
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+
+        # ── Path 2: Single-period accrual proxy (fallback for thin data) ──
+        try:
+            ni  = _num(data, 'ni_from_ops', 'net_income', 'q_pat_cr', 'net_profit')
             cfo = _num(data, 'cfo', 'operating_cf_cr', 'operating_cf')
             if ni == 0 and cfo == 0:
                 return 0.0
@@ -427,13 +693,27 @@ class ForensicsEngine:
         #   CFO/PAT < 0.5  → LOW      (accounting concern — profits aren't cash)
         #   0.5 ≤ x < 0.8  → MODERATE
         #   PAT ≤ 0        → "—"     (ratio undefined with zero/negative PAT)
-        cfo = _num(row, 'operating_cf_cr', 'cfo', 'operating_cf')
-        pat = _num(row, 'q_pat_cr', 'net_profit', 'net_income')
-        if pat > 0 and cfo != 0:
-            _eq_ratio = cfo / pat
+        #
+        # v12.9 FIX: unit-mismatch bug. cfo (operating_cf_cr) is annual TTM
+        # from yfinance, while pat (q_pat_cr) is the latest QUARTER. The
+        # raw ratio is ~4× inflated, causing 70% of stocks to falsely
+        # qualify as HIGH (NESTLEIND showed 4.41, ULTRACEMCO 0.82, etc.).
+        # Fix: prefer annual net_income / total_revenue from inc statement;
+        # if only quarterly PAT is available, annualize as PAT × 4 to put
+        # numerator and denominator on the same time-frame.
+        cfo  = _num(row, 'operating_cf_cr', 'cfo', 'operating_cf')
+        # Try annual NI first (preferred), fall back to quarterly × 4
+        pat_annual = _num(row, 'net_income_annual', 'ni_annual')
+        if pat_annual <= 0:
+            _pat_q = _num(row, 'q_pat_cr', 'net_profit', 'net_income')
+            pat_annual = _pat_q * 4 if _pat_q > 0 else 0
+        if pat_annual > 0 and cfo != 0:
+            _eq_ratio = cfo / pat_annual
             if   _eq_ratio >= 0.8: results['earnings_quality'] = "HIGH"
             elif _eq_ratio <  0.5: results['earnings_quality'] = "LOW"
             else:                  results['earnings_quality'] = "MODERATE"
+            # v12.9: expose for downstream guards (spike_screener uses cfo_pat_ratio)
+            results['cfo_pat_ratio'] = round(_eq_ratio, 3)
         else:
             results['earnings_quality'] = "—"
 

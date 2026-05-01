@@ -2667,6 +2667,46 @@ def run_master_pipeline():
                 _spike_tags = _spike_result.get("tags", [])
                 if _spike_tags:
                     stock["spike_triggers"] = " | ".join(_spike_tags)
+
+                # v12.9 FIX: re-run 3H guard with FRESH forensics values.
+                # The original guard at master_funnel:871 ran BEFORE Section
+                # 5A.5 forensics re-run, so for stocks where Altman Z and
+                # Beneish M weren't computed yet (default 0), the guard
+                # could either over- or under-suppress. Specifically:
+                # BANARISUG (Altman 7.15, Beneish -2.5 — both clean) was
+                # showing spike_score=0 in v12.8 production because its
+                # spike_suppressed flag had been set with stale defaults.
+                # Re-evaluate with current forensics to get accurate
+                # suppression. Same rules as v7_engine.apply_section_3H_guards
+                # but reading the latest in-stock values.
+                _refresh_suppress = False
+                _refresh_reasons  = []
+                try:
+                    _alt_re = float(str(stock.get('altman_z', 0) or 0).replace("—","0") or 0)
+                except (ValueError, TypeError):
+                    _alt_re = 0
+                try:
+                    _ben_re = float(str(stock.get('beneish_m', 0) or 0).replace("—","0") or 0)
+                except (ValueError, TypeError):
+                    _ben_re = 0
+                try:
+                    _pl_re = float(str(stock.get('pledge_pct', 0) or 0).replace("—","0") or 0)
+                except (ValueError, TypeError):
+                    _pl_re = 0
+                if _pl_re > 20:
+                    _refresh_suppress = True
+                    _refresh_reasons.append("Pledge > 20%")
+                if _alt_re != 0 and _alt_re < 1.81:
+                    _refresh_suppress = True
+                    _refresh_reasons.append("Altman Z < 1.81")
+                if _ben_re != 0 and _ben_re > -2.22:
+                    _refresh_suppress = True
+                    _refresh_reasons.append("Beneish M > -2.22")
+                # Update flag + reasons with the fresh evaluation
+                stock["spike_suppressed"] = _refresh_suppress
+                stock["risk_flag_active"] = _refresh_suppress
+                stock["guard_reasons"]    = ", ".join(_refresh_reasons)
+
                 # Session 15: enforce Section 3H anti-trigger guard on displayed
                 # spike_count. Previously a pledge>20 / Altman / Beneish failure
                 # set spike_suppressed=True (which cost −10 via risk_flag_active)
