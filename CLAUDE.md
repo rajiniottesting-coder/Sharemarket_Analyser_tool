@@ -2574,4 +2574,129 @@ If Beneish distribution still shows 4-bucket pattern, check that yfinance return
 
 ---
 
-*Last updated: April 30, 2026 · v12.9 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 32. v13.0 RELEASE — Free-tier shareholding data unlocked (NSE bulk pledge + corp-info QoQ deltas)
+
+**Date:** May 2, 2026
+**Trigger:** v12.9 production audit revealed 9 SHAREHOLDING-section columns were 100% empty (Pledge %, Pledge Direction, Pro QoQ Δ, FII QoQ Δ, DII %, DII QoQ Δ). Investigation found NSE actually publishes both data sources for free — they just weren't being called or were being called with single-quarter parsing only. v13.0 wires both up. Promoted to v13.0 (not v12.10) because this is the first release that delivers genuinely new column populations rather than internal scoring changes.
+**Tests:** 542 passing (532 v12.9 + 10 v13.0 in new Group 61).
+
+### What was changed
+
+**1. New module `ingestion/nse_pledge.py`** (~140 lines)
+- Calls NSE's bulk pledge endpoint `https://www.nseindia.com/api/corporates-pledgedata?index=equities`
+- ONE API call returns the latest pledge filing for every listed company (~5,000 stocks)
+- `fetch_bulk_pledge_data(session)` returns `{symbol: pct_pledged}` dict
+- `merge_pledge_into_rows(rows, pledge_map)` updates sh_rows in place
+- Preserves existing non-zero values when bulk source returns 0 (avoids overwriting good data with empty)
+- Sanity-clamps pct to [0, 100], handles malformed records gracefully
+- Network-failure-safe: returns empty dict, pipeline continues without pledge data
+
+**2. Extended `_nse_shareholding(symbol, session)` in `backfill_history.py`**
+- Pre-v13.0: read only `shareholdingPatterns.data[0]` (latest quarter)
+- v13.0: reads `data[0]` AND `data[1]` (latest + prior), computes 3 QoQ deltas
+- Adds keys: `promoter_qoq`, `fii_qoq`, `dii_qoq` (only when prior quarter has non-zero values)
+- Zero new API calls — NSE corp-info already returns 2-4 quarters in single response
+- Was a free upgrade waiting to be unlocked
+
+**3. NSE shareholding enrichment loop in `backfill_history.py`**
+- Now writes captured QoQ deltas back to sh_rows (was previously discarded)
+- Stops skipping rows that have DII data but no QoQ — runs the call when EITHER is missing
+- Bulk pledge fetch added at the end of enrichment (after per-symbol corp-info loop)
+- Both new fetches respect existing rate-limit guards
+
+**4. Pledge direction vocabulary alignment** (`master_funnel.py:803-808`)
+- Pre-v13.0 bug: master_funnel wrote IMPROVING/DETERIORATING but `scoring_engine.py:180` checked for FALLING/RISING — the `_has_paid_sentiment` gate **never** matched on pledge movement, silently breaking the QoQ-Δ-aware sentiment-informed scoring path for any stock with real pledge movement. Pre-v13.0 this was invisible because `pledge_pct` was hardcoded 0 (no movement to detect). v13.0 makes pledge real, so this latent bug now matters.
+- Fix: write FALLING / RISING / STABLE / "—" to match the read path. Tooltips, glossary, and `ownership_tracker.py` already used this vocabulary; only master_funnel was outlying.
+
+**5. Documentation refreshed**
+- `reporting/tooltip_formatter.py`: Pledge Direction tooltip explains v13.0 vocab alignment + v13.0 NSE source
+- `reporting/excel_generator.py` glossary: Pledge %, Pledge Direction, Pro QoQ Δ, FII QoQ Δ, DII %, DII QoQ Δ — all 6 entries reflect v13.0 NSE sourcing. Both glossary blocks (line ~444 and ~722) synced — second block had pre-existing stale "INCREASING/DECREASING" vocab; replaced with FALLING/RISING.
+- `CLAUDE.md` (this file): Section 32 added.
+- `readme.md`: v13.0 row added to top of version table.
+
+**6. SHAREHOLDING section color changed (visual cleanup)**
+- Pre-v13.0: section header used `#EA580C` (bright red-orange), which visually conflicted with AVOID-row tier-3 colors (`#FEE2E2` light red). The section looked perpetually "alarming" even for stocks with clean shareholding patterns.
+- v13.0: changed to `#7C3AED` (violet) — neutral, in-palette, non-red-adjacent. Matches the SCORES section color for visual consistency.
+- Updated in both color-map locations: line 48 (FULL_SECTIONS tuple) and line 961 (SECTION_COLORS dict).
+- Cell background colors for individual data cells are unchanged (still tier-based per row verdict). Only the section banner row is affected.
+
+### What unchanged (validated)
+
+- All 7 fair-value models (M1-M7) — unchanged
+- All 8 scoring fields (Piotroski, Altman, Beneish, Earn Quality, Score, Storm, Spike, Early Entry) — unchanged
+- MoS calculation, verdict logic, all override layers — unchanged
+- Anti-trigger guard threshold (pledge > 20%) — unchanged; just receives real data now
+- Gold-tier filter (11 conditions including pledge ≤ 10%) — unchanged; just gets discriminating power now
+- DB schema — unchanged; `shareholding.pledge_pct` and `pledge_dir` columns existed already
+- yfinance fetch path, reconciler, allowlist, holiday calendar — all untouched
+- Verdict assignment + confidence dots — unchanged
+
+### Scoring/verdict logic — impact analysis
+
+**No scoring or verdict logic changes were needed in v13.0.** The full sentiment/Storm/anti-trigger/Gold-tier infrastructure was already designed to consume `promoter_qoq`, `fii_qoq`, `dii_qoq`, `pledge_pct`, and `pledge_direction` — pre-v13.0 those fields were just hardcoded to zero. v13.0 makes them real for the first time.
+
+**What the data flow looks like post-v13.0:**
+
+| Score component | Pre-v13.0 behaviour | Post-v13.0 behaviour |
+|---|---|---|
+| `sentiment_score` (master_funnel:2285-2343) | Default 50 for ~all stocks (no QoQ + pledge dir mismatched) | Moves -15 to +20 from 50 based on real QoQ + pledge direction |
+| `_has_paid_sentiment` gate (scoring_engine:174-181) | Almost always False → weights redistributed (no sent contribution) | True for 50-80 stocks → canonical weights with sent_raw × 0.10 |
+| Anti-trigger guard (master_funnel:2680-2705) | pledge>20 never fired (all pledge=0) | Fires for ~5-15 funnel stocks → spike_count zeroed + risk_flag = -10 |
+| Storm Score (scoring_engine:340 region) | promoter_qoq>0 bonus never fired | +1 fires for stocks with real promoter accumulation |
+| Early Entry score (master_funnel:2370 region) | FII QoQ > +1pp branch never fired | +8 fires for genuine FII accumulation |
+
+**Net effect on composite Score per stock:** typically ±0–5 points for most, but ±10–15 for stocks at the extremes (high-pledge red-flag stocks score lower; high-accumulation stocks score higher). **All shifts are intended behaviour** — the framework was correctly designed; the data just wasn't there before.
+
+**Verdict thresholds remain unchanged** (LARGE: 60/50, MID: 63/53, SMALL: 66/56, MICRO: 70/60). They are score-agnostic and don't need to know whether sentiment data was real or imputed.
+
+**What may change in production output:** A few BUY-verdict stocks with high pledge (>20%) may demote to OVERVALUED or WATCHLIST as the anti-trigger guard correctly fires. A few WATCHLIST stocks with strong DII accumulation + falling pledge may promote to BUY as their sentiment_score lifts above the cap-tier threshold. **This is the correct behaviour the system was always designed for** — pre-v13.0 was running with sentiment data forcibly disabled.
+
+### Group 61 test coverage (9 tests)
+
+- 61.1a: `ingestion.nse_pledge` exposes both `fetch_bulk_pledge_data` and `merge_pledge_into_rows`
+- 61.2a: Network failure returns empty dict (graceful fallback, no crash)
+- 61.3a: Bulk pledge parser handles 7 input edge cases — pctEncumbered field, derived from share counts, sanity clamp on out-of-range, dedup on duplicate symbols, skips malformed/empty
+- 61.4a: `merge_pledge_into_rows` is case-insensitive, preserves existing non-zero values, doesn't touch other fields
+- 61.5a: `_nse_shareholding` computes Pro/FII/DII QoQ deltas from 2-quarter response
+- 61.6a: `_nse_shareholding` correctly omits QoQ keys when only 1 quarter available
+- 61.7a: `master_funnel` writes FALLING/RISING (matches scoring_engine sentinel check, no IMPROVING/DETERIORATING)
+- 61.8a: backfill imports + calls bulk pledge fetch BEFORE shareholding upsert
+- 61.9a: Tooltip + glossary use new FALLING/RISING vocabulary throughout
+- 61.10a: SHAREHOLDING section header color changed from `#EA580C` (red-orange) to `#7C3AED` (violet) — verified in both color-map locations
+
+### Action required at deploy
+
+**No DB delete required.** Schema unchanged. On the first v13.0 run:
+- Bulk pledge fetch runs → populates ~50-200 of the funnel's 100 stocks (most listed companies have zero pledge so don't appear in NSE feed at all — that's correct behaviour, not a bug)
+- QoQ deltas populate from existing per-symbol corp-info calls → ~50-80 stocks get real Pro/FII/DII QoQ values immediately
+- Pledge direction populates as FALLING/RISING/STABLE for stocks with both current and prior pledge (most show "—" until 2nd run accumulates history)
+
+### Expected after first v13.0 run
+
+| Metric | v12.9 | v13.0 expected |
+|---|---|---|
+| Pledge % populated stocks | 0/100 | 50–100/100 (real values 0–100% from NSE feed) |
+| Pledge Direction non-"—" | 0/100 | 5–20/100 first run, more on subsequent runs |
+| Pro QoQ Δ populated | 0/100 | 50–80/100 (NSE returns 2–4 quarters) |
+| FII QoQ Δ populated | 0/100 | 50–80/100 |
+| DII % populated | 0/100 | 50–80/100 |
+| DII QoQ Δ populated | 0/100 | 50–80/100 |
+| Spike Score behaviour | Anti-trigger guard had no real pledge to gate on — only Altman/Beneish drove suppression | Anti-trigger guard now genuinely fires on `pledge > 20%`. Stocks like VEDL, DBREALTY, ADANIPOWER will correctly see Spike → 0 |
+
+### Network failure behaviour
+
+If NSE blocks GitHub Actions IPs (which they sometimes do via Akamai bot detection), the bulk pledge endpoint returns 4xx and `fetch_bulk_pledge_data` returns `{}`. Pipeline continues with `pledge_pct=0` for all stocks, exactly as pre-v13.0 behaviour. No regression risk.
+
+The corp-info per-symbol calls already had this fallback in place.
+
+### Open known issues (carried forward from v12.9)
+
+1. 0-vs-missing ambiguity (original v12.4 audit issue) — still deferred
+2. NIFTY 50 not ingested — daily report mood renders "—" honestly
+3. Altman Z capping at 10 (v12.5 behavior) — 34/100 hit cap by-design
+4. NEWS & RISK section + ANALYSIS SUMMARY — Gemini AI quota issue (config, not code)
+5. PIPELINE / OB section (5 cols) — order book metrics, no free aggregator
+
+---
+
+*Last updated: May 2, 2026 · v13.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

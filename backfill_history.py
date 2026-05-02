@@ -1463,20 +1463,62 @@ def _nse_quote(symbol: str, session) -> dict:
 
 
 def _nse_shareholding(symbol: str, session) -> dict:
-    """Fetch shareholding pattern from NSE corp-info API."""
+    """Fetch shareholding pattern from NSE corp-info API.
+
+    v13.0: now reads BOTH the latest quarter (index 0) AND the prior
+    quarter (index 1) from `shareholdingPatterns.data` to compute
+    quarter-over-quarter deltas (Pro QoQ Δ, FII QoQ Δ, DII QoQ Δ).
+    The deltas were previously hardcoded to 0.0 from the yfinance pass
+    because that source can't supply real QoQ. NSE's corp-info JSON
+    already includes 2-4 quarters of history in a single call, so
+    extending the parse adds zero new API calls.
+    """
     try:
         url = f"https://www.nseindia.com/api/corp-info?symbol={symbol}"
         r = session.get(url, timeout=12)
         if r.status_code != 200:
             return {}
         d = r.json()
-        sh = d.get("shareholdingPatterns", {}).get("data", [{}])[0] if d.get("shareholdingPatterns") else {}
-        return {
-            "promoter_pct": float(sh.get("promoterAndPromoterGroupTotal") or 0),
-            "fii_pct":      float(sh.get("fiisTotal") or 0),
-            "dii_pct":      float(sh.get("diisTotal") or 0),
-            "public_float": float(sh.get("publicTotal") or 0),
+        sh_block = d.get("shareholdingPatterns") or {}
+        sh_rows  = sh_block.get("data") or []
+        if not sh_rows:
+            return {}
+
+        latest = sh_rows[0] or {}
+        prior  = sh_rows[1] if len(sh_rows) > 1 else {}
+
+        def _f(rec, *keys):
+            for k in keys:
+                v = rec.get(k)
+                if v in (None, "", "—"):
+                    continue
+                try:
+                    return float(str(v).replace(",", "").strip())
+                except (ValueError, TypeError):
+                    continue
+            return 0.0
+
+        out = {
+            "promoter_pct": _f(latest, "promoterAndPromoterGroupTotal"),
+            "fii_pct":      _f(latest, "fiisTotal"),
+            "dii_pct":      _f(latest, "diisTotal"),
+            "public_float": _f(latest, "publicTotal"),
         }
+
+        # v13.0: QoQ deltas — only compute when prior quarter is fully
+        # populated (not zero — zero would falsely yield a huge delta).
+        if prior:
+            p_promo = _f(prior, "promoterAndPromoterGroupTotal")
+            p_fii   = _f(prior, "fiisTotal")
+            p_dii   = _f(prior, "diisTotal")
+            if p_promo > 0:
+                out["promoter_qoq"] = round(out["promoter_pct"] - p_promo, 2)
+            if p_fii > 0:
+                out["fii_qoq"]      = round(out["fii_pct"]      - p_fii,   2)
+            if p_dii > 0:
+                out["dii_qoq"]      = round(out["dii_pct"]      - p_dii,   2)
+
+        return out
     except Exception:
         return {}
 
@@ -2179,18 +2221,31 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
     # NSE corp-info API returns separate fiisTotal and diisTotal.
     # We call this for symbols where dii_pct is still 0 after yfinance pass.
     # Only attempts top-100 to respect NSE rate limits.
+    #
+    # v13.0: also captures Pro QoQ Δ / FII QoQ Δ / DII QoQ Δ from the same
+    # API response (NSE returns 2-4 quarters in shareholdingPatterns.data,
+    # so reading prior-quarter values is a free upgrade — zero new calls).
     if sh_rows:
         try:
             _nse_session_obj, _ = _make_nse_session()
             _nse_dii_count = 0
+            _nse_qoq_count = 0
             _nse_attempts = 0
             for _row in sh_rows[:100]:   # rate-limit guard: top 100 only
-                if _row.get("dii_pct", 0) > 0:
-                    continue   # already has DII from earlier source
+                _need_dii = _row.get("dii_pct", 0) <= 0
+                _need_qoq = (_row.get("promoter_qoq", 0) == 0 and
+                             _row.get("fii_qoq", 0) == 0 and
+                             _row.get("dii_qoq", 0) == 0)
+                # Skip only if both DII and QoQ are already populated
+                if not _need_dii and not _need_qoq:
+                    continue
                 _nse_attempts += 1
                 try:
                     _nse_sh = _nse_shareholding(_row["symbol"], _nse_session_obj)
-                    if _nse_sh and _nse_sh.get("dii_pct", 0) > 0:
+                    if not _nse_sh:
+                        continue
+
+                    if _nse_sh.get("dii_pct", 0) > 0 and _need_dii:
                         _row["dii_pct"]      = round(_nse_sh["dii_pct"], 2)
                         # If NSE also gave us better FII (separated), prefer it
                         if _nse_sh.get("fii_pct", 0) > 0:
@@ -2201,12 +2256,49 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
                         _d = _row.get("dii_pct", 0)
                         _row["public_float"] = round(max(0, 100 - _p - _f - _d), 2)
                         _nse_dii_count += 1
+
+                    # v13.0: capture QoQ deltas (only when prior quarter present)
+                    _wrote_qoq = False
+                    if "promoter_qoq" in _nse_sh:
+                        _row["promoter_qoq"] = round(_nse_sh["promoter_qoq"], 2)
+                        _wrote_qoq = True
+                    if "fii_qoq" in _nse_sh:
+                        _row["fii_qoq"]      = round(_nse_sh["fii_qoq"], 2)
+                        _wrote_qoq = True
+                    if "dii_qoq" in _nse_sh:
+                        _row["dii_qoq"]      = round(_nse_sh["dii_qoq"], 2)
+                        _wrote_qoq = True
+                    if _wrote_qoq:
+                        _nse_qoq_count += 1
                 except Exception:
                     pass
                 time.sleep(0.3)   # respect NSE rate limit
-            print(f"   NSE shareholding: enriched DII for {_nse_dii_count}/{_nse_attempts} symbols")
+            print(f"   NSE shareholding: enriched DII for {_nse_dii_count}/{_nse_attempts} symbols, "
+                  f"QoQ deltas for {_nse_qoq_count}/{_nse_attempts}")
         except Exception as _e:
             print(f"   ⚠️  NSE shareholding enrichment skipped: {_e}")
+
+    # ── v13.0: NSE BULK PLEDGE DATA — single API call for all stocks ──────────
+    # NSE publishes a daily aggregated pledge report at:
+    #   https://www.nseindia.com/api/corporates-pledgedata?index=equities
+    # ONE call returns the latest pledge filing for every listed company, so
+    # this is dramatically cheaper than per-symbol calls. Pre-v13.0 the
+    # `pledge_pct` column was hardcoded to 0 from yfinance (free tier doesn't
+    # provide pledge data); now it gets real values that feed the spike
+    # anti-trigger guard (pledge > 20% suppresses Spike Score).
+    if sh_rows:
+        try:
+            from ingestion.nse_pledge import fetch_bulk_pledge_data, merge_pledge_into_rows
+            _pledge_session, _ = _make_nse_session()
+            _pledge_map = fetch_bulk_pledge_data(_pledge_session)
+            if _pledge_map:
+                _pledge_updated = merge_pledge_into_rows(sh_rows, _pledge_map)
+                print(f"   NSE bulk pledge: {len(_pledge_map):,} symbols in source, "
+                      f"{_pledge_updated} matched in funnel")
+            else:
+                print("   NSE bulk pledge: empty response (network or auth)")
+        except Exception as _ple:
+            print(f"   ⚠️  NSE bulk pledge fetch skipped: {_ple}")
 
     if fm_rows:
         upsert(pd.DataFrame(fm_rows), "fundamental_metrics", conn)

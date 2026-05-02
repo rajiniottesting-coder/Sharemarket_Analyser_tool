@@ -45,7 +45,7 @@ FULL_GROUPS = [
     (23, "FAIR VALUE",      "B45309",12),(35,"VALUATION",      "0891B2",7),
     (42, "PROFITABILITY",   "059669",10),(52,"GROWTH",         "047857",10),
     (62, "FIN HEALTH",      "DC2626",10),(72,"CAP ALLOC",      "6D28D9",3),
-    (75, "SHAREHOLDING",    "EA580C",9),(84,"QUALITY SCORES",  "0D9488",4),
+    (75, "SHAREHOLDING",    "7C3AED",9),(84,"QUALITY SCORES",  "0D9488",4),
     (88, "PIPELINE / OB",   "1D4ED8",5),(93,"EARLY DETECTION", "B45309",3),
     (96, "TECHNICAL",       "6D28D9",14),(110,"BALANCE SHEET", "D97706",2),
     (112,"TRADE PLAN",      "059669",7),(119,"NEWS & RISK",    "475569",4),
@@ -445,19 +445,20 @@ GLOSSARY_DATA = [
      "Promoter shareholding change vs previous quarter (percentage points). "
      ">+0.5 = promoter buying (Sentiment +5); <−0.5 = selling (Sentiment −5). "
      "Source: computed as (current promoter_pct − prior-quarter promoter_pct). "
-     "v10.15 FIX #5: three display states now distinct — real number = "
-     "measured delta; '—' = no ≥90-day history OR backfill literal 0 "
-     "(yfinance can't supply real QoQ; populates after ~3 months of daily "
-     "runs). Pre-v10.15 showed 0 for 83/86 stocks indistinguishably.",
+     "v13.0: now populates immediately from NSE corp-info JSON which returns "
+     "2–4 quarters of history in a single call (zero new API cost). Pre-v13.0 "
+     "depended on a 3-month rolling window of daily runs to accumulate prior "
+     "data. '—' = no prior quarter from NSE OR symbol failed corp-info call.",
      "Full Dashboard"),
     ("SHAREHOLDING","Pledge %",
      "Percentage of promoter shares pledged as loan collateral. "
      "0% = clean capital structure (Safety +4); 10–20% = watch (−7); "
      ">20% = RED FLAG (Safety −15 + suppresses all spike signals). "
-     "Source: BSE corporate filings (no free API). v10.15 FIX #6: shows '—' "
-     "when 0 because 0-pledge is structurally indistinguishable from "
-     "'unknown pledge' on free-tier. Score gates still fire on numeric "
-     "values; '—' treated as 0 for guard purposes.",
+     "Source: NSE bulk pledge endpoint (corporates-pledgedata, free, daily). "
+     "v13.0 makes this real for the first time — pre-v13.0 was hardcoded 0 "
+     "from yfinance fallback. Shows '—' when no record in NSE feed (most "
+     "stocks have zero pledge so they don't appear in the report). Score "
+     "gates fire on numeric values; '—' treated as 0 for guard purposes.",
      "All sheets"),
     ("SHAREHOLDING","Pledge Direction",
      "FALLING = promoters repaying loans (positive); RISING = more shares "
@@ -471,8 +472,9 @@ GLOSSARY_DATA = [
      "Full Dashboard"),
     ("SHAREHOLDING","FII QoQ Δ",
      "FII holding change vs previous quarter. >+1 pp = strong accumulation "
-     "(Early Entry +8); <−1 = distribution. v10.15 FIX #5: shows '—' when "
-     "no real delta computable (backfill literal 0 filtered out).",
+     "(Early Entry +8); <−1 = distribution. v13.0: populates immediately "
+     "from NSE corp-info multi-quarter response (single call, zero new API "
+     "cost). '—' when no prior quarter available.",
      "Full Dashboard"),
     ("SHAREHOLDING","DII %",
      "Domestic Institutional Investor (MF/insurance/banks) holding %. "
@@ -486,7 +488,8 @@ GLOSSARY_DATA = [
     ("SHAREHOLDING","DII QoQ Δ",
      "DII holding change vs previous quarter. >+0.5 pp = strong domestic "
      "accumulation (Sentiment +6); <−0.3 = distribution (Sentiment −3). "
-     "v10.15 FIX #5: '—' when no real delta computable.",
+     "v13.0: populates from NSE corp-info multi-quarter response. '—' when "
+     "no prior quarter computable.",
      "Full Dashboard"),
     ("SHAREHOLDING","Public Float %",
      "Percentage of shares NOT held by promoter or institutions. "
@@ -720,16 +723,20 @@ GLOSSARY_DATA = [
     ("SHAREHOLDING","Pro QoQ Δ",
      "Promoter holding change quarter-over-quarter (%). "
      "Increasing = promoters buying → bullish signal. "
-     "Decreasing = promoters selling → investigate reason. No free source (BSE filings only).","Full Dashboard"),
+     "Decreasing = promoters selling → investigate reason. "
+     "v13.0: populated from NSE corp-info multi-quarter response.","Full Dashboard"),
     ("SHAREHOLDING","Pledge Direction",
-     "Direction of pledge change: INCREASING / DECREASING / STABLE. "
-     "INCREASING pledge is a red flag — promoters may be under financial stress.","Full Dashboard"),
+     "Direction of pledge change: FALLING / RISING / STABLE. "
+     "RISING pledge is a red flag — promoters may be under financial stress. "
+     "v13.0: vocabulary aligned with rest of pipeline (was IMPROVING/DETERIORATING).","Full Dashboard"),
     ("SHAREHOLDING","DII %",
      "Domestic Institutional Investor holding %. "
      "DII (mutual funds, insurance) rising = domestic smart money accumulating. "
-     "Cannot be separated from FII in yfinance — shown as combined institutional %.","Full Dashboard"),
-    ("SHAREHOLDING","DII QoQ Δ","DII holding change quarter-over-quarter. No free source.","Full Dashboard"),
-    ("SHAREHOLDING","FII QoQ Δ","FII holding change quarter-over-quarter. No free source.","Full Dashboard"),
+     "v13.0: separated from FII via NSE corp-info diisTotal field.","Full Dashboard"),
+    ("SHAREHOLDING","DII QoQ Δ","DII holding change quarter-over-quarter. "
+     "v13.0: from NSE corp-info multi-quarter history.","Full Dashboard"),
+    ("SHAREHOLDING","FII QoQ Δ","FII holding change quarter-over-quarter. "
+     "v13.0: from NSE corp-info multi-quarter history.","Full Dashboard"),
     ("SHAREHOLDING","Public Float %",
      "% of shares held by retail/public (100% − Promoter% − Institutional%). "
      "Higher float = more liquid, lower impact cost for large orders.","Full Dashboard"),
@@ -958,7 +965,7 @@ GRP_COLORS = {
     "IDENTITY":"1E293B","SCORES":"7C3AED","PRICE & MARKET":"0369A1",
     "WEEKLY CHANGE %":"0F766E","FAIR VALUE":"B45309","VALUATION":"0891B2",
     "PROFITABILITY":"059669","GROWTH":"047857","FIN HEALTH":"DC2626",
-    "CAP ALLOC":"6D28D9","SHAREHOLDING":"EA580C","QUALITY SCORES":"0D9488",
+    "CAP ALLOC":"6D28D9","SHAREHOLDING":"7C3AED","QUALITY SCORES":"0D9488",
     "PIPELINE / OB":"1D4ED8","EARLY DETECTION":"B45309","TECHNICAL":"6D28D9",
     "BALANCE SHEET":"D97706","TRADE PLAN":"059669","NEWS & RISK":"475569",
     "ANALYSIS SUMMARY":"0F172A",

@@ -4982,6 +4982,263 @@ except Exception as _e60:
     failures.append(f"60.6a: ordering check crashed — {_e60}")
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# GROUP 61 — v13.0 release: NSE bulk pledge fetch + corp-info QoQ deltas
+# ════════════════════════════════════════════════════════════════════════════
+print("\n--- Group 61: v13.0 release (NSE pledge + QoQ deltas) ---")
+
+# ── 61.1 — nse_pledge module imports cleanly + exposes the right API ──
+try:
+    import importlib as _imp61
+    _np61 = _imp61.import_module("ingestion.nse_pledge")
+    _has_fetch = hasattr(_np61, "fetch_bulk_pledge_data")
+    _has_merge = hasattr(_np61, "merge_pledge_into_rows")
+    if _has_fetch and _has_merge:
+        passed += 1
+        print(f"  ✓ 61.1a ingestion.nse_pledge exposes fetch_bulk_pledge_data + merge_pledge_into_rows")
+    else:
+        failed += 1
+        failures.append(f"61.1a: module shape wrong fetch={_has_fetch} merge={_has_merge}")
+except Exception as _e61:
+    failed += 1
+    failures.append(f"61.1a: import crashed — {_e61}")
+
+# ── 61.2 — fetch_bulk_pledge_data handles network failure gracefully ──
+try:
+    class _FailingSession:
+        def get(self, *a, **kw):
+            raise ConnectionError("simulated")
+    _fail_result = _np61.fetch_bulk_pledge_data(_FailingSession(), max_retries=2)
+    if _fail_result == {}:
+        passed += 1
+        print(f"  ✓ 61.2a Network failure returns empty dict (no crash)")
+    else:
+        failed += 1
+        failures.append(f"61.2a: failure path returned {_fail_result!r} not {{}}")
+except Exception as _e61:
+    failed += 1
+    failures.append(f"61.2a: crashed instead of returning empty — {_e61}")
+
+# ── 61.3 — fetch_bulk_pledge_data parses the standard NSE pledge JSON shape ──
+try:
+    class _MockResponse:
+        status_code = 200
+        def json(self):
+            return [
+                {"symbol": "VEDL",   "pctEncumbered": 38.42, "noOfSharesPromoter": 100, "noOfSharesPledged": 38},
+                {"symbol": "RELIANCE", "pctEncumbered": 0.0,  "noOfSharesPromoter": 100, "noOfSharesPledged": 0},
+                {"symbol": "ANIL",   "pctEncumbered": 95.0, "noOfSharesPromoter": 100, "noOfSharesPledged": 95},
+                # Missing pctEncumbered → derive from share counts
+                {"symbol": "DERIV",  "noOfSharesPromoter": 1000, "noOfSharesPledged": 250},
+                # Out-of-range value should clamp
+                {"symbol": "BAD",    "pctEncumbered": 150.0},
+                # Same symbol twice → keep highest
+                {"symbol": "DUP",    "pctEncumbered": 10.0},
+                {"symbol": "DUP",    "pctEncumbered": 30.0},
+                # Malformed → skip
+                {"symbol": "MALFORMED", "pctEncumbered": "not a number"},
+                # Empty symbol → skip
+                {"symbol": "",       "pctEncumbered": 5.0},
+            ]
+    class _MockSession:
+        def get(self, *a, **kw):
+            return _MockResponse()
+    _result = _np61.fetch_bulk_pledge_data(_MockSession())
+    expected = {"VEDL": 38.42, "RELIANCE": 0.0, "ANIL": 95.0,
+                "DERIV": 25.0, "BAD": 100.0, "DUP": 30.0}
+    # RELIANCE=0 is a valid value (real zero pledge); MALFORMED and empty-symbol skipped
+    if _result == expected:
+        passed += 1
+        print(f"  ✓ 61.3a Bulk pledge parser handles all 7 input cases correctly")
+    else:
+        failed += 1
+        failures.append(f"61.3a: parser output mismatch\n        expected={expected}\n        actual={_result}")
+except Exception as _e61:
+    failed += 1
+    failures.append(f"61.3a: crashed — {_e61}")
+
+# ── 61.4 — merge_pledge_into_rows updates rows in-place, case-insensitive ──
+try:
+    _rows = [
+        {"symbol": "VEDL",     "pledge_pct": 0.0, "other": "preserved"},
+        {"symbol": "vedl",     "pledge_pct": 0.0},   # lowercase — should still match
+        {"symbol": "UNKNOWN",  "pledge_pct": 0.0},
+        {"symbol": "ZERO",     "pledge_pct": 5.0},   # bulk has 0 — should NOT overwrite (preserves existing)
+    ]
+    _pmap = {"VEDL": 38.42, "ZERO": 0.0}
+    _updated = _np61.merge_pledge_into_rows(_rows, _pmap)
+    if (_rows[0]["pledge_pct"] == 38.42 and
+        _rows[0]["other"] == "preserved" and       # other fields untouched
+        _rows[1]["pledge_pct"] == 38.42 and        # case-insensitive match
+        _rows[2]["pledge_pct"] == 0.0 and          # not in map: untouched
+        _rows[3]["pledge_pct"] == 5.0 and          # bulk zero: don't overwrite
+        _updated == 2):
+        passed += 1
+        print(f"  ✓ 61.4a merge_pledge_into_rows: case-insensitive, no-overwrite-with-zero, preserves other fields")
+    else:
+        failed += 1
+        failures.append(f"61.4a: merge failed — rows={[r.get('pledge_pct') for r in _rows]}, count={_updated}")
+except Exception as _e61:
+    failed += 1
+    failures.append(f"61.4a: crashed — {_e61}")
+
+# ── 61.5 — _nse_shareholding extracts QoQ deltas when prior quarter present ──
+try:
+    import sys as _sys61
+    if 'backfill_history' in _sys61.modules:
+        del _sys61.modules['backfill_history']
+    import backfill_history as _bf61
+    class _ShRsp:
+        status_code = 200
+        def json(self):
+            return {
+                "shareholdingPatterns": {
+                    "data": [
+                        {"promoterAndPromoterGroupTotal": 60.5, "fiisTotal": 12.0, "diisTotal": 8.0, "publicTotal": 19.5},
+                        {"promoterAndPromoterGroupTotal": 60.0, "fiisTotal": 11.5, "diisTotal": 7.5, "publicTotal": 21.0},
+                    ]
+                }
+            }
+    class _ShSession:
+        def get(self, url, timeout=12):
+            return _ShRsp()
+    _r = _bf61._nse_shareholding("TESTSYM", _ShSession())
+    if (_r.get("promoter_pct") == 60.5 and _r.get("fii_pct") == 12.0 and
+        _r.get("dii_pct") == 8.0 and
+        _r.get("promoter_qoq") == 0.5 and _r.get("fii_qoq") == 0.5 and _r.get("dii_qoq") == 0.5):
+        passed += 1
+        print(f"  ✓ 61.5a _nse_shareholding computes Pro/FII/DII QoQ deltas (+0.5 each)")
+    else:
+        failed += 1
+        failures.append(f"61.5a: QoQ extraction wrong — {_r}")
+except Exception as _e61:
+    failed += 1
+    failures.append(f"61.5a: crashed — {_e61}")
+
+# ── 61.6 — _nse_shareholding skips QoQ when prior quarter is missing ──
+try:
+    class _ShRspSingle:
+        status_code = 200
+        def json(self):
+            return {
+                "shareholdingPatterns": {
+                    "data": [
+                        {"promoterAndPromoterGroupTotal": 60.0, "fiisTotal": 11.0, "diisTotal": 7.0, "publicTotal": 22.0},
+                    ]
+                }
+            }
+    class _ShSession2:
+        def get(self, url, timeout=12):
+            return _ShRspSingle()
+    _r2 = _bf61._nse_shareholding("TESTSYM", _ShSession2())
+    # Only current quarter — QoQ keys should NOT be present
+    if (_r2.get("promoter_pct") == 60.0 and
+        "promoter_qoq" not in _r2 and "fii_qoq" not in _r2 and "dii_qoq" not in _r2):
+        passed += 1
+        print(f"  ✓ 61.6a _nse_shareholding correctly omits QoQ when only 1 quarter available")
+    else:
+        failed += 1
+        failures.append(f"61.6a: single-quarter handling wrong — {_r2}")
+except Exception as _e61:
+    failed += 1
+    failures.append(f"61.6a: crashed — {_e61}")
+
+# ── 61.7 — pledge_dir vocabulary aligned across pipeline ──
+# master_funnel must write FALLING/RISING/STABLE (not IMPROVING/DETERIORATING)
+# so it matches the FALLING/RISING check in scoring_engine._has_paid_sentiment.
+try:
+    import os as _os61
+    _proj_root61 = _os61.path.dirname(_os61.path.abspath(__file__))
+    with open(_os61.path.join(_proj_root61, "master_funnel.py")) as _f61:
+        _mf_src61 = _f61.read()
+    has_falling   = "stock['pledge_dir'] = \"FALLING\"" in _mf_src61
+    has_rising    = "stock['pledge_dir'] = \"RISING\"" in _mf_src61
+    no_improving  = "stock['pledge_dir'] = \"IMPROVING\"" not in _mf_src61
+    no_deterior   = "stock['pledge_dir'] = \"DETERIORATING\"" not in _mf_src61
+    if has_falling and has_rising and no_improving and no_deterior:
+        passed += 1
+        print(f"  ✓ 61.7a master_funnel writes FALLING/RISING (matches scoring_engine sentinel check)")
+    else:
+        failed += 1
+        failures.append(f"61.7a: vocab mismatch falling={has_falling} rising={has_rising} "
+                        f"no_imp={no_improving} no_det={no_deterior}")
+except Exception as _e61:
+    failed += 1
+    failures.append(f"61.7a: scan crashed — {_e61}")
+
+# ── 61.8 — backfill calls bulk pledge fetch before upsert ──
+try:
+    with open(_os61.path.join(_proj_root61, "backfill_history.py")) as _f61b:
+        _bf_src61 = _f61b.read()
+    has_import = "from ingestion.nse_pledge import" in _bf_src61
+    has_call = "fetch_bulk_pledge_data(" in _bf_src61
+    has_merge = "merge_pledge_into_rows(" in _bf_src61
+    # Verify ordering: pledge fetch must run BEFORE shareholding upsert
+    idx_pledge = _bf_src61.find("merge_pledge_into_rows(")
+    idx_upsert = _bf_src61.find("upsert(pd.DataFrame(sh_rows), \"shareholding\"")
+    order_ok = (idx_pledge > 0 and idx_upsert > idx_pledge)
+    if has_import and has_call and has_merge and order_ok:
+        passed += 1
+        print(f"  ✓ 61.8a backfill imports + calls bulk pledge BEFORE shareholding upsert")
+    else:
+        failed += 1
+        failures.append(f"61.8a: backfill wiring missing imp={has_import} call={has_call} "
+                        f"merge={has_merge} order={order_ok}")
+except Exception as _e61:
+    failed += 1
+    failures.append(f"61.8a: scan crashed — {_e61}")
+
+# ── 61.9 — Tooltip + glossary updated for v13.0 (no IMPROVING/DETERIORATING in pledge dir) ──
+try:
+    with open(_os61.path.join(_proj_root61, "reporting/tooltip_formatter.py")) as _f61t:
+        _tt_src61 = _f61t.read()
+    with open(_os61.path.join(_proj_root61, "reporting/excel_generator.py")) as _f61e:
+        _eg_src61 = _f61e.read()
+    # Find the Pledge Direction tooltip block specifically (not the OBV one which legitimately uses RISING/FALLING)
+    # In tooltip_formatter, the Pledge Direction key is the anchor.
+    pd_idx = _tt_src61.find('"Pledge Direction":')
+    # Capture the block until the next tooltip key
+    pd_block = _tt_src61[pd_idx:pd_idx+1000] if pd_idx > 0 else ""
+    # The block must talk about FALLING/RISING in its semantic explanation; old IMPROVING:/DETERIORATING: list lines must be gone.
+    ok_tt = ("FALLING:" in pd_block and "RISING:" in pd_block and 
+             "IMPROVING: Pledge dropped" not in pd_block)
+    # In glossary, look for the "INCREASING / DECREASING" old phrasing — must be replaced
+    ok_eg = "INCREASING / DECREASING / STABLE" not in _eg_src61
+    if ok_tt and ok_eg:
+        passed += 1
+        print(f"  ✓ 61.9a Tooltip + glossary use new FALLING/RISING vocabulary")
+    else:
+        failed += 1
+        failures.append(f"61.9a: doc vocab not aligned tt={ok_tt} eg={ok_eg}")
+except Exception as _e61:
+    failed += 1
+    failures.append(f"61.9a: scan crashed — {_e61}")
+
+# ── 61.10 — SHAREHOLDING section color changed from red-orange to violet ──
+# Pre-v13.0 the SHAREHOLDING section header used #EA580C (bright red-orange)
+# which visually conflicted with AVOID-row colors (#FEE2E2 light red) and
+# made the section look perpetually "alarming" even for clean stocks. v13.0
+# changes it to #7C3AED (violet) — neutral, in-palette, non-red-adjacent.
+try:
+    with open(_os61.path.join(_proj_root61, "reporting/excel_generator.py")) as _f61c:
+        _eg_src61c = _f61c.read()
+    # Both color maps must be updated
+    has_violet_grp1 = '"SHAREHOLDING",    "7C3AED"' in _eg_src61c
+    has_violet_grp2 = '"SHAREHOLDING":"7C3AED"' in _eg_src61c
+    no_orange_share = 'SHAREHOLDING",    "EA580C"' not in _eg_src61c and \
+                      '"SHAREHOLDING":"EA580C"' not in _eg_src61c
+    if has_violet_grp1 and has_violet_grp2 and no_orange_share:
+        passed += 1
+        print(f"  ✓ 61.10a SHAREHOLDING section color: EA580C (red-orange) → 7C3AED (violet)")
+    else:
+        failed += 1
+        failures.append(f"61.10a: section color not aligned grp1={has_violet_grp1} "
+                        f"grp2={has_violet_grp2} no_orange={no_orange_share}")
+except Exception as _e61:
+    failed += 1
+    failures.append(f"61.10a: color scan crashed — {_e61}")
+
+
 print("\n" + "═" * 70)
 print(f"FINAL: {passed} passed, {failed} failed")
 print("═" * 70)

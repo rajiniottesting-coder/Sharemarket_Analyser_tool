@@ -528,15 +528,19 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "because pledge data is only in BSE corporate filings which\n"
                  "have no free API. Zero pledge is structurally indistinguishable\n"
                  "from 'unknown pledge' on free-tier, so honest display is '—'.\n"
-                 "If a paid BSE feed is added, real 0 and real pledge will\n"
-                 "display as numbers. Score gates still fire on numeric values\n"
-                 "only — '—' treated as 0 for guard purposes (safe default)."),
+                 "v13.0: NSE bulk pledge endpoint (corporates-pledgedata) is now\n"
+                 "fetched daily — pledge_pct is real for any stock with reported\n"
+                 "promoter pledge. Score gates still fire on numeric values only.\n"
+                 "'—' treated as 0 for guard purposes (safe default)."),
     "Pledge Direction": ("FALLING = positive | RISING = risk",
                           "Trend in promoter share pledge over time.\n"
-                          "IMPROVING: Pledge dropped — promoters repaying loans (positive).\n"
-                          "DETERIORATING: Pledge rose — more shares pledged (risk).\n"
+                          "FALLING: Pledge dropped — promoters repaying loans (positive).\n"
+                          "RISING: Pledge rose — more shares pledged (risk).\n"
                           "STABLE: Pledge unchanged at a non-zero level.\n"
-                          "— : No pledge data (yfinance has no free source; needs BSE filings)."),
+                          "— : No pledge data or no prior history to compare against.\n"
+                          "v13.0: vocabulary aligned across pipeline (was IMPROVING/\n"
+                          "DETERIORATING in master_funnel — silently mismatched the\n"
+                          "FALLING/RISING check in scoring_engine sentiment gate)."),
     "FII %": (">15% institutional backed",
               ">25%: High global interest | Rising FII = strong signal."),
     "FII QoQ Δ": (">1% accumulation | <−1% selling",

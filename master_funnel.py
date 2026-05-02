@@ -787,6 +787,15 @@ def run_master_pipeline():
             # When BOTH current and historical pledge are 0, we have no data to
             # compare — must show "—" not "STABLE" (which implies measured = no change).
             # "STABLE" only applies when there's REAL non-zero pledge data that didn't move.
+            #
+            # v13.0: vocabulary aligned with the rest of the codebase. Tooltips,
+            # glossary, ownership_tracker, and scoring_engine.py:180 all use
+            # FALLING/RISING. Pre-v13.0 this block wrote IMPROVING/DETERIORATING
+            # which never matched the FALLING/RISING check in
+            # scoring_engine._has_paid_sentiment, silently breaking the
+            # QoQ-Δ-aware sentiment-informed gate for any stock with real pledge
+            # movement. With v13.0's bulk pledge fetch making pledge_pct
+            # actually populated, this fix matters now.
             curr_p = stock.get('pledge_pct', 0) or 0
             prev_p_raw = h_data.get('pledge_pct') if h_data else None
             try:
@@ -801,9 +810,9 @@ def run_master_pipeline():
                 # No pledge data from any source (yfinance returns 0 permanently)
                 stock['pledge_dir'] = "—"
             elif curr_p < prev_p_num:
-                stock['pledge_dir'] = "IMPROVING"
+                stock['pledge_dir'] = "FALLING"
             elif curr_p > prev_p_num:
-                stock['pledge_dir'] = "DETERIORATING"
+                stock['pledge_dir'] = "RISING"
             else:
                 stock['pledge_dir'] = "STABLE"
 
