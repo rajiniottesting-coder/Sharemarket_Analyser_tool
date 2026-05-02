@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>NSE/BSE Stock Analyser — Pipeline Reference (v12.3)</title>
+<title>NSE/BSE Stock Analyser — Pipeline Reference (v13.0)</title>
 <style>
   :root {
     --bg-primary:#fff;--bg-secondary:#f8f7f3;--bg-tertiary:#f1efe8;
@@ -77,7 +77,7 @@
 <body>
 <div class="wrap">
 <h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
-<div class="meta">v12.3 · Daily pre-market intelligence pipeline · Single source of truth for end-to-end logic</div>
+<div class="meta">v13.0 · Daily pre-market intelligence pipeline · Single source of truth for end-to-end logic</div>
 <div class="toc">
   <h3>Contents</h3>
   <ol>
@@ -229,7 +229,7 @@
 <g class="c-amber"><rect x="350" y="392" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="495" y="412" text-anchor="middle" dominant-baseline="central">MICRO CAP</text><text class="ts" x="495" y="430" text-anchor="middle" dominant-baseline="central">BUY ≥ 70 · WATCHLIST ≥ 60</text></g>
 <line x1="340" y1="452" x2="340" y2="466" class="arr" marker-end="url(#arrA5)"/>
 <g class="c-purple"><rect x="40" y="476" width="600" height="160" rx="8" stroke-width="0.5"/><text class="th" x="340" y="496" text-anchor="middle">DECISION 4 · Verdict assignment (in order)</text><text class="ts" x="340" y="520" text-anchor="middle" dominant-baseline="central">if score ≥ buy_min AND mos &gt; mos_gate → BUY (good business + safe MoS)</text><text class="ts" x="340" y="540" text-anchor="middle" dominant-baseline="central">if score ≥ buy_min AND mos ≤ mos_gate → OVERVALUED (great biz, expensive)</text><text class="ts" x="340" y="560" text-anchor="middle" dominant-baseline="central">elif score ≥ watch_min → WATCHLIST</text><text class="ts" x="340" y="580" text-anchor="middle" dominant-baseline="central">else (score 38 to watch_min) → NEUTRAL</text><text class="ts" x="340" y="604" text-anchor="middle" dominant-baseline="central">Confidence: distance from threshold → ≥5 = HIGH ●●● · 2-5 = MED ●●○ · &lt;2 = LOW ●○○</text><text class="ts" x="340" y="624" text-anchor="middle" dominant-baseline="central">Display string includes dots: "BUY ●●●", "OVERVALUED ●●○", "AVOID ●○○"</text></g>
-<g class="c-teal"><rect x="40" y="660" width="600" height="92" rx="8" stroke-width="0.5"/><text class="th" x="340" y="680" text-anchor="middle">EXCEL OUTPUT (reporting/excel_generator.py)</text><text class="ts" x="340" y="704" text-anchor="middle" dominant-baseline="central">Full Dashboard · 86 columns · all 100 stocks (v12.0: NEUTRAL filter removed) · color-coded verdict cells</text><text class="ts" x="340" y="722" text-anchor="middle" dominant-baseline="central">Gold sheet · top BUY-only filtered (11 conditions) · with confidence dots</text><text class="ts" x="340" y="740" text-anchor="middle" dominant-baseline="central">Tooltip Reference + Glossary · 147 fields documented with v10.16 "—" notes</text></g>
+<g class="c-teal"><rect x="40" y="660" width="600" height="92" rx="8" stroke-width="0.5"/><text class="th" x="340" y="680" text-anchor="middle">EXCEL OUTPUT (reporting/excel_generator.py)</text><text class="ts" x="340" y="704" text-anchor="middle" dominant-baseline="central">Full Dashboard · 123 columns · all 100 stocks (v12.0: NEUTRAL filter removed) · color-coded verdict cells</text><text class="ts" x="340" y="722" text-anchor="middle" dominant-baseline="central">Gold sheet · top BUY-only filtered (11 conditions) · with confidence dots</text><text class="ts" x="340" y="740" text-anchor="middle" dominant-baseline="central">Tooltip Reference + Glossary · 173 fields documented with v10.16 "—" notes</text></g>
 </svg>
 </div>
 
@@ -841,8 +841,8 @@ Stage 3 reads <code>latest_analysis_results</code> table at startup via <code>ge
 </p>
 
 <div class="footer">
-NSE/BSE Stock Analyser · v12.3 · Pipeline reference document<br>
-For ongoing changes see CLAUDE.md (Section 15) and scoring_logic_3Stagefunnel_explained.md
+NSE/BSE Stock Analyser · v13.0 · Pipeline reference document<br>
+For ongoing changes see CLAUDE.md (Sections 25–32 cover v12.4 → v13.0) and scoring_logic_3Stagefunnel_explained.md
 </div>
 
 </div>
