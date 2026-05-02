@@ -196,7 +196,7 @@
 <g class="c-teal"><rect x="40" y="128" width="120" height="76" rx="8" stroke-width="0.5"/><text class="th" x="100" y="150" text-anchor="middle">f_raw</text><text class="ts" x="100" y="168" text-anchor="middle">FUND</text><text class="ts" x="100" y="184" text-anchor="middle">15 bucket groups</text></g>
 <g class="c-teal"><rect x="170" y="128" width="120" height="76" rx="8" stroke-width="0.5"/><text class="th" x="230" y="150" text-anchor="middle">t_raw</text><text class="ts" x="230" y="168" text-anchor="middle">TECH</text><text class="ts" x="230" y="184" text-anchor="middle">RSI/MA/MACD</text></g>
 <g class="c-teal"><rect x="300" y="128" width="120" height="76" rx="8" stroke-width="0.5"/><text class="th" x="360" y="150" text-anchor="middle">e_raw</text><text class="ts" x="360" y="168" text-anchor="middle">EARLY</text><text class="ts" x="360" y="184" text-anchor="middle">spike screener</text></g>
-<g class="c-teal"><rect x="430" y="128" width="120" height="76" rx="8" stroke-width="0.5"/><text class="th" x="490" y="150" text-anchor="middle">sent_raw</text><text class="ts" x="490" y="168" text-anchor="middle">SENT</text><text class="ts" x="490" y="184" text-anchor="middle">9 contributors</text></g>
+<g class="c-teal"><rect x="430" y="128" width="120" height="76" rx="8" stroke-width="0.5"/><text class="th" x="490" y="150" text-anchor="middle">sent_raw</text><text class="ts" x="490" y="168" text-anchor="middle">SENT</text><text class="ts" x="490" y="184" text-anchor="middle">8 contributors</text></g>
 <g class="c-teal"><rect x="560" y="128" width="80" height="76" rx="8" stroke-width="0.5"/><text class="th" x="600" y="150" text-anchor="middle">safe_raw</text><text class="ts" x="600" y="168" text-anchor="middle">SAFE</text><text class="ts" x="600" y="184" text-anchor="middle">11 contribs</text></g>
 <text class="ts" x="340" y="222" text-anchor="middle">See Part 3 below for full sub-score derivation (every bucket, every weight)</text>
 <line x1="340" y1="234" x2="340" y2="246" class="arr" marker-end="url(#arrA4)"/>
@@ -391,7 +391,7 @@
 
 <h2 id="part3">Part 3 — Sub-score derivation deep-dive</h2>
 <p><strong>Where you are:</strong> Part 1 showed the pipeline; Part 2 covered Stage 3. Part 3 zooms into the amber <em>Section 6 composite</em> box of Part 1 — specifically, the <strong>five sub-scores</strong> that get computed before they are blended. <a href="#part4">Part 4</a> then picks up where Part 3 ends and turns the blend into a verdict.</p>
-<p>The Section 6 composite blends five sub-scores computed in <code>master_funnel.py</code> and <code>analysis/</code>: <strong>fundamental_score</strong> (15 bucket groups), <strong>technical_score</strong> (9 indicators), <strong>early_entry_score</strong> (11 conditions), <strong>safety_score</strong> (11 contributors), and <strong>sentiment_score</strong> (9 contributors). Below are the exact thresholds and weights extracted from the code — every +N and −N that flows into each sub-score.</p>
+<p>The Section 6 composite blends five sub-scores computed in <code>master_funnel.py</code> and <code>analysis/</code>: <strong>fundamental_score</strong> (15 bucket groups), <strong>technical_score</strong> (9 indicators), <strong>early_entry_score</strong> (11 conditions), <strong>safety_score</strong> (11 contributors), and <strong>sentiment_score</strong> (8 contributors). Below are the exact thresholds and weights extracted from the code — every +N and −N that flows into each sub-score.</p>
 
 <div class="nav">
   <span class="label">Sub-score:</span>
@@ -399,7 +399,7 @@
   <button onclick="showC(1)" data-grp="c">Technical (9 indicators)</button>
   <button onclick="showC(2)" data-grp="c">Early Entry (11 conditions)</button>
   <button onclick="showC(3)" data-grp="c">Safety (11 contribs)</button>
-  <button onclick="showC(4)" data-grp="c">Sentiment (9 contribs)</button>
+  <button onclick="showC(4)" data-grp="c">Sentiment (8 contribs)</button>
 </div>
 
 <div class="section">
@@ -521,7 +521,7 @@
 
 <g class="c-pink"><rect x="40" y="296" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="316" text-anchor="middle" dominant-baseline="central">4 · FCF (free cash flow)</text><text class="ts" x="340" y="338" text-anchor="middle" dominant-baseline="central">&lt;0 → −8 (cash-burning) · &gt;0 → +3 (cash-generative)</text></g>
 
-<g class="c-pink"><rect x="40" y="364" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="340" y="384" text-anchor="middle" dominant-baseline="central">5 · BS status (from bs_engine output)</text><text class="ts" x="340" y="406" text-anchor="middle" dominant-baseline="central">"ALERT" → −15 · "WATCH" → −5</text><text class="ts" x="340" y="426" text-anchor="middle" dominant-baseline="central">"HEALTHY" AND fcf &gt; 0 → +3 (double confirmation)</text></g>
+<g class="c-pink"><rect x="40" y="364" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="340" y="384" text-anchor="middle" dominant-baseline="central">5 · BS status (from bs_engine — escalates to ALERT on pledge&gt;20%)</text><text class="ts" x="340" y="406" text-anchor="middle" dominant-baseline="central">"ALERT" → −15 (e.g. pledge&gt;20%, D/E&gt;3, leveraged+neg FCF) · "WATCH" → −5</text><text class="ts" x="340" y="426" text-anchor="middle" dominant-baseline="central">"HEALTHY" AND fcf &gt; 0 → +3 (double confirmation) — note: pledge&gt;20% double-counts here +1</text></g>
 
 <g class="c-pink"><rect x="40" y="448" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="468" text-anchor="middle" dominant-baseline="central">6 · Margin expansion flag</text><text class="ts" x="340" y="490" text-anchor="middle" dominant-baseline="central">margin_expansion = "YES" → +3 (bonus on top of FCF)</text></g>
 
@@ -544,7 +544,7 @@
 
 <div id="c4" class="panel">
 <svg viewBox="0 0 680 900">
-<text class="th" x="340" y="28" text-anchor="middle">sentiment_score — 9 contributors (master_funnel.py)</text>
+<text class="th" x="340" y="28" text-anchor="middle">sentiment_score — 8 contributors (master_funnel.py)</text>
 <text class="ts" x="340" y="48" text-anchor="middle">Captures money-flow signals · institutional/retail activity + news tone</text>
 
 <g class="c-purple"><rect x="40" y="76" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="340" y="96" text-anchor="middle" dominant-baseline="central">1 · FII trend (3-quarter direction)</text><text class="ts" x="340" y="118" text-anchor="middle" dominant-baseline="central">"UP" → +10 (FII accumulating) · "DOWN" → −10 (FII exiting)</text><text class="ts" x="340" y="138" text-anchor="middle" dominant-baseline="central">Derived from fii_qoq_change (&gt;1.0 = UP, &lt;-1.0 = DOWN) if trend not set upstream</text></g>
@@ -561,13 +561,13 @@
 
 <g class="c-purple"><rect x="40" y="516" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="340" y="536" text-anchor="middle" dominant-baseline="central">7 · Delivery percentage (today)</text><text class="ts" x="340" y="558" text-anchor="middle" dominant-baseline="central">&gt;70 → +4 (strong conviction) · &gt;60 → +2 (decent)</text><text class="ts" x="340" y="578" text-anchor="middle" dominant-baseline="central">0&lt;x&lt;30 → −3 (mostly speculative intraday)</text></g>
 
-<g class="c-purple"><rect x="40" y="600" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="620" text-anchor="middle" dominant-baseline="central">8 · Price direction tag</text><text class="ts" x="340" y="642" text-anchor="middle" dominant-baseline="central">"FALL" → +3 (contrarian buy opportunity) · "RIS(ING)" → −5 (chasing)</text></g>
+<g class="c-purple"><rect x="40" y="600" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="620" text-anchor="middle" dominant-baseline="central">8 · Pledge Direction (ownership quality trend)</text><text class="ts" x="340" y="642" text-anchor="middle" dominant-baseline="central">"FALLING" → +3 (promoters repaying loans, positive) · "RISING" → −5 (more pledging, risk)</text></g>
 
-<g class="c-purple"><rect x="40" y="668" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="688" text-anchor="middle" dominant-baseline="central">9 · (summed from boolean signals above — contribution is additive)</text><text class="ts" x="340" y="710" text-anchor="middle" dominant-baseline="central">Each boolean signal above contributes independently — no mutual exclusivity</text></g>
+<g class="c-gray"><rect x="40" y="668" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="688" text-anchor="middle" dominant-baseline="central">Additivity rule — all 8 contributors fire independently</text><text class="ts" x="340" y="710" text-anchor="middle" dominant-baseline="central">No mutual exclusivity. Multiple positive signals stack; multiple negatives also stack.</text></g>
 
 <g class="c-gray"><rect x="40" y="752" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="772" text-anchor="middle" dominant-baseline="central">Only computed IF not already set by upstream sentiment pipeline</text><text class="ts" x="340" y="794" text-anchor="middle" dominant-baseline="central">Final sent_raw clamped [0,100] before composite blend at 10% weight (canonical)</text></g>
 
-<g class="c-amber"><rect x="40" y="832" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="852" text-anchor="middle" dominant-baseline="central">Max theoretical bonus: ~+50 · Max penalty: ~-26</text><text class="ts" x="340" y="874" text-anchor="middle" dominant-baseline="central">If sentiment data missing, weights redistribute to F/T/E/Safety (f×0.389 etc.)</text></g>
+<g class="c-amber"><rect x="40" y="832" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="852" text-anchor="middle" dominant-baseline="central">Max theoretical bonus: +50 · Max penalty: −31</text><text class="ts" x="340" y="874" text-anchor="middle" dominant-baseline="central">If sentiment data missing, weights redistribute to F/T/E/Safety (f×0.389 etc.)</text></g>
 </svg>
 </div>
 
@@ -698,7 +698,7 @@
 
 
 <div id="d4" class="panel">
-<svg viewBox="0 0 680 1086">
+<svg viewBox="0 0 680 1480">
 <defs><marker id="arrD4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">Step 4 · Verdict derivation — final_score → verdict</text>
 <text class="ts" x="340" y="48" text-anchor="middle">Source: <tspan font-family="ui-monospace,Menlo,monospace" font-size="11">_get_verdict_with_confidence()</tspan> · runs after composite is finalised</text>
@@ -733,17 +733,27 @@
 <g class="c-purple"><rect x="40" y="958" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="978" text-anchor="middle">elif score ≥ buy_min AND informed &lt; 3 → WATCHLIST (thin data)</text><text class="ts" x="340" y="998" text-anchor="middle">v10.17 · score qualified but data too sparse to commit to BUY</text></g>
 <g class="c-purple"><rect x="40" y="1026" width="290" height="44" rx="8" stroke-width="0.5"/><text class="th" x="185" y="1048" text-anchor="middle">elif score ≥ watch_min</text><text class="ts" x="185" y="1064" text-anchor="middle">→ WATCHLIST</text></g>
 <g class="c-gray"><rect x="350" y="1026" width="290" height="44" rx="8" stroke-width="0.5"/><text class="th" x="495" y="1048" text-anchor="middle">else (38 ≤ score &lt; watch_min)</text><text class="ts" x="495" y="1064" text-anchor="middle">→ NEUTRAL</text></g>
+
+<g class="c-gray"><rect x="40" y="1098" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1120" text-anchor="middle">Side-output 1 · Risk Level classification (display-only)</text></g>
+
+<g class="c-pink"><rect x="40" y="1156" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1176" text-anchor="middle" dominant-baseline="central">stock["risk_level"] · master_funnel.py:2655 · independent of verdict</text><text class="ts" x="340" y="1198" text-anchor="middle" dominant-baseline="central">HIGH if bs_status=ALERT OR <tspan font-family="ui-monospace,Menlo,monospace" font-size="11">pledge&gt;20%</tspan> OR (D/E&gt;2.5 AND small/micro cap)</text><text class="ts" x="340" y="1216" text-anchor="middle" dominant-baseline="central">LOW if LARGE cap AND D/E&lt;0.5 AND beta&lt;0.9 (or D/E&lt;1.0 AND beta&lt;1.2)</text><text class="ts" x="340" y="1234" text-anchor="middle" dominant-baseline="central">HIGH if small/micro cap OR D/E&gt;1.5 OR beta&gt;1.5 · else MEDIUM</text></g>
+
+<line x1="340" y1="1262" x2="340" y2="1276" class="arr" marker-end="url(#arrD4)"/>
+
+<g class="c-gray"><rect x="40" y="1284" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1306" text-anchor="middle">Side-output 2 · Gold-tier filter (binary include/exclude)</text></g>
+
+<g class="c-amber"><rect x="40" y="1342" width="600" height="124" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1362" text-anchor="middle" dominant-baseline="central">Gold sheet membership — ALL 11 conditions must pass (excel_generator.py:2004)</text><text class="ts" x="340" y="1384" text-anchor="middle" dominant-baseline="central">1) verdict==BUY · 2) score≥70 · 3) MoS 15-100 · 4) Storm≥5 · 5) RSI≤70</text><text class="ts" x="340" y="1402" text-anchor="middle" dominant-baseline="central">6) bs_status≠ALERT · 7) <tspan font-family="ui-monospace,Menlo,monospace" font-size="11">pledge_pct≤10</tspan> · 8) spike_suppressed=False</text><text class="ts" x="340" y="1420" text-anchor="middle" dominant-baseline="central">9) Altman Z≥1.8 OR "—" · 10) Earn Quality≠LOW · 11) Int Coverage≥1.5 OR "—"</text><text class="ts" x="340" y="1442" text-anchor="middle" dominant-baseline="central">High pledge → never reaches Gold even if score=95+verdict=BUY (binary exclusion)</text></g>
 </svg>
 </div>
 
 
 <div id="d5" class="panel">
-<svg viewBox="0 0 680 1180">
+<svg viewBox="0 0 680 2040">
 <defs><marker id="arrD5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">Worked example · how every step compounds</text>
-<text class="ts" x="340" y="48" text-anchor="middle">Hypothetical mid-cap stock illustrating the full assembly flow end-to-end</text>
+<text class="ts" x="340" y="48" text-anchor="middle">Two parallel runs of the same MID-cap stock — clean vs high-pledge — illustrate v13.0's impact</text>
 
-<g class="c-gray"><rect x="40" y="76" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="96" text-anchor="middle" dominant-baseline="central">Stock inputs (after Part-3 sub-scoring)</text><text class="ts" x="340" y="118" text-anchor="middle" dominant-baseline="central">Cap = MID · fund=68 · tech=72 · early=58 · safe=62 · sent=55 (sentiment informed)</text><text class="ts" x="340" y="136" text-anchor="middle" dominant-baseline="central">MoS = +18% · spike_count = 3 · risk_flag_active = False</text><text class="ts" x="340" y="154" text-anchor="middle" dominant-baseline="central">Altman Z = 3.4 · EQ = HIGH · ND/EBITDA = 0.7 · IntCov = 8× · ST=BUY · STAGE 2</text></g>
+<g class="c-gray"><rect x="40" y="76" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="96" text-anchor="middle" dominant-baseline="central">VARIANT A · Clean stock (pledge = 0%) · inputs after Part-3 sub-scoring</text><text class="ts" x="340" y="118" text-anchor="middle" dominant-baseline="central">Cap = MID · fund=68 · tech=72 · early=58 · safe=62 · sent=55 (sentiment informed)</text><text class="ts" x="340" y="136" text-anchor="middle" dominant-baseline="central">MoS = +18% · spike_count = 3 · risk_flag_active = False · pledge_pct = 0%</text><text class="ts" x="340" y="154" text-anchor="middle" dominant-baseline="central">Altman Z = 3.4 · EQ = HIGH · ND/EBITDA = 0.7 · IntCov = 8× · ST=BUY · STAGE 2</text></g>
 
 <g class="c-blue"><rect x="40" y="196" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="216" text-anchor="middle" dominant-baseline="central">Sub-score blend (canonical weights — sentiment informed)</text><text class="ts" x="340" y="238" text-anchor="middle" dominant-baseline="central">base = 68×0.35 + 72×0.30 + 58×0.15 + 55×0.10 + 62×0.10</text><text class="ts" x="340" y="256" text-anchor="middle" dominant-baseline="central">    = 23.80 + 21.60 + 8.70 + 5.50 + 6.20 = 65.80</text></g>
 <line x1="340" y1="276" x2="340" y2="290" class="arr" marker-end="url(#arrD5)"/>
@@ -776,6 +786,31 @@
 <line x1="340" y1="1058" x2="340" y2="1072" class="arr" marker-end="url(#arrD5)"/>
 
 <g class="c-blue"><rect x="40" y="1080" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1100" text-anchor="middle">Gate 5 · Verdict · 88.80 ≥ 63 AND not blocked → BUY</text><text class="ts" x="340" y="1122" text-anchor="middle">distance from buy_min = 88.80 − 63 = 25.80 → ≥ 5 → confidence = HIGH</text><text class="ts" x="340" y="1140" text-anchor="middle">Display string: "BUY ●●●"</text></g>
+
+<g class="c-pink"><rect x="40" y="1196" width="600" height="120" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1216" text-anchor="middle" dominant-baseline="central">VARIANT B · Same stock, but pledge = 25% (v13.0 NSE bulk fetch surfaces this)</text><text class="ts" x="340" y="1238" text-anchor="middle" dominant-baseline="central">Same fund=68 · tech=72 · early=58, but Safety drops 62→27, Sent drops 55→50</text><text class="ts" x="340" y="1256" text-anchor="middle" dominant-baseline="central">Why Safety 62→27: pledge&gt;20 → −15 (gradient) · BS_status=ALERT → −15 · misses +5 "clean" bonus</text><text class="ts" x="340" y="1274" text-anchor="middle" dominant-baseline="central">Why Sent 55→50: Pledge Direction = RISING → −5 in sentiment_score</text><text class="ts" x="340" y="1294" text-anchor="middle" dominant-baseline="central">risk_flag_active = True (pledge&gt;20% trips 3H guard) · spike_count → still 3 at scoring time</text></g>
+<line x1="340" y1="1316" x2="340" y2="1330" class="arr" marker-end="url(#arrD5)"/>
+
+<g class="c-blue"><rect x="40" y="1338" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1358" text-anchor="middle" dominant-baseline="central">Sub-score blend (canonical — sentiment still informed, pledge_dir=RISING fires gate)</text><text class="ts" x="340" y="1380" text-anchor="middle" dominant-baseline="central">base = 68×0.35 + 72×0.30 + 58×0.15 + 50×0.10 + 27×0.10</text><text class="ts" x="340" y="1398" text-anchor="middle" dominant-baseline="central">    = 23.80 + 21.60 + 8.70 + 5.00 + 2.70 = 61.80 (vs 65.80 clean · −4.00)</text></g>
+<line x1="340" y1="1418" x2="340" y2="1432" class="arr" marker-end="url(#arrD5)"/>
+
+<g class="c-teal"><rect x="40" y="1440" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1460" text-anchor="middle" dominant-baseline="central">Step 1 · MoS adjustment (same as Variant A)</text><text class="ts" x="340" y="1480" text-anchor="middle" dominant-baseline="central">MoS = +18% → +4 · running total = 65.80</text></g>
+<line x1="340" y1="1500" x2="340" y2="1514" class="arr" marker-end="url(#arrD5)"/>
+
+<g class="c-teal"><rect x="40" y="1522" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1542" text-anchor="middle" dominant-baseline="central">Step 2a/b · Spike + Early bonuses (same as Variant A)</text><text class="ts" x="340" y="1562" text-anchor="middle" dominant-baseline="central">spike_count=3 read at scoring time (zeroing happens later for Excel display only)</text><text class="ts" x="340" y="1580" text-anchor="middle" dominant-baseline="central">+6 (spike) + 5 (early) = +11 · running total = 76.80</text></g>
+<line x1="340" y1="1598" x2="340" y2="1612" class="arr" marker-end="url(#arrD5)"/>
+
+<g class="c-pink"><rect x="40" y="1620" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1640" text-anchor="middle" dominant-baseline="central">Step 2c · Anti-trigger penalty FIRES (the kill-switch)</text><text class="ts" x="340" y="1660" text-anchor="middle" dominant-baseline="central">risk_flag_active = True (pledge&gt;20%) → −10 direct to composite</text><text class="ts" x="340" y="1678" text-anchor="middle" dominant-baseline="central">running total = 66.80 (this is the &quot;flat −10&quot; documented in Steps 1-2 box)</text></g>
+<line x1="340" y1="1696" x2="340" y2="1710" class="arr" marker-end="url(#arrD5)"/>
+
+<g class="c-teal"><rect x="40" y="1718" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1738" text-anchor="middle" dominant-baseline="central">Step 3 · Forensic adjustment (Altman/Beneish still clean)</text><text class="ts" x="340" y="1758" text-anchor="middle" dominant-baseline="central">+8 (capped) · running total = 74.80</text></g>
+<line x1="340" y1="1778" x2="340" y2="1792" class="arr" marker-end="url(#arrD5)"/>
+
+<g class="c-amber"><rect x="40" y="1800" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1822" text-anchor="middle">final_score = clamp(74.80, 0, 100) = 74.80 · vs Variant A 88.80 · Δ −14.00</text></g>
+<line x1="340" y1="1844" x2="340" y2="1858" class="arr" marker-end="url(#arrD5)"/>
+
+<g class="c-blue"><rect x="40" y="1866" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1886" text-anchor="middle">Verdict · 74.80 ≥ 63 AND mos passes AND informed=5 → still BUY</text><text class="ts" x="340" y="1908" text-anchor="middle">distance from buy_min = 74.80 − 63 = 11.80 → ≥ 5 → confidence = HIGH</text><text class="ts" x="340" y="1926" text-anchor="middle">"BUY ●●●" — but Excel shows Spike=0, risk_level=HIGH, EXCLUDED from Gold sheet</text></g>
+
+<g class="c-amber"><rect x="40" y="1962" width="600" height="76" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1982" text-anchor="middle" dominant-baseline="central">Δ −14 breakdown · how the 5 pledge-driven mechanisms compound</text><text class="ts" x="340" y="2002" text-anchor="middle" dominant-baseline="central">Safety drop (62→27 internal × 0.10 weight) = −3.50 · Sentiment drop (55→50 × 0.10) = −0.50</text><text class="ts" x="340" y="2020" text-anchor="middle" dominant-baseline="central">Anti-trigger flat −10.00 · Plus binary: Spike count display=0 · Excluded from Gold (pledge&gt;10)</text></g>
 </svg>
 </div>
 
@@ -795,7 +830,7 @@
 <strong>Technical sub-score:</strong> <code>master_funnel.py</code> Section 6 loop (fallback computation) — 9 indicator groups (weight 0.30)<br>
 <strong>Early entry sub-score:</strong> <code>master_funnel.py</code> Section 6 loop — 11 conditions (weight 0.15)<br>
 <strong>Safety sub-score:</strong> <code>master_funnel.py</code> Section 6 loop (fallback computation) — 11 contributors (weight 0.10)<br>
-<strong>Sentiment sub-score:</strong> <code>master_funnel.py</code> Section 6 loop (fallback computation) — 9 contributors (weight 0.10)<br>
+<strong>Sentiment sub-score:</strong> <code>master_funnel.py</code> Section 6 loop (fallback computation) — 8 contributors (weight 0.10)<br>
 <strong>Verdict derivation:</strong> <code>analysis/scoring_engine.py::_get_verdict_with_confidence</code> (L286–361)<br>
 <strong>Storm score:</strong> <code>analysis/scoring_engine.py::calculate_storm_score</code> (L232–272)<br>
 <strong>Quick-pick label:</strong> <code>analysis/scoring_engine.py::_assign_quick_pick</code> (L368–381)<br>
