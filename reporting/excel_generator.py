@@ -38,18 +38,20 @@ VERDICT_STYLES = {
 _DS = {"bg":"F8FAFC","text":"1E293B"}
 
 FULL_GROUPS = [
-    (1,  "IDENTITY",        "1E293B",7),(8, "SCORES",         "7C3AED",4),
-    (12, "PRICE & MARKET",  "0369A1",7),(19,"WEEKLY CHANGE %", "0F766E",4),
+    # v13.x: SCORES band widened 4→5 to accommodate new "Quick Pick" column
+    # inserted right after Verdict. All subsequent starts shift by +1.
+    (1,  "IDENTITY",        "1E293B",7),(8, "SCORES",         "7C3AED",5),
+    (13, "PRICE & MARKET",  "0369A1",7),(20,"WEEKLY CHANGE %", "0F766E",4),
     # v10.8: FAIR VALUE span reduced 13→12 after removing duplicate 'Upside to FV %' column.
     # All subsequent group starts shift left by 1 (36→35, 43→42, 53→52, ...).
-    (23, "FAIR VALUE",      "B45309",12),(35,"VALUATION",      "0891B2",7),
-    (42, "PROFITABILITY",   "059669",10),(52,"GROWTH",         "047857",10),
-    (62, "FIN HEALTH",      "DC2626",10),(72,"CAP ALLOC",      "6D28D9",3),
-    (75, "SHAREHOLDING",    "7C3AED",9),(84,"QUALITY SCORES",  "0D9488",4),
-    (88, "PIPELINE / OB",   "1D4ED8",5),(93,"EARLY DETECTION", "B45309",3),
-    (96, "TECHNICAL",       "6D28D9",14),(110,"BALANCE SHEET", "D97706",2),
-    (112,"TRADE PLAN",      "059669",7),(119,"NEWS & RISK",    "475569",4),
-    (123,"ANALYSIS SUMMARY","0F172A",1),
+    (24, "FAIR VALUE",      "B45309",12),(36,"VALUATION",      "0891B2",7),
+    (43, "PROFITABILITY",   "059669",10),(53,"GROWTH",         "047857",10),
+    (63, "FIN HEALTH",      "DC2626",10),(73,"CAP ALLOC",      "6D28D9",3),
+    (76, "SHAREHOLDING",    "7C3AED",9),(85,"QUALITY SCORES",  "0D9488",4),
+    (89, "PIPELINE / OB",   "1D4ED8",5),(94,"EARLY DETECTION", "B45309",3),
+    (97, "TECHNICAL",       "6D28D9",14),(111,"BALANCE SHEET", "D97706",2),
+    (113,"TRADE PLAN",      "059669",7),(120,"NEWS & RISK",    "475569",4),
+    (124,"ANALYSIS SUMMARY","0F172A",1),
 ]
 
 FULL_COLS = [
@@ -58,7 +60,17 @@ FULL_COLS = [
     # Session 24: Verdict col now uses verdict_display (e.g., "BUY ●●●") to
     # show confidence dots inline. Plain 'verdict' key is still used by Gold
     # filter, priority_ranker, and styling lookup.
-    ("Verdict",26,"verdict_display"),("Score /100",10,"composite_score"),("Early Entry /100",14,"early_entry_score"),
+    ("Verdict",26,"verdict_display"),
+    # v13.x: Quick Pick — surfaces the archetype assigned by
+    # ScoringEngine._assign_quick_pick(). Distinct from Verdict (which is
+    # cap-tier+MoS-gated). Possible values:
+    #   DEEP VALUE EARLY MOVER · DEEP VALUE · EARLY MOVER · AVOID / EXIT · WATCHLIST
+    # The 'label' field is already populated on every stock dict in
+    # scoring_engine.calculate_composite_score() (line 324). Color styling
+    # falls back to the existing VERDICT_STYLES map keys when the label
+    # matches one of those entries.
+    ("Quick Pick",26,"label"),
+    ("Score /100",10,"composite_score"),("Early Entry /100",14,"early_entry_score"),
     ("Spike Score /6",11,"spike_count"),("Storm Score /10",12,"storm_score"),
     ("CMP (₹)",11,"close"),("Day Chg %",10,"day_change"),("52W High (₹)",12,"high_52w"),
     ("52W Low (₹)",12,"low_52w"),("Vol Spike (×50D)",14,"vol_ratio"),("Delivery %",11,"delivery_pct"),
@@ -128,16 +140,20 @@ GOLD_GROUPS = [
     # under KEY METRICS, "Supertrend" under EARLY DETECTION, etc. Fixed by
     # reducing KEY METRICS span 7→6 and shifting all subsequent starts by -1.
     # Sum of spans now = 6+4+1+4+3+6+3+3+7+2+1 = 40 = len(GOLD_COLS). ✓
-    (1,"IDENTITY","1E293B",6),(7,"SCORES","7C3AED",4),(11,"PRICE","0369A1",1),
-    (12,"WEEKLY CHANGE %","0F766E",4),(16,"FAIR VALUE","B45309",3),
-    (19,"KEY METRICS","0891B2",6),(25,"EARLY DETECTION","B45309",3),
-    (28,"TECHNICAL","6D28D9",3),(31,"TRADE PLAN","059669",7),
-    (38,"NEWS","475569",2),(40,"ANALYSIS SUMMARY","0F172A",1),
+    # v13.x: SCORES band widened 4→5 for new "Quick Pick" column inserted
+    # right after Verdict. All subsequent starts shift +1. New sum = 41.
+    (1,"IDENTITY","1E293B",6),(7,"SCORES","7C3AED",5),(12,"PRICE","0369A1",1),
+    (13,"WEEKLY CHANGE %","0F766E",4),(17,"FAIR VALUE","B45309",3),
+    (20,"KEY METRICS","0891B2",6),(26,"EARLY DETECTION","B45309",3),
+    (29,"TECHNICAL","6D28D9",3),(32,"TRADE PLAN","059669",7),
+    (39,"NEWS","475569",2),(41,"ANALYSIS SUMMARY","0F172A",1),
 ]
 
 GOLD_COLS = [
     ("Symbol",12,"symbol"),("Company Name",28,"company_name"),("Sector",22,"sector"),
     ("Exchange",13,"exchange_tag"),("Cap Category",13,"cap_category"),("Verdict",26,"verdict_display"),
+    # v13.x: Quick Pick — same as in FULL_COLS. See note there for full context.
+    ("Quick Pick",26,"label"),
     ("Score /100",10,"composite_score"),("Early Entry /100",14,"early_entry_score"),
     ("Spike /6",9,"spike_count"),("Storm /10",9,"storm_score"),
     ("CMP (₹)",11,"close"),("Chg% [2-Wk]",13,"2w_chg"),("Chg% [4-Wk]",13,"4w_chg"),
@@ -193,6 +209,18 @@ GLOSSARY_DATA = [
      "Session 22: when BSE bhavcopy download fails (Cloudflare blocks cloud IPs), "
      "a curated allowlist of Nifty 100 + popular mid-caps is used to tag DUAL_LISTED. "
      "Lesser-known small-caps may show NSE_ONLY even if also listed on BSE.","All sheets"),
+    ("SCORES","Quick Pick",
+     "Archetype label assigned by ScoringEngine._assign_quick_pick(). DISTINCT from the Verdict column: "
+     "Verdict is cap-tier-aware and MoS-gated (asks 'should you act?'); Quick Pick is a simpler tag for "
+     "the stock's character (asks 'what kind of signal is this?'). The two CAN disagree — that's by design, not a bug. "
+     "Possible values (priority order, first match wins): "
+     "DEEP VALUE EARLY MOVER = MoS > 25% AND score > 70 AND early_entry ≥ 60 (cheap + breaking out, top conviction) | "
+     "DEEP VALUE = MoS > 25% AND score > 70 (cheap vs fair value, no breakout yet) | "
+     "EARLY MOVER = early_entry ≥ 70 AND score > 55 (technical breakout signal, may not be deeply discounted) | "
+     "AVOID / EXIT = score < 38 OR (score < 45 AND MoS < −30%) (weak fundamentals + bad value) | "
+     "WATCHLIST = fallback for everything else (no special archetype, monitor). "
+     "Use this column with AutoFilter to instantly isolate top-conviction picks (e.g., filter to 'DEEP VALUE EARLY MOVER').",
+     "All sheets"),
     ("SCORES","Score /100","Composite: Fundamental 35% + Technical 30% + Early 15% + Sentiment 10% + Safety 10%. Session 24: if no paid/AI sentiment signals fired (no FII/Promoter/DII QoQ, no insider buy, no news sentiment, no pledge direction), the 10% sentiment weight redistributes proportionally to the other 4 sub-scores (Fundamental→0.389, Technical→0.333, Early→0.167, Safety→0.111) — no 'free 5 points' for missing data. Spike bonus (+2 per trigger, max +10) is gated on fundamental quality: only awards full +10 when fundamental_score ≥ 55; capped at +3 for weaker stocks to prevent momentum masking weak fundamentals. v10.17: a high composite score alone does not guarantee BUY — the verdict also requires at least 3 of 5 sub-score dimensions to be 'informed' (real data fired, not just sat at base). Otherwise BUY is demoted to WATCHLIST with a 'thin data' annotation. See the Verdict tooltip for details.","All sheets"),
     ("SCORES","Early Entry /100","12-signal system measuring how early vs consensus. ≥50 = EARLY MOVER badge | ≥35 = AHEAD OF CONSENSUS. Session 23: low EE on a Gold-sheet stock is not a bug — Gold admits two archetypes: MOMENTUM (high EE from firing trend/volume signals) and VALUE (low EE but high Score + MoS + clean safety; quietly accumulating without momentum triggers yet)","All sheets"),
     ("SCORES","Spike Score /6","Count of active triggers from 6 IF-THEN spike conditions (Section 3H). Session 23: low Spike on a Gold stock is OK — VALUE-archetype candidates may be accumulating quietly without hot momentum triggers","All sheets"),
@@ -1036,6 +1064,7 @@ def _alt(bg):
 # ── Column header tooltips (module-scope so all sheets can use them) ──
 _HDR_TIPS = {
     "Verdict":("✅ BUY=strong | WATCHLIST=wait | AVOID=skip","BUY: Score clears cap-tier threshold + MoS > -10%\nWATCHLIST: Score qualifies but MoS gate blocks\nAVOID: Score < 38 (universal floor)\n\nBUY thresholds: LARGE>=60 | MID>=63 | SMALL>=66 | MICRO>=70\nTech Override: MoS gate relaxes to -20% when Score>=70+ST=BUY+Stage2"),
+    "Quick Pick":("⭐ Archetype label — distinct from Verdict","DEEP VALUE EARLY MOVER: MoS>25% + Score>70 + EE>=60 (top conviction)\nDEEP VALUE: MoS>25% + Score>70 (cheap vs FV)\nEARLY MOVER: EE>=70 + Score>55 (breakout signal)\nAVOID/EXIT: Score<38 OR (Score<45 AND MoS<-30%)\nWATCHLIST: fallback (no special archetype)\n\nFirst-match-wins priority order. AutoFilter to isolate top picks.\nSource: scoring_engine._assign_quick_pick (L494-507)"),
     "Score /100":(">=70 strong | >=60 watch | <38 avoid","Fundamental*35%+Technical*30%+EarlyEntry*15%+Sentiment*10%+Safety*10%\n+MoS adj(-10 to +12)+Spike bonus(x2 capped +10)\n+Early Mover+5(if EE>=50)-Risk penalty-10\n\n>=80:Exceptional | >=70:Strong BUY | >=60:Watch | <38:Avoid"),
     "Early Entry /100":(">=50=Early Mover | >=35=Ahead of Consensus","Detects stocks 4-12 wks BEFORE institutional coverage.\nVol Surge+RSI +15 | Trend Confluence +12 | Momentum +10\n52W Breakout +10 | Deep Value+BUY +10 | Inst Footprint +10\nScore Convergence +8 | FII Accum +8 | Promoter Accum +8\n\n>=50:EARLY MOVER | >=35:AHEAD OF CONSENSUS | <35:EMERGING\nMax ~55 with free data(FII/Promoter QoQ needs paid source)"),
     "Spike Score /6":(">=2 notable | >=4 strong | 6 very rare","6 momentum triggers-how many fire simultaneously:\nT1:CMP within 3% of 52W High+vol>2x | T2:MACD+ST=BUY+vol>1.5x\nT3:ADX>25+delivery>60%+vol>1.5x | T4:RSI 45-65+vol>2x\nT5:vol>3x+delivery>60% | T6:2w_chg>3%+2w>4w+vol>1.5x\n\n0:None | 1:Weak | 2-3:Notable | 4-5:Strong | 6:Extreme\nSuppressed to 0 if pledge>20% or Beneish/Altman flags active"),
@@ -1586,13 +1615,28 @@ class ExcelGeneratorV6:
             st=VERDICT_STYLES.get(verd,_DS)
             bg,tx=st["bg"],st["text"]
             ubg=bg if ri%2==0 else _alt(bg)
+            # v13.x: Quick Pick gets its OWN color (not the row's verdict color)
+            # so the archetype label (DEEP VALUE / EARLY MOVER / AVOID / EXIT / etc.)
+            # visually pops at a glance. Falls back to row's color if label
+            # is unknown or missing — defensive against future label additions.
+            qp_label=str(stk.get("label","WATCHLIST"))
+            qp_st=VERDICT_STYLES.get(qp_label,st)            # default: row color
+            qp_bg,qp_tx=qp_st["bg"],qp_st["text"]
+            qp_ubg=qp_bg if ri%2==0 else _alt(qp_bg)
             for ci,(_,_,key) in enumerate(FULL_COLS,1):
                 val=_g(stk,key)
                 # FV models: 0 means "not applicable" → show "—" not 0
                 if key in FV_MODEL_KEYS and (val == 0 or val == 0.0):
                     val = "—"
-                cell=ws.cell(rn,ci,val); cell.fill=_f(ubg); cell.font=_ft(False,tx,9)
-                wrap_cols={2,3,7,28,94,96,112,120,122,124}
+                cell=ws.cell(rn,ci,val)
+                # v13.x: Quick Pick column uses its own archetype color
+                if key == "label":
+                    cell.fill=_f(qp_ubg); cell.font=_ft(True,qp_tx,9)
+                else:
+                    cell.fill=_f(ubg); cell.font=_ft(False,tx,9)
+                # v13.x: col 8 added (Quick Pick, left-aligned like Verdict).
+                # Cols 28+ shifted by +1 due to new column insertion.
+                wrap_cols={2,3,7,8,29,95,97,113,121,123,125}
                 cell.alignment=_al("left" if ci in wrap_cols else "center","center",wrap=(ci==N))
                 cell.border=Border(
                     left=Side(style="thin",color="E2E8F0"),
@@ -1601,9 +1645,11 @@ class ExcelGeneratorV6:
                     bottom=Side(style="thin",color="E2E8F0")
                 )
         # Cond format weekly changes
+        # v13.x: shifted from [19,20,21,22] → [20,21,22,23] after Quick Pick
+        # column was inserted at position 8.
         lr=4+len(stks)
         if lr>4:
-            for col_num in [19,20,21,22]:
+            for col_num in [20,21,22,23]:
                 cl=get_column_letter(col_num)
                 ws.conditional_formatting.add(f"{cl}5:{cl}{lr}",
                     ColorScaleRule(start_type="min",start_color="FEE2E2",
@@ -1699,9 +1745,18 @@ class ExcelGeneratorV6:
             rn=ri+6; ws.row_dimensions[rn].height=20
             bg="92400E" if ri%2==0 else "FAC775"
             tx=WHITE   if ri%2==0 else "412402"
+            # v13.x: Quick Pick gets its own archetype color (same logic as Full sheet)
+            qp_label=str(stk.get("label","WATCHLIST"))
+            qp_st=VERDICT_STYLES.get(qp_label,{"bg":bg,"text":tx})
+            qp_bg,qp_tx=qp_st["bg"],qp_st["text"]
+            qp_ubg=qp_bg if ri%2==0 else _alt(qp_bg)
             for ci,(_,_,key) in enumerate(GOLD_COLS,1):
                 val=_g(stk,key); cell=ws.cell(rn,ci,val)
-                cell.fill=_f(bg); cell.font=_ft(False,tx,9)
+                # v13.x: Quick Pick column uses archetype color, not row color
+                if key == "label":
+                    cell.fill=_f(qp_ubg); cell.font=_ft(True,qp_tx,9)
+                else:
+                    cell.fill=_f(bg); cell.font=_ft(False,tx,9)
                 cell.alignment=_al("left" if ci in {2,3,N} else "center","center",wrap=(ci==N))
                 cell.border=Border(
                     left=Side(style="thin",color="E2E8F0"),
