@@ -82,6 +82,51 @@ TIPS: Dict[str, Tuple[str, str]] = {
                 "purely from ISIN match (not symbol-match) for stocks with\n"
                 "no ISIN, so non-equity tickers (indices, ETFs) no longer\n"
                 "get falsely tagged DUAL_LISTED."),
+    # v13.x: Quick Pick — archetype label assigned by
+    # ScoringEngine._assign_quick_pick(). Distinct from Verdict (which is
+    # cap-tier+MoS-gated). Possible values:
+    #   DEEP VALUE EARLY MOVER · DEEP VALUE · EARLY MOVER · AVOID / EXIT · WATCHLIST
+    # The 'label' field is already populated on every stock dict in
+    # scoring_engine.calculate_composite_score() (line 324). Color styling
+    # falls back to the existing VERDICT_STYLES map keys when the label
+    # matches one of those entries.
+    "Quick Pick": ("⭐ Archetype label — distinct from Verdict",
+                   "Tags each stock by INVESTING ARCHETYPE. Distinct from Verdict:\n"
+                   "  · Verdict asks 'should you act?' (cap-tier + MoS-gated)\n"
+                   "  · Quick Pick asks 'what kind of signal is this?'\n"
+                   "Verdict and Quick Pick CAN disagree — that's by design.\n"
+                   "\n"
+                   "How values are assigned (priority order, FIRST MATCH WINS):\n"
+                   "\n"
+                   "1. DEEP VALUE EARLY MOVER (gold)\n"
+                   "    if MoS > 25% AND Score > 70 AND EarlyEntry ≥ 60\n"
+                   "    → Top conviction: cheap + breakout signal firing.\n"
+                   "\n"
+                   "2. DEEP VALUE (green)\n"
+                   "    elif MoS > 25% AND Score > 70\n"
+                   "    → Cheap vs fair value, no breakout yet — patient buy.\n"
+                   "\n"
+                   "3. EARLY MOVER (gold)\n"
+                   "    elif EarlyEntry ≥ 70 AND Score > 55\n"
+                   "    → Technical breakout firing, may not be deeply discounted.\n"
+                   "\n"
+                   "4. AVOID / EXIT (red)\n"
+                   "    elif Score < 38 OR (Score < 45 AND MoS < −30%)\n"
+                   "    → Weak fundamentals + bad value — stay out / exit.\n"
+                   "\n"
+                   "5. WATCHLIST (pale yellow)\n"
+                   "    else → fallback — no special archetype, monitor.\n"
+                   "\n"
+                   "Inputs read from each stock's composite-score dict:\n"
+                   "  Score = composite_score (the 'Score /100' column)\n"
+                   "  MoS = mos_pct (the 'MoS %' column)\n"
+                   "  EarlyEntry = early_entry_score (the 'Early Entry /100' column)\n"
+                   "\n"
+                   "Use AutoFilter on this column to instantly isolate top picks.\n"
+                   "Cell color is based on the LABEL itself (not the row's verdict),\n"
+                   "so Quick Pick stands out even on rows where verdict is WATCHLIST.\n"
+                   "\n"
+                   "Source: scoring_engine._assign_quick_pick() (L494-507)."),
     "Score /100": ("≥70 strong · ≥60 watch · <38 avoid",
                    "Weighted composite (0-100):\n"
                    "Fundamental 35% + Technical 30% + EarlyEntry 15%\n"
@@ -948,7 +993,7 @@ GROUP_TIPS: Dict[str, Tuple[str, str]] = {
 # CONTEXT-APPROPRIATE ICONS PER METRIC FAMILY
 # ════════════════════════════════════════════════════════════════════════════
 _ICON_FAMILIES = {
-    "🎯": {"Verdict", "Score /100", "Early Entry /100", "Spike Score /6", "Spike /6",
+    "🎯": {"Verdict", "Quick Pick", "Score /100", "Early Entry /100", "Spike Score /6", "Spike /6",
            "Storm Score /10", "Storm /10", "Action Required",
            "Gold-Tier Filter"},
     "💰": {"CFV (₹)", "FV Low (₹)", "FV High (₹)", "MoS %", "MoS Label",
