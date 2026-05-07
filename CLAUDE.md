@@ -2699,4 +2699,125 @@ The corp-info per-symbol calls already had this fallback in place.
 
 ---
 
-*Last updated: May 2, 2026 · v13.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 33. v13.x RELEASE — Production-credibility patch set (Top 5 BUY filter · MoS '—' for ETFs · Quick Pick recompute)
+
+**Date:** May 7, 2026
+**Trigger:** v13.0 production audit by Rajkumar against `NSE_BSE_Full_Dashboard_20260506.xlsx` (100 stocks · 124 columns · 12,400 cells). Three real data-credibility issues found alongside one false-alarm (MoS formula was correct — the audit rule was using textbook (CFV-CMP)/CFV instead of the source-code (CFV-CMP)/CMP). Rate before fix: 11/12,400 cells (0.089%). Rate after fix: 0/12,400 (0.000%).
+
+### What was changed
+
+**Issue 1 — `reporting/daily_report_generator.py:62` — txt report's "TOP 5 BUY CANDIDATES" filter**
+
+Pre-fix: section header said "TOP 5 BUY CANDIDATES" but the code did `df.sort_values(by=['spike_count', 'mos_pct']).head(5)` with **no verdict filter**. OVERVALUED and NEUTRAL stocks with high spike counts could leak in. Production example from 2026-05-06: MOCAPITAL appeared with `VERDICT: OVERVALUED` in a section labelled BUY.
+
+Fix: filter to BUY first, then apply existing sort. Substring match (`'BUY' in verdict`) tolerates dotted display variants like `BUY ●●●` / `BUY ○○`. The other 4 verdict values (OVERVALUED, WATCHLIST, NEUTRAL, AVOID) don't contain the substring "BUY", so the filter is unambiguous.
+
+```python
+# Pre-fix
+top_buys = self.df.sort_values(
+    by=['spike_count', 'mos_pct'], ascending=[False, False]).head(5)
+
+# Post-fix
+_buy_only = self.df[self.df['verdict'].astype(str).str.contains(
+    'BUY', case=False, na=False, regex=False)]
+top_buys = _buy_only.sort_values(
+    by=['spike_count', 'mos_pct'], ascending=[False, False]).head(5)
+```
+
+**Issue 2 — `reporting/excel_generator.py:1626` and `reporting/report_formatter.py:42` — MoS=-100% leak when CFV is unavailable**
+
+Root cause: `analysis/fair_value_engine.py:439` returns `mos_pct = (cfv - cmp) / cmp * 100` whenever `cmp > 0`. For ETFs/index funds where no models fire (cfv=0), this yields **-100.0** as a math-only artifact. Pre-fix the Excel cell showed `-100%` paired with `SIGNIFICANT PREMIUM†`, and the txt Quick Card showed `MoS: -100% [SIGNIFICANT PREMIUM†]` and `CMP is 100% EXPENSIVE` — misleading readers into thinking the stock is wildly overvalued, when the truth is "we couldn't value it with our model set".
+
+Production audit found 8 affected stocks (all NSE-listed ETFs / index funds): **CHEMICAL, HSBCGOLD, BANKBETA, MOCAPITAL, SENSEXBETA, LICMFGOLD, EGOLD, GOLDBETA**.
+
+Fix strategy considered: setting `stock["mos_pct"] = "—"` directly in master_funnel. Rejected because it breaks downstream numeric consumers — DB write at `master_funnel.py:3171` does `float(_s_lar.get("mos_pct", 0) or 0)`, AI analyst reads via `v("mos_pct")`, command_parser filters `df['mos_pct'] > 25`, sort operations rely on numeric, and the score-adjustment lookup uses `mos_pct` as a numeric input. Any one of these would crash or silently misbehave.
+
+Fix applied: **display-time intercept at the Excel cell write and the Quick Card text builder**. Internal stock dict stays numeric (`mos_pct=-100`) so all downstream consumers work unchanged; the cell renders `'—'` and the card prints `'MoS: —  [—]'`. Mirrors the existing `cfv == 0 → '—'` rule already in place via `FV_MODEL_KEYS`.
+
+```python
+# excel_generator.py — patched logic
+_cfv_for_display = stk.get("cfv", 0)
+_cfv_missing = (_cfv_for_display in (0, 0.0, None, "", "—"))
+for ci,(_,_,key) in enumerate(FULL_COLS,1):
+    val = _g(stk, key)
+    if key in FV_MODEL_KEYS and (val == 0 or val == 0.0):
+        val = "—"
+    if _cfv_missing and key in ("mos_pct", "mos_label"):
+        val = "—"
+    cell = ws.cell(rn, ci, val)
+```
+
+The Gold sheet does not need this patch — its 11-condition filter already excludes any stock with no CFV (they fail the score≥70 + 15%≤MoS≤100% gates).
+
+**Issue 3 — `master_funnel.py:2582` — Quick Pick stale after Score Convergence +8 EE bonus**
+
+Order-of-operations bug. The pipeline runs three steps in sequence:
+
+1. `ScoringEngine.calculate_composite_score(stock)` → returns `label` (the Quick Pick) using the **pre-bonus** `early_entry_score`. Set at `scoring_engine.py:324` via `_assign_quick_pick(data, final_score)`.
+2. `stock.update(score_result)` writes `label` to the stock dict.
+3. **Then** the v10.x Score Convergence pass at `master_funnel.py:2562-2582` adds +8 to `early_entry_score` when score≥70 AND RSI>60 AND supertrend=BUY. Updates `early_entry_score` in the dict (the Excel reads this updated value).
+
+Pre-fix: the displayed EE in Excel column 10 was post-bonus, but the `label` (Quick Pick column 8) was locked in with pre-bonus EE. When the +8 bump moved EE across the **60** archetype threshold (`DEEP VALUE` → `DEEP VALUE EARLY MOVER` requires EE≥60) or the **70** threshold (`WATCHLIST` → `EARLY MOVER` requires EE≥70 AND score>55), the row showed inconsistent values.
+
+Production audit found 3 affected stocks:
+
+| Symbol | Score | Pre-bonus EE | Post-bonus EE | Excel showed (buggy) | Should be |
+|---|---|---|---|---|---|
+| MOCAPITAL | 72.66 | 65 | 73 | WATCHLIST | EARLY MOVER |
+| KIRLFER | 73.95 | 65 | 73 | WATCHLIST | EARLY MOVER |
+| KAMAHOLD | 72.21 | 55 | 63 | DEEP VALUE | DEEP VALUE EARLY MOVER |
+
+Fix: re-call `_assign_quick_pick(stock, _score_final)` inside the convergence-bonus `if` block, AFTER the EE update. Defensive: only re-runs when the bonus actually fires (no impact on stocks where the bonus condition didn't trigger). Same `scoring` instance, same method, same signature as the first call.
+
+```python
+if (_score_final >= 70 and _rsi_final > 60 and _st_final == "BUY"
+        and "SCORE CONVERGENCE" not in _sigs_str):
+    _ee_now = min(100, _ee_now + 8)
+    stock["early_entry_score"] = _ee_now
+    # ... existing badge / label updates ...
+    # v13.x fix: recompute Quick Pick after EE update
+    stock["label"] = scoring._assign_quick_pick(stock, _score_final)
+```
+
+### Test results
+
+15 tests across 3 layers:
+
+- **8 unit tests** (`test_fixes.py`): verdict-filter logic, sort-order preservation, FV-engine leak source, normal-stock unchanged, pre/post bonus QP transitions, KAMAHOLD case, no-bonus case
+- **7 integration tests** (`test_integration.py`): 3 real production-shape stock profiles (MOCAPITAL, KIRLFER, KAMAHOLD), no-bonus regression, Excel-renderer ETF edge cases, internal-dict-untouched safety, txt-report Section B real scenario
+- **Full-data simulation** against the production Excel: applied patched logic to all 100 stocks
+  - Issue 1: Top 5 BUY = SANDHAR, HALEOSLABS, APLLTD, SAHYADRI, AMBIKCO (all BUY ✅)
+  - Issue 2: All 8 ETFs render `—`; **zero changes** to other 92 stocks
+  - Issue 3: Exactly the 3 expected QP changes; **zero unexpected** changes elsewhere
+
+### Documents updated
+
+| File | Update |
+|---|---|
+| `reporting/tooltip_formatter.py` | MoS % and MoS Label tooltips note the '—' rendering rule for ETFs · Quick Pick tooltip notes the v13.x recompute timing |
+| `reporting/excel_generator.py` (GLOSSARY_DATA) | MoS % glossary row mentions ETF rendering · Quick Pick glossary row mentions the recompute |
+| `CLAUDE.md` | This §33 section |
+| `readme.md` | New v13.x row at top of version-history table |
+
+Not touched: `pipeline_reference_v13_0.html` (describes scoring flow, not rendering edge cases) · `scoring_logic_3Stagefunnel_explained.md` (no QP/MoS rendering details).
+
+### Open known issues (carried forward from v13.0)
+
+1. 0-vs-missing ambiguity (original v12.4 audit issue) — still deferred
+2. NIFTY 50 not ingested — daily report mood renders "—" honestly
+3. Altman Z capping at 10 (v12.5 behavior) — 34/100 hit cap by-design
+4. NEWS & RISK section + ANALYSIS SUMMARY — Gemini AI quota issue (config, not code)
+5. PIPELINE / OB section (5 cols) — order book metrics, no free aggregator
+
+### Edge-case stocks NOT fixed (defensible by design — flagged for awareness)
+
+Two BUY verdicts with mildly negative MoS that pass the formal -10% gate by 1-2 points but don't meet the technical-confirmation criteria for the wider -20% gate:
+
+- **VENTIVE** (score 68.77, MoS -9.39%) — Supertrend BUY + Stage 2, but score below 70 threshold for tech_confirmed
+- **BAJAJHCARE** (score 70.49, MoS -8.76%) — Supertrend NEUTRAL, sector NEUTRAL — passes formal gate only
+
+Both are cliff-zone BUYs. Defensible if challenged ("score and MoS gate both pass"), but represent edge cases where a stricter rule could be added in a future release. Left alone in v13.x because they're not bugs — the verdict logic is producing exactly what its rules specify.
+
+---
+
+*Last updated: May 7, 2026 · v13.x · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

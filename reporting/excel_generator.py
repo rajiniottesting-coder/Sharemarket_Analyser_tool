@@ -219,7 +219,11 @@ GLOSSARY_DATA = [
      "EARLY MOVER = early_entry ≥ 70 AND score > 55 (technical breakout signal, may not be deeply discounted) | "
      "AVOID / EXIT = score < 38 OR (score < 45 AND MoS < −30%) (weak fundamentals + bad value) | "
      "WATCHLIST = fallback for everything else (no special archetype, monitor). "
-     "Use this column with AutoFilter to instantly isolate top-conviction picks (e.g., filter to 'DEEP VALUE EARLY MOVER').",
+     "Use this column with AutoFilter to instantly isolate top-conviction picks (e.g., filter to 'DEEP VALUE EARLY MOVER'). "
+     "v13.x: Quick Pick is now computed TWICE — once in calculate_composite_score(), then re-computed in master_funnel "
+     "AFTER the Score Convergence +8 EE bonus fires. Pre-fix, when the bonus crossed the 60 or 70 archetype threshold, "
+     "the displayed Quick Pick disagreed with the post-bonus EE in the same row (3 stocks affected: MOCAPITAL, KIRLFER, KAMAHOLD). "
+     "The recompute runs only when the bonus actually fires, so non-trigger stocks see zero change.",
      "All sheets"),
     ("SCORES","Score /100","Composite: Fundamental 35% + Technical 30% + Early 15% + Sentiment 10% + Safety 10%. Session 24: if no paid/AI sentiment signals fired (no FII/Promoter/DII QoQ, no insider buy, no news sentiment, no pledge direction), the 10% sentiment weight redistributes proportionally to the other 4 sub-scores (Fundamental→0.389, Technical→0.333, Early→0.167, Safety→0.111) — no 'free 5 points' for missing data. Spike bonus (+2 per trigger, max +10) is gated on fundamental quality: only awards full +10 when fundamental_score ≥ 55; capped at +3 for weaker stocks to prevent momentum masking weak fundamentals. v10.17: a high composite score alone does not guarantee BUY — the verdict also requires at least 3 of 5 sub-score dimensions to be 'informed' (real data fired, not just sat at base). Otherwise BUY is demoted to WATCHLIST with a 'thin data' annotation. See the Verdict tooltip for details.","All sheets"),
     ("SCORES","Early Entry /100","12-signal system measuring how early vs consensus. ≥50 = EARLY MOVER badge | ≥35 = AHEAD OF CONSENSUS. Session 23: low EE on a Gold-sheet stock is not a bug — Gold admits two archetypes: MOMENTUM (high EE from firing trend/volume signals) and VALUE (low EE but high Score + MoS + clean safety; quietly accumulating without momentum triggers yet)","All sheets"),
@@ -244,7 +248,13 @@ GLOSSARY_DATA = [
      "FAIR VALUE = MoS 0–10% (priced fairly) | "
      "SLIGHT PREMIUM = MoS −15–0% (slightly overvalued, ok for quality stocks) | "
      "OVERVALUED = MoS −30–−15% (CMP exceeds FV, caution) | "
-     "SIGNIFICANTLY OVERVALUED = MoS < −30% (avoid, major downside risk)","All sheets"),
+     "SIGNIFICANTLY OVERVALUED = MoS < −30% (avoid, major downside risk). "
+     "v13.x: Cell renders '—' (not a number) when CFV is unavailable — typical for ETFs / "
+     "index funds / very thin-data instruments where no valuation models could fire. "
+     "Pre-fix the cell would show '-100%' as a math artifact of (0-CMP)/CMP×100, "
+     "misleading readers to think the stock is 100% overvalued when the truth is "
+     "'we can't value it with our model set'. The MoS Label cell mirrors this — "
+     "both show '—' together when CFV is missing.","All sheets"),
     # Session 27: Removed duplicate "M1: DCF FV" glossary row here — the more
     # complete version remains in the second FAIR VALUE block below (with
     # Session 19 cap details + SBIN β=0.2 example). Leaving both created
@@ -1623,10 +1633,27 @@ class ExcelGeneratorV6:
             qp_st=VERDICT_STYLES.get(qp_label,st)            # default: row color
             qp_bg,qp_tx=qp_st["bg"],qp_st["text"]
             qp_ubg=qp_bg if ri%2==0 else _alt(qp_bg)
+            # v13.x fix: when CFV could not be computed (no models fired,
+            # typical for ETFs / index funds / very thin-data instruments),
+            # the FV engine returns mos_pct=-100 as a math-only result of
+            # (0-CMP)/CMP*100. Without this guard the cell shows "-100%"
+            # alongside an "SIGNIFICANT PREMIUM" label — misleading the
+            # reader to think the stock is 100% overvalued, when the truth
+            # is "we can't value this with our model set". Mirror the CFV
+            # display rule and render both fields as "—" in that case.
+            # Internal dict values (stock["mos_pct"], stock["mos_label"])
+            # stay unchanged — DB write, AI analyst, sort, score gates and
+            # all other numeric consumers continue to work normally.
+            _cfv_for_display = stk.get("cfv", 0)
+            _cfv_missing = (_cfv_for_display in (0, 0.0, None, "", "—"))
             for ci,(_,_,key) in enumerate(FULL_COLS,1):
                 val=_g(stk,key)
                 # FV models: 0 means "not applicable" → show "—" not 0
                 if key in FV_MODEL_KEYS and (val == 0 or val == 0.0):
+                    val = "—"
+                # v13.x: tie MoS % / MoS Label display to CFV availability —
+                # when CFV is missing the MoS math is a meaningless -100.
+                if _cfv_missing and key in ("mos_pct", "mos_label"):
                     val = "—"
                 cell=ws.cell(rn,ci,val)
                 # v13.x: Quick Pick column uses its own archetype color

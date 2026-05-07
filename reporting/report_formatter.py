@@ -40,14 +40,32 @@ class ReportFormatter:
         )
 
         # BLOCK A: FAIR VALUE (Boxed format)
-        block_a = (
-            f"┌────────────────────────────────────────────────────┐\n"
-            f"│ Fair Value (CFV): ₹{stock.get('cfv', 0)}  Range: ₹{stock.get('cfv_low', 0)} – ₹{stock.get('cfv_high', 0)}     │\n"
-            f"│ CMP is {abs(stock.get('mos_pct', 0))}% {'CHEAP' if stock.get('mos_pct', 0) > 0 else 'EXPENSIVE'} vs fair value       │\n"
-            f"│ MoS: {stock.get('mos_pct', 0)}%  [{stock.get('mos_label', '—')}]        │\n"
-            f"│ Upside to FV: +{stock.get('upside', 0)}%  (₹{stock.get('upside_rs', 0)} per share)                │\n"
-            f"└────────────────────────────────────────────────────┘"
-        )
+        # v13.x fix: when no FV models fired (cfv == 0), the FV engine
+        # returns mos_pct=-100 as a math artifact of (0-CMP)/CMP*100.
+        # Pre-fix the card showed "MoS: -100% [SIGNIFICANT PREMIUM†]" and
+        # "CMP is 100% EXPENSIVE" — misleading the reader to think the
+        # stock is wildly overvalued. Truth: we couldn't value it. Render
+        # "—" for MoS/Upside/CFV in that case to match the Excel display.
+        _cfv_qc = stock.get('cfv', 0)
+        _cfv_missing_qc = (_cfv_qc in (0, 0.0, None, '', '—'))
+        if _cfv_missing_qc:
+            block_a = (
+                f"┌────────────────────────────────────────────────────┐\n"
+                f"│ Fair Value (CFV): ₹—  Range: ₹— – ₹—     │\n"
+                f"│ CMP vs fair value: — (no models available)       │\n"
+                f"│ MoS: —  [—]        │\n"
+                f"│ Upside to FV: —                                          │\n"
+                f"└────────────────────────────────────────────────────┘"
+            )
+        else:
+            block_a = (
+                f"┌────────────────────────────────────────────────────┐\n"
+                f"│ Fair Value (CFV): ₹{stock.get('cfv', 0)}  Range: ₹{stock.get('cfv_low', 0)} – ₹{stock.get('cfv_high', 0)}     │\n"
+                f"│ CMP is {abs(stock.get('mos_pct', 0))}% {'CHEAP' if stock.get('mos_pct', 0) > 0 else 'EXPENSIVE'} vs fair value       │\n"
+                f"│ MoS: {stock.get('mos_pct', 0)}%  [{stock.get('mos_label', '—')}]        │\n"
+                f"│ Upside to FV: +{stock.get('upside', 0)}%  (₹{stock.get('upside_rs', 0)} per share)                │\n"
+                f"└────────────────────────────────────────────────────┘"
+            )
 
         # BLOCK B: METRICS STRIP (Section 8)
         block_b = (

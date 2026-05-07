@@ -59,7 +59,14 @@ class DailyReportGenerator:
         report.append(self._format_list(early_movers, ['symbol', 'early_entry_score', 'sector']))
 
         # SECTION B: TOP 5 BUY CANDIDATES
-        top_buys = self.df.sort_values(
+        # v13.x fix: previously this sort returned the global top-5 by spike
+        # count regardless of verdict, so OVERVALUED / NEUTRAL stocks could
+        # appear in a section labelled "BUY". Filter to BUY first, then sort.
+        # Substring match ("BUY" in verdict) tolerates the dotted display
+        # variants like "BUY ●●●" / "BUY ○○" emitted by ScoringEngine.
+        _buy_only = self.df[self.df['verdict'].astype(str).str.contains(
+            'BUY', case=False, na=False, regex=False)]
+        top_buys = _buy_only.sort_values(
             by=['spike_count', 'mos_pct'], ascending=[False, False]).head(5)
         report.append("SECTION B — TOP 5 BUY CANDIDATES")
         report.append(self._format_list(top_buys, ['symbol', 'verdict', 'mos_pct']))

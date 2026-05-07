@@ -126,6 +126,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                    "Cell color is based on the LABEL itself (not the row's verdict),\n"
                    "so Quick Pick stands out even on rows where verdict is WATCHLIST.\n"
                    "\n"
+                   "v13.x timing: Quick Pick is computed twice. First inside\n"
+                   "ScoringEngine.calculate_composite_score() (the moment the\n"
+                   "composite is finalised), then re-computed in master_funnel\n"
+                   "AFTER the Score Convergence +8 EE bonus fires. The bonus\n"
+                   "can flip EE across the 60 / 70 archetype thresholds, so the\n"
+                   "second call ensures the displayed Quick Pick matches the EE\n"
+                   "in the same row. Re-runs only when the bonus actually fires.\n"
+                   "\n"
                    "Source: scoring_engine._assign_quick_pick() (L494-507)."),
     "Score /100": ("≥70 strong · ≥60 watch · <38 avoid",
                    "Weighted composite (0-100):\n"
@@ -233,14 +241,21 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "CMP below FV Low = very deeply undervalued."),
     "FV High (₹)": ("Optimistic FV = CFV × 1.15",
                    "CMP above FV High = significantly overvalued."),
-    "MoS %": (">25% strong buy · <−15% overvalued",
+    "MoS %": (">25% strong buy · <−15% overvalued · '—' = no FV available",
               "Margin of Safety = (CFV − CMP) / CMP × 100.\n"
               ">40% Exceptional (+12), >25% Strong (+8), 10–25% Adequate (+4).\n"
               "−15 to −30% Overvalued (−5), <−30% Significant premium (−10).\n"
               "Effectively capped near 200% because CFV is capped at 3× CMP\n"
               "(Session 19 safety net). If MoS ≈200%, verify inputs rather\n"
-              "than treating it as a guaranteed bargain."),
-    "MoS Label": ("Valuation summary (* = capped CFV, † = thin-FV evidence)",
+              "than treating it as a guaranteed bargain.\n"
+              "\n"
+              "v13.x: Renders '—' (not a number) when CFV cannot be computed —\n"
+              "typical for ETFs / index funds / very thin-data instruments.\n"
+              "Pre-fix the cell would show '-100%' as a math artifact of\n"
+              "(0-CMP)/CMP×100, paired with a 'SIGNIFICANT PREMIUM' label —\n"
+              "misleading readers to think the stock is 100% overvalued when\n"
+              "the truth is 'we can't value it with our model set'."),
+    "MoS Label": ("Valuation summary (* = capped CFV, † = thin-FV evidence, '—' = no FV)",
                   "EXCEPTIONAL >40% | STRONG >25% | ADEQUATE >10% | THIN 0-10%\n"
                   "SLIGHT PREMIUM −10% to 0% | SIGNIFICANT PREMIUM <−10%\n"
                   "v12.5: trailing `*` (e.g., 'EXCEPTIONAL*') means CFV was\n"
@@ -253,7 +268,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "you can decide for yourself, but the automatic +score bonus\n"
                   "(+4 to +12) is suppressed in composite_score to prevent\n"
                   "thin-evidence false BUYs. Markers can stack: '*†' means\n"
-                  "BOTH conditions fired — treat with extreme caution."),
+                  "BOTH conditions fired — treat with extreme caution.\n"
+                  "v13.x: Renders '—' (matching MoS %) when CFV is unavailable\n"
+                  "— the labels above are meaningless without a CFV anchor."),
     # v10.8: 'Upside to FV %' and 'Upside %' removed entirely — duplicated MoS %
     # (same formula, same number). MoS % is the single source of truth now.
     "M1: DCF FV (₹)": ("Discounted Cash Flow fair value — 30% weight in CFV",

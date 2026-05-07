@@ -2580,6 +2580,15 @@ def run_master_pipeline():
                     stock["early_label"] = "EARLY MOVER — Act before the crowd"
                 elif _ee_now >= 35:
                     stock["early_label"] = "AHEAD OF CONSENSUS"
+                # v13.x fix: Quick Pick (stock["label"]) was already assigned by
+                # ScoringEngine.calculate_composite_score() above using the
+                # PRE-bonus EE. The +8 bump can move EE across the 60 / 70
+                # archetype thresholds (e.g. 65→73 flips WATCHLIST→EARLY MOVER;
+                # 55→63 flips DEEP VALUE→DEEP VALUE EARLY MOVER). Re-run the
+                # exact same private rule so the displayed Quick Pick matches
+                # the EE shown in the same row. Defensive: scoring instance,
+                # method, and signature are unchanged from the first call.
+                stock["label"] = scoring._assign_quick_pick(stock, _score_final)
 
             # ── Derive ghost keys for Storm/Sentiment/EDE before scoring ──────
             # These keys are READ by scoring_engine but were never populated,
