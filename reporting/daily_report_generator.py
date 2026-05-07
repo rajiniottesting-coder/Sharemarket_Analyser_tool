@@ -35,16 +35,38 @@ class DailyReportGenerator:
         # values returned 0 → mood was always BEARISH (misleading). Now
         # render "—" when nifty data is unavailable so users aren't shown
         # a fabricated regime call.
+        # v13.x: extend the same honesty principle to the second header line —
+        # Nifty / Sensex / VIX values are static placeholders in master_funnel
+        # (sensex hardcoded to 0, vix to 12.0, nifty_close not ingested). Pre-
+        # v13.x they printed as "0" / "12.0" alongside a "—" mood, mixing
+        # honest absence with fake numeric precision. Now render "—" for any
+        # of these that are zero/missing; FII (real data from F&O participant
+        # table) keeps its numeric format.
         nifty  = self.mkt.get('nifty_close', 0)
         sma200 = self.mkt.get('nifty_200d', 0)
+        sensex = self.mkt.get('sensex_close', 0)
+        vix    = self.mkt.get('vix', 0)
+        fii    = self.mkt.get('fii_net', 0)
         if nifty > 0 and sma200 > 0:
             mood = "BULLISH" if nifty > sma200 else "BEARISH"
         else:
             mood = "—"   # no NIFTY data available
+
+        # v13.x: "—" for unavailable market scalars, retain numeric for real data
+        nifty_disp  = nifty  if (isinstance(nifty,  (int, float)) and nifty  > 0) else "—"
+        sensex_disp = sensex if (isinstance(sensex, (int, float)) and sensex > 0) else "—"
+        vix_disp    = vix    if (isinstance(vix,    (int, float)) and vix    > 0) else "—"
+        # FII can be legitimately negative (net selling); render "—" only if 0
+        # (no record in fo_participant_data) or non-numeric.
+        if isinstance(fii, (int, float)) and fii != 0:
+            fii_disp = f"₹{fii}Cr"
+        else:
+            fii_disp = "—"
+
         header = (
             f"HEADER: NSE/BSE Research | {self.today_str} | {mood}\n"
-            f"Nifty: {nifty} | Sensex: {self.mkt.get('sensex_close', 0)} | "
-            f"VIX: {self.mkt.get('vix', 0)} | FII: ₹{self.mkt.get('fii_net', 0)}Cr\n"
+            f"Nifty: {nifty_disp} | Sensex: {sensex_disp} | "
+            f"VIX: {vix_disp} | FII: {fii_disp}\n"
         )
         report.append(header + "=" * 60 + "\n")
 
@@ -93,8 +115,27 @@ class DailyReportGenerator:
         report.append(self._format_list(sme_watch, ['symbol', 'vol_ratio']))
 
         # SECTION F: EXIT ALERTS
-        exits = self.df[self.df['composite_score'] < 30].head(2)
-        report.append("SECTION F — 2 EXIT ALERTS")
+        # v13.x fix: previously filtered `composite_score < 30` and capped
+        # at head(2) with a hardcoded "2 EXIT ALERTS" title. Two problems:
+        # (1) the score-only filter missed AVOID-verdict stocks scoring 30-37
+        # (the system's actual exit signal), and (2) the title was
+        # hardcoded "2" regardless of how many stocks qualified. Aligned the
+        # filter to the section's intent — list AVOID verdicts (the system's
+        # explicit exit recommendation) — and made the count dynamic. Cap
+        # at 5 to keep the report compact; pipeline rarely produces > 5.
+        # Substring match ('AVOID' in verdict) tolerates dotted display
+        # variants like 'AVOID ●●●' / 'AVOID ●○○ (thin data)'.
+        _avoid_mask = self.df['verdict'].astype(str).str.contains(
+            'AVOID', case=False, na=False, regex=False)
+        # Sort weakest first (lowest score → most urgent to exit)
+        exits = self.df[_avoid_mask].sort_values(
+            by='composite_score', ascending=True).head(5)
+        _exit_count = len(exits)
+        if _exit_count == 0:
+            report.append("\nSECTION F — EXIT ALERTS")
+        else:
+            report.append(f"\nSECTION F — {_exit_count} EXIT ALERT" +
+                          ("S" if _exit_count != 1 else ""))
         report.append(self._format_list(exits, ['symbol', 'verdict', 'guard_reasons']))
 
         # SECTION G: SMART MONEY

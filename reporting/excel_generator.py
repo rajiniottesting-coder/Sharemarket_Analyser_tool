@@ -220,6 +220,12 @@ GLOSSARY_DATA = [
      "AVOID / EXIT = score < 38 OR (score < 45 AND MoS < −30%) (weak fundamentals + bad value) | "
      "WATCHLIST = fallback for everything else (no special archetype, monitor). "
      "Use this column with AutoFilter to instantly isolate top-conviction picks (e.g., filter to 'DEEP VALUE EARLY MOVER'). "
+     "Why DEEP VALUE EARLY MOVER uses 3 factors (vs 2 for the others): it's the COMBO of DEEP VALUE and EARLY MOVER — "
+     "inherits the value gates from DEEP VALUE (MoS>25% AND Score>70) and adds a momentum check. Note the EE threshold "
+     "drops 70 → 60 in the combo: when value AND quality are both high, you don't need an extreme momentum signal — "
+     "moderate confirmation (EE≥60) is enough. Pure EARLY MOVER needs EE≥70 because momentum is the only thing speaking "
+     "for stocks that may not have great fundamentals (Score>55 floor, no MoS gate). So both EE thresholds are correct "
+     "for what each archetype is claiming. "
      "v13.x: Quick Pick is now computed TWICE — once in calculate_composite_score(), then re-computed in master_funnel "
      "AFTER the Score Convergence +8 EE bonus fires. Pre-fix, when the bonus crossed the 60 or 70 archetype threshold, "
      "the displayed Quick Pick disagreed with the post-bonus EE in the same row (3 stocks affected: MOCAPITAL, KIRLFER, KAMAHOLD). "
@@ -1074,7 +1080,7 @@ def _alt(bg):
 # ── Column header tooltips (module-scope so all sheets can use them) ──
 _HDR_TIPS = {
     "Verdict":("✅ BUY=strong | WATCHLIST=wait | AVOID=skip","BUY: Score clears cap-tier threshold + MoS > -10%\nWATCHLIST: Score qualifies but MoS gate blocks\nAVOID: Score < 38 (universal floor)\n\nBUY thresholds: LARGE>=60 | MID>=63 | SMALL>=66 | MICRO>=70\nTech Override: MoS gate relaxes to -20% when Score>=70+ST=BUY+Stage2"),
-    "Quick Pick":("⭐ Archetype label — distinct from Verdict","DEEP VALUE EARLY MOVER: MoS>25% + Score>70 + EE>=60 (top conviction)\nDEEP VALUE: MoS>25% + Score>70 (cheap vs FV)\nEARLY MOVER: EE>=70 + Score>55 (breakout signal)\nAVOID/EXIT: Score<38 OR (Score<45 AND MoS<-30%)\nWATCHLIST: fallback (no special archetype)\n\nFirst-match-wins priority order. AutoFilter to isolate top picks.\nSource: scoring_engine._assign_quick_pick (L494-507)"),
+    "Quick Pick":("⭐ Archetype label — distinct from Verdict","DEEP VALUE EARLY MOVER: MoS>25% + Score>70 + EE>=60 (top conviction)\nDEEP VALUE: MoS>25% + Score>70 (cheap vs FV)\nEARLY MOVER: EE>=70 + Score>55 (breakout signal)\nAVOID/EXIT: Score<38 OR (Score<45 AND MoS<-30%)\nWATCHLIST: fallback (no special archetype)\n\nFirst-match-wins priority order. AutoFilter to isolate top picks.\n\nWhy DEEP VALUE EARLY MOVER uses 3 factors (others use 2):\nIt's the COMBO of DEEP VALUE + EARLY MOVER — inherits both gates.\nNote EE drops 70→60 in combo: when value+quality both high, you don't\nneed an extreme momentum signal — moderate confirmation is enough.\nPure EARLY MOVER needs EE>=70 because momentum is the only thing\nspeaking for stocks that may not have great fundamentals (Score>55 floor).\n\nSource: scoring_engine._assign_quick_pick (L494-507)"),
     "Score /100":(">=70 strong | >=60 watch | <38 avoid","Fundamental*35%+Technical*30%+EarlyEntry*15%+Sentiment*10%+Safety*10%\n+MoS adj(-10 to +12)+Spike bonus(x2 capped +10)\n+Early Mover+5(if EE>=50)-Risk penalty-10\n\n>=80:Exceptional | >=70:Strong BUY | >=60:Watch | <38:Avoid"),
     "Early Entry /100":(">=50=Early Mover | >=35=Ahead of Consensus","Detects stocks 4-12 wks BEFORE institutional coverage.\nVol Surge+RSI +15 | Trend Confluence +12 | Momentum +10\n52W Breakout +10 | Deep Value+BUY +10 | Inst Footprint +10\nScore Convergence +8 | FII Accum +8 | Promoter Accum +8\n\n>=50:EARLY MOVER | >=35:AHEAD OF CONSENSUS | <35:EMERGING\nMax ~55 with free data(FII/Promoter QoQ needs paid source)"),
     "Spike Score /6":(">=2 notable | >=4 strong | 6 very rare","6 momentum triggers-how many fire simultaneously:\nT1:CMP within 3% of 52W High+vol>2x | T2:MACD+ST=BUY+vol>1.5x\nT3:ADX>25+delivery>60%+vol>1.5x | T4:RSI 45-65+vol>2x\nT5:vol>3x+delivery>60% | T6:2w_chg>3%+2w>4w+vol>1.5x\n\n0:None | 1:Weak | 2-3:Notable | 4-5:Strong | 6:Extreme\nSuppressed to 0 if pledge>20% or Beneish/Altman flags active"),

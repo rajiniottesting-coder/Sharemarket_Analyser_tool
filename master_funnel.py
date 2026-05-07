@@ -3088,12 +3088,20 @@ def run_master_pipeline():
             # both fields legitimately return 0.0 — daily_report_generator
             # is patched alongside this to render "—" when both are 0
             # (instead of misleading "BEARISH").
+            # v13.x: vix changed 12.0 → 0 here so the daily report renders
+            # "—" (matching the same honesty principle as the mood line).
+            # The storm score path at master_funnel.py:2648 uses its OWN
+            # hardcoded `market_vix=12.0` constant directly — it does NOT
+            # read from market_stats — so this change does NOT affect
+            # storm score computation. Verified: search the codebase for
+            # `market_stats["vix"]` / `mkt.get("vix"` — only consumer is
+            # daily_report_generator.
             "nifty_close":   get_nifty_close_from_db(),
             "sensex_close":  0,
             "nifty_52w_high": get_nifty_52w_high_from_db(),
             "fii_net":       get_latest_fii_net_cash(),
             "nifty_200d":    get_nifty_200_sma(),
-            "vix":           12.0,
+            "vix":           0,    # v13.x: was 12.0 placeholder; now honest "—" in report
         }
 
         # Section 10: Excel Dashboard

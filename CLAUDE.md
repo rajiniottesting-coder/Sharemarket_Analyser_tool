@@ -2820,4 +2820,79 @@ Both are cliff-zone BUYs. Defensible if challenged ("score and MoS gate both pas
 
 ---
 
-*Last updated: May 7, 2026 · v13.x · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 33.1 v13.x Round 3 — txt-report polish (HEADER honesty · SECTION F filter · Quick Pick 3-factor clarification)
+
+**Date:** May 7, 2026 (later in same day as §33)
+**Trigger:** User audit of `Daily_Analysis_Report_20260506__1_.txt` (the post-v13.x-Round-2 txt output) flagged three more issues + one design-clarity question.
+
+### What was changed (3 fixes + 1 doc clarification)
+
+**Fix 4 — `reporting/daily_report_generator.py:28-50` + `master_funnel.py:3082-3104` — HEADER honesty for placeholder market data**
+
+Pre-fix: header displayed `Nifty: 0.0 | Sensex: 0 | VIX: 12.0 | FII: ₹817.0Cr` with mood `—`. The mood line was correctly honest about NIFTY data being unavailable, but the second header line printed:
+- `Nifty: 0.0` — NIFTY 50 not ingested (master_funnel:3091 `get_nifty_close_from_db()` returns 0 because NIFTY 50 isn't in `daily_prices`)
+- `Sensex: 0` — hardcoded 0 in master_funnel:3092
+- `VIX: 12.0` — hardcoded constant in master_funnel:3096
+
+Mixing honest absence (`—`) with fake numeric precision is misleading. v13.x extends the same honesty principle: any market scalar that's a known placeholder renders as `—`. FII (real data from `get_latest_fii_net_cash()`) keeps numeric format.
+
+Two-file fix:
+- `master_funnel.py:3104`: `"vix": 12.0` → `"vix": 0`. Verified the `market_stats["vix"]` field has only ONE consumer (daily_report_generator) — the storm score path at `master_funnel.py:2648` uses its own hardcoded `market_vix=12.0` constant directly, not via market_stats. Confirmed by grep for `market_stats["vix"]` and `mkt.get("vix"`.
+- `reporting/daily_report_generator.py:38-58`: defensive renderer logic — if value is non-positive or non-numeric, render `—`. FII handled separately because it can be legitimately negative (net selling).
+
+**Fix 5 — `reporting/daily_report_generator.py:117-138` — SECTION F filter aligned with section intent**
+
+Pre-fix issues:
+1. Section title was hardcoded `"SECTION F — 2 EXIT ALERTS"` regardless of actual count
+2. Filter was `composite_score < 30` AND head(2) — only catches extreme outliers
+3. Production audit: 4 AVOID-verdict stocks existed (HDFCLIFE 34.09, VIPIND 29.04, UBL 37.22, RELIGARE 35.48) but only VIPIND would have qualified — and on the next pipeline run VIPIND's score moved to ≥30, so Section F became empty even though 4 stocks still warranted exit attention
+
+Fix: align filter with section's intent ("EXIT ALERTS" = system's explicit AVOID verdict). Substring match (`'AVOID' in verdict`) tolerates dotted display variants like `AVOID ●●●` / `AVOID ●○○ (thin data)`. Sort weakest first (lowest score → most urgent). Cap at head(5) since the pipeline rarely produces more. Title is now dynamic with English plural handling: `"X EXIT ALERT"` for 1, `"X EXIT ALERTS"` for 0/N. When 0 AVOID stocks exist, the bare `"SECTION F — EXIT ALERTS"` header prints (no count), matching the existing "No candidates today" convention.
+
+**Fix 6 — Quick Pick three-factor clarification (doc-only)**
+
+User question: "Why does DEEP VALUE EARLY MOVER use 3 factors when the others use 2?"
+
+The answer is structural — DEEP VALUE EARLY MOVER is the **combo** of the two single-archetype rules above it:
+```
+DEEP VALUE alone:      MoS > 25% AND Score > 70                       (no EE check)
+EARLY MOVER alone:                       Score > 55 AND EarlyEntry ≥ 70
+DEEP VALUE EARLY MOVER:MoS > 25% AND Score > 70 AND EarlyEntry ≥ 60   ← combo
+```
+
+The third factor isn't extra work — it inherits the value gates from DEEP VALUE and adds a momentum check. The notable design choice is the **EE threshold drop 70 → 60 in the combo**: when a stock already has high score AND deep undervaluation, you don't need an extreme momentum signal — moderate confirmation (EE≥60) is enough. Pure EARLY MOVER demands EE≥70 because momentum is the only thing speaking for stocks that may not have great fundamentals (Score > 55 floor, no MoS gate).
+
+Updates applied to 3 surfaces (no code logic change):
+1. `reporting/tooltip_formatter.py` — Quick Pick `TIPS` entry: added 9-line "Why does DEEP VALUE EARLY MOVER use 3 factors..." paragraph
+2. `reporting/excel_generator.py` — `_HDR_TIPS` Quick Pick header tooltip: condensed 6-line version
+3. `reporting/excel_generator.py` — `GLOSSARY_DATA` Quick Pick row: integrated explanation in single sentence
+
+### Test results
+
+22/22 tests pass across all 3 rounds:
+- Round 1 (test_fixes.py): 8/8
+- Round 2 (test_integration.py): 7/7
+- Round 3 (test_v13_x_round3.py): 7/7 — covers HEADER honesty, Section F filter + dynamic title + dotted-verdict tolerance + zero-AVOIDs case, tooltip + glossary content checks
+
+12/12 end-to-end checks against real production Excel data pass:
+- Section B: BUY-only ✅
+- ETFs: 8/8 render `—` ✅
+- Quick Pick: 3 known cases corrected ✅
+- Header: Nifty/Sensex/VIX render `—`, FII keeps numeric ✅
+- Section F: dynamic title `"4 EXIT ALERTS"`, all 4 AVOID stocks listed (VIPIND, HDFCLIFE, RELIGARE, UBL) ✅
+- Tooltip + glossary: combo/asymmetry explanations present ✅
+
+### Files changed in Round 3
+
+| File | Change |
+|---|---|
+| `master_funnel.py` | 1 line: `"vix": 12.0` → `"vix": 0` (with v13.x rationale comment) |
+| `reporting/daily_report_generator.py` | HEADER block: defensive renderer for placeholder values; SECTION F: AVOID filter + dynamic title |
+| `reporting/tooltip_formatter.py` | Quick Pick `TIPS` entry: combo + EE-asymmetry explanation |
+| `reporting/excel_generator.py` | `_HDR_TIPS` Quick Pick: condensed combo explanation; `GLOSSARY_DATA` Quick Pick: integrated explanation |
+| `CLAUDE.md` | This §33.1 addendum |
+| `readme.md` | v13.x row updated with Round 3 additions |
+
+---
+
+*Last updated: May 7, 2026 · v13.x Round 3 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
