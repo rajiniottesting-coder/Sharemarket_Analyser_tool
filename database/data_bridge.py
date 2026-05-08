@@ -172,6 +172,88 @@ def initialize_v7_tables(conn):
             PRIMARY KEY (symbol, date)
         )
     """)
+    # ────────────────────────────────────────────────────────────────────
+    # v14.0 — OUTCOME TRACKING TABLES
+    # gold_recommendations: append-only log of every Gold-sheet pick.
+    # Written when generate_excel_reports() builds the Gold sheet.
+    # PRIMARY KEY (symbol, recommendation_date) prevents same-day duplicates;
+    # the master_funnel writer also enforces "first-appearance only" by
+    # checking if any OPEN recommendation already exists for that symbol
+    # before inserting a new one.
+    # ────────────────────────────────────────────────────────────────────
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS gold_recommendations (
+            recommendation_date     TEXT,
+            symbol                  TEXT,
+            company_name            TEXT DEFAULT '',
+            sector                  TEXT DEFAULT '',
+            cap_category            TEXT DEFAULT '',
+            cmp_at_recommendation   REAL DEFAULT 0,
+            entry_low               REAL DEFAULT 0,
+            entry_high              REAL DEFAULT 0,
+            stop_loss               REAL DEFAULT 0,
+            t1                      REAL DEFAULT 0,
+            t2                      REAL DEFAULT 0,
+            t3                      REAL DEFAULT 0,
+            cfv                     REAL DEFAULT 0,
+            mos_pct                 REAL DEFAULT 0,
+            composite_score         REAL DEFAULT 0,
+            early_entry_score       REAL DEFAULT 0,
+            quick_pick_label        TEXT DEFAULT '',
+            verdict                 TEXT DEFAULT '',
+            time_horizon            TEXT DEFAULT '',
+            predicted_rr            REAL DEFAULT 0,
+            PRIMARY KEY (symbol, recommendation_date)
+        )
+    """)
+    # gold_outcomes: written by track_outcomes.py after walking forward
+    # through daily_prices. ONE row per closed/open recommendation.
+    # outcome_type ∈ {SL_HIT, T1_HIT, T2_HIT, T3_HIT, EXPIRED, OPEN}
+    # When OPEN, outcome_date is NULL — the tracker overwrites the row
+    # each run until the recommendation closes.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS gold_outcomes (
+            recommendation_date     TEXT,
+            symbol                  TEXT,
+            outcome_type            TEXT DEFAULT 'OPEN',
+            outcome_date            TEXT DEFAULT '',
+            outcome_price           REAL DEFAULT 0,
+            days_to_outcome         INTEGER DEFAULT 0,
+            max_drawdown_pct        REAL DEFAULT 0,
+            max_runup_pct           REAL DEFAULT 0,
+            current_price           REAL DEFAULT 0,
+            current_pnl_pct         REAL DEFAULT 0,
+            last_checked_date       TEXT DEFAULT '',
+            PRIMARY KEY (symbol, recommendation_date)
+        )
+    """)
+    # Index for fast lookups of OPEN recommendations during track_outcomes
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_gold_outcomes_open
+        ON gold_outcomes (outcome_type) WHERE outcome_type = 'OPEN'
+    """)
+    # ────────────────────────────────────────────────────────────────────
+    # v14.1 — Horizon-aware expiry + reappearance tracking
+    # Backward-compat: ALTER TABLE ADD COLUMN. SQLite raises OperationalError
+    # if column already exists — caught silently. Idempotent on re-runs.
+    # gold_recommendations gets:
+    #   expiry_days       INTEGER — captured at log time per Horizon
+    #   expiry_date       TEXT    — pre-computed YYYY-MM-DD
+    #   times_reappeared  INTEGER — count of subsequent same-day reappearances
+    #                               while this recommendation is still OPEN
+    # gold_outcomes gets:
+    #   last_reappeared_date TEXT — most recent same-day reappearance while OPEN
+    # ────────────────────────────────────────────────────────────────────
+    for col_def in [
+        ("gold_recommendations", "expiry_days INTEGER DEFAULT 90"),
+        ("gold_recommendations", "expiry_date TEXT DEFAULT ''"),
+        ("gold_recommendations", "times_reappeared INTEGER DEFAULT 0"),
+        ("gold_outcomes",        "last_reappeared_date TEXT DEFAULT ''"),
+    ]:
+        try:
+            c.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]}")
+        except sqlite3.OperationalError:
+            pass  # column already exists — fine
     conn.commit()
 
 
@@ -1262,3 +1344,271 @@ def update_verdict_streaks(stocks_today: list) -> dict:
         print(f"   ⚠️  update_verdict_streaks: persist failed: {e}")
 
     return new_streaks
+
+# ════════════════════════════════════════════════════════════════════════════
+# v14.0 — OUTCOME TRACKING HELPERS
+# ════════════════════════════════════════════════════════════════════════════
+
+def has_open_recommendation(symbol: str) -> bool:
+    """v14.0: True if this symbol already has an OPEN recommendation.
+    Used by master_funnel to enforce "first-appearance only" — we only
+    log a new recommendation when no prior one is still being tracked.
+    A recommendation closes when track_outcomes marks it SL_HIT / T1_HIT /
+    T2_HIT / T3_HIT / EXPIRED."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            c = conn.cursor()
+            c.execute(
+                "SELECT 1 FROM gold_outcomes "
+                "WHERE symbol = ? AND outcome_type = 'OPEN' LIMIT 1",
+                (symbol,)
+            )
+            return c.fetchone() is not None
+        finally:
+            conn.close()
+    except Exception:
+        # Conservative default: if DB query fails, treat as "no open" so we
+        # don't suppress legitimate recommendations on transient errors.
+        return False
+
+
+def insert_gold_recommendation(rec: dict) -> bool:
+    """v14.0/v14.1: Insert one Gold-sheet recommendation. Returns True on success.
+    Caller should have already verified has_open_recommendation()==False
+    for this symbol (first-appearance rule).
+    Also seeds a corresponding row in gold_outcomes with outcome_type=OPEN.
+
+    v14.1: caller should pass `expiry_days` (int) and `expiry_date` (YYYY-MM-DD str)
+    derived from the recommendation's time_horizon. Falls back to 90 / "" if absent
+    so existing v14.0 callers continue to work."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            c = conn.cursor()
+            c.execute("""
+                INSERT OR IGNORE INTO gold_recommendations
+                (recommendation_date, symbol, company_name, sector, cap_category,
+                 cmp_at_recommendation, entry_low, entry_high, stop_loss,
+                 t1, t2, t3, cfv, mos_pct, composite_score, early_entry_score,
+                 quick_pick_label, verdict, time_horizon, predicted_rr,
+                 expiry_days, expiry_date, times_reappeared)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                rec.get("recommendation_date", ""),
+                rec.get("symbol", ""),
+                rec.get("company_name", ""),
+                rec.get("sector", ""),
+                rec.get("cap_category", ""),
+                float(rec.get("cmp_at_recommendation", 0) or 0),
+                float(rec.get("entry_low", 0) or 0),
+                float(rec.get("entry_high", 0) or 0),
+                float(rec.get("stop_loss", 0) or 0),
+                float(rec.get("t1", 0) or 0),
+                float(rec.get("t2", 0) or 0),
+                float(rec.get("t3", 0) or 0),
+                float(rec.get("cfv", 0) or 0),
+                float(rec.get("mos_pct", 0) or 0),
+                float(rec.get("composite_score", 0) or 0),
+                float(rec.get("early_entry_score", 0) or 0),
+                rec.get("quick_pick_label", ""),
+                rec.get("verdict", ""),
+                rec.get("time_horizon", ""),
+                float(rec.get("predicted_rr", 0) or 0),
+                int(rec.get("expiry_days", 90) or 90),
+                rec.get("expiry_date", ""),
+                0,  # times_reappeared starts at 0
+            ))
+            # Seed gold_outcomes with OPEN row
+            c.execute("""
+                INSERT OR IGNORE INTO gold_outcomes
+                (recommendation_date, symbol, outcome_type, last_checked_date,
+                 current_price)
+                VALUES (?,?,?,?,?)
+            """, (
+                rec.get("recommendation_date", ""),
+                rec.get("symbol", ""),
+                "OPEN",
+                rec.get("recommendation_date", ""),
+                float(rec.get("cmp_at_recommendation", 0) or 0),
+            ))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  insert_gold_recommendation({rec.get('symbol','?')}): {e}")
+        return False
+
+
+def get_open_recommendations() -> list:
+    """v14.0: Return all OPEN recommendations with their target/SL data
+    for the outcome tracker to walk forward through price history.
+    Joins gold_recommendations × gold_outcomes."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            df = pd.read_sql_query("""
+                SELECT
+                    r.symbol, r.recommendation_date,
+                    r.cmp_at_recommendation,
+                    r.entry_low, r.entry_high,
+                    r.stop_loss, r.t1, r.t2, r.t3,
+                    r.composite_score, r.quick_pick_label,
+                    r.time_horizon,
+                    COALESCE(r.expiry_days, 90) AS expiry_days,
+                    COALESCE(r.expiry_date, '') AS expiry_date,
+                    o.last_checked_date, o.outcome_type,
+                    o.max_drawdown_pct, o.max_runup_pct
+                FROM gold_recommendations r
+                INNER JOIN gold_outcomes o
+                  ON r.symbol = o.symbol
+                  AND r.recommendation_date = o.recommendation_date
+                WHERE o.outcome_type = 'OPEN'
+                ORDER BY r.recommendation_date ASC
+            """, conn)
+            return df.to_dict("records")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  get_open_recommendations: {e}")
+        return []
+
+
+def update_outcome(symbol: str, recommendation_date: str,
+                   outcome_type: str, outcome_date: str = "",
+                   outcome_price: float = 0,
+                   days_to_outcome: int = 0,
+                   max_drawdown_pct: float = 0,
+                   max_runup_pct: float = 0,
+                   current_price: float = 0,
+                   current_pnl_pct: float = 0,
+                   last_checked_date: str = "") -> bool:
+    """v14.0: Update gold_outcomes row for a recommendation. Used by
+    track_outcomes.py both to finalize closed outcomes (SL/T1/T2/T3/EXPIRED)
+    and to update OPEN row tracking (current_price, max_runup, last_checked)."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            c = conn.cursor()
+            c.execute("""
+                UPDATE gold_outcomes
+                SET outcome_type = ?,
+                    outcome_date = ?,
+                    outcome_price = ?,
+                    days_to_outcome = ?,
+                    max_drawdown_pct = ?,
+                    max_runup_pct = ?,
+                    current_price = ?,
+                    current_pnl_pct = ?,
+                    last_checked_date = ?
+                WHERE symbol = ?
+                  AND recommendation_date = ?
+            """, (
+                outcome_type, outcome_date, outcome_price,
+                days_to_outcome, max_drawdown_pct, max_runup_pct,
+                current_price, current_pnl_pct, last_checked_date,
+                symbol, recommendation_date,
+            ))
+            conn.commit()
+            return c.rowcount > 0
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  update_outcome({symbol}): {e}")
+        return False
+
+
+def get_outcome_stats() -> dict:
+    """v14.0: Aggregate stats across all closed outcomes — used by the
+    Excel Performance sheet. Returns headline counts + breakdowns."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            df = pd.read_sql_query("""
+                SELECT r.*, o.outcome_type, o.outcome_date, o.outcome_price,
+                       o.days_to_outcome, o.max_drawdown_pct, o.max_runup_pct,
+                       o.current_price, o.current_pnl_pct
+                FROM gold_recommendations r
+                INNER JOIN gold_outcomes o
+                  ON r.symbol = o.symbol
+                  AND r.recommendation_date = o.recommendation_date
+            """, conn)
+        finally:
+            conn.close()
+        return {"all_recommendations": df}
+    except Exception as e:
+        print(f"   ⚠️  get_outcome_stats: {e}")
+        return {"all_recommendations": pd.DataFrame()}
+
+
+def increment_reappearance(symbol: str, today_iso: str) -> bool:
+    """v14.1: Increment the times_reappeared counter on the OPEN
+    recommendation for this symbol. Also stamps the last_reappeared_date.
+
+    Called from master_funnel when a stock shows up in Gold but already
+    has an OPEN recommendation — provides visibility into 'system kept
+    saying buy this' without changing the original entry/SL/T levels.
+
+    Idempotent within the same day: if last_reappeared_date already equals
+    today_iso, the counter is NOT incremented (avoids double-counting if
+    pipeline re-runs on the same calendar day)."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            c = conn.cursor()
+            # Find the OPEN row for this symbol
+            c.execute("""
+                SELECT r.recommendation_date, o.last_reappeared_date
+                FROM gold_recommendations r
+                INNER JOIN gold_outcomes o
+                  ON r.symbol = o.symbol
+                  AND r.recommendation_date = o.recommendation_date
+                WHERE r.symbol = ?
+                  AND o.outcome_type = 'OPEN'
+                LIMIT 1
+            """, (symbol,))
+            row = c.fetchone()
+            if not row:
+                return False
+            rec_date, last_reap = row
+            # Skip if already incremented today (idempotency)
+            if last_reap == today_iso:
+                return False
+            c.execute("""
+                UPDATE gold_recommendations
+                SET times_reappeared = COALESCE(times_reappeared, 0) + 1
+                WHERE symbol = ? AND recommendation_date = ?
+            """, (symbol, rec_date))
+            c.execute("""
+                UPDATE gold_outcomes
+                SET last_reappeared_date = ?
+                WHERE symbol = ? AND recommendation_date = ?
+            """, (today_iso, symbol, rec_date))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  increment_reappearance({symbol}): {e}")
+        return False
+
+
+def horizon_to_expiry_days(time_horizon: str) -> int:
+    """v14.1: Map a recommendation's Horizon string to its expiry window in days.
+
+    Mapping (matches the Excel Horizon tooltip "SHORT TERM: 2-4 weeks |
+    POSITIONAL: 1-3 mo | LONG TERM: 3-12 mo"):
+        SHORT TERM  → 30 days  (upper bound of "2-4 weeks")
+        POSITIONAL  → 90 days  (median of "1-3 months")
+        LONG TERM   → 270 days (median of "3-12 months", ~9 months)
+        anything else → 90 days (conservative default)
+
+    Case-insensitive, tolerates extra whitespace and dotted variants."""
+    h = str(time_horizon or "").strip().upper()
+    if "SHORT" in h:
+        return 30
+    if "LONG" in h:
+        return 270
+    # POSITIONAL or unknown → 90 (conservative default matches v14.0 behavior)
+    return 90

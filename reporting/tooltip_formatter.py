@@ -802,12 +802,23 @@ TIPS: Dict[str, Tuple[str, str]] = {
                      "Hold remainder after Target 1."),
     "Target 3 (₹)": ("Final target = Fair Value (CFV)",
                      "High MoS stocks can give 20–50% upside."),
-    "Time Horizon": ("How long to hold",
-                     "SHORT TERM: 2–4 weeks (BUY + Spike≥2)\n"
-                     "POSITIONAL: 1–3 months (Score≥68 + ST=BUY)\n"
-                     "LONG TERM: 3–12 months (Score≥72 + no spike)"),
-    "Horizon": ("How long to hold",
-                "SHORT TERM: 2–4 weeks | POSITIONAL: 1–3 mo | LONG TERM: 3–12 mo"),
+    "Time Horizon": ("How long the system claims to hold this pick",
+                     "Time-horizon classification at recommendation time, set by the\n"
+                     "pipeline based on verdict + spike + supertrend + MACD signals:\n"
+                     "  SHORT TERM = BUY + Spike count ≥ 2 (high-momentum entry)\n"
+                     "  POSITIONAL = BUY + supertrend BUY + MACD BUY (confirmed trend)\n"
+                     "             OR BUY + Score ≥ 68 (high-conviction)\n"
+                     "  LONG TERM  = BUY + lower-conviction (gradual re-rating)\n"
+                     "             OR WATCHLIST / NEUTRAL / AVOID\n"
+                     "\n"
+                     "v14.1: Drives the per-recommendation expiry window in the\n"
+                     "outcome tracker (when 90 days isn't right for SHORT or LONG plays):\n"
+                     "  SHORT TERM  → expiry 30 days  (upper bound of '2-4 weeks')\n"
+                     "  POSITIONAL  → expiry 90 days  (median of '1-3 months')\n"
+                     "  LONG TERM   → expiry 270 days (median of '3-12 months')\n"
+                     "Frozen at log time — outcome judgment uses this stamped value\n"
+                     "so changing the constants later doesn't retroactively re-bucket\n"
+                     "stocks already being tracked."),
     "Risk Level": ("LOW=safest | VERY HIGH=speculative only",
                    "LOW: High score + low beta + low D/E + no pledge\n"
                    "MEDIUM: Acceptable | HIGH: Small/micro | VERY HIGH: Speculative"),
@@ -898,6 +909,140 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # "M1: DCF FV (₹)" entry above (added in Session 26). A separate entry
     # created a confusing duplicate row in the Tooltip Reference sheet
     # (rows 24 & 25 both showed M1-related info).
+    # ────────────────────────────────────────────────────────────────────
+    # v14.0: PERFORMANCE SHEET column tooltips (cell-hover variants)
+    # ────────────────────────────────────────────────────────────────────
+    "TOTAL TRACKED": ("All Gold-sheet picks ever logged",
+                       "Counts every stock that has ever made it through the 11-condition\n"
+                       "Gold-tier filter and been logged to gold_recommendations. Includes\n"
+                       "both currently-open positions and historically-closed ones.\n"
+                       "First-appearance rule: a stock is logged once when it FIRST appears\n"
+                       "in Gold; re-appearances on subsequent days are skipped UNTIL the\n"
+                       "original recommendation closes (T1/T2/T3 hit, SL hit, or 90d expiry)."),
+    "CLOSED": ("Picks where outcome is final",
+                "Sum of T1_HIT + T2_HIT + T3_HIT + SL_HIT + EXPIRED. These are\n"
+                "recommendations the tracker has finalised — no further updates\n"
+                "are made to closed rows. Hit/SL/Expiry % are computed against\n"
+                "this denominator, not Total Tracked."),
+    "OPEN": ("Picks still being monitored",
+             "Recommendations currently within the 90-day tracking window with no\n"
+             "T1/T2/T3 hit and no SL break yet. The tracker re-walks these every\n"
+             "day to catch new events. Open positions appear in the bottom table\n"
+             "with running P&L and max runup/drawdown."),
+    "HIT RATE (T1+)": ("% of closed picks reaching at least T1",
+                        "(T1_HIT + T2_HIT + T3_HIT) / CLOSED × 100. The fraction of closed\n"
+                        "picks where the price reached at least the first target. Higher = the\n"
+                        "system's BUY conviction picks turn out to be correct.\n"
+                        "Heuristics for interpretation:\n"
+                        "  ≥60% : strong predictive value\n"
+                        "  40–60%: useful but mixed\n"
+                        "  <40% : weak — review filter logic\n"
+                        "Wait for ≥30 closed picks before drawing conclusions."),
+    "SL RATE": ("% of closed picks hitting stop loss",
+                 "SL_HIT / CLOSED × 100. The fraction where price broke down through\n"
+                 "the stop loss before any target hit. Lower is better. The system\n"
+                 "is calibrated for ~6.5% risk per trade; an SL rate of 25-35% is\n"
+                 "normal even for a healthy strategy. >50% suggests entries are\n"
+                 "too late (chasing momentum) or SL too tight."),
+    "AVG DAYS → T1": ("Mean days from recommendation to T1 hit",
+                       "How quickly winners reached the first target. Lower = faster\n"
+                       "win realization. Useful for setting realistic expectations:\n"
+                       "if AVG=20, plan to hold positions ~3 weeks; if AVG=60,\n"
+                       "expect 2 months of patience. Median may differ from mean\n"
+                       "for skewed distributions — currently we report mean only."),
+    "AVG DAYS → T2": ("Mean days from recommendation to T2 hit",
+                       "Same as AVG DAYS → T1 but for the second target. T2 ≈ T1 × 1.05\n"
+                       "by design, so this should be slightly larger than T1."),
+    "AVG DAYS → T3": ("Mean days from recommendation to T3 hit",
+                       "Same as AVG DAYS → T1 but for the third (CFV-anchored) target.\n"
+                       "Often considerably larger because T3 is set to fair value\n"
+                       "which can take a full re-rating cycle to reach."),
+    "AVG DAYS → SL": ("Mean days from recommendation to SL break",
+                       "How long, on average, losing trades take to hit stop. Short\n"
+                       "AVG (e.g., <10 days) suggests entries on weak setups; longer\n"
+                       "AVG (>30 days) suggests gradual drift after entry."),
+    "Max Runup %": ("Best unrealized gain reached during tracking",
+                    "Highest (high − cmp_at_recommendation) / cmp × 100 observed since\n"
+                    "the recommendation was logged. For closed rows, this is the peak\n"
+                    "before the close event fired. For open rows, this is the running\n"
+                    "max as of the last tracker run. Use to spot 'left money on the\n"
+                    "table' situations where SL fired AFTER a +20% runup."),
+    "Max DD %": ("Worst unrealized loss reached during tracking",
+                  "Lowest (low − cmp_at_recommendation) / cmp × 100 observed. Negative\n"
+                  "value (e.g., -8.5%). For SL_HIT rows, this matches the SL distance.\n"
+                  "For T1+/T2+/T3+ winners, a deep DD before the win is informative —\n"
+                  "the system held conviction through a drawdown."),
+    "Hit Rate": ("Group hit rate within breakdown table",
+                  "T1+_Hits / Group_Total × 100 for the row's group (Score band /\n"
+                  "Archetype / Sector). Color coded:\n"
+                  "  green ≥60% — strong group\n"
+                  "  amber 40-60% — mixed\n"
+                  "  red <40% — weak group, candidate for filter tightening"),
+    "Days Held": ("Calendar days since recommendation_date",
+                   "For open positions only. Computed as (today - recommendation_date).\n"
+                   "When this hits 90 days with no event, the tracker bumps the row\n"
+                   "to EXPIRED on the next run."),
+    "Archetype": ("Quick Pick label at recommendation time",
+                   "The Quick Pick assigned the day this stock was added to Gold.\n"
+                   "Frozen at log time — even if today's score/EE would change the\n"
+                   "label, this column shows the original archetype.\n"
+                   "Lets you measure whether (e.g.) DEEP VALUE EARLY MOVER picks\n"
+                   "actually outperform DEEP VALUE — the diagnostic 'BY QUICK PICK\n"
+                   "ARCHETYPE' table aggregates on this column."),
+    # ────────────────────────────────────────────────────────────────────
+    # v14.1: Horizon-aware expiry + reappearance tracking column tooltips
+    # (Note: 'Time Horizon' tooltip above was upgraded with v14.1 expiry-mapping
+    # info — single canonical entry, no separate 'Horizon' duplicate needed)
+    # ────────────────────────────────────────────────────────────────────
+    "Days Left": ("Calendar days remaining until hard expiry",
+                   "expiry_days minus days_held. When this hits 0 with no SL/T1/T2/T3\n"
+                   "event, the next tracker run buckets the row as EXPIRED at the\n"
+                   "exact horizon-derived cutoff (HARD CUTOFF — no grace period).\n"
+                   "When ≤14, the row is highlighted in pale yellow with a ⚠ flag\n"
+                   "to surface positions you may want to manually exit before\n"
+                   "the tracker forces EXPIRED."),
+    "Re-app": ("Times this stock re-appeared in Gold while OPEN",
+                "Count of subsequent Gold-sheet appearances by the same symbol\n"
+                "while the original recommendation is still being tracked.\n"
+                "First-appearance rule keeps targets frozen — re-appearances\n"
+                "do NOT update entry/SL/T1/T2/T3 (preserves measurement integrity\n"
+                "by not letting later optimism rescue earlier calls). The counter\n"
+                "exists for visibility: a high count means 'the system kept saying\n"
+                "buy this — N times' which is a stronger conviction signal than\n"
+                "a single appearance.\n"
+                "\n"
+                "Idempotent within a calendar day: same-day re-runs of the\n"
+                "pipeline don't double-count."),
+    "AVG MISSED RUNUP": ("Avg max gain reached before EXPIRED",
+                          "Average of max_runup_pct across all EXPIRED rows.\n"
+                          "Diagnostic question: how much money did we 'leave on\n"
+                          "the table' by expiring positions before they hit T1?\n"
+                          "\n"
+                          "Reading guide:\n"
+                          "  >15% — targets too far OR expiry too early.\n"
+                          "         Stocks rallied during tracking but failed to\n"
+                          "         reach T1 within the horizon window.\n"
+                          "         Investigate top offenders manually.\n"
+                          "  5-15% — typical noise, no immediate concern.\n"
+                          "  <5%  — expiry was the right call (truly sideways)."),
+    "PEAK MISSED RUNUP": ("Single highest runup before EXPIRED",
+                           "Worst single case of money left on the table — the\n"
+                           "expired row that came closest to a win without hitting.\n"
+                           "Useful as a sanity check: if peak is 50%+ but the\n"
+                           "stock still expired, dig into that stock specifically."),
+    "EXPIRED w/ ≥10% RUNUP": ("Count of expired rows that still rallied 10%+",
+                               "Stocks that crossed +10% runup but didn't hit T1\n"
+                               "before expiry. Numerator/denominator format (e.g.\n"
+                               "'8/30' = 8 out of 30 expired). High ratio = system\n"
+                               "is identifying winners but missing on timing."),
+    "BY TIME HORIZON": ("Hit rate breakdown per Horizon class",
+                         "Diagnostic table answering: 'Are SHORT TERM picks\n"
+                         "actually winning in their stated 30-day window? Are\n"
+                         "LONG TERM picks really earning their 270 days of\n"
+                         "patience?' Compare hit rates across horizon classes:\n"
+                         "if SHORT TERM has lower hit rate than POSITIONAL\n"
+                         "despite being stricter (high spike count required),\n"
+                         "the SHORT TERM trigger may need recalibration."),
 }
 
 
@@ -1052,7 +1197,7 @@ _ICON_FAMILIES = {
            "OB/Bill Ratio", "Pipeline Vis", "L1 Wins 90D", "L1 Est (₹Cr)",
            "New Mkt Entry", "Capex / Rev %", "Key Catalyst"},
     "🎚": {"Entry Range (₹)", "Stop Loss (₹)", "Target 1 (₹)", "Target 2 (₹)",
-           "Target 3 (₹)", "Time Horizon", "Horizon", "R:R Ratio",
+           "Target 3 (₹)", "Time Horizon", "R:R Ratio",
            "Support 1 (₹)", "Support 2 (₹)", "Resist 1 (₹)", "Resist 2 (₹)"},
     "🏷": {"Symbol", "Company Name", "Company", "Sector", "Exchange",
            "Cap Category", "Date", "Time (IST)", "Alert Type", "Trigger Detail",

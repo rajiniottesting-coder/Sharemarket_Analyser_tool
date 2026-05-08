@@ -2895,4 +2895,257 @@ Updates applied to 3 surfaces (no code logic change):
 
 ---
 
-*Last updated: May 7, 2026 · v13.x Round 3 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## 34. v14.0 RELEASE — Gold-pick outcome tracking system (the "did our recommendations actually work?" feedback loop)
+
+**Date:** May 8, 2026
+**Trigger:** Rajkumar question: "How do I know whether the Gold sheet recommendations achieved their targets or not?" The pipeline produces 0–10 Gold-tier picks every day with Entry Range / Stop Loss / T1 / T2 / T3 levels, but the only persisted history was `latest_analysis_results` (PRIMARY KEY symbol — overwritten every run). No way to measure success rate, hit timing, or filter quality. v14.0 closes this gap with a forward-tracking outcome system.
+
+**Promoted to v14.0 (not v13.y) because this delivers a fundamentally new system capability — measurement — not a fix to existing logic.**
+
+### Design decisions (locked in)
+
+- **Track each Gold-sheet stock** as a recommendation. Eligibility = clears the existing 11-condition Gold filter (Session 19 + v10.11). No new gates added.
+- **First-appearance only** for re-recommendations. A stock that re-appears in Gold on subsequent days is skipped *until* its first recommendation closes (T1/T2/T3 hit, SL break, or 90-day expiry). Prevents inflated sample size with correlated outcomes.
+- **90-day expiry window.** Reasoning: spike triggers historically resolve in 4–12 weeks; Deep Value picks need 1–2 quarters to re-rate. 90 days balances both archetypes.
+- **Outcome priority on same-day daily-bar ties: SL > T3 > T2 > T1.** We use daily OHLC, so we can't tell intra-day order. SL wins ties because the conservative interpretation is "we hit our risk limit." Highest-target wins on a single-day jump (a stock that gaps from CMP=100 to high=132 is recorded as T3_HIT, not T1_HIT).
+- **`max_drawdown_pct` and `max_runup_pct` tracked** along the way for diagnostic value (e.g., spotting "left money on the table" cases where SL fired after a +20% runup).
+
+### Honest limitations called out
+
+1. **No backfill of past performance is possible.** The Gold filter depends on yesterday's score, MoS, RSI, sector stage — values not preserved historically. Today's snapshot can't validate yesterday's decision.
+2. **First 30–60 days of stats will be noisy.** Small sample, single market regime. Don't share Performance numbers externally until ≥30 closed picks.
+3. **Backtesting today's Gold picks against historical price data would be survivorship bias on steroids** (today's list is biased toward stocks that already moved correctly). v14.0 is forward-only by design.
+
+### What was added
+
+**1. Two new SQLite tables in `database/data_bridge.py`** (added before `conn.commit()` in `initialize_v7_tables`):
+
+- `gold_recommendations` — append-only log. PRIMARY KEY (symbol, recommendation_date). 20 columns covering recommendation context: company, sector, cap_category, cmp_at_recommendation, entry_low, entry_high, stop_loss, t1, t2, t3, cfv, mos_pct, composite_score, early_entry_score, quick_pick_label, verdict, time_horizon, predicted_rr.
+- `gold_outcomes` — outcome state per recommendation. PRIMARY KEY (symbol, recommendation_date). 11 columns: outcome_type ∈ {OPEN, SL_HIT, T1_HIT, T2_HIT, T3_HIT, EXPIRED}, outcome_date, outcome_price, days_to_outcome, max_drawdown_pct, max_runup_pct, current_price, current_pnl_pct, last_checked_date.
+- Index `idx_gold_outcomes_open` on `outcome_type WHERE outcome_type='OPEN'` for fast tracker scans.
+
+**2. Five helper functions in `data_bridge.py`** (appended at end of file):
+
+- `has_open_recommendation(symbol)` → bool — first-appearance gate
+- `insert_gold_recommendation(rec: dict)` — also seeds gold_outcomes OPEN row
+- `get_open_recommendations()` — returns list of dicts joining both tables
+- `update_outcome(...)` — finalizes closed rows or refreshes OPEN tracking metrics
+- `get_outcome_stats()` — returns DataFrame of all recs ⨯ outcomes for the Performance sheet
+
+**3. master_funnel.py logging hook** (~85 lines added after `excel_gen.generate_excel_reports()` returns). Iterates `excel_gen._get_gold()` (re-using the same 11-condition filter — single source of truth), parses entry_range string (handles en-dash, hyphen, currency symbol, comma), computes predicted_rr matching the Excel column logic, and writes to `gold_recommendations` via the helper. First-appearance check via `has_open_recommendation()` before insert. Defensive: per-symbol try/except so one bad row can't abort the loop. Console output: `📈 v14.0 outcome tracking: logged N Gold pick(s) (skipped X already-open, Y error)`.
+
+**4. NEW FILE: `track_outcomes.py`** (~280 lines). Run as `python3 track_outcomes.py` AFTER the daily pipeline. For every OPEN recommendation:
+- Loads `daily_prices` filtered `exchange='NSE'` from recommendation_date+1 forward (matches v12.7 dual-listed dedup convention).
+- Walks chronologically. Tracks running `max_runup_pct` and `max_drawdown_pct` on every bar.
+- First event check at each day:
+  - `low ≤ stop_loss` → SL_HIT (wins ties)
+  - else `high ≥ t3` → T3_HIT (highest target priority)
+  - else `high ≥ t2` → T2_HIT
+  - else `high ≥ t1` → T1_HIT
+  - else continue
+- After 90 calendar days from recommendation_date with no event → EXPIRED.
+- For OPEN rows, refreshes `current_price`, `current_pnl_pct`, `last_checked_date` so the Performance sheet shows live-as-of-last-tracker-run state.
+- Idempotent: closed rows are skipped on subsequent runs because `get_open_recommendations()` filters them out.
+
+**5. New `🎯 Performance` sheet in Excel** (`reporting/excel_generator.py::_performance_sheet`, ~180 lines). Inserted between `📱 Delivery Preview` and `📖 Glossary` in tab order. Sections:
+- **Headline metrics** — Total Tracked / Closed / Open / Hit Rate (T1+) / SL Rate. Outcome breakdown counts (T1, T2, T3, SL, Expired).
+- **Speed metrics** — average days from recommendation to T1/T2/T3/SL.
+- **Diagnostic breakdowns** — three tables: by composite score band, by Quick Pick archetype, by sector. Each shows Total / T1+ Hits / SL Hits / Expired / Hit Rate (color-coded green/amber/red).
+- **Open positions** — currently-tracked stocks with Days Held, CMP at Rec, Current Price, P&L %, Max Runup, Max DD, Score, Archetype.
+- **Sample-size banner** — amber warning if <30 closed picks ("preliminary"), green confirmation if ≥30 ("statistically meaningful").
+- **Empty-DB graceful handling** — first run shows "No Gold-pick history yet — tracking starts the first time a stock makes the Gold sheet" banner instead of crashing.
+
+**6. Tooltip + glossary updates** for new columns (per Rajkumar standing rule: "update tooltip, tooltip ref and glossary if any newly columns added"):
+- 14 new entries in `tooltip_formatter.py::TIPS` dict (cell-hover tooltips): TOTAL TRACKED, CLOSED, OPEN, HIT RATE (T1+), SL RATE, AVG DAYS → T1, AVG DAYS → T2, AVG DAYS → T3, AVG DAYS → SL, Max Runup %, Max DD %, Hit Rate, Days Held, Archetype.
+- 13 new rows in `excel_generator.py::GLOSSARY_DATA` under new "PERFORMANCE" group, all with "Where Used" = "🎯 Performance".
+- New `PERFORMANCE` color registered in `GRP_COLORS` (`B45309` matching the Gold-tier amber).
+- Tooltip Reference sheet auto-renders the new TIPS entries — no manual sync needed.
+
+### Test coverage — 17 tests in 5 groups
+
+`/home/claude/tests/test_v14_outcome_tracking.py` — all pass.
+
+| Group | Tests | Coverage |
+|---|---|---|
+| G1 — Schema + helpers | 3 | Tables created with correct columns; first-appearance rule; get_open JOIN |
+| G2 — master_funnel hook | 2 | Entry-range parser (en-dash/hyphen/currency); predicted_rr formula |
+| G3 — Walk-forward (CP3) | 6 | T1_HIT detected; SL beats target on same-day ties; highest target wins; EXPIRED at 90 days; max_runup/drawdown tracked; closed rows immutable across reruns |
+| G4 — Performance sheet | 3 | Sheet present and ordered before Glossary; empty-DB shows graceful banner; full-data renders all 4 sections |
+| G5 — Tooltips/glossary | 3 | TIPS dict has all 14 entries; GLOSSARY_DATA has all 13 rows; PERFORMANCE color registered |
+
+**No-regression check**: all prior test suites still pass (8/8 v13.x R1 + 7/7 v13.x R2 + 7/7 v13.x R3 + 17/17 v14.0 = **39/39 passing**).
+
+### Operational deployment
+
+1. Drop the 7 patched files into project (master_funnel.py, track_outcomes.py NEW, database/data_bridge.py, reporting/excel_generator.py, reporting/tooltip_formatter.py, CLAUDE.md, readme.md).
+2. Run pipeline as usual: `python3 master_funnel.py`. Console will show `📈 v14.0 outcome tracking: logged N Gold pick(s)...` after Excel save. The Excel will have a new `🎯 Performance` sheet with the empty-DB banner on first run.
+3. Run `python3 track_outcomes.py` after the daily pipeline (or schedule it 30 min later). Tomorrow's Excel will reflect any closed positions.
+4. **Don't share Performance numbers externally until ≥30 closed picks** — the sheet itself banners this caveat.
+
+### What you'll learn over time
+
+- **Hit rate by score band** answers: do Score≥90 picks actually outperform 70-79? If yes, tighten the Gold filter. If no, the score is just noise above 70.
+- **Hit rate by archetype** answers: does DEEP VALUE EARLY MOVER (the 3-factor combo) actually outperform DEEP VALUE alone? Or are we creating fake distinctions?
+- **Average days to T1** answers: what's the realistic holding period? Lets you set position-sizing and patience expectations.
+- **Max runup at SL_HIT rows** answers: are we leaving money on the table? If many SL trades had +15% runups before fading, a trailing-stop layer would help.
+
+### Open known issues (carried forward + new)
+
+1. 0-vs-missing ambiguity (original v12.4 audit issue) — still deferred
+2. NIFTY 50 not ingested — daily report renders "—" honestly (v13.x fix)
+3. Altman Z capping at 10 (v12.5 behavior) — 34/100 hit cap by design
+4. NEWS & RISK section + ANALYSIS SUMMARY — Gemini AI quota issue (config, not code)
+5. PIPELINE / OB section (5 cols) — order book metrics, no free aggregator
+6. **NEW v14.0**: Tracker uses daily OHLC (no intraday data). Same-day SL+T1 ties resolve to SL. If finer granularity matters, would need 5-min bars (paid data feed).
+7. **NEW v14.0**: 90-day expiry is fixed. Could be configurable per archetype later (DEEP VALUE = 180d, EARLY MOVER = 60d).
+
+---
+
+## 35. v14.1 RELEASE — Horizon-aware expiry + reappearance tracking + v14.0 bug-fix
+
+**Date:** May 8, 2026 (later same day as §34 v14.0)
+**Trigger:** User question after seeing v14.0 in production: *"Will the tracker wait 90 days for SHORT TERM stocks too? How is this handled across different scenarios?"*
+
+The Excel already classifies each Gold pick by **Horizon**: SHORT TERM (2-4 weeks), POSITIONAL (1-3 months), LONG TERM (3-12 months). But v14.0 used a single hardcoded `EXPIRY_DAYS=90` for everything. This is **wrong** for SHORT TERM (too lenient — counts 60-day wins as SHORT TERM successes) and LONG TERM (too strict — falsely expires genuine 6-month re-rates). v14.1 fixes this by reading the per-stock horizon and dispatching to the right window.
+
+### v14.0 bug surfaced and fixed
+
+While building v14.1, discovered a quiet bug in v14.0's master_funnel logging hook: it read `_grow.get("time_horizon", "")` from the stock dict — but the actual key set by `master_funnel.py:2750` is `horizon`, not `time_horizon`. Result: every production row in `gold_recommendations` had `time_horizon = ""`. The Performance sheet's BY TIME HORIZON diagnostic would have rolled all rows into a single "—" group, making the breakdown useless.
+
+**Impact on existing v14.0 deployments**: any rows logged before v14.1 deploy have empty `time_horizon`. The tracker handles them gracefully via the `DEFAULT_EXPIRY_DAYS=90` fallback — they continue to be tracked exactly as before. New rows logged from v14.1 onwards will have correct horizon values. No data correction needed.
+
+### Locked design decisions (from user)
+
+- **Re-appearance handling**: counter-only. Original entry/SL/T1/T2/T3 frozen at log time. New `times_reappeared` column on `gold_recommendations` increments each subsequent same-day appearance while OPEN. Preserves measurement integrity — the system's *original* call was either right or wrong; refreshing targets mid-flight muddles that.
+- **Expiry**: hard cutoff at exact day per horizon. No grace periods, no soft windows.
+
+### Horizon-to-expiry mapping
+
+| Horizon (Excel column) | Expiry days | Reasoning |
+|---|---|---|
+| SHORT TERM | **30** | Upper bound of system's "2-4 weeks" claim |
+| POSITIONAL | **90** | Median of "1-3 months" — matches v14.0 default |
+| LONG TERM | **270** | ~9 months — median of "3-12 months" |
+| (missing/unknown) | **90** | Conservative default — backward-compat |
+
+### What was added
+
+**1. Schema migration in `database/data_bridge.py::initialize_v7_tables`** (added before `conn.commit()` after v14.0's gold_outcomes index):
+
+```python
+for col_def in [
+    ("gold_recommendations", "expiry_days INTEGER DEFAULT 90"),
+    ("gold_recommendations", "expiry_date TEXT DEFAULT ''"),
+    ("gold_recommendations", "times_reappeared INTEGER DEFAULT 0"),
+    ("gold_outcomes",        "last_reappeared_date TEXT DEFAULT ''"),
+]:
+    try:
+        c.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]}")
+    except sqlite3.OperationalError:
+        pass  # column already exists — fine
+```
+
+ALTER TABLE inside try/except matches v11.0.2's existing idempotent migration pattern (`consecutive_avoid_quarters` etc.). Runs cleanly on existing v14.0 DBs without dropping data.
+
+**2. Two new helper functions appended to `data_bridge.py`**:
+
+- `horizon_to_expiry_days(time_horizon: str) → int` — case-insensitive substring match: "SHORT" → 30, "LONG" → 270, anything else → 90. Tolerates underscores, mixed case, dotted variants.
+- `increment_reappearance(symbol, today_iso) → bool` — atomically increments counter on the OPEN row + stamps `last_reappeared_date`. **Idempotent within a calendar day**: if `last_reappeared_date == today_iso`, returns False without incrementing (prevents double-counting on pipeline reruns).
+
+**3. `insert_gold_recommendation` extended** to accept and persist `expiry_days` + `expiry_date`. Backward-compat: missing keys default to `90` and `""` so existing v14.0 callers continue to work unmodified.
+
+**4. `get_open_recommendations` enriched** to include `time_horizon`, `expiry_days` (with `COALESCE(..., 90)` for legacy rows), `expiry_date` for the tracker.
+
+**5. `track_outcomes.py` — horizon-aware walk-forward**:
+
+- Renamed `EXPIRY_DAYS = 90` (module constant) to `DEFAULT_EXPIRY_DAYS = 90` (fallback only).
+- `_walk_forward()` reads `expiry_days` per recommendation from the rec dict at the top of the function. Both expiry checkpoints (price-history-empty branch + chronological-walk branch) now use the local `expiry_days` instead of the module constant.
+- Console output enhanced: each row shows `day {N}/{expiry_days} ({horizon})`. OPEN rows compute `days_left` and append `⚠ Nd to expiry` warning when ≤ 14. Bottom-line summary counts approaching-expiry total.
+
+**6. `master_funnel.py` — fixed v14.0 horizon-key bug + reappearance counter**:
+
+- Now reads `_grow.get("horizon", "")` (was `"time_horizon"` — wrong key in v14.0).
+- Maps to `_expiry_days_v` via `horizon_to_expiry_days()`.
+- Pre-computes `_expiry_date_v` as `recommendation_date + expiry_days`.
+- When `has_open_recommendation()` returns True, calls `increment_reappearance()` and tracks count separately.
+- Console: `📈 v14.1 outcome tracking: logged N (skipped X already-open, Y reappearance(s) counted)`.
+
+**7. Performance sheet enhancements** (4 additions in `_performance_sheet`):
+
+- **BY TIME HORIZON breakdown** — 4th diagnostic table after Score Band / Quick Pick Archetype / Sector. Same color-coded format. Answers: "are SHORT TERM picks really winning in 30 days? are LONG TERM picks earning their 270 days?"
+- **Open Positions table redesign** — expanded from 10 to 12 columns. New: Horizon, Days Left, Re-app, ⚠ flag. Rows where `days_left ≤ 14` get pale-yellow background + bolded ⚠ warning emoji in column 12. End-of-table summary line surfaces the count.
+- **EXPIRED missed-runup diagnostic** — new section that renders only when ≥ 3 expired rows exist. Shows AVG MISSED RUNUP (mean of `max_runup_pct` across expired rows), PEAK MISSED RUNUP (worst single case), EXPIRED w/ ≥10% RUNUP (count/total). Reading guide inline: AVG > 15% suggests targets too far OR expiry too early; AVG < 5% means expiry was the right call.
+- **Defensive sample-size suppression** — diagnostic suppressed entirely when fewer than 3 expired rows exist. Mirrors the existing "≥30 closed picks" caveat for headline stats.
+
+**8. Tooltips + glossary updates**:
+
+- `tooltip_formatter.py::TIPS` — 7 new entries: Horizon, Days Left, Re-app, AVG MISSED RUNUP, PEAK MISSED RUNUP, EXPIRED w/ ≥10% RUNUP, BY TIME HORIZON.
+- `excel_generator.py::GLOSSARY_DATA` — 6 new PERFORMANCE rows under v14.1: Horizon, Days Left, Re-app, Approaching Expiry Warning, BY TIME HORIZON breakdown, Avg/Peak Missed Runup.
+- Tooltip Reference sheet auto-renders the new TIPS entries — no manual sync needed.
+
+### Test coverage — 13 new tests in `tests/test_v14_1_outcome_tracking.py`
+
+| Group | Tests | Coverage |
+|---|---|---|
+| G1 — Mapping | 1 | horizon_to_expiry_days for all 4 cases incl. case-insensitive variants |
+| G2 — ALTER | 1 | Idempotent across 3 init calls; no duplicate columns |
+| G3 — Insert  | 1 | Stores expiry_days/expiry_date; defaults to 90 when missing |
+| G4 — Counter | 2 | Increments + idempotent same-day; doesn't increment on closed rows |
+| G5 — Tracker | 3 | SHORT expires at 30; LONG still open at 100 (waits for 270); legacy rows fall back to 90 |
+| G6 — Sheet   | 2 | BY TIME HORIZON appears; Open Positions has Horizon/Days Left/Re-app columns |
+| G7 — Diag    | 2 | EXPIRED missed-runup renders with correct avg; suppressed when <3 expired |
+| G8 — Bug fix | 1 | master_funnel reads `horizon` key, NOT `time_horizon` (v14.0 bug confirmed fixed) |
+
+**No-regression check**: 8/8 + 7/7 + 7/7 + 17/17 + 13/13 = **52/52 tests pass across 5 suites**.
+
+### Operational deployment
+
+1. Drop the 5 patched files into project: `master_funnel.py`, `track_outcomes.py`, `database/data_bridge.py`, `reporting/excel_generator.py`, `reporting/tooltip_formatter.py`.
+2. Run pipeline: `python3 master_funnel.py`. The ALTER TABLE migration runs automatically. Existing v14.0 rows continue to work with defaults; new rows are logged with proper horizon/expiry data.
+3. Run `python3 track_outcomes.py`. Console will now show per-row expiry context: `day N/30 (SHORT TERM)`, `day N/90 (POSITIONAL)`, `day N/270 (LONG TERM)`. Approaching-expiry warnings surface for OPEN rows ≤ 14 days from cutoff.
+4. Excel Performance sheet now has 4 enhancements visible from first run.
+
+### What changes in your hit-rate numbers
+
+Compared to v14.0 with everything-90-day expiry:
+
+| Horizon | v14.0 behavior | v14.1 behavior | Hit rate impact |
+|---|---|---|---|
+| SHORT TERM | T1 hit on day 60 → T1_HIT (counted as win) | T1 hit on day 60 → EXPIRED (counted as fail at day 30) | **Lower** SHORT TERM hit rate (correctly stricter) |
+| POSITIONAL | T1 hit on day 50 → T1_HIT | Same — both 90-day windows | **Unchanged** |
+| LONG TERM | T1 hit on day 150 → EXPIRED (false miss) | T1 hit on day 150 → T1_HIT | **Higher** LONG TERM hit rate (correctly more patient) |
+
+This makes hit rates meaningful **per horizon class** instead of mixing apples and oranges. After 60+ closed picks, you'll be able to see e.g. "POSITIONAL = 65% hit rate, but SHORT TERM only 35% — the system's high-momentum trigger is over-promising on speed."
+
+### Open known issues (carried forward + new)
+
+1. 0-vs-missing ambiguity (deferred since v12.4)
+2. NIFTY 50 not ingested (v13.x renders "—")
+3. Altman Z capping at 10 (v12.5 by design)
+4. NEWS & RISK + ANALYSIS SUMMARY — Gemini quota
+5. PIPELINE / OB section — no free aggregator
+6. Tracker uses daily OHLC (no intraday) — same-day SL+T ties resolve to SL
+7. **NEW v14.1**: Hard expiry cutoff means a stock that hits T1 on day 31 of a 30-day SHORT TERM window is recorded as EXPIRED. By design — soft cutoffs are slippery slopes — but worth noting for occasional "near miss" cases.
+8. **NEW v14.1**: Reappearance counter is idempotent within a calendar day. If you run the pipeline 3 times on the same day (e.g., for testing), the counter increments at most once.
+
+### v14.1 follow-up — column-name consistency fix (same release)
+
+While reviewing v14.1 in the production Excel, Rajkumar spotted that the same field appeared as **"Time Horizon"** in Full Dashboard but as bare **"Horizon"** in the Gold sheet — and v14.1's Performance sheet also used `"Horizon"`. Inconsistent UX. Fixed by standardizing on **"Time Horizon"** as the display label everywhere:
+
+- Gold sheet column header: `"Horizon"` → `"Time Horizon"` (in `GOLD_COLS` at `excel_generator.py:176`)
+- Performance Open Positions header: `"Horizon"` → `"Time Horizon"` (column slightly widened from 13 to 15 chars)
+- Performance glossary entry: `("PERFORMANCE","Horizon")` → `("PERFORMANCE","Time Horizon")`
+- Gold-sheet glossary entry: `("TRADE PLAN","Horizon")` → `("TRADE PLAN","Time Horizon")`
+- Removed stale glossary entry that referenced old SWING/INVESTMENT labels (system uses SHORT TERM/POSITIONAL/LONG TERM)
+- Tooltip dict: merged two entries (`"Time Horizon"` + `"Horizon"`) into single canonical `"Time Horizon"` with the richer v14.1 body
+- Tooltip Reference category set: removed redundant `"Horizon"` from 🎚 set
+
+The DB column name remains `time_horizon` (no schema rename — would have broken the v14.0/v14.1 production data already in `gold_recommendations`). The stock dict key in `master_funnel.py` also stays `horizon` (changing it would touch the entire pipeline). This is purely a **display-label** fix — code-level field names unchanged.
+
+**New test**: `test_g9_column_name_consistency_time_horizon_everywhere` — verifies no `("Horizon",`, `"Horizon":`, or `("PERFORMANCE","Horizon")` patterns remain anywhere in `excel_generator.py` or `tooltip_formatter.py`. Catches future regressions if anyone re-introduces the bare label.
+
+**Final test count**: 8 + 7 + 7 + 17 + **14** = **53/53 across 5 suites**.
+
+---
+
+*Last updated: May 8, 2026 · v14.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

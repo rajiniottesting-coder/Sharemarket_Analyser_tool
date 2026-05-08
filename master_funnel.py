@@ -3213,6 +3213,125 @@ def run_master_pipeline():
         master_file, gold_file = excel_gen.generate_excel_reports()
         print(f"   ✅ Excel saved: {master_file}")
 
+        # ─────────────────────────────────────────────────────────────────────
+        # v14.0 — OUTCOME TRACKING: Log Gold-sheet picks
+        # ─────────────────────────────────────────────────────────────────────
+        # After Excel is built, capture every stock that made it into the Gold
+        # sheet (clears all 11 strict gates) into the gold_recommendations
+        # table for forward outcome tracking. First-appearance rule: skip
+        # symbols that already have an OPEN recommendation (still being tracked
+        # from a prior day). Once that recommendation closes (T1/SL/expired),
+        # the symbol becomes eligible to be re-recommended.
+        #
+        # All numeric/string conversions defensive — DB writes wrap each
+        # symbol in its own try so a single bad row can't abort the loop.
+        try:
+            from database.data_bridge import (
+                has_open_recommendation, insert_gold_recommendation,
+                increment_reappearance, horizon_to_expiry_days
+            )
+            from datetime import datetime as _dt_v14, timedelta as _td_v14
+            _gold_df = excel_gen._get_gold()
+            _today_iso = target_date.strftime("%Y-%m-%d")
+            _logged = 0
+            _skipped_open = 0
+            _skipped_err = 0
+            _reappeared = 0   # v14.1: count of skipped re-appearances tracked
+            for _, _grow in _gold_df.iterrows():
+                _sym_g = str(_grow.get("symbol", "") or "").strip()
+                if not _sym_g:
+                    _skipped_err += 1
+                    continue
+                # First-appearance only: skip if already being tracked.
+                # v14.1: when skipping, also increment the reappearance
+                # counter on the original row for diagnostic visibility.
+                if has_open_recommendation(_sym_g):
+                    _skipped_open += 1
+                    if increment_reappearance(_sym_g, _today_iso):
+                        _reappeared += 1
+                    continue
+                # Parse entry_range string (format like "95.5–101.2") to lo/hi floats
+                _entry_lo_v, _entry_hi_v = 0.0, 0.0
+                _er_raw = str(_grow.get("entry_range", "") or "")
+                # entry_range uses U+2013 (en-dash) as separator
+                _er_clean = _er_raw.replace("₹", "").replace(",", "").strip()
+                # split on either en-dash or hyphen
+                _er_parts = _er_clean.replace("–", "|").replace("-", "|").split("|")
+                if len(_er_parts) == 2:
+                    try:
+                        _entry_lo_v = float(_er_parts[0].strip())
+                        _entry_hi_v = float(_er_parts[1].strip())
+                    except (ValueError, TypeError):
+                        pass
+                # Defensive numeric coercion for SL / T1 / T2 / T3
+                def _num(_v):
+                    try:
+                        return float(str(_v).replace("₹", "").replace(",", "").strip())
+                    except (ValueError, TypeError):
+                        return 0.0
+                _cmp_v = _num(_grow.get("close", 0))
+                _sl_v  = _num(_grow.get("stop_loss", 0))
+                _t1_v  = _num(_grow.get("t1", 0))
+                _t2_v  = _num(_grow.get("t2", 0))
+                _t3_v  = _num(_grow.get("t3", 0))
+                # Compute predicted_rr (T1-based, matches the Excel column)
+                _entry_mid_v = (_entry_lo_v + _entry_hi_v) / 2 if (_entry_lo_v > 0 and _entry_hi_v > 0) else _cmp_v
+                _pred_rr = 0.0
+                if _entry_mid_v > _sl_v > 0 and _t1_v > _entry_mid_v:
+                    _pred_rr = round((_t1_v - _entry_mid_v) / (_entry_mid_v - _sl_v), 2)
+                # v14.1: read time horizon (the dict key is "horizon", not
+                # "time_horizon" — v14.0 had this wrong, leaving the column
+                # empty for all production rows). Map to expiry days and
+                # pre-compute expiry_date.
+                _horizon_v = str(_grow.get("horizon", "") or "")
+                _expiry_days_v = horizon_to_expiry_days(_horizon_v)
+                try:
+                    _rec_dt = _dt_v14.strptime(_today_iso, "%Y-%m-%d").date()
+                    _expiry_date_v = (_rec_dt + _td_v14(days=_expiry_days_v)).strftime("%Y-%m-%d")
+                except (ValueError, TypeError):
+                    _expiry_date_v = ""
+                # Insert
+                _rec = {
+                    "recommendation_date":   _today_iso,
+                    "symbol":                _sym_g,
+                    "company_name":          str(_grow.get("company_name", "") or ""),
+                    "sector":                str(_grow.get("sector", "") or ""),
+                    "cap_category":          str(_grow.get("cap_category", _grow.get("cap_badge", "")) or ""),
+                    "cmp_at_recommendation": _cmp_v,
+                    "entry_low":             _entry_lo_v,
+                    "entry_high":            _entry_hi_v,
+                    "stop_loss":             _sl_v,
+                    "t1":                    _t1_v,
+                    "t2":                    _t2_v,
+                    "t3":                    _t3_v,
+                    "cfv":                   _num(_grow.get("cfv", 0)),
+                    "mos_pct":               _num(_grow.get("mos_pct", 0)),
+                    "composite_score":       _num(_grow.get("composite_score", 0)),
+                    "early_entry_score":     _num(_grow.get("early_entry_score", 0)),
+                    "quick_pick_label":      str(_grow.get("label", "") or ""),
+                    "verdict":               str(_grow.get("verdict", "") or ""),
+                    "time_horizon":          _horizon_v,    # v14.1: now reads the right key
+                    "predicted_rr":          _pred_rr,
+                    "expiry_days":           _expiry_days_v,
+                    "expiry_date":           _expiry_date_v,
+                }
+                if insert_gold_recommendation(_rec):
+                    _logged += 1
+                else:
+                    _skipped_err += 1
+            # v14.1: enriched console output — adds reappearance count
+            _msg = (f"   📈 v14.1 outcome tracking: logged {_logged} Gold pick(s) "
+                    f"(skipped {_skipped_open} already-open")
+            if _reappeared > 0:
+                _msg += f", {_reappeared} reappearance(s) counted"
+            if _skipped_err > 0:
+                _msg += f", {_skipped_err} error"
+            _msg += ")"
+            print(_msg)
+        except Exception as _v14e:
+            print(f"   ⚠️  v14.0 Gold logging skipped: {_v14e}")
+        # ─────────────────────────────────────────────────────────────────────
+
         # Section 9: Daily Research Report (text)
         report_txt = DailyReportGenerator(
             final_100_list, market_stats

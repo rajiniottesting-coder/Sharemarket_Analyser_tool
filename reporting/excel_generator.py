@@ -173,7 +173,7 @@ GOLD_COLS = [
     ("RSI (14)",9,"rsi"),("Pattern",24,"chart_pattern"),
     ("Entry Range (₹)",16,"entry_range"),("Stop Loss (₹)",12,"stop_loss"),
     ("Target 1 (₹)",12,"t1"),("Target 2 (₹)",12,"t2"),("Target 3 (₹)",12,"t3"),
-    ("Horizon",22,"horizon"),("Risk Level",10,"risk_level"),
+    ("Time Horizon",22,"horizon"),("Risk Level",10,"risk_level"),
     ("Key Catalyst",42,"key_catalyst"),("Primary Risk",42,"primary_risk"),
     ("View Analysis Summary",70,"Analysis_Summary_Block_H"),
 ]
@@ -599,10 +599,6 @@ GLOSSARY_DATA = [
      "> 3:1 = Excellent (asymmetric payoff). "
      "Session 22: Target1 auto-derived to keep R:R ≥ 2.0 — uses max of "
      "(Entry + 2× risk distance) and CFV-weighted target.","Trade Summary"),
-    ("TRADE PLAN","Time Horizon",
-     "SWING = 5–15 trading days (short-term momentum play) | "
-     "POSITIONAL = 1–3 months (medium-term trend follow) | "
-     "INVESTMENT = 6–18 months (fundamental re-rating play)","Trade Summary"),
     ("TRADE PLAN","Risk Level",
      "LOW = large cap, low beta, positive MoS, strong balance sheet | "
      "MEDIUM = mid cap or slight premium or moderate debt | "
@@ -915,11 +911,13 @@ GLOSSARY_DATA = [
      "Storm Score 0–10: defensive quality in volatile markets. "
      "Rewards low beta, low D/E, positive FCF, high promoter holding, "
      "low pledge and strong cash cover. Higher = safer defensive pick.","All sheets"),
-    ("TRADE PLAN","Horizon",
-     "Abbreviated Time Horizon used in Gold sheet. "
+    ("TRADE PLAN","Time Horizon",
+     "How long the system claims to hold this pick. "
      "SHORT TERM = 2–4 weeks (spike-driven entry) | "
      "POSITIONAL = 1–3 months (trend confirmed) | "
-     "LONG TERM = 6–12 months (value accumulation).","Gold Sheet"),
+     "LONG TERM = 6–12 months (value accumulation). "
+     "Drives the v14.1 outcome-tracking expiry window: "
+     "SHORT TERM → 30 days, POSITIONAL → 90 days, LONG TERM → 270 days.","All sheets"),
     ("VALUATION","P/E",
      "Price-to-Earnings ratio (abbreviated in Gold sheet). "
      "CMP ÷ Trailing 12-month EPS. "
@@ -1003,6 +1001,76 @@ GLOSSARY_DATA = [
     # Session 27: Removed standalone "M1 DCF Cap (4× CMP)" row — its content
     # is already covered by the main "M1: DCF FV (₹)" row above (Session 26
     # added the Session 19 cap + SBIN β=0.2 example inline to that entry).
+    # ──────────────────────────────────────────────────────────────────────
+    # v14.0: PERFORMANCE SHEET column entries
+    # ──────────────────────────────────────────────────────────────────────
+    ("PERFORMANCE","Total Tracked",
+     "Total Gold-sheet picks ever logged to gold_recommendations. Counts every stock that has cleared the 11-condition Gold filter at least once. "
+     "First-appearance rule: a stock is logged ONCE on its first Gold appearance; re-appearances are skipped until the original recommendation closes "
+     "(T1/T2/T3 hit, SL break, or 90-day expiry). This prevents the same stock from inflating sample size with correlated outcomes.","🎯 Performance"),
+    ("PERFORMANCE","Closed",
+     "Picks where outcome is final — sum of T1_HIT + T2_HIT + T3_HIT + SL_HIT + EXPIRED. Hit rate / SL rate / expiry rate are computed against this denominator. "
+     "Closed rows are immutable — the tracker never re-evaluates them, so once a stock hits T1, subsequent T2 movement won't update the row.","🎯 Performance"),
+    ("PERFORMANCE","Open",
+     "Picks still being monitored — within 90-day tracking window with no SL/T1/T2/T3 event yet. The tracker walks each open row's daily price history "
+     "every run, refreshing current_price + max_runup + max_drawdown. Open rows graduate to EXPIRED automatically at day 90 if no event fires.","🎯 Performance"),
+    ("PERFORMANCE","Hit Rate (T1+)",
+     "(T1_HIT + T2_HIT + T3_HIT) / CLOSED × 100. The fraction of closed picks where price reached at least the first target. The headline measure of system accuracy. "
+     "Heuristics: ≥60% = strong predictive value; 40-60% = useful but mixed; <40% = weak signal, review filter logic. "
+     "Wait for ≥30 closed picks before drawing conclusions — sample size matters.","🎯 Performance"),
+    ("PERFORMANCE","SL Rate",
+     "SL_HIT / CLOSED × 100. The fraction of closed picks that broke down through stop loss before any target hit. Lower is better. "
+     "System is calibrated for ~6.5% risk per trade; SL rate of 25-35% is normal even for a healthy strategy. >50% suggests entries are too late "
+     "(chasing momentum) or SL is set too tight.","🎯 Performance"),
+    ("PERFORMANCE","T1 Hit / T2 Hit / T3 Hit",
+     "Counts of closed picks bucketed by which target the price reached first. Note: a pick that reached T2 is NOT also counted in T1 — these are mutually exclusive buckets. "
+     "T1 = first target (~2× the risk distance from entry); T2 = T1 × 1.05; T3 = CFV-anchored (often 25-30% above entry).","🎯 Performance"),
+    ("PERFORMANCE","SL Hit",
+     "Count of closed picks where the daily LOW touched/breached the stop loss before any target was hit. We use daily OHLC, so on same-day ties (low ≤ SL AND high ≥ T1), "
+     "SL wins by convention — we can't tell intra-day order from daily bars.","🎯 Performance"),
+    ("PERFORMANCE","Expired",
+     "Count of closed picks that crossed 90 calendar days from recommendation_date without hitting any target or SL. Bucketed separately because they're neither wins nor losses — "
+     "the stock simply drifted sideways. High Expired rate suggests targets may be too ambitious for the chosen time horizon.","🎯 Performance"),
+    ("PERFORMANCE","Avg Days → T1 / T2 / T3 / SL",
+     "Mean calendar days from recommendation_date to the event firing. Useful for setting realistic expectations: if Avg Days→T1 is 20, plan to hold positions ~3 weeks. "
+     "Long Avg→SL (>30d) suggests gradual drift after entry; short Avg→SL (<10d) suggests entries on weak setups.","🎯 Performance"),
+    ("PERFORMANCE","Max Runup %",
+     "Highest unrealized gain reached during the tracking period. Computed as max((daily_high - cmp_at_recommendation) / cmp × 100) across the walk. "
+     "For closed rows, this is the peak before the close event. For open rows, this is the running max as of the last tracker run. "
+     "Useful diagnostic: if SL fires after a +20% runup, the system held a winner too long — consider trailing-stop logic.","🎯 Performance"),
+    ("PERFORMANCE","Max DD %",
+     "Worst unrealized loss reached during the tracking period — max negative excursion from cmp_at_recommendation. Computed as min((daily_low - cmp) / cmp × 100). "
+     "For SL_HIT rows, this matches the SL distance. For winners, a deep DD before the win shows the system held conviction through volatility.","🎯 Performance"),
+    ("PERFORMANCE","Days Held",
+     "For open positions only. Calendar days since recommendation_date. When this hits 90 with no SL/T1/T2/T3 event, the next tracker run bumps the row to EXPIRED.","🎯 Performance"),
+    ("PERFORMANCE","Archetype (in Performance sheet)",
+     "Quick Pick label captured at the moment the stock was logged (frozen — not updated even if today's score/EE would change it). Lets the BY QUICK PICK ARCHETYPE table "
+     "measure whether DEEP VALUE EARLY MOVER picks actually outperform DEEP VALUE — answers the question 'are the combo-archetype calls meaningfully different?'","🎯 Performance"),
+    # ──────────────────────────────────────────────────────────────────────
+    # v14.1: Horizon-aware expiry + reappearance tracking
+    # ──────────────────────────────────────────────────────────────────────
+    ("PERFORMANCE","Time Horizon",
+     "Time-horizon classification at recommendation time, set by master_funnel based on verdict + spike + supertrend + MACD: "
+     "SHORT TERM = BUY + Spike count ≥ 2 (high momentum); POSITIONAL = BUY + supertrend BUY + MACD BUY (confirmed trend) OR BUY + Score ≥ 68; LONG TERM = BUY (lower conviction) OR WATCHLIST/NEUTRAL/AVOID. "
+     "v14.1 drives the per-recommendation expiry window: SHORT TERM → 30 days, POSITIONAL → 90 days, LONG TERM → 270 days. Frozen at log time so changing constants later doesn't retroactively re-bucket existing rows.","🎯 Performance"),
+    ("PERFORMANCE","Days Left",
+     "Calendar days remaining until hard expiry. Computed as expiry_days minus days_held. When this hits 0 with no SL/T1/T2/T3 event, the next tracker run buckets the row as EXPIRED at the exact horizon-derived cutoff. "
+     "HARD CUTOFF — no grace period, no extensions. When ≤14, the open-positions row is highlighted in pale yellow with a ⚠ flag to surface positions you may want to manually review before forced expiry.","🎯 Performance"),
+    ("PERFORMANCE","Re-app",
+     "Times this stock re-appeared in Gold sheet on subsequent days while the original recommendation is still being tracked. First-appearance rule keeps the original entry/SL/T1/T2/T3 frozen — re-appearances do NOT update targets "
+     "(preserves measurement integrity by not letting later optimism rescue earlier calls). The counter exists for diagnostic visibility: high count = 'the system kept saying buy this' which is a stronger conviction signal than a single appearance. "
+     "Idempotent within a calendar day: same-day pipeline re-runs don't double-count.","🎯 Performance"),
+    ("PERFORMANCE","Approaching Expiry Warning",
+     "⚠ flag (column 12 of Open Positions table) and pale-yellow row highlight when Days Left ≤ 14. Surfaces positions nearing the hard cutoff so you can decide whether to manually exit at current P&L or accept the EXPIRED outcome. "
+     "End-of-table summary line counts how many positions are approaching expiry — useful at-a-glance metric for daily review.","🎯 Performance"),
+    ("PERFORMANCE","BY TIME HORIZON breakdown",
+     "Fourth diagnostic table in the Performance sheet (after Score Band, Quick Pick Archetype, Sector). Shows hit rate / SL rate / expired count per Horizon class. "
+     "Answers: 'are SHORT TERM picks actually winning in their stated 30-day window? are LONG TERM picks really earning their 270 days of patience?' If SHORT TERM has lower hit rate than POSITIONAL despite stricter triggers, "
+     "the SHORT TERM classification may need recalibration. v14.1 only — appears once data accumulates.","🎯 Performance"),
+    ("PERFORMANCE","Avg / Peak Missed Runup",
+     "Diagnostic for EXPIRED rows: how much max gain (max_runup_pct) the stock reached before being bucketed as EXPIRED. AVG MISSED RUNUP averages across all expired rows; PEAK MISSED RUNUP shows the worst single case. "
+     "Reading guide: AVG >15% suggests targets are too far OR expiry too early — stocks rallied during tracking but failed to reach T1 within the horizon window. AVG <5% means expiry was the right call (truly sideways stocks). "
+     "EXPIRED w/ ≥10% RUNUP shows count/total of expired rows that crossed 10% runup before failing — high ratio means the system identifies winners but mistimes them.","🎯 Performance"),
 ]
 
 GRP_COLORS = {
@@ -1015,6 +1083,8 @@ GRP_COLORS = {
     "ANALYSIS SUMMARY":"0F172A",
     # Session 19: new group for documenting the Gold-Tier filter definition
     "GOLD FILTER":"B45309",
+    # v14.0: new group for the Performance sheet
+    "PERFORMANCE":"B45309",
 }
 
 # Columns permanently blank — no free data source available
@@ -1503,9 +1573,10 @@ class ExcelGeneratorV6:
         self._trade_summary(wb)
         self._alert_log(wb)
         self._delivery_preview(wb)
+        self._performance_sheet(wb)   # v14.0: Gold-pick outcome dashboard
         self._glossary(wb)
         # Move Tooltip Reference to the end so tab order is:
-        # Full Dashboard → Gold → Trade Summary → Alert Log → Delivery → Glossary → Reference
+        # Full Dashboard → Gold → Trade Summary → Alert Log → Delivery → Performance → Glossary → Reference
         _ref = wb["📖 Tooltip Reference"]
         wb._sheets.remove(_ref); wb._sheets.append(_ref)
         for ws in wb.worksheets: ws.sheet_view.showGridLines=False
@@ -2010,6 +2081,337 @@ class ExcelGeneratorV6:
                          ('  "refresh excel"',"→  Regenerate with latest data")]:
             ws.row_dimensions[r].height=15
             ws.cell(r,2,f"{cmd:<28}{desc}").font=_ft(False,NAVY,9); r+=1
+
+    def _performance_sheet(self, wb):
+        """v14.0: Performance dashboard for Gold-pick outcome tracking.
+
+        Shows historical hit-rate stats from gold_recommendations × gold_outcomes
+        DB tables (populated by master_funnel logging + track_outcomes.py walk).
+
+        Sections:
+            1. Headline — total tracked, hit rate, SL rate, expiry rate
+            2. Speed   — avg days to T1/T2/T3
+            3. Diagnostic breakdowns — by score band, archetype, sector
+            4. Open positions — currently-tracked stocks with running P&L
+
+        Handles "no data yet" gracefully — when fewer than 30 closed picks
+        exist, shows a banner explaining stats need ≥30 closed picks for
+        meaningful interpretation. We still display whatever data is there
+        so the user can see the system is working.
+        """
+        ws = wb.create_sheet("🎯 Performance"); ws.sheet_properties.tabColor = "B45309"
+
+        # Pull data from DB
+        try:
+            from database.data_bridge import get_outcome_stats
+            _stats = get_outcome_stats()
+            _df_all = _stats.get("all_recommendations", pd.DataFrame())
+        except Exception as _pe:
+            _df_all = pd.DataFrame()
+            print(f"   ⚠️  Performance sheet — DB read failed: {_pe}")
+
+        # Column widths
+        for col, w in [("A",26),("B",16),("C",16),("D",16),("E",16),("F",16),
+                       ("G",16),("H",16),("I",16),("J",16)]:
+            ws.column_dimensions[col].width = w
+
+        # ── Title row ─────────────────────────────────────────────────────
+        ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=10)
+        ws.row_dimensions[1].height = 26
+        c = ws.cell(1,1,
+            f"🎯 GOLD-PICK PERFORMANCE TRACKER  ·  Outcome stats since launch  ·  Generated {self.run_time}")
+        c.fill = _f(NAVY); c.font = _ft(True,WHITE,12); c.alignment = _al()
+
+        # If table is empty (first run, no data yet)
+        if _df_all.empty:
+            ws.merge_cells(start_row=3,start_column=1,end_row=3,end_column=10)
+            c = ws.cell(3,1,
+                "📋 No Gold-pick history yet — tracking starts the first time a stock makes the Gold sheet. "
+                "Run the daily pipeline + track_outcomes.py for at least 30 days to see meaningful stats.")
+            c.fill = _f("FEF3C7"); c.font = _ft(False,NAVY,10,True); c.alignment = _al("left","center",True)
+            ws.row_dimensions[3].height = 36
+            return
+
+        # ── Helper to write a labeled metric cell ─────────────────────────
+        def _metric(row, col, label, value, *, value_fill="EFF6FF", label_fill="DBEAFE",
+                    label_color="1E3A8A", val_bold=True, val_color=NAVY, val_size=14):
+            cl = ws.cell(row, col, label)
+            cl.fill = _f(label_fill); cl.font = _ft(False, label_color, 9); cl.alignment = _al()
+            cv = ws.cell(row+1, col, value)
+            cv.fill = _f(value_fill); cv.font = _ft(val_bold, val_color, val_size); cv.alignment = _al()
+            ws.row_dimensions[row].height = 16
+            ws.row_dimensions[row+1].height = 22
+
+        # Compute headline metrics
+        n_total = len(_df_all)
+        closed_mask = _df_all["outcome_type"].isin(["SL_HIT","T1_HIT","T2_HIT","T3_HIT","EXPIRED"])
+        n_closed = int(closed_mask.sum())
+        n_open   = int((_df_all["outcome_type"] == "OPEN").sum())
+
+        if n_closed > 0:
+            n_t1 = int((_df_all["outcome_type"] == "T1_HIT").sum())
+            n_t2 = int((_df_all["outcome_type"] == "T2_HIT").sum())
+            n_t3 = int((_df_all["outcome_type"] == "T3_HIT").sum())
+            n_sl = int((_df_all["outcome_type"] == "SL_HIT").sum())
+            n_ex = int((_df_all["outcome_type"] == "EXPIRED").sum())
+            # T1+ hit rate = anything that reached at least T1 (T1, T2, or T3)
+            hit_rate = (n_t1 + n_t2 + n_t3) / n_closed * 100
+            sl_rate  = n_sl / n_closed * 100
+            ex_rate  = n_ex / n_closed * 100
+        else:
+            n_t1 = n_t2 = n_t3 = n_sl = n_ex = 0
+            hit_rate = sl_rate = ex_rate = 0.0
+
+        # Insufficient-sample banner
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=10)
+        if n_closed < 30:
+            banner = (f"⚠️ Only {n_closed} closed pick(s) so far — stats below are preliminary. "
+                      f"Wait for ≥30 closed picks for statistically meaningful interpretation.")
+            ws.cell(3,1,banner).fill = _f("FEF3C7")
+            ws.cell(3,1).font = _ft(False,"92400E",9,True)
+        else:
+            banner = (f"✅ {n_closed} closed picks tracked — sample size is meaningful for "
+                      f"diagnostic interpretation. {n_open} positions still open.")
+            ws.cell(3,1,banner).fill = _f("D1FAE5")
+            ws.cell(3,1).font = _ft(False,"065F46",9,True)
+        ws.cell(3,1).alignment = _al("left","center",True)
+        ws.row_dimensions[3].height = 24
+
+        # ── Section 1: HEADLINE METRICS ───────────────────────────────────
+        ws.merge_cells(start_row=5,start_column=1,end_row=5,end_column=10)
+        c = ws.cell(5,1,"📊  HEADLINE METRICS")
+        c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
+        ws.row_dimensions[5].height = 22
+
+        # Row 6/7: 5 metric cells
+        _metric(6, 1, "TOTAL TRACKED",     n_total)
+        _metric(6, 2, "CLOSED",            n_closed)
+        _metric(6, 3, "OPEN",              n_open,
+                value_fill="DBEAFE", label_fill="BFDBFE")
+        _metric(6, 4, "HIT RATE (T1+)",    f"{hit_rate:.1f}%",
+                value_fill="D1FAE5", label_fill="BBF7D0", val_color="065F46")
+        _metric(6, 5, "SL RATE",           f"{sl_rate:.1f}%",
+                value_fill="FEE2E2", label_fill="FECACA", val_color="991B1B")
+
+        # Row 9/10: outcome counts
+        ws.merge_cells(start_row=9,start_column=1,end_row=9,end_column=10)
+        c = ws.cell(9,1,"  Outcome breakdown of closed picks")
+        c.fill = _f(LG); c.font = _ft(False,NAVY,9,True); c.alignment = _al("left")
+        ws.row_dimensions[9].height = 16
+        _metric(10, 1, "T1 HIT", n_t1, value_fill="D1FAE5",  label_fill="A7F3D0", val_color="065F46")
+        _metric(10, 2, "T2 HIT", n_t2, value_fill="A7F3D0",  label_fill="6EE7B7", val_color="065F46")
+        _metric(10, 3, "T3 HIT", n_t3, value_fill="6EE7B7",  label_fill="34D399", val_color="065F46")
+        _metric(10, 4, "SL HIT", n_sl, value_fill="FECACA",  label_fill="FCA5A5", val_color="991B1B")
+        _metric(10, 5, "EXPIRED",n_ex, value_fill="E5E7EB",  label_fill="D1D5DB", val_color="374151")
+
+        # ── Section 2: SPEED ──────────────────────────────────────────────
+        ws.merge_cells(start_row=13,start_column=1,end_row=13,end_column=10)
+        c = ws.cell(13,1,"⏱  SPEED METRICS  ·  Average days from recommendation to event")
+        c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
+        ws.row_dimensions[13].height = 22
+
+        def _avg_days(outcome):
+            sub = _df_all[_df_all["outcome_type"] == outcome]
+            if sub.empty: return "—"
+            return f"{sub['days_to_outcome'].mean():.1f} days"
+
+        _metric(14, 1, "AVG DAYS → T1", _avg_days("T1_HIT"))
+        _metric(14, 2, "AVG DAYS → T2", _avg_days("T2_HIT"))
+        _metric(14, 3, "AVG DAYS → T3", _avg_days("T3_HIT"))
+        _metric(14, 4, "AVG DAYS → SL", _avg_days("SL_HIT"),
+                value_fill="FEE2E2", label_fill="FECACA", val_color="991B1B")
+
+        # ── Section 3: DIAGNOSTIC BREAKDOWNS ──────────────────────────────
+        ws.merge_cells(start_row=17,start_column=1,end_row=17,end_column=10)
+        c = ws.cell(17,1,"🔬  DIAGNOSTIC BREAKDOWNS  ·  Hit rate by Score band / Archetype / Sector")
+        c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
+        ws.row_dimensions[17].height = 22
+
+        # Score band breakdown
+        def _bucket_score(s):
+            try: s = float(s)
+            except: return "Unknown"
+            if s >= 90: return "≥90 (top tier)"
+            if s >= 80: return "80-89"
+            if s >= 70: return "70-79"
+            return "<70"
+
+        _df_all["_score_band"] = _df_all["composite_score"].apply(_bucket_score)
+        _closed = _df_all[closed_mask].copy()
+        _closed["_score_band"] = _closed["composite_score"].apply(_bucket_score)
+
+        def _build_breakdown_table(start_row, header, group_col):
+            """Render a 5-column table: group | total | T1+/SL/EXP / hit%"""
+            ws.cell(start_row, 1, header).font = _ft(True, NAVY, 10)
+            ws.cell(start_row, 1).fill = _f("FEF3C7")
+            ws.row_dimensions[start_row].height = 18
+            # column headers
+            for ci, h in enumerate(["Group","Total","T1+ Hits","SL Hits","Expired","Hit Rate"], 1):
+                cc = ws.cell(start_row + 1, ci, h)
+                cc.fill = _f("FED7AA"); cc.font = _ft(True, NAVY, 9); cc.alignment = _al()
+            ws.row_dimensions[start_row + 1].height = 18
+            # group rows
+            if _closed.empty:
+                ws.cell(start_row + 2, 1, "  (no closed picks yet)").font = _ft(False, "6B7280", 9, True)
+                return start_row + 3
+            grouped = _closed.groupby(group_col).agg(
+                total=(group_col, "size"),
+                t1_plus=("outcome_type", lambda s: int(s.isin(["T1_HIT","T2_HIT","T3_HIT"]).sum())),
+                sl=("outcome_type", lambda s: int((s == "SL_HIT").sum())),
+                expired=("outcome_type", lambda s: int((s == "EXPIRED").sum())),
+            ).reset_index().sort_values("total", ascending=False)
+            r = start_row + 2
+            for _, gr in grouped.iterrows():
+                tot = int(gr["total"])
+                if tot == 0: continue
+                hit_pct = gr["t1_plus"] / tot * 100
+                bg = LG if r % 2 == 0 else WHITE
+                ws.cell(r,1, str(gr[group_col])).fill = _f(bg)
+                ws.cell(r,1).font = _ft(False, NAVY, 9); ws.cell(r,1).alignment = _al("left")
+                for ci, val in [(2, tot), (3, int(gr["t1_plus"])),
+                                (4, int(gr["sl"])), (5, int(gr["expired"]))]:
+                    cc = ws.cell(r, ci, val); cc.fill = _f(bg); cc.font = _ft(False, NAVY, 9)
+                    cc.alignment = _al()
+                # Hit rate cell — colored by quality
+                if hit_pct >= 60:    rate_bg = "D1FAE5"; rate_color = "065F46"
+                elif hit_pct >= 40:  rate_bg = "FEF3C7"; rate_color = "92400E"
+                else:                rate_bg = "FEE2E2"; rate_color = "991B1B"
+                cc = ws.cell(r, 6, f"{hit_pct:.1f}%")
+                cc.fill = _f(rate_bg); cc.font = _ft(True, rate_color, 9); cc.alignment = _al()
+                r += 1
+            return r + 1
+
+        next_row = _build_breakdown_table(18, "BY COMPOSITE SCORE BAND", "_score_band")
+        next_row = _build_breakdown_table(next_row, "BY QUICK PICK ARCHETYPE", "quick_pick_label")
+        next_row = _build_breakdown_table(next_row, "BY SECTOR", "sector")
+        # v14.1: 4th breakdown — by time horizon (SHORT TERM / POSITIONAL / LONG TERM)
+        # Lets you measure whether the system's own horizon classifications hold up
+        # (do POSITIONAL picks actually resolve in 1-3 months? do SHORT TERM picks
+        # really hit in 2-4 weeks?). Empty/missing horizon rows roll into "—" group.
+        if "time_horizon" in _df_all.columns:
+            _df_all["_horizon_clean"] = _df_all["time_horizon"].fillna("—").astype(str).replace("", "—")
+            if not _closed.empty:
+                _closed["_horizon_clean"] = _closed["time_horizon"].fillna("—").astype(str).replace("", "—")
+            next_row = _build_breakdown_table(next_row, "BY TIME HORIZON", "_horizon_clean")
+
+        # ── Section 4: OPEN POSITIONS ─────────────────────────────────────
+        # v14.1: enhanced with Horizon, Days Left, Re-appearances, ⚠ approaching-expiry flag
+        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=12)
+        c = ws.cell(next_row,1,
+            "📂  OPEN POSITIONS  ·  Currently-tracked stocks with running P&L vs targets")
+        c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
+        ws.row_dimensions[next_row].height = 22
+        next_row += 1
+
+        # v14.1: 12-column header (was 10 in v14.0). New: Time Horizon, Days Left, Re-app, ⚠
+        open_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",15),("Days Held",10),
+                     ("Days Left",10),("Re-app",8),("CMP at Rec",12),("Current Price",12),
+                     ("P&L %",10),("Max Runup %",12),("Score",8),("⚠",6)]
+        for ci,(h,w) in enumerate(open_cols, 1):
+            cc = ws.cell(next_row, ci, h)
+            cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
+            ws.column_dimensions[get_column_letter(ci)].width = w
+        ws.row_dimensions[next_row].height = 20
+        next_row += 1
+
+        _open_df = _df_all[_df_all["outcome_type"] == "OPEN"].copy()
+        _approaching_count = 0   # for an end-of-table summary
+        if _open_df.empty:
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=12)
+            c = ws.cell(next_row,1,"  No currently-open positions.")
+            c.fill = _f(LG); c.font = _ft(False,"6B7280",9,True); c.alignment = _al("left")
+            next_row += 1
+        else:
+            # Compute days held from recommendation_date to today
+            _today_dt = datetime.now()
+            for _, row_o in _open_df.iterrows():
+                try:
+                    _rd = datetime.strptime(str(row_o.get("recommendation_date","")), "%Y-%m-%d")
+                    _days_held = (_today_dt - _rd).days
+                except Exception:
+                    _days_held = 0
+                # v14.1: per-rec expiry window — defaults to 90 if column missing (legacy rows)
+                _exp_days = int(row_o.get("expiry_days", 90) or 90)
+                if _exp_days <= 0: _exp_days = 90
+                _days_left = max(0, _exp_days - _days_held)
+                _is_approaching = _days_left <= 14
+                if _is_approaching: _approaching_count += 1
+                _times_reap = int(row_o.get("times_reappeared", 0) or 0)
+                _horizon_str = str(row_o.get("time_horizon","") or "—")
+                bg = LG if next_row % 2 == 0 else WHITE
+                # Highlight whole row in pale yellow if approaching expiry
+                if _is_approaching: bg = "FEF3C7"
+                vals = [
+                    str(row_o.get("symbol","—")),
+                    str(row_o.get("recommendation_date","—")),
+                    _horizon_str,
+                    _days_held,
+                    _days_left,
+                    _times_reap if _times_reap > 0 else "—",
+                    round(float(row_o.get("cmp_at_recommendation",0) or 0), 2),
+                    round(float(row_o.get("current_price",0) or 0), 2),
+                    f"{float(row_o.get('current_pnl_pct',0) or 0):+.1f}%",
+                    f"{float(row_o.get('max_runup_pct',0) or 0):+.1f}%",
+                    round(float(row_o.get("composite_score",0) or 0), 1),
+                    "⚠" if _is_approaching else "",
+                ]
+                for ci, v in enumerate(vals, 1):
+                    cc = ws.cell(next_row, ci, v); cc.fill = _f(bg)
+                    cc.font = _ft(False, NAVY, 9); cc.alignment = _al()
+                # Color P&L cell
+                pnl = float(row_o.get("current_pnl_pct",0) or 0)
+                if pnl > 0:    ws.cell(next_row, 9).font = _ft(True, "065F46", 9)
+                elif pnl < 0:  ws.cell(next_row, 9).font = _ft(True, "991B1B", 9)
+                # Bold the warning emoji
+                if _is_approaching:
+                    ws.cell(next_row, 12).font = _ft(True, "92400E", 11)
+                next_row += 1
+            # End-of-table summary line if any approaching expiry
+            if _approaching_count > 0:
+                ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=12)
+                c = ws.cell(next_row,1,
+                    f"  ⚠ {_approaching_count} position(s) within 14 days of expiry — "
+                    "review for manual exit or accept EXPIRED outcome at the hard cutoff.")
+                c.fill = _f("FEF3C7"); c.font = _ft(False,"92400E",9,True); c.alignment = _al("left")
+                ws.row_dimensions[next_row].height = 20
+                next_row += 1
+
+        # ── v14.1 Section 5: EXPIRED — MISSED RUNUP DIAGNOSTIC ────────────
+        # For EXPIRED rows, show what max runup the stock reached during
+        # tracking. High avg = "we're leaving money on the table by expiring
+        # positions too early or with too-tight targets". Low avg = "the
+        # stock genuinely went sideways, expiry was the right call."
+        _expired_df = _df_all[_df_all["outcome_type"] == "EXPIRED"].copy()
+        if not _expired_df.empty and len(_expired_df) >= 3:
+            next_row += 1   # spacer
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=12)
+            c = ws.cell(next_row,1,
+                "💸  EXPIRED — MISSED RUNUP DIAGNOSTIC  ·  How much was 'left on the table' before expiry")
+            c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
+            ws.row_dimensions[next_row].height = 22
+            next_row += 1
+
+            avg_missed = _expired_df["max_runup_pct"].astype(float).mean()
+            max_missed = _expired_df["max_runup_pct"].astype(float).max()
+            count_significant = int((_expired_df["max_runup_pct"].astype(float) >= 10).sum())
+            # 3 summary cells
+            _metric(next_row, 1, "AVG MISSED RUNUP", f"{avg_missed:+.1f}%",
+                    value_fill="FEF3C7", label_fill="FED7AA", val_color="92400E")
+            _metric(next_row, 2, "PEAK MISSED RUNUP", f"{max_missed:+.1f}%",
+                    value_fill="FEF3C7", label_fill="FED7AA", val_color="92400E")
+            _metric(next_row, 3, "EXPIRED w/ ≥10% RUNUP",
+                    f"{count_significant}/{len(_expired_df)}",
+                    value_fill="FEE2E2", label_fill="FECACA", val_color="991B1B")
+            next_row += 3
+            # Interpretive note
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=12)
+            c = ws.cell(next_row, 1,
+                "  Reading guide: high AVG MISSED RUNUP (>15%) suggests targets are too far "
+                "or expiry too early. Stocks rallied during tracking but failed to reach T1 within "
+                "the horizon's window. Investigate top offenders manually.")
+            c.fill = _f(LG); c.font = _ft(False, "475569", 9, True); c.alignment = _al("left", "center", True)
+            ws.row_dimensions[next_row].height = 30
+            next_row += 1
 
     def _glossary(self,wb):
         ws=wb.create_sheet("📖 Glossary"); ws.sheet_properties.tabColor="475569"
