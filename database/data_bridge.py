@@ -1572,8 +1572,15 @@ def increment_reappearance(symbol: str, today_iso: str) -> bool:
             if not row:
                 return False
             rec_date, last_reap = row
-            # Skip if already incremented today (idempotency)
+            # Idempotency #1: skip if already incremented today
             if last_reap == today_iso:
+                return False
+            # Idempotency #2: skip if today IS the recommendation_date.
+            # This handles the case where the pipeline runs multiple times on
+            # the same day the stock was first logged — without this guard,
+            # the 2nd run-of-day-1 would falsely register a "re-appearance"
+            # against the just-created row. (Bug found in Q1 verification — fixed v14.1.1.)
+            if rec_date == today_iso:
                 return False
             c.execute("""
                 UPDATE gold_recommendations

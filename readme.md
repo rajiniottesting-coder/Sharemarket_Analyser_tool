@@ -1,4 +1,4 @@
-# NSE / BSE Stock Analyser — v12.3
+# NSE / BSE Stock Analyser — v14.1
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
 > 5,000+ stocks → AI-scored Excel dashboard → your inbox by ~5:30 AM IST.
@@ -18,7 +18,8 @@ Single-user personal tool. No UI, no server to manage. Runs free on GitHub Actio
 - **Forensic guards** — Altman Z, Beneish M, promoter pledge, Piotroski F /9, BS Health status — automatically suppress alerts on distressed names.
 - **Forensic quality scoring** (v10.9+) — Altman Z, Earn Quality, ND/EBITDA, Int Coverage feed into the composite score (+8 bonus / −10 penalty cap).
 - **Gold-Tier filter** — 11 conditions ensure only genuinely healthy stocks with patient upside reach the Gold sheet.
-- **7-sheet Excel dashboard** — Full Dashboard, Gold (Early Movers), Trade Summary, Alert Log, Delivery Preview, Glossary, Tooltip Reference — with Indian currency formatting, right-sized hover tooltips on every metric.
+- **Outcome tracking** (v14.0+) — every Gold-sheet pick is logged with its entry/SL/T1/T2/T3 levels and tracked forward through `daily_prices` via `track_outcomes.py`. v14.1 dispatches per-Horizon expiry windows (SHORT TERM 30d / POSITIONAL 90d / LONG TERM 270d). New `🎯 Performance` sheet renders headline hit rates, speed metrics, and BY SCORE/ARCHETYPE/SECTOR/TIME HORIZON breakdowns.
+- **8-sheet Excel dashboard** — Full Dashboard, Gold (Early Movers), Trade Summary, Alert Log, Delivery Preview, 🎯 Performance, Glossary, Tooltip Reference — with Indian currency formatting, right-sized hover tooltips on every metric.
 - **AI investor cards** — Google Gemini generates a 150–250 word research note per stock, batched 10–15 per API call, grounded with the engine's pre-computed Graham/PEG/CFV values.
 - **Gate-checked execution** — 6 pre-conditions (weekday, holiday calendar, NSE bhav availability, data integrity, DB freshness, minimum rows) must pass before any download or analysis.
 - **BSE resilience** — uses the `bse` pip package (Akamai auth handled internally) and falls back to a curated `DUAL_LISTED_ALLOWLIST` of 206 Nifty-100/mid-cap names when BSE downloads fail from cloud IPs.
@@ -30,7 +31,8 @@ Single-user personal tool. No UI, no server to manage. Runs free on GitHub Actio
 ```
 Sharemarket_Analyser_tool/
 ├── master_funnel.py              Core pipeline orchestrator (Sections 0–13)
-├── backfill_history.py           365-day initial backfill + yfinance enrichment
+├── backfill_history.py           400-day initial backfill + yfinance enrichment (v12.6.1)
+├── track_outcomes.py             v14.0+ Gold-pick outcome tracker — walks daily_prices forward
 ├── requirements.txt
 ├── .env                          (local only — secrets go into GitHub Secrets in prod)
 │
@@ -69,7 +71,7 @@ Sharemarket_Analyser_tool/
 │   └── ai_analyst.py             Google Gemini batch analysis
 │
 ├── reporting/
-│   ├── excel_generator.py        7-sheet ExcelGeneratorV6 + dynamic red-header + dynamic tooltip sizing
+│   ├── excel_generator.py        8-sheet ExcelGeneratorV6 + dynamic red-header + dynamic tooltip sizing (v14.0 Performance sheet)
 │   ├── tooltip_formatter.py      Cell / group / reference tooltips with per-tooltip dynamic height
 │   ├── daily_report_generator.py Plain-text research report
 │   ├── report_formatter.py       Investor card formatter
@@ -101,11 +103,14 @@ git clone <your-fork>
 cd Sharemarket_Analyser_tool
 pip install -r requirements.txt
 
-# one-time: populate 365-day history (~30–60 min, uses yfinance)
-python backfill_history.py 365
+# one-time: populate 400-day history (~30–60 min, uses yfinance) — v12.6.1
+python backfill_history.py 400
 
 # daily: runs the full pipeline
 python master_funnel.py
+
+# v14.0+: after pipeline, run the outcome tracker (or schedule it 30 min later)
+python track_outcomes.py
 ```
 
 On first run, if `daily_prices` has fewer than 50,000 rows the pipeline will auto-trigger `backfill_history.py 365`. Expect a cold start to take ~45 minutes.
@@ -186,9 +191,9 @@ Section 6   Scoring loop per stock
              → Storm score → Spike score → Horizon + Risk level (after verdict)
              → F-Score proxy → Price targets T1/T2/T3 + SL + R:R
 Section 7/8 AI investor cards (Gemini, batches of 10–15)
-Section 9/10 7-sheet Excel dashboard + text research report
+Section 9/10 8-sheet Excel dashboard + text research report (v14.0 added 🎯 Performance)
 Section 12  Gmail SMTP delivery
-Section 13  DB maintenance — 400-day rolling window
+Section 13  DB maintenance — 400-day rolling window (gold_recommendations + gold_outcomes intentionally NOT pruned — outcome tracking retains all-time history)
 ```
 
 ---
@@ -272,30 +277,33 @@ Verdicts are cap-aware. Thresholds and confidence dots live in `analysis/scoring
 
 ---
 
-## Excel output — 7 sheets
+## Excel output — 8 sheets
 
 1. **📊 Full Dashboard** — 100 stocks × ~123 columns. Every metric. The full picture.
 2. **⭐ Gold / Early Movers** — 11-condition filter (see scoring flow above). Row 2 displays the criteria text; daily count typically 0–10.
 3. **📊 Trade Summary** — Entry / Stop Loss / T1 / T2 / T3 / R:R for Gold stocks only.
 4. **🔔 Alert Log** — Today's score vs yesterday's, 8-way **Action Required** logic (`CONSIDER ENTRY`, `MONITOR FOR ENTRY`, `VOLUME ALERT — INVESTIGATE`, `EARLY MOVER — ACCUMULATE`, `SCORE IMPROVING — WATCH`, `SCORE DECLINING — CAUTION`, `REVIEW FOR EXIT`, `MONITOR CLOSELY`).
 5. **📱 Delivery Preview** — WhatsApp + Email text preview.
-6. **📖 Glossary** — 80+ column definitions.
-7. **💡 Tooltip Reference** — Polished hover + ⓘ cue.
+6. **🎯 Performance** *(v14.0+)* — Gold-pick outcome tracking. Headline metrics (Total Tracked / Closed / Open / Hit Rate / SL Rate), speed metrics (Avg Days → T1/T2/T3/SL), 4 diagnostic breakdown tables (BY SCORE BAND / ARCHETYPE / SECTOR / TIME HORIZON), live Open Positions with running P&L + ⚠ approaching-expiry warnings, EXPIRED missed-runup diagnostic. Empty-state banner on Day 1; sample-size guard at <30 closed picks.
+7. **📖 Glossary** — 80+ column definitions.
+8. **💡 Tooltip Reference** — Polished hover + ⓘ cue.
 
 Tooltips auto-size per content (v10.12): short 2-line tips render at ~85px; long 16-line tips at ~308px. No empty yellow space.
 
 ---
 
-## DB retention — 365 vs 400 clarification
+## DB retention — backfill window vs rolling window
 
 Two distinct day-counts in the pipeline, serving different purposes:
 
 | Thing | Where | Value | Purpose |
 |---|---|---|---|
-| Initial backfill | `backfill_history.py` (`DAYS_TO_BACKFILL`) | **365 calendar days** | One-time cold-start hydration |
+| Initial backfill | `backfill_history.py` (`DAYS_TO_BACKFILL`) | **400 calendar days** *(v12.6.1, was 365)* | One-time cold-start hydration |
 | Rolling window | `database/db_maintenance.py` (`KEEP_DAYS`) | **400 calendar days ≈ 275 trading days** | Daily pruning + VACUUM, runs as Section 13 after each pipeline |
 
 **Why 400 rather than 365?** 52-week high/low needs ≥ 250 trading days; 200-day SMA needs 200; 8-week momentum needs 41. 400 calendar days ≈ 275 trading days (after weekends + NSE holidays) — comfortably above the 250-trading-day floor. If only 365 calendar days were kept, we'd be at ~250 trading days, right on the edge.
+
+**v14.0+ outcome tracking tables (`gold_recommendations`, `gold_outcomes`) are intentionally NOT pruned** — outcome history is the entire point of v14.0 measurement, and the storage cost is negligible (~270 bytes per Gold pick × ~6 picks/day = ~0.6 MB/year). The cleanup logic in `db_maintenance.py::enforce_circular_queue` deliberately omits these two tables.
 
 ---
 
