@@ -3146,6 +3146,105 @@ The DB column name remains `time_horizon` (no schema rename — would have broke
 
 **Final test count**: 8 + 7 + 7 + 17 + **14** = **53/53 across 5 suites**.
 
+### v14.1.2 hotfix — hook-ordering bug (Day-2 user observation)
+
+**Date:** May 9, 2026 (one day after first production rollout)
+**Discovered by:** Rajkumar — "yesterday 3 stocks logged, today 3 more, why does Performance sheet only show 3?"
+
+**The bug:** v14 logging hook fired AFTER `generate_excel_reports()`. So the Performance sheet was rendered using yesterday's gold_recommendations only — today's picks were logged 1 step too late, surfacing on Day+1. Off-by-one-day display bug.
+
+**Day-by-day evidence from user's actual production data:**
+- 2026-05-07 (Day 1): Pipeline runs → Performance sheet renders empty (no history) → AFTER save, 3 stocks logged (PETRONET, ITC, BSOFT)
+- 2026-05-08 (Day 2): Pipeline runs → Performance sheet renders showing yesterday's 3 stocks → AFTER save, 3 new stocks logged (HEXT, FIEMIND, VIKRAMSOLR)
+- User's question: "where are today's 3 stocks?" — they were logged but rendered one day late
+
+**The fix:** Move the v14 hook to BEFORE `generate_excel_reports()`. Verified safe because `excel_gen._get_gold()` only reads `self.df` (set in constructor), doesn't depend on Excel having been built.
+
+**New test:** `test_g10_v14_hook_fires_before_excel_generation` — locks the order via source-code anchor positions. Catches future regressions if anyone re-adds the hook below the Excel call.
+
+**Test count after fix:** 8 + 7 + 7 + 17 + **16** = **55/55 across 5 suites**.
+
+### v14.1.3 hotfix — tracker invocation missing (Day-2 user observation #2)
+
+**Date:** May 9, 2026 (same day as v14.1.2)
+**Discovered by:** Rajkumar — "Current Price = CMP at Rec, P&L = +0.0%, Max Runup = +0.0% for every position regardless of how the stock has moved"
+
+**The bug:** `track_outcomes.py` is the script that walks `daily_prices` forward and refreshes OPEN row fields (`current_price`, `current_pnl_pct`, `max_runup_pct`, `max_drawdown_pct`). It was a standalone script the user had to run separately — but in production, no one ever invoked it. So OPEN-row fields were stuck at the seed values from `insert_gold_recommendation` (current_price = cmp_at_recommendation, P&L=0, max_runup=0) forever. Performance sheet showed frozen-at-recommendation snapshots, not live tracker output.
+
+**Evidence from user's screenshot (2026-05-08):**
+- PETRONET: rec at ₹282.1, current ₹282.1 (identical), P&L +0.0%, max_runup +0.0%
+- ITC: rec at ₹307.4, current ₹307.4 (identical), P&L +0.0%, max_runup +0.0%
+- BSOFT: rec at ₹362.2, current ₹362.2 (identical), P&L +0.0%, max_runup +0.0%
+
+Same exact pattern across all 3 stocks → not a one-stock data error, but a structural bug. Tracker had never run.
+
+**The fix:** `master_funnel.py` now invokes `track_outcomes.main()` automatically as part of the pipeline. New ordering:
+1. v14 hook fires — log today's Gold picks (already in v14.1.2)
+2. **NEW v14.1.3** — `track_outcomes.main()` runs, refreshes all OPEN rows
+3. `generate_excel_reports()` — Performance sheet sees today's logged stocks AND fresh tracker output
+
+This makes the tracker an automatic part of every pipeline run. No more manual invocation needed. Console output now shows tracker state in every pipeline log.
+
+**End-to-end simulation verified:**
+| Day | Price | current_price | P&L % | max_runup % |
+|-----|-------|--------------|-------|-------------|
+| 1 | rec at ₹380 | 380 | 0.0% | 0.0% |
+| 2 | high 395, close 392 | 392 | +3.2% | +4.0% |
+| 3 | high 415, close 410 | 410 | +7.9% | +9.2% |
+| 4 | high 420 → T1 hit | (T1_HIT @ 418) | (closed) | +10.5% |
+
+**New test:** `test_g11_tracker_invoked_from_master_funnel` — verifies `from track_outcomes import main` is present, `_tracker_main()` is called, and ordering (hook → tracker → Excel) is preserved. Catches future regressions if anyone removes the integration.
+
+**Test count after fix:** 8 + 7 + 7 + 17 + **17** = **56/56 across 5 suites**.
+
+**Combined v14.1.2 + v14.1.3 user-visible effect:** After deploying both, tomorrow's Performance sheet will:
+1. Show today's 3 new stocks (HEXT, FIEMIND, VIKRAMSOLR) — v14.1.2 fix
+2. Have correct Current Price, P&L%, Max Runup% on yesterday's 3 stocks (PETRONET, ITC, BSOFT) — v14.1.3 fix
+3. Show 6 total OPEN positions (3 from each day) with live, accurate price tracking
+
+### v14.3 audit + fix — comprehensive Performance sheet value-correctness audit
+
+**Date:** May 9, 2026 (same day as v14.1.2/v14.1.3)
+**Trigger:** User request: "rather than waiting 30 days to find issues, simulate all possible conditions and fix any issues found"
+
+**What was audited:** 17 distinct scenarios run through the actual `_performance_sheet()` code path with synthesised DB data. Total of 60+ individual cell-value assertions verified across:
+
+| Section | Scenarios checked |
+|---|---|
+| HEADLINE METRICS | TOTAL/CLOSED/OPEN counts; HIT RATE formula = (T1+T2+T3)/closed; SL RATE formula |
+| Outcome breakdown row | All 5 buckets (T1/T2/T3/SL/EXPIRED) count correctly |
+| SPEED METRICS | AVG DAYS → T1/T2/T3/SL formulas; '—' fallback when no closed rows |
+| BY COMPOSITE SCORE BAND | 90+ / 80-89 / 70-79 / <70 boundary behavior at 95, 90, 89.9, 80, 79.9, 70, 69.9 |
+| BY QUICK PICK ARCHETYPE | Multi-archetype grouping including long labels ("DEEP VALUE FALLEN ANGEL") |
+| BY SECTOR | All sectors group correctly; hit-rate cell color thresholds (≥60% green, 40-60% amber, <40% red) |
+| BY TIME HORIZON | SHORT/POSITIONAL/LONG buckets group correctly; empty horizon → "—" group |
+| OPEN POSITIONS | 12-column header; days_left formula; ⚠ flag at boundary (≤14 inclusive) |
+| Approaching-expiry highlight | URGENT (5d), NORMAL (88d), BORDER (exactly 14d) — pale-yellow row + ⚠ flag |
+| End-of-table summary | Approaching-expiry count = 2 when 2 stocks within 14 days |
+| Re-app counter display | "—" for 0, integer for >0 |
+| P&L color coding | green (>0), red (<0), default (=0) |
+| MISSED RUNUP DIAGNOSTIC | AVG / PEAK / count_significant formulas; suppressed at <3 expired; renders at ≥3 |
+| MISSED RUNUP edge cases | Negative max_runup values; mixed positive/negative |
+| Sample-size banner | Amber at <30 closed; green at ≥30 closed |
+| All-loser scenario | 0% hit rate, 100% SL rate, sector cell red |
+| 10K-row scale test | Renders in <1 second; total = 10000 |
+| Robustness | NULL fields, NaN scores, empty strings — graceful, no crash |
+| Day-1 production state | Mirror user's exact 2026-05-08 situation; all fields verified |
+
+**Result of audit: ALL 60+ assertions pass.** The Performance sheet rendering code is correct. No values are populated wrongly when given correct DB data.
+
+**One soft issue surfaced and fixed:** `insert_gold_recommendation` was returning `True` even when `INSERT OR IGNORE` silently dropped the row due to a PRIMARY KEY collision (symbol+recommendation_date). Effect: master_funnel's `_skipped_err` counter never registered duplicate-key collisions. They would have been invisible in pipeline logs.
+
+**Fix:** capture `cursor.rowcount` immediately after the gold_recommendations INSERT (before the second INSERT into gold_outcomes overwrites it). Return True only when rowcount==1 (genuine new insertion); return False on collision. Master_funnel hook unchanged — its existing `if insert_gold_recommendation(_rec): _logged += 1; else: _skipped_err += 1` now correctly distinguishes new logs from silent dupes.
+
+**New tests:**
+- `test_g12_insert_returns_false_on_duplicate` — locks the rowcount semantics
+- `test_g13_performance_sheet_value_correctness_audit` — runs a synthetic 35-row dataset through the full pipeline and asserts 16 specific calculation invariants. If any formula drifts (someone changes the score band thresholds, the speed metric calculation, the missed-runup formula), this test catches it before a 30-day real-world wait would.
+
+**Test count after v14.3:** 8 + 7 + 7 + 17 + **19** = **58/58 across 5 suites**.
+
+**No user-visible behavior change** — production pipelines never had PK collisions because the first-appearance gate (`has_open_recommendation`) catches dupes upstream. v14.3 is defense-in-depth: better instrumentation if anything breaks the upstream gate in the future.
+
 ---
 
-*Last updated: May 8, 2026 · v14.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 9, 2026 · v14.3 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

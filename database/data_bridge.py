@@ -1374,7 +1374,19 @@ def has_open_recommendation(symbol: str) -> bool:
 
 
 def insert_gold_recommendation(rec: dict) -> bool:
-    """v14.0/v14.1: Insert one Gold-sheet recommendation. Returns True on success.
+    """v14.0/v14.1/v14.3: Insert one Gold-sheet recommendation.
+
+    Returns:
+      True  — row was newly inserted (cursor.rowcount == 1 on the gold_recommendations INSERT)
+      False — row already existed (PRIMARY KEY collision on symbol+recommendation_date)
+              OR DB error occurred. Either way the caller should treat as "not logged this call".
+
+    v14.3 audit fix: previously returned True even when INSERT OR IGNORE silently
+    skipped due to PK collision, masking duplicate-key issues. Caller (master_funnel)
+    now uses the False return as a signal that the row was a same-day duplicate, not
+    a fresh log. The first-appearance gate still happens upstream via
+    has_open_recommendation() — this is a defense-in-depth check.
+
     Caller should have already verified has_open_recommendation()==False
     for this symbol (first-appearance rule).
     Also seeds a corresponding row in gold_outcomes with outcome_type=OPEN.
@@ -1419,6 +1431,8 @@ def insert_gold_recommendation(rec: dict) -> bool:
                 rec.get("expiry_date", ""),
                 0,  # times_reappeared starts at 0
             ))
+            # v14.3: capture rowcount BEFORE the second INSERT overwrites it
+            inserted = (c.rowcount == 1)
             # Seed gold_outcomes with OPEN row
             c.execute("""
                 INSERT OR IGNORE INTO gold_outcomes
@@ -1433,7 +1447,7 @@ def insert_gold_recommendation(rec: dict) -> bool:
                 float(rec.get("cmp_at_recommendation", 0) or 0),
             ))
             conn.commit()
-            return True
+            return inserted
         finally:
             conn.close()
     except Exception as e:

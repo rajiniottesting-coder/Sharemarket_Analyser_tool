@@ -3210,18 +3210,27 @@ def run_master_pipeline():
                                      run_time=_run_time_ist,
                                      prev_scores=_prev_scores,
                                      gap_days=_missed_trading_days)
-        master_file, gold_file = excel_gen.generate_excel_reports()
-        print(f"   ✅ Excel saved: {master_file}")
 
         # ─────────────────────────────────────────────────────────────────────
-        # v14.0 — OUTCOME TRACKING: Log Gold-sheet picks
+        # v14.0/v14.1 — OUTCOME TRACKING: Log Gold-sheet picks BEFORE Excel build
         # ─────────────────────────────────────────────────────────────────────
-        # After Excel is built, capture every stock that made it into the Gold
-        # sheet (clears all 11 strict gates) into the gold_recommendations
-        # table for forward outcome tracking. First-appearance rule: skip
-        # symbols that already have an OPEN recommendation (still being tracked
-        # from a prior day). Once that recommendation closes (T1/SL/expired),
-        # the symbol becomes eligible to be re-recommended.
+        # v14.1.2 ORDERING FIX: This hook used to fire AFTER generate_excel_reports().
+        # That meant the Performance sheet rendered using only YESTERDAY's data —
+        # today's Gold picks weren't logged yet when the sheet was built. User saw
+        # today's Gold picks finally appear in the Performance sheet only on Day+1.
+        # Off-by-one-day display bug.
+        #
+        # Fix: log first, render Performance sheet second. Now today's sheet shows
+        # today's stocks correctly. Functional behaviour of _get_gold() is unchanged
+        # — it filters self.df by the 11 Gold criteria and depends only on the
+        # constructor having run, not on generate_excel_reports() having executed.
+        #
+        # Capture every stock that made it into the Gold sheet (clears all 11
+        # strict gates) into the gold_recommendations table for forward outcome
+        # tracking. First-appearance rule: skip symbols that already have an
+        # OPEN recommendation (still being tracked from a prior day). Once that
+        # recommendation closes (T1/SL/expired), the symbol becomes eligible
+        # to be re-recommended.
         #
         # All numeric/string conversions defensive — DB writes wrap each
         # symbol in its own try so a single bad row can't abort the loop.
@@ -3331,6 +3340,35 @@ def run_master_pipeline():
         except Exception as _v14e:
             print(f"   ⚠️  v14.0 Gold logging skipped: {_v14e}")
         # ─────────────────────────────────────────────────────────────────────
+        # v14.1.3 — RUN OUTCOME TRACKER before Excel build
+        # ─────────────────────────────────────────────────────────────────────
+        # Walks every OPEN recommendation forward through the daily_prices we
+        # just ingested. Refreshes current_price, current_pnl_pct, max_runup_pct,
+        # max_drawdown_pct on still-OPEN rows; closes any row whose price hit
+        # SL/T1/T2/T3 today; expires rows past their horizon window.
+        #
+        # Pre-v14.1.3, the tracker was a separate script (`python track_outcomes.py`)
+        # that the user had to remember to run separately. In production it never
+        # ran, so OPEN-row prices were frozen at insertion-time CMP forever.
+        # User saw current_price == cmp_at_recommendation, P&L=0, max_runup=0
+        # for every position regardless of how the stock had moved.
+        #
+        # Fix: invoke from inside the pipeline so it runs automatically. This MUST
+        # come AFTER the v14 hook (which logs today's new picks) and BEFORE the
+        # Excel build (so the Performance sheet sees fresh tracker output).
+        # Idempotent — safe to re-run; closed rows are skipped via WHERE
+        # outcome_type='OPEN' filter inside get_open_recommendations().
+        try:
+            from track_outcomes import main as _tracker_main
+            _tracker_main()
+        except Exception as _tex:
+            print(f"   ⚠️  v14.1.3 tracker run skipped: {_tex}")
+        # ─────────────────────────────────────────────────────────────────────
+        # NOW build the Excel — Performance sheet will see today's freshly-logged
+        # Gold picks AND refreshed price/P&L data from the tracker.
+        # ─────────────────────────────────────────────────────────────────────
+        master_file, gold_file = excel_gen.generate_excel_reports()
+        print(f"   ✅ Excel saved: {master_file}")
 
         # Section 9: Daily Research Report (text)
         report_txt = DailyReportGenerator(
