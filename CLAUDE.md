@@ -3245,6 +3245,58 @@ This makes the tracker an automatic part of every pipeline run. No more manual i
 
 **No user-visible behavior change** — production pipelines never had PK collisions because the first-appearance gate (`has_open_recommendation`) catches dupes upstream. v14.3 is defense-in-depth: better instrumentation if anything breaks the upstream gate in the future.
 
+### v14.4 — Performance sheet OPEN POSITIONS shows SL/T1/T2/T3 levels
+
+**Date:** May 9, 2026
+**Trigger:** User observation — "in the performance sheet there is no clarity of what the target one value and two and three for each stock... we need to add those to give clear picture of what's expected and where we are"
+
+**The issue (not a bug, a missing feature):** The OPEN POSITIONS table showed Current Price, P&L %, and Max Runup % — but didn't show what the SL/T1/T2/T3 levels were. So a reader could see "PETRONET is at ₹283.80, +0.6% from entry" but had no reference frame for "where does this need to go" (target prices) or "where would this stop us out" (SL price). Forced manual lookup against the Gold sheet to interpret each row.
+
+**The fix:** Added 4 new columns between **Max Runup %** and **Score**: **SL · T1 · T2 · T3**. Each cell shows both the absolute price AND the distance from current price as a dynamic percentage:
+
+```
+  ₹262.35 (-7.6%)    ← SL: red text (downside risk)
+  ₹310.31 (+9.3%)    ← T1: green text
+  ₹338.52 (+19.3%)   ← T2: green text  
+  ₹366.73 (+29.2%)   ← T3: green text
+```
+
+The distance percentage updates dynamically each pipeline run as `current_price` is refreshed by the tracker. So if PETRONET rallies to ₹300, T1 will show "+3.4%" instead of "+9.3%", giving instant visual signal that we're approaching target. SL distance correspondingly shrinks (or grows) as price moves.
+
+**Why distance from current, not from entry:** Distance from current is the actionable figure for "where do we go from here." Distance from entry is already implicit in P&L %. Showing both pieces avoids redundancy.
+
+**Visual treatment:**
+- SL column: red text (always represents downside risk regardless of current state)
+- T1 / T2 / T3 columns: green text (always represent upside)
+- Subtle text color, not bold — avoids visual overwhelm with 16 columns
+- "—" placeholder shown when level is missing (legacy rows pre-v14.0 might lack levels)
+
+**Column count:** 12 → 16 columns. New full layout:
+1. Symbol
+2. Rec Date
+3. Time Horizon
+4. Days Held
+5. Days Left
+6. Re-app
+7. CMP at Rec
+8. Current Price
+9. P&L %
+10. Max Runup %
+11. **SL** *(NEW)*
+12. **T1** *(NEW)*
+13. **T2** *(NEW)*
+14. **T3** *(NEW)*
+15. Score
+16. ⚠
+
+**Files changed:** `reporting/excel_generator.py` only. Single-file change — no DB schema, no master_funnel impact.
+
+**Side-track work — test suite consolidation:** Same release also consolidated the 6 separate test files I'd been maintaining (`test_fixes.py`, `test_integration.py`, `test_regression.py`, `test_v13_x_round3.py`, `test_v14_outcome_tracking.py`, `test_v14_1_outcome_tracking.py`) into a single `test_v13_v14_consolidated.py` at repo root. 65 tests, 8.5s runtime, single ✅/❌ summary, exit code 0 only on full pass. Stability: 5/5 consecutive runs pass after fixing CWD-restoration race condition in the runner. Three previously-untouched test files remain separate by design (`test_v11.0.2_full_withdummies.py` for ScoringEngine deep tests, `test_run.py` for manual pipeline launches, `test_yfinance.py` for external-API diagnostics).
+
+**Test count after v14.4:** 65/65 across consolidated suite. Same 65 tests as v14.3 — no new tests needed for v14.4 since the existing G6 already verifies Open Positions column structure and would have caught a regression in column count or labels.
+
+**No user-visible behavior change** other than the 4 new columns appearing in the Performance sheet OPEN POSITIONS table. Existing columns and their behavior preserved exactly.
+
 ---
 
-*Last updated: May 9, 2026 · v14.3 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 9, 2026 · v14.4 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

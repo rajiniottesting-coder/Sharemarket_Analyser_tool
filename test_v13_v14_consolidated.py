@@ -53,6 +53,13 @@ def _setup_temp_db(name='test'):
     test_db = f'/tmp/test_consolidated_{name}.db'
     if os.path.exists(test_db):
         os.remove(test_db)
+    # v14.4 robustness: also nuke any leftover Excel files from a previous test
+    # that may have crashed mid-render. Failure to clean up causes the next test's
+    # load_workbook to read a stale/truncated file → "BadZipFile" or "no such table" errors.
+    import glob as _glob
+    for _stale in _glob.glob('/tmp/NSE_BSE_*.xlsx'):
+        try: os.remove(_stale)
+        except OSError: pass
     original = sqlite3.connect
     def t_connect(p):
         return original(test_db if p == "market_data.db" else p)
@@ -61,10 +68,16 @@ def _setup_temp_db(name='test'):
 
 
 def _restore(original_connect, test_db):
-    """Cleanup — restore real sqlite3.connect and remove the temp DB."""
+    """Cleanup — restore real sqlite3.connect, remove the temp DB, and
+    purge any Excel artifacts the test may have produced."""
     sqlite3.connect = original_connect
     if os.path.exists(test_db):
         os.remove(test_db)
+    # v14.4 robustness: clean leaked Excel files so they don't poison sibling tests
+    import glob as _glob
+    for _stale in _glob.glob('/tmp/NSE_BSE_*.xlsx'):
+        try: os.remove(_stale)
+        except OSError: pass
 
 
 def _seed_recommendation_and_prices(symbol, rec_date_str, cmp_p, sl, t1, t2, t3, price_pattern):
@@ -2263,884 +2276,152 @@ if __name__ == '__main__':
     print('NSE/BSE Sharemarket Analyser — Consolidated Regression Suite')
     print(f'Target: {os.path.abspath(".")}'.replace("'", '"'))
     print('=' * 78)
-    
+
+    # v14.4 robustness: nuke any leftover /tmp artifacts from previous runs
+    # BEFORE any test starts. Excel files from a prior crashed run can poison
+    # subsequent load_workbook calls with "BadZipFile: Truncated file header"
+    # or stale-DB errors. Per-test cleanup also exists in _setup_temp_db /
+    # _restore, but a clean suite start is the most reliable safeguard.
+    import glob as _start_glob
+    for _f in _start_glob.glob('/tmp/NSE_BSE_*.xlsx') + _start_glob.glob('/tmp/test_consolidated_*.db'):
+        try: os.remove(_f)
+        except OSError: pass
+
+    # Stability harness — some tests do os.chdir('/tmp') and don't restore CWD.
+    # Subsequent tests can then fail with FileNotFoundError or readonly-DB errors
+    # if their working dir has been replaced. Snapshot the runner's starting CWD
+    # and restore it before every test by monkey-patching the runner's local lookup.
+    _RUNNER_START_CWD = os.path.abspath('.')
+    def _restore_cwd_before_each_test():
+        try:
+            os.chdir(_RUNNER_START_CWD)
+        except Exception:
+            pass
+    # Wrap a no-arg callable so we can drop _restore_cwd_before_each_test() in
+    # before each try-block without rewriting all 65 inline runners.
+
     suite_results = []  # (group_key, group_label, [(test_name, status, message)])
-    
+
+    def _run_one_test(fn):
+        """Execute one test with full per-test isolation:
+           1. restore CWD (some tests do os.chdir('/tmp') and don't restore)
+           2. clean any /tmp leftover Excel files (defensive — _setup_temp_db
+              also does this, but tests not using that helper still benefit)
+           3. run, classify result by exception type
+        Returns: (name, status, message)
+        """
+        os.chdir(_RUNNER_START_CWD)
+        import glob as _g
+        for _f in _g.glob('/tmp/NSE_BSE_*.xlsx'):
+            try: os.remove(_f)
+            except OSError: pass
+        name = fn.__name__
+        try:
+            r = fn()
+            print(f'  ✅ {name}')
+            return (name, 'PASS', r if isinstance(r, str) else 'ok')
+        except AssertionError as e:
+            print(f'  ❌ {name}: {e}')
+            return (name, 'FAIL', str(e))
+        except Exception as e:
+            print(f'  ⚠️  {name}: {type(e).__name__}: {e}')
+            return (name, 'ERROR', f'{type(e).__name__}: {e}')
+
     # ── v13_R1 ──
     print('\n[v13_R1] v13.x Round 1 — original fix verification (Top-5 BUY filter, ETF d')
     v13_R1_results = []
-    try:
-        _r = test_fix1_top5_filters_to_buy_only()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix1_top5_filters_to_buy_only')
-        else:
-            print(f'  ✅ test_fix1_top5_filters_to_buy_only')
-        v13_R1_results.append(('test_fix1_top5_filters_to_buy_only', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix1_top5_filters_to_buy_only: {_e}')
-        v13_R1_results.append(('test_fix1_top5_filters_to_buy_only', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix1_top5_filters_to_buy_only: {type(_e).__name__}: {_e}')
-        v13_R1_results.append(('test_fix1_top5_filters_to_buy_only', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix1_top5_empty_when_no_buys()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix1_top5_empty_when_no_buys')
-        else:
-            print(f'  ✅ test_fix1_top5_empty_when_no_buys')
-        v13_R1_results.append(('test_fix1_top5_empty_when_no_buys', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix1_top5_empty_when_no_buys: {_e}')
-        v13_R1_results.append(('test_fix1_top5_empty_when_no_buys', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix1_top5_empty_when_no_buys: {type(_e).__name__}: {_e}')
-        v13_R1_results.append(('test_fix1_top5_empty_when_no_buys', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix1_preserves_sort_order_within_buys()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix1_preserves_sort_order_within_buys')
-        else:
-            print(f'  ✅ test_fix1_preserves_sort_order_within_buys')
-        v13_R1_results.append(('test_fix1_preserves_sort_order_within_buys', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix1_preserves_sort_order_within_buys: {_e}')
-        v13_R1_results.append(('test_fix1_preserves_sort_order_within_buys', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix1_preserves_sort_order_within_buys: {type(_e).__name__}: {_e}')
-        v13_R1_results.append(('test_fix1_preserves_sort_order_within_buys', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix2_etf_no_cfv_renders_em_dash()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix2_etf_no_cfv_renders_em_dash')
-        else:
-            print(f'  ✅ test_fix2_etf_no_cfv_renders_em_dash')
-        v13_R1_results.append(('test_fix2_etf_no_cfv_renders_em_dash', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix2_etf_no_cfv_renders_em_dash: {_e}')
-        v13_R1_results.append(('test_fix2_etf_no_cfv_renders_em_dash', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix2_etf_no_cfv_renders_em_dash: {type(_e).__name__}: {_e}')
-        v13_R1_results.append(('test_fix2_etf_no_cfv_renders_em_dash', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix2_normal_stocks_unchanged()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix2_normal_stocks_unchanged')
-        else:
-            print(f'  ✅ test_fix2_normal_stocks_unchanged')
-        v13_R1_results.append(('test_fix2_normal_stocks_unchanged', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix2_normal_stocks_unchanged: {_e}')
-        v13_R1_results.append(('test_fix2_normal_stocks_unchanged', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix2_normal_stocks_unchanged: {type(_e).__name__}: {_e}')
-        v13_R1_results.append(('test_fix2_normal_stocks_unchanged', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix3_quick_pick_recomputed_after_ee_bonus()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix3_quick_pick_recomputed_after_ee_bonus')
-        else:
-            print(f'  ✅ test_fix3_quick_pick_recomputed_after_ee_bonus')
-        v13_R1_results.append(('test_fix3_quick_pick_recomputed_after_ee_bonus', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix3_quick_pick_recomputed_after_ee_bonus: {_e}')
-        v13_R1_results.append(('test_fix3_quick_pick_recomputed_after_ee_bonus', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix3_quick_pick_recomputed_after_ee_bonus: {type(_e).__name__}: {_e}')
-        v13_R1_results.append(('test_fix3_quick_pick_recomputed_after_ee_bonus', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix3_kamahold_case()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix3_kamahold_case')
-        else:
-            print(f'  ✅ test_fix3_kamahold_case')
-        v13_R1_results.append(('test_fix3_kamahold_case', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix3_kamahold_case: {_e}')
-        v13_R1_results.append(('test_fix3_kamahold_case', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix3_kamahold_case: {type(_e).__name__}: {_e}')
-        v13_R1_results.append(('test_fix3_kamahold_case', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix3_no_bonus_fired_no_change()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix3_no_bonus_fired_no_change')
-        else:
-            print(f'  ✅ test_fix3_no_bonus_fired_no_change')
-        v13_R1_results.append(('test_fix3_no_bonus_fired_no_change', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix3_no_bonus_fired_no_change: {_e}')
-        v13_R1_results.append(('test_fix3_no_bonus_fired_no_change', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix3_no_bonus_fired_no_change: {type(_e).__name__}: {_e}')
-        v13_R1_results.append(('test_fix3_no_bonus_fired_no_change', 'ERROR', f'{type(_e).__name__}: {_e}'))
+    v13_R1_results.append(_run_one_test(test_fix1_top5_filters_to_buy_only))
+    v13_R1_results.append(_run_one_test(test_fix1_top5_empty_when_no_buys))
+    v13_R1_results.append(_run_one_test(test_fix1_preserves_sort_order_within_buys))
+    v13_R1_results.append(_run_one_test(test_fix2_etf_no_cfv_renders_em_dash))
+    v13_R1_results.append(_run_one_test(test_fix2_normal_stocks_unchanged))
+    v13_R1_results.append(_run_one_test(test_fix3_quick_pick_recomputed_after_ee_bonus))
+    v13_R1_results.append(_run_one_test(test_fix3_kamahold_case))
+    v13_R1_results.append(_run_one_test(test_fix3_no_bonus_fired_no_change))
     suite_results.append(('v13_R1', v13_R1_results))
-    
+
     # ── v13_R2 ──
     print('\n[v13_R2] v13.x Round 2 — integration tests with real-stock scenarios')
     v13_R2_results = []
-    try:
-        _r = test_real_mocapital()
-        if isinstance(_r, str):
-            print(f'  ✅ test_real_mocapital')
-        else:
-            print(f'  ✅ test_real_mocapital')
-        v13_R2_results.append(('test_real_mocapital', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_real_mocapital: {_e}')
-        v13_R2_results.append(('test_real_mocapital', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_real_mocapital: {type(_e).__name__}: {_e}')
-        v13_R2_results.append(('test_real_mocapital', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_real_kirlfer()
-        if isinstance(_r, str):
-            print(f'  ✅ test_real_kirlfer')
-        else:
-            print(f'  ✅ test_real_kirlfer')
-        v13_R2_results.append(('test_real_kirlfer', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_real_kirlfer: {_e}')
-        v13_R2_results.append(('test_real_kirlfer', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_real_kirlfer: {type(_e).__name__}: {_e}')
-        v13_R2_results.append(('test_real_kirlfer', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_real_kamahold()
-        if isinstance(_r, str):
-            print(f'  ✅ test_real_kamahold')
-        else:
-            print(f'  ✅ test_real_kamahold')
-        v13_R2_results.append(('test_real_kamahold', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_real_kamahold: {_e}')
-        v13_R2_results.append(('test_real_kamahold', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_real_kamahold: {type(_e).__name__}: {_e}')
-        v13_R2_results.append(('test_real_kamahold', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_no_bonus_no_recompute()
-        if isinstance(_r, str):
-            print(f'  ✅ test_no_bonus_no_recompute')
-        else:
-            print(f'  ✅ test_no_bonus_no_recompute')
-        v13_R2_results.append(('test_no_bonus_no_recompute', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_no_bonus_no_recompute: {_e}')
-        v13_R2_results.append(('test_no_bonus_no_recompute', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_no_bonus_no_recompute: {type(_e).__name__}: {_e}')
-        v13_R2_results.append(('test_no_bonus_no_recompute', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix2_excel_renderer_dash_for_etf()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix2_excel_renderer_dash_for_etf')
-        else:
-            print(f'  ✅ test_fix2_excel_renderer_dash_for_etf')
-        v13_R2_results.append(('test_fix2_excel_renderer_dash_for_etf', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix2_excel_renderer_dash_for_etf: {_e}')
-        v13_R2_results.append(('test_fix2_excel_renderer_dash_for_etf', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix2_excel_renderer_dash_for_etf: {type(_e).__name__}: {_e}')
-        v13_R2_results.append(('test_fix2_excel_renderer_dash_for_etf', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix2_internal_dict_untouched()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix2_internal_dict_untouched')
-        else:
-            print(f'  ✅ test_fix2_internal_dict_untouched')
-        v13_R2_results.append(('test_fix2_internal_dict_untouched', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix2_internal_dict_untouched: {_e}')
-        v13_R2_results.append(('test_fix2_internal_dict_untouched', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix2_internal_dict_untouched: {type(_e).__name__}: {_e}')
-        v13_R2_results.append(('test_fix2_internal_dict_untouched', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix1_real_top5_scenario()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix1_real_top5_scenario')
-        else:
-            print(f'  ✅ test_fix1_real_top5_scenario')
-        v13_R2_results.append(('test_fix1_real_top5_scenario', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix1_real_top5_scenario: {_e}')
-        v13_R2_results.append(('test_fix1_real_top5_scenario', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix1_real_top5_scenario: {type(_e).__name__}: {_e}')
-        v13_R2_results.append(('test_fix1_real_top5_scenario', 'ERROR', f'{type(_e).__name__}: {_e}'))
+    v13_R2_results.append(_run_one_test(test_real_mocapital))
+    v13_R2_results.append(_run_one_test(test_real_kirlfer))
+    v13_R2_results.append(_run_one_test(test_real_kamahold))
+    v13_R2_results.append(_run_one_test(test_no_bonus_no_recompute))
+    v13_R2_results.append(_run_one_test(test_fix2_excel_renderer_dash_for_etf))
+    v13_R2_results.append(_run_one_test(test_fix2_internal_dict_untouched))
+    v13_R2_results.append(_run_one_test(test_fix1_real_top5_scenario))
     suite_results.append(('v13_R2', v13_R2_results))
-    
+
     # ── v13_REG ──
     print('\n[v13_REG] v13.x regression — affected modules import cleanly, untouched logi')
     v13_REG_results = []
-    try:
-        _r = test_all_modules_import()
-        if isinstance(_r, str):
-            print(f'  ✅ test_all_modules_import')
-        else:
-            print(f'  ✅ test_all_modules_import')
-        v13_REG_results.append(('test_all_modules_import', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_all_modules_import: {_e}')
-        v13_REG_results.append(('test_all_modules_import', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_all_modules_import: {type(_e).__name__}: {_e}')
-        v13_REG_results.append(('test_all_modules_import', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_scoring_engine_unchanged()
-        if isinstance(_r, str):
-            print(f'  ✅ test_scoring_engine_unchanged')
-        else:
-            print(f'  ✅ test_scoring_engine_unchanged')
-        v13_REG_results.append(('test_scoring_engine_unchanged', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_scoring_engine_unchanged: {_e}')
-        v13_REG_results.append(('test_scoring_engine_unchanged', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_scoring_engine_unchanged: {type(_e).__name__}: {_e}')
-        v13_REG_results.append(('test_scoring_engine_unchanged', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fair_value_engine_unchanged()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fair_value_engine_unchanged')
-        else:
-            print(f'  ✅ test_fair_value_engine_unchanged')
-        v13_REG_results.append(('test_fair_value_engine_unchanged', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fair_value_engine_unchanged: {_e}')
-        v13_REG_results.append(('test_fair_value_engine_unchanged', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fair_value_engine_unchanged: {type(_e).__name__}: {_e}')
-        v13_REG_results.append(('test_fair_value_engine_unchanged', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_command_parser_unchanged()
-        if isinstance(_r, str):
-            print(f'  ✅ test_command_parser_unchanged')
-        else:
-            print(f'  ✅ test_command_parser_unchanged')
-        v13_REG_results.append(('test_command_parser_unchanged', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_command_parser_unchanged: {_e}')
-        v13_REG_results.append(('test_command_parser_unchanged', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_command_parser_unchanged: {type(_e).__name__}: {_e}')
-        v13_REG_results.append(('test_command_parser_unchanged', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_excel_generator_doesnt_crash_on_etf()
-        if isinstance(_r, str):
-            print(f'  ✅ test_excel_generator_doesnt_crash_on_etf')
-        else:
-            print(f'  ✅ test_excel_generator_doesnt_crash_on_etf')
-        v13_REG_results.append(('test_excel_generator_doesnt_crash_on_etf', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_excel_generator_doesnt_crash_on_etf: {_e}')
-        v13_REG_results.append(('test_excel_generator_doesnt_crash_on_etf', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_excel_generator_doesnt_crash_on_etf: {type(_e).__name__}: {_e}')
-        v13_REG_results.append(('test_excel_generator_doesnt_crash_on_etf', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_quick_card_renders_dash_for_etf()
-        if isinstance(_r, str):
-            print(f'  ✅ test_quick_card_renders_dash_for_etf')
-        else:
-            print(f'  ✅ test_quick_card_renders_dash_for_etf')
-        v13_REG_results.append(('test_quick_card_renders_dash_for_etf', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_quick_card_renders_dash_for_etf: {_e}')
-        v13_REG_results.append(('test_quick_card_renders_dash_for_etf', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_quick_card_renders_dash_for_etf: {type(_e).__name__}: {_e}')
-        v13_REG_results.append(('test_quick_card_renders_dash_for_etf', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_quick_card_normal_stock_unchanged()
-        if isinstance(_r, str):
-            print(f'  ✅ test_quick_card_normal_stock_unchanged')
-        else:
-            print(f'  ✅ test_quick_card_normal_stock_unchanged')
-        v13_REG_results.append(('test_quick_card_normal_stock_unchanged', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_quick_card_normal_stock_unchanged: {_e}')
-        v13_REG_results.append(('test_quick_card_normal_stock_unchanged', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_quick_card_normal_stock_unchanged: {type(_e).__name__}: {_e}')
-        v13_REG_results.append(('test_quick_card_normal_stock_unchanged', 'ERROR', f'{type(_e).__name__}: {_e}'))
+    v13_REG_results.append(_run_one_test(test_all_modules_import))
+    v13_REG_results.append(_run_one_test(test_scoring_engine_unchanged))
+    v13_REG_results.append(_run_one_test(test_fair_value_engine_unchanged))
+    v13_REG_results.append(_run_one_test(test_command_parser_unchanged))
+    v13_REG_results.append(_run_one_test(test_excel_generator_doesnt_crash_on_etf))
+    v13_REG_results.append(_run_one_test(test_quick_card_renders_dash_for_etf))
+    v13_REG_results.append(_run_one_test(test_quick_card_normal_stock_unchanged))
     suite_results.append(('v13_REG', v13_REG_results))
-    
+
     # ── v13_R3 ──
     print('\n[v13_R3] v13.x Round 3 — header dashes, exit alerts, three-factor tooltips')
     v13_R3_results = []
-    try:
-        _r = test_fix4_header_dashes_when_data_missing()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix4_header_dashes_when_data_missing')
-        else:
-            print(f'  ✅ test_fix4_header_dashes_when_data_missing')
-        v13_R3_results.append(('test_fix4_header_dashes_when_data_missing', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix4_header_dashes_when_data_missing: {_e}')
-        v13_R3_results.append(('test_fix4_header_dashes_when_data_missing', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix4_header_dashes_when_data_missing: {type(_e).__name__}: {_e}')
-        v13_R3_results.append(('test_fix4_header_dashes_when_data_missing', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix4_header_real_data_unchanged()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix4_header_real_data_unchanged')
-        else:
-            print(f'  ✅ test_fix4_header_real_data_unchanged')
-        v13_R3_results.append(('test_fix4_header_real_data_unchanged', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix4_header_real_data_unchanged: {_e}')
-        v13_R3_results.append(('test_fix4_header_real_data_unchanged', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix4_header_real_data_unchanged: {type(_e).__name__}: {_e}')
-        v13_R3_results.append(('test_fix4_header_real_data_unchanged', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix5_exit_alerts_shows_avoid_verdicts()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix5_exit_alerts_shows_avoid_verdicts')
-        else:
-            print(f'  ✅ test_fix5_exit_alerts_shows_avoid_verdicts')
-        v13_R3_results.append(('test_fix5_exit_alerts_shows_avoid_verdicts', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix5_exit_alerts_shows_avoid_verdicts: {_e}')
-        v13_R3_results.append(('test_fix5_exit_alerts_shows_avoid_verdicts', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix5_exit_alerts_shows_avoid_verdicts: {type(_e).__name__}: {_e}')
-        v13_R3_results.append(('test_fix5_exit_alerts_shows_avoid_verdicts', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix5_exit_alerts_no_avoids()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix5_exit_alerts_no_avoids')
-        else:
-            print(f'  ✅ test_fix5_exit_alerts_no_avoids')
-        v13_R3_results.append(('test_fix5_exit_alerts_no_avoids', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix5_exit_alerts_no_avoids: {_e}')
-        v13_R3_results.append(('test_fix5_exit_alerts_no_avoids', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix5_exit_alerts_no_avoids: {type(_e).__name__}: {_e}')
-        v13_R3_results.append(('test_fix5_exit_alerts_no_avoids', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix5_exit_alerts_dotted_verdict()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix5_exit_alerts_dotted_verdict')
-        else:
-            print(f'  ✅ test_fix5_exit_alerts_dotted_verdict')
-        v13_R3_results.append(('test_fix5_exit_alerts_dotted_verdict', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix5_exit_alerts_dotted_verdict: {_e}')
-        v13_R3_results.append(('test_fix5_exit_alerts_dotted_verdict', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix5_exit_alerts_dotted_verdict: {type(_e).__name__}: {_e}')
-        v13_R3_results.append(('test_fix5_exit_alerts_dotted_verdict', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix6_tooltip_explains_three_factor()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix6_tooltip_explains_three_factor')
-        else:
-            print(f'  ✅ test_fix6_tooltip_explains_three_factor')
-        v13_R3_results.append(('test_fix6_tooltip_explains_three_factor', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix6_tooltip_explains_three_factor: {_e}')
-        v13_R3_results.append(('test_fix6_tooltip_explains_three_factor', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix6_tooltip_explains_three_factor: {type(_e).__name__}: {_e}')
-        v13_R3_results.append(('test_fix6_tooltip_explains_three_factor', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_fix6_glossary_explains_three_factor()
-        if isinstance(_r, str):
-            print(f'  ✅ test_fix6_glossary_explains_three_factor')
-        else:
-            print(f'  ✅ test_fix6_glossary_explains_three_factor')
-        v13_R3_results.append(('test_fix6_glossary_explains_three_factor', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_fix6_glossary_explains_three_factor: {_e}')
-        v13_R3_results.append(('test_fix6_glossary_explains_three_factor', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_fix6_glossary_explains_three_factor: {type(_e).__name__}: {_e}')
-        v13_R3_results.append(('test_fix6_glossary_explains_three_factor', 'ERROR', f'{type(_e).__name__}: {_e}'))
+    v13_R3_results.append(_run_one_test(test_fix4_header_dashes_when_data_missing))
+    v13_R3_results.append(_run_one_test(test_fix4_header_real_data_unchanged))
+    v13_R3_results.append(_run_one_test(test_fix5_exit_alerts_shows_avoid_verdicts))
+    v13_R3_results.append(_run_one_test(test_fix5_exit_alerts_no_avoids))
+    v13_R3_results.append(_run_one_test(test_fix5_exit_alerts_dotted_verdict))
+    v13_R3_results.append(_run_one_test(test_fix6_tooltip_explains_three_factor))
+    v13_R3_results.append(_run_one_test(test_fix6_glossary_explains_three_factor))
     suite_results.append(('v13_R3', v13_R3_results))
-    
+
     # ── v14_0 ──
     print('\n[v14_0] v14.0 outcome tracking — schema, walk-forward, Performance sheet, ')
     v14_0_results = []
-    try:
-        _r = test_g1_1_tables_created_with_correct_columns()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g1_1_tables_created_with_correct_columns')
-        else:
-            print(f'  ✅ test_g1_1_tables_created_with_correct_columns')
-        v14_0_results.append(('test_g1_1_tables_created_with_correct_columns', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g1_1_tables_created_with_correct_columns: {_e}')
-        v14_0_results.append(('test_g1_1_tables_created_with_correct_columns', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g1_1_tables_created_with_correct_columns: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g1_1_tables_created_with_correct_columns', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g1_2_first_appearance_rule()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g1_2_first_appearance_rule')
-        else:
-            print(f'  ✅ test_g1_2_first_appearance_rule')
-        v14_0_results.append(('test_g1_2_first_appearance_rule', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g1_2_first_appearance_rule: {_e}')
-        v14_0_results.append(('test_g1_2_first_appearance_rule', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g1_2_first_appearance_rule: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g1_2_first_appearance_rule', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g1_3_get_open_recommendations_join_works()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g1_3_get_open_recommendations_join_works')
-        else:
-            print(f'  ✅ test_g1_3_get_open_recommendations_join_works')
-        v14_0_results.append(('test_g1_3_get_open_recommendations_join_works', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g1_3_get_open_recommendations_join_works: {_e}')
-        v14_0_results.append(('test_g1_3_get_open_recommendations_join_works', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g1_3_get_open_recommendations_join_works: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g1_3_get_open_recommendations_join_works', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g3_1_t1_hit_first_day_target_high_reaches_t1()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g3_1_t1_hit_first_day_target_high_reaches_t1')
-        else:
-            print(f'  ✅ test_g3_1_t1_hit_first_day_target_high_reaches_t1')
-        v14_0_results.append(('test_g3_1_t1_hit_first_day_target_high_reaches_t1', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g3_1_t1_hit_first_day_target_high_reaches_t1: {_e}')
-        v14_0_results.append(('test_g3_1_t1_hit_first_day_target_high_reaches_t1', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g3_1_t1_hit_first_day_target_high_reaches_t1: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g3_1_t1_hit_first_day_target_high_reaches_t1', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g3_2_sl_wins_over_target_on_same_day()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g3_2_sl_wins_over_target_on_same_day')
-        else:
-            print(f'  ✅ test_g3_2_sl_wins_over_target_on_same_day')
-        v14_0_results.append(('test_g3_2_sl_wins_over_target_on_same_day', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g3_2_sl_wins_over_target_on_same_day: {_e}')
-        v14_0_results.append(('test_g3_2_sl_wins_over_target_on_same_day', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g3_2_sl_wins_over_target_on_same_day: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g3_2_sl_wins_over_target_on_same_day', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g3_3_highest_target_wins_on_single_day()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g3_3_highest_target_wins_on_single_day')
-        else:
-            print(f'  ✅ test_g3_3_highest_target_wins_on_single_day')
-        v14_0_results.append(('test_g3_3_highest_target_wins_on_single_day', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g3_3_highest_target_wins_on_single_day: {_e}')
-        v14_0_results.append(('test_g3_3_highest_target_wins_on_single_day', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g3_3_highest_target_wins_on_single_day: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g3_3_highest_target_wins_on_single_day', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g3_4_expired_after_90_days_no_event()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g3_4_expired_after_90_days_no_event')
-        else:
-            print(f'  ✅ test_g3_4_expired_after_90_days_no_event')
-        v14_0_results.append(('test_g3_4_expired_after_90_days_no_event', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g3_4_expired_after_90_days_no_event: {_e}')
-        v14_0_results.append(('test_g3_4_expired_after_90_days_no_event', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g3_4_expired_after_90_days_no_event: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g3_4_expired_after_90_days_no_event', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g3_5_max_runup_drawdown_tracked()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g3_5_max_runup_drawdown_tracked')
-        else:
-            print(f'  ✅ test_g3_5_max_runup_drawdown_tracked')
-        v14_0_results.append(('test_g3_5_max_runup_drawdown_tracked', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g3_5_max_runup_drawdown_tracked: {_e}')
-        v14_0_results.append(('test_g3_5_max_runup_drawdown_tracked', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g3_5_max_runup_drawdown_tracked: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g3_5_max_runup_drawdown_tracked', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g3_6_idempotent_closed_rows_not_reprocessed()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g3_6_idempotent_closed_rows_not_reprocessed')
-        else:
-            print(f'  ✅ test_g3_6_idempotent_closed_rows_not_reprocessed')
-        v14_0_results.append(('test_g3_6_idempotent_closed_rows_not_reprocessed', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g3_6_idempotent_closed_rows_not_reprocessed: {_e}')
-        v14_0_results.append(('test_g3_6_idempotent_closed_rows_not_reprocessed', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g3_6_idempotent_closed_rows_not_reprocessed: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g3_6_idempotent_closed_rows_not_reprocessed', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g4_1_performance_sheet_appears_in_workbook()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g4_1_performance_sheet_appears_in_workbook')
-        else:
-            print(f'  ✅ test_g4_1_performance_sheet_appears_in_workbook')
-        v14_0_results.append(('test_g4_1_performance_sheet_appears_in_workbook', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g4_1_performance_sheet_appears_in_workbook: {_e}')
-        v14_0_results.append(('test_g4_1_performance_sheet_appears_in_workbook', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g4_1_performance_sheet_appears_in_workbook: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g4_1_performance_sheet_appears_in_workbook', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g4_2_empty_db_shows_no_data_banner()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g4_2_empty_db_shows_no_data_banner')
-        else:
-            print(f'  ✅ test_g4_2_empty_db_shows_no_data_banner')
-        v14_0_results.append(('test_g4_2_empty_db_shows_no_data_banner', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g4_2_empty_db_shows_no_data_banner: {_e}')
-        v14_0_results.append(('test_g4_2_empty_db_shows_no_data_banner', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g4_2_empty_db_shows_no_data_banner: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g4_2_empty_db_shows_no_data_banner', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g4_3_full_data_renders_all_sections()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g4_3_full_data_renders_all_sections')
-        else:
-            print(f'  ✅ test_g4_3_full_data_renders_all_sections')
-        v14_0_results.append(('test_g4_3_full_data_renders_all_sections', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g4_3_full_data_renders_all_sections: {_e}')
-        v14_0_results.append(('test_g4_3_full_data_renders_all_sections', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g4_3_full_data_renders_all_sections: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g4_3_full_data_renders_all_sections', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g5_1_tips_dict_has_performance_entries()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g5_1_tips_dict_has_performance_entries')
-        else:
-            print(f'  ✅ test_g5_1_tips_dict_has_performance_entries')
-        v14_0_results.append(('test_g5_1_tips_dict_has_performance_entries', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g5_1_tips_dict_has_performance_entries: {_e}')
-        v14_0_results.append(('test_g5_1_tips_dict_has_performance_entries', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g5_1_tips_dict_has_performance_entries: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g5_1_tips_dict_has_performance_entries', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g5_2_glossary_has_performance_entries()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g5_2_glossary_has_performance_entries')
-        else:
-            print(f'  ✅ test_g5_2_glossary_has_performance_entries')
-        v14_0_results.append(('test_g5_2_glossary_has_performance_entries', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g5_2_glossary_has_performance_entries: {_e}')
-        v14_0_results.append(('test_g5_2_glossary_has_performance_entries', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g5_2_glossary_has_performance_entries: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g5_2_glossary_has_performance_entries', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g5_3_grp_colors_has_performance()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g5_3_grp_colors_has_performance')
-        else:
-            print(f'  ✅ test_g5_3_grp_colors_has_performance')
-        v14_0_results.append(('test_g5_3_grp_colors_has_performance', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g5_3_grp_colors_has_performance: {_e}')
-        v14_0_results.append(('test_g5_3_grp_colors_has_performance', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g5_3_grp_colors_has_performance: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g5_3_grp_colors_has_performance', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g2_1_entry_range_parse_handles_multiple_separators()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g2_1_entry_range_parse_handles_multiple_separators')
-        else:
-            print(f'  ✅ test_g2_1_entry_range_parse_handles_multiple_separators')
-        v14_0_results.append(('test_g2_1_entry_range_parse_handles_multiple_separators', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g2_1_entry_range_parse_handles_multiple_separators: {_e}')
-        v14_0_results.append(('test_g2_1_entry_range_parse_handles_multiple_separators', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g2_1_entry_range_parse_handles_multiple_separators: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g2_1_entry_range_parse_handles_multiple_separators', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g2_2_predicted_rr_calculation()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g2_2_predicted_rr_calculation')
-        else:
-            print(f'  ✅ test_g2_2_predicted_rr_calculation')
-        v14_0_results.append(('test_g2_2_predicted_rr_calculation', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g2_2_predicted_rr_calculation: {_e}')
-        v14_0_results.append(('test_g2_2_predicted_rr_calculation', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g2_2_predicted_rr_calculation: {type(_e).__name__}: {_e}')
-        v14_0_results.append(('test_g2_2_predicted_rr_calculation', 'ERROR', f'{type(_e).__name__}: {_e}'))
+    v14_0_results.append(_run_one_test(test_g1_1_tables_created_with_correct_columns))
+    v14_0_results.append(_run_one_test(test_g1_2_first_appearance_rule))
+    v14_0_results.append(_run_one_test(test_g1_3_get_open_recommendations_join_works))
+    v14_0_results.append(_run_one_test(test_g3_1_t1_hit_first_day_target_high_reaches_t1))
+    v14_0_results.append(_run_one_test(test_g3_2_sl_wins_over_target_on_same_day))
+    v14_0_results.append(_run_one_test(test_g3_3_highest_target_wins_on_single_day))
+    v14_0_results.append(_run_one_test(test_g3_4_expired_after_90_days_no_event))
+    v14_0_results.append(_run_one_test(test_g3_5_max_runup_drawdown_tracked))
+    v14_0_results.append(_run_one_test(test_g3_6_idempotent_closed_rows_not_reprocessed))
+    v14_0_results.append(_run_one_test(test_g4_1_performance_sheet_appears_in_workbook))
+    v14_0_results.append(_run_one_test(test_g4_2_empty_db_shows_no_data_banner))
+    v14_0_results.append(_run_one_test(test_g4_3_full_data_renders_all_sections))
+    v14_0_results.append(_run_one_test(test_g5_1_tips_dict_has_performance_entries))
+    v14_0_results.append(_run_one_test(test_g5_2_glossary_has_performance_entries))
+    v14_0_results.append(_run_one_test(test_g5_3_grp_colors_has_performance))
+    v14_0_results.append(_run_one_test(test_g2_1_entry_range_parse_handles_multiple_separators))
+    v14_0_results.append(_run_one_test(test_g2_2_predicted_rr_calculation))
     suite_results.append(('v14_0', v14_0_results))
-    
+
     # ── v14_1 ──
     print('\n[v14_1] v14.1+v14.1.2+v14.1.3+v14.3 — horizon-aware expiry, hook-ordering,')
     v14_1_results = []
-    try:
-        _r = test_g1_horizon_mapping()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g1_horizon_mapping')
-        else:
-            print(f'  ✅ test_g1_horizon_mapping')
-        v14_1_results.append(('test_g1_horizon_mapping', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g1_horizon_mapping: {_e}')
-        v14_1_results.append(('test_g1_horizon_mapping', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g1_horizon_mapping: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g1_horizon_mapping', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g2_alter_table_idempotent()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g2_alter_table_idempotent')
-        else:
-            print(f'  ✅ test_g2_alter_table_idempotent')
-        v14_1_results.append(('test_g2_alter_table_idempotent', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g2_alter_table_idempotent: {_e}')
-        v14_1_results.append(('test_g2_alter_table_idempotent', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g2_alter_table_idempotent: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g2_alter_table_idempotent', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g3_insert_stores_expiry_fields()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g3_insert_stores_expiry_fields')
-        else:
-            print(f'  ✅ test_g3_insert_stores_expiry_fields')
-        v14_1_results.append(('test_g3_insert_stores_expiry_fields', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g3_insert_stores_expiry_fields: {_e}')
-        v14_1_results.append(('test_g3_insert_stores_expiry_fields', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g3_insert_stores_expiry_fields: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g3_insert_stores_expiry_fields', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g4_reappearance_counter()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g4_reappearance_counter')
-        else:
-            print(f'  ✅ test_g4_reappearance_counter')
-        v14_1_results.append(('test_g4_reappearance_counter', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g4_reappearance_counter: {_e}')
-        v14_1_results.append(('test_g4_reappearance_counter', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g4_reappearance_counter: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g4_reappearance_counter', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g4c_same_day_as_recommendation_does_not_increment()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g4c_same_day_as_recommendation_does_not_increment')
-        else:
-            print(f'  ✅ test_g4c_same_day_as_recommendation_does_not_increment')
-        v14_1_results.append(('test_g4c_same_day_as_recommendation_does_not_increment', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g4c_same_day_as_recommendation_does_not_increment: {_e}')
-        v14_1_results.append(('test_g4c_same_day_as_recommendation_does_not_increment', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g4c_same_day_as_recommendation_does_not_increment: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g4c_same_day_as_recommendation_does_not_increment', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g4_reappearance_skipped_after_close()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g4_reappearance_skipped_after_close')
-        else:
-            print(f'  ✅ test_g4_reappearance_skipped_after_close')
-        v14_1_results.append(('test_g4_reappearance_skipped_after_close', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g4_reappearance_skipped_after_close: {_e}')
-        v14_1_results.append(('test_g4_reappearance_skipped_after_close', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g4_reappearance_skipped_after_close: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g4_reappearance_skipped_after_close', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g5_short_term_expires_at_30()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g5_short_term_expires_at_30')
-        else:
-            print(f'  ✅ test_g5_short_term_expires_at_30')
-        v14_1_results.append(('test_g5_short_term_expires_at_30', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g5_short_term_expires_at_30: {_e}')
-        v14_1_results.append(('test_g5_short_term_expires_at_30', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g5_short_term_expires_at_30: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g5_short_term_expires_at_30', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g5_long_term_doesnt_expire_at_90()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g5_long_term_doesnt_expire_at_90')
-        else:
-            print(f'  ✅ test_g5_long_term_doesnt_expire_at_90')
-        v14_1_results.append(('test_g5_long_term_doesnt_expire_at_90', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g5_long_term_doesnt_expire_at_90: {_e}')
-        v14_1_results.append(('test_g5_long_term_doesnt_expire_at_90', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g5_long_term_doesnt_expire_at_90: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g5_long_term_doesnt_expire_at_90', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g5_legacy_no_expiry_days_uses_default_90()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g5_legacy_no_expiry_days_uses_default_90')
-        else:
-            print(f'  ✅ test_g5_legacy_no_expiry_days_uses_default_90')
-        v14_1_results.append(('test_g5_legacy_no_expiry_days_uses_default_90', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g5_legacy_no_expiry_days_uses_default_90: {_e}')
-        v14_1_results.append(('test_g5_legacy_no_expiry_days_uses_default_90', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g5_legacy_no_expiry_days_uses_default_90: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g5_legacy_no_expiry_days_uses_default_90', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g6_by_time_horizon_breakdown_appears()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g6_by_time_horizon_breakdown_appears')
-        else:
-            print(f'  ✅ test_g6_by_time_horizon_breakdown_appears')
-        v14_1_results.append(('test_g6_by_time_horizon_breakdown_appears', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g6_by_time_horizon_breakdown_appears: {_e}')
-        v14_1_results.append(('test_g6_by_time_horizon_breakdown_appears', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g6_by_time_horizon_breakdown_appears: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g6_by_time_horizon_breakdown_appears', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g6_open_positions_has_new_columns()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g6_open_positions_has_new_columns')
-        else:
-            print(f'  ✅ test_g6_open_positions_has_new_columns')
-        v14_1_results.append(('test_g6_open_positions_has_new_columns', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g6_open_positions_has_new_columns: {_e}')
-        v14_1_results.append(('test_g6_open_positions_has_new_columns', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g6_open_positions_has_new_columns: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g6_open_positions_has_new_columns', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g7_expired_missed_runup_diagnostic()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g7_expired_missed_runup_diagnostic')
-        else:
-            print(f'  ✅ test_g7_expired_missed_runup_diagnostic')
-        v14_1_results.append(('test_g7_expired_missed_runup_diagnostic', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g7_expired_missed_runup_diagnostic: {_e}')
-        v14_1_results.append(('test_g7_expired_missed_runup_diagnostic', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g7_expired_missed_runup_diagnostic: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g7_expired_missed_runup_diagnostic', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g7_no_diagnostic_when_few_expired()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g7_no_diagnostic_when_few_expired')
-        else:
-            print(f'  ✅ test_g7_no_diagnostic_when_few_expired')
-        v14_1_results.append(('test_g7_no_diagnostic_when_few_expired', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g7_no_diagnostic_when_few_expired: {_e}')
-        v14_1_results.append(('test_g7_no_diagnostic_when_few_expired', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g7_no_diagnostic_when_few_expired: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g7_no_diagnostic_when_few_expired', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g8_master_funnel_reads_horizon_key_not_time_horizon()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g8_master_funnel_reads_horizon_key_not_time_horizon')
-        else:
-            print(f'  ✅ test_g8_master_funnel_reads_horizon_key_not_time_horizon')
-        v14_1_results.append(('test_g8_master_funnel_reads_horizon_key_not_time_horizon', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g8_master_funnel_reads_horizon_key_not_time_horizon: {_e}')
-        v14_1_results.append(('test_g8_master_funnel_reads_horizon_key_not_time_horizon', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g8_master_funnel_reads_horizon_key_not_time_horizon: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g8_master_funnel_reads_horizon_key_not_time_horizon', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g13_performance_sheet_value_correctness_audit()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g13_performance_sheet_value_correctness_audit')
-        else:
-            print(f'  ✅ test_g13_performance_sheet_value_correctness_audit')
-        v14_1_results.append(('test_g13_performance_sheet_value_correctness_audit', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g13_performance_sheet_value_correctness_audit: {_e}')
-        v14_1_results.append(('test_g13_performance_sheet_value_correctness_audit', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g13_performance_sheet_value_correctness_audit: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g13_performance_sheet_value_correctness_audit', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g12_insert_returns_false_on_duplicate()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g12_insert_returns_false_on_duplicate')
-        else:
-            print(f'  ✅ test_g12_insert_returns_false_on_duplicate')
-        v14_1_results.append(('test_g12_insert_returns_false_on_duplicate', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g12_insert_returns_false_on_duplicate: {_e}')
-        v14_1_results.append(('test_g12_insert_returns_false_on_duplicate', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g12_insert_returns_false_on_duplicate: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g12_insert_returns_false_on_duplicate', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g11_tracker_invoked_from_master_funnel()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g11_tracker_invoked_from_master_funnel')
-        else:
-            print(f'  ✅ test_g11_tracker_invoked_from_master_funnel')
-        v14_1_results.append(('test_g11_tracker_invoked_from_master_funnel', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g11_tracker_invoked_from_master_funnel: {_e}')
-        v14_1_results.append(('test_g11_tracker_invoked_from_master_funnel', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g11_tracker_invoked_from_master_funnel: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g11_tracker_invoked_from_master_funnel', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g10_v14_hook_fires_before_excel_generation()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g10_v14_hook_fires_before_excel_generation')
-        else:
-            print(f'  ✅ test_g10_v14_hook_fires_before_excel_generation')
-        v14_1_results.append(('test_g10_v14_hook_fires_before_excel_generation', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g10_v14_hook_fires_before_excel_generation: {_e}')
-        v14_1_results.append(('test_g10_v14_hook_fires_before_excel_generation', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g10_v14_hook_fires_before_excel_generation: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g10_v14_hook_fires_before_excel_generation', 'ERROR', f'{type(_e).__name__}: {_e}'))
-    try:
-        _r = test_g9_column_name_consistency_time_horizon_everywhere()
-        if isinstance(_r, str):
-            print(f'  ✅ test_g9_column_name_consistency_time_horizon_everywhere')
-        else:
-            print(f'  ✅ test_g9_column_name_consistency_time_horizon_everywhere')
-        v14_1_results.append(('test_g9_column_name_consistency_time_horizon_everywhere', 'PASS', _r if isinstance(_r, str) else 'ok'))
-    except AssertionError as _e:
-        print(f'  ❌ test_g9_column_name_consistency_time_horizon_everywhere: {_e}')
-        v14_1_results.append(('test_g9_column_name_consistency_time_horizon_everywhere', 'FAIL', str(_e)))
-    except Exception as _e:
-        print(f'  ⚠️  test_g9_column_name_consistency_time_horizon_everywhere: {type(_e).__name__}: {_e}')
-        v14_1_results.append(('test_g9_column_name_consistency_time_horizon_everywhere', 'ERROR', f'{type(_e).__name__}: {_e}'))
+    v14_1_results.append(_run_one_test(test_g1_horizon_mapping))
+    v14_1_results.append(_run_one_test(test_g2_alter_table_idempotent))
+    v14_1_results.append(_run_one_test(test_g3_insert_stores_expiry_fields))
+    v14_1_results.append(_run_one_test(test_g4_reappearance_counter))
+    v14_1_results.append(_run_one_test(test_g4c_same_day_as_recommendation_does_not_increment))
+    v14_1_results.append(_run_one_test(test_g4_reappearance_skipped_after_close))
+    v14_1_results.append(_run_one_test(test_g5_short_term_expires_at_30))
+    v14_1_results.append(_run_one_test(test_g5_long_term_doesnt_expire_at_90))
+    v14_1_results.append(_run_one_test(test_g5_legacy_no_expiry_days_uses_default_90))
+    v14_1_results.append(_run_one_test(test_g6_by_time_horizon_breakdown_appears))
+    v14_1_results.append(_run_one_test(test_g6_open_positions_has_new_columns))
+    v14_1_results.append(_run_one_test(test_g7_expired_missed_runup_diagnostic))
+    v14_1_results.append(_run_one_test(test_g7_no_diagnostic_when_few_expired))
+    v14_1_results.append(_run_one_test(test_g8_master_funnel_reads_horizon_key_not_time_horizon))
+    v14_1_results.append(_run_one_test(test_g13_performance_sheet_value_correctness_audit))
+    v14_1_results.append(_run_one_test(test_g12_insert_returns_false_on_duplicate))
+    v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
+    v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
+    v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
     suite_results.append(('v14_1', v14_1_results))
-    
+
     # ── Final summary ──
     print('\n' + '=' * 78)
     print('SUMMARY')

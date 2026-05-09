@@ -1043,6 +1043,32 @@ TIPS: Dict[str, Tuple[str, str]] = {
                          "if SHORT TERM has lower hit rate than POSITIONAL\n"
                          "despite being stricter (high spike count required),\n"
                          "the SHORT TERM trigger may need recalibration."),
+    # ────────────────────────────────────────────────────────────────────
+    # v14.4: SL/T1/T2/T3 columns in OPEN POSITIONS
+    # Each cell shows "₹price (±X.X%)" — distance is from current_price
+    # (not entry), so it updates dynamically as the tracker refreshes price.
+    # ────────────────────────────────────────────────────────────────────
+    "SL": ("Stop-loss level for this open position",
+            "Format: ₹price (distance%). Distance is from CURRENT price, not\n"
+            "from entry — so as the stock moves, the distance updates each\n"
+            "pipeline run. SL distance is naturally negative (price would need\n"
+            "to drop for SL to fire). Frozen at recommendation time — never\n"
+            "updated even on re-appearance, preserving measurement integrity.\n"
+            "Red text indicates downside risk."),
+    "T1": ("First profit target for this open position",
+            "Format: ₹price (distance%). Distance is from CURRENT price.\n"
+            "Positive distance (e.g. +9.3%) means we still need to rally to\n"
+            "reach T1; negative would mean we've passed it but not closed (rare\n"
+            "edge case). T1 is the realistic 'first take-profit' level — most\n"
+            "Gold picks aim to hit at minimum T1 within their horizon window."),
+    "T2": ("Second profit target for this open position",
+            "Format: ₹price (distance%). Distance from CURRENT price. T2 is\n"
+            "the 'extended' target — typically +20% above entry. Reaching T2\n"
+            "means the recommendation overdelivered vs the realistic case."),
+    "T3": ("Stretch profit target for this open position",
+            "Format: ₹price (distance%). Distance from CURRENT price. T3 is\n"
+            "the 'home run' target — typically +30% above entry. T3_HIT outcomes\n"
+            "are rare in the wild but mark the system's strongest validations."),
 }
 
 

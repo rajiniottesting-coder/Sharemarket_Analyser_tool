@@ -1061,7 +1061,7 @@ GLOSSARY_DATA = [
      "(preserves measurement integrity by not letting later optimism rescue earlier calls). The counter exists for diagnostic visibility: high count = 'the system kept saying buy this' which is a stronger conviction signal than a single appearance. "
      "Idempotent within a calendar day: same-day pipeline re-runs don't double-count.","🎯 Performance"),
     ("PERFORMANCE","Approaching Expiry Warning",
-     "⚠ flag (column 12 of Open Positions table) and pale-yellow row highlight when Days Left ≤ 14. Surfaces positions nearing the hard cutoff so you can decide whether to manually exit at current P&L or accept the EXPIRED outcome. "
+     "⚠ flag (last column of Open Positions table) and pale-yellow row highlight when Days Left ≤ 14. Surfaces positions nearing the hard cutoff so you can decide whether to manually exit at current P&L or accept the EXPIRED outcome. "
      "End-of-table summary line counts how many positions are approaching expiry — useful at-a-glance metric for daily review.","🎯 Performance"),
     ("PERFORMANCE","BY TIME HORIZON breakdown",
      "Fourth diagnostic table in the Performance sheet (after Score Band, Quick Pick Archetype, Sector). Shows hit rate / SL rate / expired count per Horizon class. "
@@ -1071,6 +1071,11 @@ GLOSSARY_DATA = [
      "Diagnostic for EXPIRED rows: how much max gain (max_runup_pct) the stock reached before being bucketed as EXPIRED. AVG MISSED RUNUP averages across all expired rows; PEAK MISSED RUNUP shows the worst single case. "
      "Reading guide: AVG >15% suggests targets are too far OR expiry too early — stocks rallied during tracking but failed to reach T1 within the horizon window. AVG <5% means expiry was the right call (truly sideways stocks). "
      "EXPIRED w/ ≥10% RUNUP shows count/total of expired rows that crossed 10% runup before failing — high ratio means the system identifies winners but mistimes them.","🎯 Performance"),
+    # v14.4: SL/T1/T2/T3 columns in Open Positions table
+    ("PERFORMANCE","SL / T1 / T2 / T3 columns",
+     "v14.4: each open position row shows the recommended stop-loss and three profit targets. Format: ₹price (distance%). The distance percentage is from CURRENT price (not entry), so it updates dynamically as the tracker refreshes price each pipeline run. "
+     "Example: PETRONET entered at ₹282.10 with T1 ₹310.30. After rallying to ₹283.80, T1 reads '₹310.30 (+9.3%)' — meaning we still need +9.3% more from current to hit T1. SL distance is naturally negative; target distances naturally positive while we're below them. "
+     "Levels are frozen at recommendation time — re-appearances do NOT update them, preserving measurement integrity. SL renders in red text (downside risk); T1/T2/T3 render in green (upside).","🎯 Performance"),
 ]
 
 GRP_COLORS = {
@@ -2296,17 +2301,25 @@ class ExcelGeneratorV6:
 
         # ── Section 4: OPEN POSITIONS ─────────────────────────────────────
         # v14.1: enhanced with Horizon, Days Left, Re-appearances, ⚠ approaching-expiry flag
-        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=12)
+        # v14.4: added SL / T1 / T2 / T3 columns showing target prices + dynamic
+        #        distance-from-current-price hints. A reader can now see at a
+        #        glance "where are we vs where do we expect to go?" without
+        #        cross-referencing the Gold sheet.
+        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
         c = ws.cell(next_row,1,
             "📂  OPEN POSITIONS  ·  Currently-tracked stocks with running P&L vs targets")
         c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
         ws.row_dimensions[next_row].height = 22
         next_row += 1
 
-        # v14.1: 12-column header (was 10 in v14.0). New: Time Horizon, Days Left, Re-app, ⚠
+        # v14.4: 16-column header (was 12 in v14.1). New: SL, T1, T2, T3 between
+        # Max Runup % and Score. Each shows "₹price (±X.X%)" — the % is distance
+        # from CURRENT price (not from entry), so it updates dynamically each run.
         open_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",15),("Days Held",10),
                      ("Days Left",10),("Re-app",8),("CMP at Rec",12),("Current Price",12),
-                     ("P&L %",10),("Max Runup %",12),("Score",8),("⚠",6)]
+                     ("P&L %",10),("Max Runup %",12),
+                     ("SL",18),("T1",18),("T2",18),("T3",18),
+                     ("Score",8),("⚠",6)]
         for ci,(h,w) in enumerate(open_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
@@ -2317,7 +2330,7 @@ class ExcelGeneratorV6:
         _open_df = _df_all[_df_all["outcome_type"] == "OPEN"].copy()
         _approaching_count = 0   # for an end-of-table summary
         if _open_df.empty:
-            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=12)
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
             c = ws.cell(next_row,1,"  No currently-open positions.")
             c.fill = _f(LG); c.font = _ft(False,"6B7280",9,True); c.alignment = _al("left")
             next_row += 1
@@ -2341,6 +2354,26 @@ class ExcelGeneratorV6:
                 bg = LG if next_row % 2 == 0 else WHITE
                 # Highlight whole row in pale yellow if approaching expiry
                 if _is_approaching: bg = "FEF3C7"
+                # v14.4: format SL/T1/T2/T3 as "₹price (±X.X%)" — distance from
+                # current price. SL distance is naturally negative (price would
+                # need to drop for SL to fire); target distances naturally positive
+                # while we're below them.
+                _cur_price = float(row_o.get("current_price",0) or 0)
+                _sl_v = float(row_o.get("stop_loss",0) or 0)
+                _t1_v = float(row_o.get("t1",0) or 0)
+                _t2_v = float(row_o.get("t2",0) or 0)
+                _t3_v = float(row_o.get("t3",0) or 0)
+                def _level_str(level_price):
+                    """Format a target/SL level: '₹P (±D.D%)' where D is distance
+                    from current price. Returns '—' for missing levels."""
+                    if not level_price or level_price <= 0 or _cur_price <= 0:
+                        return "—"
+                    dist_pct = (level_price - _cur_price) / _cur_price * 100
+                    return f"₹{level_price:,.2f} ({dist_pct:+.1f}%)"
+                _sl_str = _level_str(_sl_v)
+                _t1_str = _level_str(_t1_v)
+                _t2_str = _level_str(_t2_v)
+                _t3_str = _level_str(_t3_v)
                 vals = [
                     str(row_o.get("symbol","—")),
                     str(row_o.get("recommendation_date","—")),
@@ -2349,26 +2382,38 @@ class ExcelGeneratorV6:
                     _days_left,
                     _times_reap if _times_reap > 0 else "—",
                     round(float(row_o.get("cmp_at_recommendation",0) or 0), 2),
-                    round(float(row_o.get("current_price",0) or 0), 2),
+                    round(_cur_price, 2),
                     f"{float(row_o.get('current_pnl_pct',0) or 0):+.1f}%",
                     f"{float(row_o.get('max_runup_pct',0) or 0):+.1f}%",
+                    _sl_str, _t1_str, _t2_str, _t3_str,
                     round(float(row_o.get("composite_score",0) or 0), 1),
                     "⚠" if _is_approaching else "",
                 ]
                 for ci, v in enumerate(vals, 1):
                     cc = ws.cell(next_row, ci, v); cc.fill = _f(bg)
                     cc.font = _ft(False, NAVY, 9); cc.alignment = _al()
-                # Color P&L cell
+                # Color P&L cell (column 9)
                 pnl = float(row_o.get("current_pnl_pct",0) or 0)
                 if pnl > 0:    ws.cell(next_row, 9).font = _ft(True, "065F46", 9)
                 elif pnl < 0:  ws.cell(next_row, 9).font = _ft(True, "991B1B", 9)
-                # Bold the warning emoji
+                # v14.4: color SL column (11) red — always represents downside risk.
+                # Color target columns (12/13/14) green — always represents upside.
+                # Subtle text color, not bold (avoids visual overwhelm with so many cols).
+                if _sl_v > 0:
+                    ws.cell(next_row, 11).font = _ft(False, "991B1B", 9)
+                if _t1_v > 0:
+                    ws.cell(next_row, 12).font = _ft(False, "065F46", 9)
+                if _t2_v > 0:
+                    ws.cell(next_row, 13).font = _ft(False, "065F46", 9)
+                if _t3_v > 0:
+                    ws.cell(next_row, 14).font = _ft(False, "065F46", 9)
+                # Bold the warning emoji (column 16 in v14.4, was 12 in v14.1)
                 if _is_approaching:
-                    ws.cell(next_row, 12).font = _ft(True, "92400E", 11)
+                    ws.cell(next_row, 16).font = _ft(True, "92400E", 11)
                 next_row += 1
             # End-of-table summary line if any approaching expiry
             if _approaching_count > 0:
-                ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=12)
+                ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
                 c = ws.cell(next_row,1,
                     f"  ⚠ {_approaching_count} position(s) within 14 days of expiry — "
                     "review for manual exit or accept EXPIRED outcome at the hard cutoff.")
@@ -2384,7 +2429,7 @@ class ExcelGeneratorV6:
         _expired_df = _df_all[_df_all["outcome_type"] == "EXPIRED"].copy()
         if not _expired_df.empty and len(_expired_df) >= 3:
             next_row += 1   # spacer
-            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=12)
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
             c = ws.cell(next_row,1,
                 "💸  EXPIRED — MISSED RUNUP DIAGNOSTIC  ·  How much was 'left on the table' before expiry")
             c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
@@ -2404,7 +2449,7 @@ class ExcelGeneratorV6:
                     value_fill="FEE2E2", label_fill="FECACA", val_color="991B1B")
             next_row += 3
             # Interpretive note
-            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=12)
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
             c = ws.cell(next_row, 1,
                 "  Reading guide: high AVG MISSED RUNUP (>15%) suggests targets are too far "
                 "or expiry too early. Stocks rallied during tracking but failed to reach T1 within "
