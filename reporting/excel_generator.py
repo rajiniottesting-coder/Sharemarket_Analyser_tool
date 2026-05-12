@@ -1076,6 +1076,12 @@ GLOSSARY_DATA = [
      "v14.4: each open position row shows the recommended stop-loss and three profit targets. Format: ₹price (distance%). The distance percentage is from CURRENT price (not entry), so it updates dynamically as the tracker refreshes price each pipeline run. "
      "Example: PETRONET entered at ₹282.10 with T1 ₹310.30. After rallying to ₹283.80, T1 reads '₹310.30 (+9.3%)' — meaning we still need +9.3% more from current to hit T1. SL distance is naturally negative; target distances naturally positive while we're below them. "
      "Levels are frozen at recommendation time — re-appearances do NOT update them, preserving measurement integrity. SL renders in red text (downside risk); T1/T2/T3 render in green (upside).","🎯 Performance"),
+    # v14.5: CLOSED POSITIONS section
+    ("PERFORMANCE","Closed Positions section",
+     "v14.5: chronological log of every closed pick (SL_HIT/T1_HIT/T2_HIT/T3_HIT/EXPIRED), sorted most-recent-first. 12 columns: Symbol, Rec Date, Time Horizon, Outcome (color-coded — green for targets, red for SL, amber for EXPIRED), Outcome Date, Days to Outcome, Entry CMP, Outcome Price, P&L %, Max Runup %, Max Drawdown %, Score. "
+     "Realised P&L is computed live from entry vs outcome_price (so it reflects what actually happened, not what was projected). Max Runup % is especially revealing for SL_HIT rows: a high value (e.g. +9%) means the stock rallied significantly BEFORE hitting SL — possible SL too tight. "
+     "Max Drawdown % matters for T-HIT rows: shows how much pain you'd have suffered before winning, useful for sizing future positions. Section appears between Diagnostic Breakdowns and Open Positions in the sheet — natural reading flow from aggregates to detail to current state. "
+     "Footer summarises counts per outcome bucket.","🎯 Performance"),
 ]
 
 GRP_COLORS = {
@@ -2299,7 +2305,128 @@ class ExcelGeneratorV6:
                 _closed["_horizon_clean"] = _closed["time_horizon"].fillna("—").astype(str).replace("", "—")
             next_row = _build_breakdown_table(next_row, "BY TIME HORIZON", "_horizon_clean")
 
-        # ── Section 4: OPEN POSITIONS ─────────────────────────────────────
+        # ── Section 4: CLOSED POSITIONS (v14.5) ───────────────────────────
+        # Chronological detail log of every closed pick (SL_HIT/T1_HIT/T2_HIT/
+        # T3_HIT/EXPIRED). The headline counts (T1 HIT: 21, SL HIT: 10, etc.)
+        # tell you the aggregate score, but they don't tell you which stocks
+        # contributed or how each one played out. This section closes that gap:
+        # one row per closed pick, sorted most-recent-first, color-coded by
+        # outcome type (green for targets, red for SL, amber for EXPIRED).
+        #
+        # Sample-size guard: if zero closed rows in DB, render the empty-state
+        # line and skip the table entirely (same pattern as OPEN POSITIONS).
+        _closed_df = _df_all[_df_all["outcome_type"].isin(
+            ["SL_HIT","T1_HIT","T2_HIT","T3_HIT","EXPIRED"])].copy()
+        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+        c = ws.cell(next_row,1,
+            "📜  CLOSED POSITIONS  ·  Realised outcomes — historical track record")
+        c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
+        ws.row_dimensions[next_row].height = 22
+        next_row += 1
+
+        # 12-column header — matches OPEN POSITIONS density. Outcome column
+        # gets color treatment based on the actual outcome_type value.
+        closed_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",13),
+                       ("Outcome",10),("Outcome Date",13),("Days to Outcome",14),
+                       ("Entry CMP",12),("Outcome Price",13),("P&L %",10),
+                       ("Max Runup %",12),("Max Drawdown %",14),("Score",8)]
+        for ci,(h,w) in enumerate(closed_cols, 1):
+            cc = ws.cell(next_row, ci, h)
+            cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
+            # Note: column widths above 12 may be left untouched — OPEN POSITIONS
+            # in the next section will re-set them with its own widths anyway.
+            ws.column_dimensions[get_column_letter(ci)].width = w
+        ws.row_dimensions[next_row].height = 20
+        next_row += 1
+
+        if _closed_df.empty:
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+            c = ws.cell(next_row,1,"  No closed positions yet — track record will populate as picks resolve.")
+            c.fill = _f(LG); c.font = _ft(False,"6B7280",9,True); c.alignment = _al("left")
+            next_row += 1
+        else:
+            # Sort by outcome_date DESC (most recent closures first). Falls back
+            # gracefully if outcome_date is missing/malformed.
+            _closed_df = _closed_df.sort_values(
+                by="outcome_date", ascending=False, na_position="last")
+
+            # Color map for outcome column (cell background)
+            _outcome_bg = {
+                "T1_HIT":  "D1FAE5",   # light green
+                "T2_HIT":  "A7F3D0",   # medium green
+                "T3_HIT":  "6EE7B7",   # darker green
+                "SL_HIT":  "FEE2E2",   # light red
+                "EXPIRED": "FEF3C7",   # amber
+            }
+            _outcome_fg = {
+                "T1_HIT":  "065F46",
+                "T2_HIT":  "065F46",
+                "T3_HIT":  "065F46",
+                "SL_HIT":  "991B1B",
+                "EXPIRED": "92400E",
+            }
+
+            for _, row_c in _closed_df.iterrows():
+                _outcome = str(row_c.get("outcome_type","") or "")
+                _horizon_str = str(row_c.get("time_horizon","") or "—")
+                # Compute P&L % at outcome from entry CMP and outcome_price
+                _entry_cmp = float(row_c.get("cmp_at_recommendation", 0) or 0)
+                _outcome_price = float(row_c.get("outcome_price", 0) or 0)
+                if _entry_cmp > 0 and _outcome_price > 0:
+                    _pnl_realised = (_outcome_price - _entry_cmp) / _entry_cmp * 100
+                    _pnl_str = f"{_pnl_realised:+.1f}%"
+                else:
+                    _pnl_realised = 0.0
+                    _pnl_str = "—"
+                _days_to = row_c.get("days_to_outcome", "")
+                _days_to_str = str(int(_days_to)) if _days_to not in ("", None) else "—"
+                bg = LG if next_row % 2 == 0 else WHITE
+                vals = [
+                    str(row_c.get("symbol","—")),
+                    str(row_c.get("recommendation_date","—")),
+                    _horizon_str,
+                    _outcome,
+                    str(row_c.get("outcome_date","—") or "—"),
+                    _days_to_str,
+                    round(_entry_cmp, 2) if _entry_cmp > 0 else "—",
+                    round(_outcome_price, 2) if _outcome_price > 0 else "—",
+                    _pnl_str,
+                    f"{float(row_c.get('max_runup_pct',0) or 0):+.1f}%",
+                    f"{float(row_c.get('max_drawdown_pct',0) or 0):+.1f}%",
+                    round(float(row_c.get("composite_score",0) or 0), 1),
+                ]
+                for ci, v in enumerate(vals, 1):
+                    cc = ws.cell(next_row, ci, v); cc.fill = _f(bg)
+                    cc.font = _ft(False, NAVY, 9); cc.alignment = _al()
+                # Color the Outcome column (col 4) with semantic bg + bold fg
+                if _outcome in _outcome_bg:
+                    cc = ws.cell(next_row, 4)
+                    cc.fill = _f(_outcome_bg[_outcome])
+                    cc.font = _ft(True, _outcome_fg[_outcome], 9)
+                # Color P&L column (col 9): green for positive, red for negative
+                if _pnl_realised > 0:
+                    ws.cell(next_row, 9).font = _ft(True, "065F46", 9)
+                elif _pnl_realised < 0:
+                    ws.cell(next_row, 9).font = _ft(True, "991B1B", 9)
+                next_row += 1
+
+            # End-of-table summary count by outcome bucket (one-liner)
+            _summary_parts = []
+            for _otype, _emoji in [("T1_HIT","🎯"),("T2_HIT","🎯🎯"),("T3_HIT","🎯🎯🎯"),
+                                    ("SL_HIT","🛑"),("EXPIRED","⏱")]:
+                _n = int((_closed_df["outcome_type"] == _otype).sum())
+                if _n > 0:
+                    _summary_parts.append(f"{_emoji} {_otype}: {_n}")
+            if _summary_parts:
+                ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+                c = ws.cell(next_row,1,
+                    f"  Total {len(_closed_df)} closed · " + " · ".join(_summary_parts))
+                c.fill = _f(LG); c.font = _ft(False,NAVY,9,True); c.alignment = _al("left")
+                next_row += 1
+
+        next_row += 1   # blank spacer before OPEN POSITIONS
+
+        # ── Section 5: OPEN POSITIONS ─────────────────────────────────────
         # v14.1: enhanced with Horizon, Days Left, Re-appearances, ⚠ approaching-expiry flag
         # v14.4: added SL / T1 / T2 / T3 columns showing target prices + dynamic
         #        distance-from-current-price hints. A reader can now see at a

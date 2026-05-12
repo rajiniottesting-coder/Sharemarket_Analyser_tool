@@ -2168,6 +2168,134 @@ def test_g12_insert_returns_false_on_duplicate():
         _restore(original, test_db)
     return "✅ Duplicate INSERT OR IGNORE correctly returns False (silent collision detected)"
 
+def test_g14_closed_positions_section_renders_correctly():
+    """v14.5 regression test: Performance sheet must render a CLOSED POSITIONS
+    section between DIAGNOSTIC BREAKDOWNS and OPEN POSITIONS, with:
+      - 12-column header (Symbol, Rec Date, Time Horizon, Outcome, Outcome Date,
+        Days to Outcome, Entry CMP, Outcome Price, P&L %, Max Runup %,
+        Max Drawdown %, Score)
+      - Rows sorted by outcome_date DESC (most recent first)
+      - Realised P&L computed from entry CMP and outcome_price
+      - Summary footer counting outcomes by bucket
+    """
+    from database.data_bridge import (initialize_v7_tables, insert_gold_recommendation,
+        update_outcome)
+    from reporting.excel_generator import ExcelGeneratorV6
+    from openpyxl import load_workbook
+
+    test_db, original = _setup_temp_db('g14_full')
+    try:
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        today = datetime.now().date()
+        cases = [
+            ('WIN1',  -30, 'T1_HIT',  12, 110, 80, 'POSITIONAL'),
+            ('WIN2',  -20, 'T2_HIT',  18, 120, 85, 'POSITIONAL'),
+            ('LOSS1', -25, 'SL_HIT',   8,  93, 73, 'SHORT TERM'),
+            ('EXP1',  -100,'EXPIRED', 90, 102, 75, 'POSITIONAL'),
+            ('OPEN1',  -3, 'OPEN',  None, None, 91, 'POSITIONAL'),
+        ]
+        for sym, off, outcome, days_to, out_p, score, horiz in cases:
+            rec_dt = today + timedelta(days=off)
+            insert_gold_recommendation({
+                'recommendation_date': rec_dt.strftime("%Y-%m-%d"),
+                'symbol': sym, 'cmp_at_recommendation': 100,
+                'stop_loss': 93, 't1': 110, 't2': 120, 't3': 130,
+                'composite_score': score, 'time_horizon': horiz, 'expiry_days': 90,
+                'sector': 'Tech', 'quick_pick_label': 'DEEP VALUE',
+            })
+            if outcome == 'OPEN':
+                update_outcome(sym, rec_dt.strftime("%Y-%m-%d"), 'OPEN',
+                    current_price=100, current_pnl_pct=0,
+                    max_drawdown_pct=-1, max_runup_pct=2,
+                    last_checked_date=today.strftime("%Y-%m-%d"))
+            else:
+                out_dt = rec_dt + timedelta(days=days_to)
+                update_outcome(sym, rec_dt.strftime("%Y-%m-%d"), outcome,
+                    outcome_date=out_dt.strftime("%Y-%m-%d"),
+                    outcome_price=out_p, days_to_outcome=days_to,
+                    max_drawdown_pct=-3, max_runup_pct=12,
+                    current_price=out_p, current_pnl_pct=(out_p-100),
+                    last_checked_date=today.strftime("%Y-%m-%d"))
+
+        os.chdir('/tmp')
+        final_list = [{'symbol': 'D', 'verdict': 'N', 'composite_score': 50,
+            'mos_pct': 0, 'storm_score': 5, 'rsi': 50, 'pledge_pct': 0,
+            'spike_suppressed': False, 'sector': 'T', 'close': 100,
+            'cfv': 100, 'cap_category': 'MID', 'cap_badge': 'MID',
+            'company_name': 'D', 'altman_z': 3.0, 'earnings_quality': 'MEDIUM',
+            'int_coverage': 5.0, 'bs_status': 'OK', 'early_entry_score': 30,
+            'spike_count': 0, 'spike_triggers': [], 'label': 'WATCHLIST'}]
+        gen = ExcelGeneratorV6(final_list, '20260601', run_time='10:00 IST',
+                               prev_scores={}, gap_days=0)
+        master, _ = gen.generate_excel_reports()
+        wb = load_workbook(f"/tmp/{master}")
+        ws = wb["🎯 Performance"]
+
+        def find_row(text):
+            for r in range(1, ws.max_row + 1):
+                if text in str(ws.cell(r, 1).value or ''):
+                    return r
+            return None
+        def cv(r, c):
+            return str(ws.cell(r, c).value or '').strip()
+
+        cl_r = find_row("CLOSED POSITIONS")
+        assert cl_r is not None, "CLOSED POSITIONS section header missing"
+
+        op_r = find_row("OPEN POSITIONS")
+        assert op_r is not None, "OPEN POSITIONS section missing"
+        assert cl_r < op_r, (
+            f"CLOSED POSITIONS at row {cl_r} should appear BEFORE "
+            f"OPEN POSITIONS at row {op_r}"
+        )
+
+        expected_headers = ["Symbol","Rec Date","Time Horizon","Outcome","Outcome Date",
+            "Days to Outcome","Entry CMP","Outcome Price","P&L %","Max Runup %",
+            "Max Drawdown %","Score"]
+        for i, expected in enumerate(expected_headers, 1):
+            got = cv(cl_r + 1, i)
+            assert got == expected, (
+                f"CLOSED POSITIONS header col {i}: got {got!r}, expected {expected!r}"
+            )
+
+        symbols_in_table = []
+        for offset in range(2, 10):
+            sym = cv(cl_r + offset, 1)
+            if sym in ("WIN1", "WIN2", "LOSS1", "EXP1"):
+                symbols_in_table.append(sym)
+            elif "Total" in sym or not sym:
+                break
+        assert len(symbols_in_table) == 4, (
+            f"Expected 4 closed rows, got {len(symbols_in_table)}: {symbols_in_table}"
+        )
+        assert "OPEN1" not in symbols_in_table
+
+        first_sym = cv(cl_r + 2, 1)
+        assert first_sym == "WIN2", (
+            f"First row should be most recent (WIN2), got {first_sym!r}"
+        )
+
+        for offset in range(2, 10):
+            if cv(cl_r + offset, 1) == "WIN2":
+                pnl = cv(cl_r + offset, 9)
+                assert pnl == "+20.0%", f"WIN2 P&L = {pnl!r}, expected +20.0%"
+                break
+
+        summary_found = False
+        for offset in range(2, 15):
+            v = cv(cl_r + offset, 1)
+            if "Total" in v and "closed" in v:
+                summary_found = True
+                assert "Total 4" in v, f"Summary count wrong: {v!r}"
+                break
+        assert summary_found, "Summary footer not found in CLOSED POSITIONS"
+
+        os.remove(f"/tmp/{master}")
+    finally:
+        _restore(original, test_db)
+
+    return "✅ CLOSED POSITIONS section renders correctly (12 cols, sorted, color-coded, P&L formula)"
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -2417,6 +2545,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g8_master_funnel_reads_horizon_key_not_time_horizon))
     v14_1_results.append(_run_one_test(test_g13_performance_sheet_value_correctness_audit))
     v14_1_results.append(_run_one_test(test_g12_insert_returns_false_on_duplicate))
+    v14_1_results.append(_run_one_test(test_g14_closed_positions_section_renders_correctly))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

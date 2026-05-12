@@ -1069,6 +1069,37 @@ TIPS: Dict[str, Tuple[str, str]] = {
             "Format: ₹price (distance%). Distance from CURRENT price. T3 is\n"
             "the 'home run' target — typically +30% above entry. T3_HIT outcomes\n"
             "are rare in the wild but mark the system's strongest validations."),
+    # ────────────────────────────────────────────────────────────────────
+    # v14.5: CLOSED POSITIONS columns
+    # ────────────────────────────────────────────────────────────────────
+    "Outcome": ("How this position closed",
+                "One of: T1_HIT / T2_HIT / T3_HIT (profit targets), SL_HIT (stop\n"
+                "loss triggered), EXPIRED (no event fired within the horizon\n"
+                "window). Color-coded green/red/amber for at-a-glance scanning."),
+    "Outcome Date": ("Calendar date when the closing event fired",
+                     "For T-HIT outcomes, this is the day the stock high crossed\n"
+                     "the target level. For SL_HIT, the day the stock low touched\n"
+                     "the stop loss. For EXPIRED, the date = recommendation_date\n"
+                     "+ expiry_days (hard cutoff at horizon boundary)."),
+    "Days to Outcome": ("Calendar days between recommendation and closing event",
+                        "Lower is faster. T1 wins often resolve in 10-30 days;\n"
+                        "T2 in 25-50; T3 in 40-90. SL_HITs are usually fast (5-15\n"
+                        "days) — meaningful info: if SL_HIT averages slower than\n"
+                        "T1_HIT, the stop is well-calibrated."),
+    "Entry CMP": ("CMP price the day this stock was first recommended",
+                  "Frozen at log time — never updated even on re-appearance.\n"
+                  "This is the reference price the realised P&L is computed from."),
+    "Outcome Price": ("Price at which the outcome event fired",
+                      "For T-HIT: the relevant target level (e.g. T1 ≈ +10% entry).\n"
+                      "For SL_HIT: the stop-loss level (e.g. -7% entry).\n"
+                      "For EXPIRED: the daily close on the expiry date.\n"
+                      "P&L % is computed as (outcome - entry) / entry × 100."),
+    "Max Drawdown %": ("Worst unrealized loss seen during tracking",
+                       "Running min of (low - entry) / entry × 100 as the tracker\n"
+                       "walks daily prices forward. For T-HIT outcomes, this shows\n"
+                       "how much pain you'd have endured before winning — useful\n"
+                       "for sizing future positions. -10% drawdown to win T1 is\n"
+                       "very different from -2%."),
 }
 
 

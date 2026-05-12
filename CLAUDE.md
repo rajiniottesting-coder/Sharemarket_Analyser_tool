@@ -3299,4 +3299,64 @@ The distance percentage updates dynamically each pipeline run as `current_price`
 
 ---
 
-*Last updated: May 9, 2026 · v14.4 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+### v14.5 — CLOSED POSITIONS section for track-record visibility
+
+**Date:** May 11, 2026
+**Trigger:** User observation — "in the performance sheet I think its good to have closed position section which should hold information such as expired stocks with expired date and stock price at expired date and other relevant info. This will give user more insight on the track record."
+
+**The gap (not a bug, a missing detail level):** Pre-v14.5 the Performance sheet showed closed picks only as aggregated counts in the headline (T1 HIT: 21, T2 HIT: 7, T3 HIT: 4, SL HIT: 10, EXPIRED: 3). A reader could see "we hit T1 21 times" but couldn't see WHICH stocks contributed, when they hit, or what the realised price was. The track record was statistical, not transactional.
+
+**The fix:** Added a new CLOSED POSITIONS section between DIAGNOSTIC BREAKDOWNS and OPEN POSITIONS. One row per closed pick (SL_HIT/T1_HIT/T2_HIT/T3_HIT/EXPIRED), sorted by outcome_date DESC so most recent closures appear at top.
+
+**Columns (12):**
+
+1. Symbol
+2. Rec Date
+3. Time Horizon
+4. **Outcome** *(color-coded — green for T1/T2/T3, red for SL_HIT, amber for EXPIRED)*
+5. Outcome Date
+6. Days to Outcome
+7. Entry CMP
+8. Outcome Price
+9. P&L % *(realised; computed live from entry vs outcome_price)*
+10. Max Runup % *(best gain ever during tracking — exposes near-miss SL_HITs)*
+11. Max Drawdown % *(worst pain experienced — useful for reviewing SL placement)*
+12. Score *(composite at recommendation)*
+
+**Summary footer:** `Total N closed · 🎯 T1_HIT: x · 🎯🎯 T2_HIT: y · 🎯🎯🎯 T3_HIT: z · 🛑 SL_HIT: a · ⏱ EXPIRED: b`
+
+**Empty-state:** When zero closed rows in DB, renders "No closed positions yet — track record will populate as picks resolve." instead of an empty table.
+
+**Section order in Performance sheet** (after v14.5):
+1. 🎯 GOLD-PICK PERFORMANCE TRACKER (title + sample-size banner)
+2. 📊 HEADLINE METRICS
+3. ⏱ SPEED METRICS
+4. 🔬 DIAGNOSTIC BREAKDOWNS
+5. **📜 CLOSED POSITIONS** *(NEW)*
+6. 📂 OPEN POSITIONS
+7. 💸 EXPIRED — MISSED RUNUP DIAGNOSTIC (when ≥3 expired)
+
+**Why this placement:** Reading flow becomes natural — start with aggregates (Headline/Speed/Breakdowns), then see the trade-by-trade log (Closed Positions), then current state (Open Positions), then deep-dive diagnostic (Missed Runup).
+
+**Why sorted by outcome_date DESC:** Recency matters more than alphabetical. Trader skimming the sheet wants "what closed this week" at the top.
+
+**No row count cap:** Showing all closed rows. After ~1 year of pipeline runs, this would be ~250 rows max — readable in Excel, manageable file size. Users can filter in Excel themselves if needed.
+
+**Files changed:** `reporting/excel_generator.py` only. Single-file change.
+
+**Test count after v14.5:** 66 (was 65). New test `test_g14_closed_positions_section_renders_correctly` verifies:
+- Section header "CLOSED POSITIONS" present
+- Section appears BEFORE OPEN POSITIONS (chronological reading order)
+- 12-column header with correct labels
+- Closed rows present, OPEN rows excluded
+- Most-recent-closed row appears first (sort verification)
+- Realised P&L formula correct (e.g. entry 100, outcome 120 → +20.0%)
+- Summary footer present with correct total
+
+**Stability:** 5/5 consecutive test runs all 66/66 pass.
+
+**No user-visible behaviour change** other than the new section appearing. Existing sections render identically.
+
+---
+
+*Last updated: May 11, 2026 · v14.5 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
