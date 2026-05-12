@@ -3302,7 +3302,7 @@ The distance percentage updates dynamically each pipeline run as `current_price`
 ### v14.5 — CLOSED POSITIONS section for track-record visibility
 
 **Date:** May 11, 2026
-**Trigger:** User observation — "in the performance sheet I think its good to have closed position section which should hold information such as expired stocks with expired date and stock price at expired date and other relevant info. This will give user more insight on the track record."
+**Trigger:** User observation — "good to have closed position section which should hold information such as expired stocks with expired date and stock price at expired date and other relevant info. This will give user more insight on the track record."
 
 **The gap (not a bug, a missing detail level):** Pre-v14.5 the Performance sheet showed closed picks only as aggregated counts in the headline (T1 HIT: 21, T2 HIT: 7, T3 HIT: 4, SL HIT: 10, EXPIRED: 3). A reader could see "we hit T1 21 times" but couldn't see WHICH stocks contributed, when they hit, or what the realised price was. The track record was statistical, not transactional.
 
@@ -3325,14 +3325,15 @@ The distance percentage updates dynamically each pipeline run as `current_price`
 
 **Summary footer:** `Total N closed · 🎯 T1_HIT: x · 🎯🎯 T2_HIT: y · 🎯🎯🎯 T3_HIT: z · 🛑 SL_HIT: a · ⏱ EXPIRED: b`
 
-**Empty-state:** When zero closed rows in DB, renders "No closed positions yet — track record will populate as picks resolve." instead of an empty table.
+**Empty-state:** When zero closed rows in DB, renders "No closed positions yet — track record will populate as picks resolve." instead of an empty table. Summary footer correctly suppressed in empty state.
 
 **Section order in Performance sheet** (after v14.5):
+
 1. 🎯 GOLD-PICK PERFORMANCE TRACKER (title + sample-size banner)
 2. 📊 HEADLINE METRICS
 3. ⏱ SPEED METRICS
 4. 🔬 DIAGNOSTIC BREAKDOWNS
-5. **📜 CLOSED POSITIONS** *(NEW)*
+5. **📜 CLOSED POSITIONS** *(NEW in v14.5)*
 6. 📂 OPEN POSITIONS
 7. 💸 EXPIRED — MISSED RUNUP DIAGNOSTIC (when ≥3 expired)
 
@@ -3341,6 +3342,8 @@ The distance percentage updates dynamically each pipeline run as `current_price`
 **Why sorted by outcome_date DESC:** Recency matters more than alphabetical. Trader skimming the sheet wants "what closed this week" at the top.
 
 **No row count cap:** Showing all closed rows. After ~1 year of pipeline runs, this would be ~250 rows max — readable in Excel, manageable file size. Users can filter in Excel themselves if needed.
+
+**OPEN vs CLOSED filter is mutually exclusive:** Each pick has exactly one `outcome_type` value at any time. The two sections use complementary filters (`outcome_type == 'OPEN'` vs `outcome_type IN ('SL_HIT','T1_HIT','T2_HIT','T3_HIT','EXPIRED')`), so a pick appears in exactly one section — never both, never neither. When a pick closes, the tracker updates its `outcome_type`, and on the next pipeline run the row automatically migrates from OPEN POSITIONS to CLOSED POSITIONS. No manual move needed.
 
 **Files changed:** `reporting/excel_generator.py` only. Single-file change.
 
@@ -3355,7 +3358,18 @@ The distance percentage updates dynamically each pipeline run as `current_price`
 
 **Stability:** 5/5 consecutive test runs all 66/66 pass.
 
-**No user-visible behaviour change** other than the new section appearing. Existing sections render identically.
+**Tooltip + glossary updates:**
+- 5 new TIPS entries in `tooltip_formatter.py`: Outcome, Outcome Date, Days to Outcome, Entry CMP, Outcome Price, Max Drawdown %
+- 1 new PERFORMANCE glossary entry: "Closed Positions section" — explains 12-column structure, color-coding, P&L formula, Max Runup interpretation for SL_HIT rows
+
+**Repository hardening (same release, prep for going public):**
+- Added `LICENSE` (MIT) — was missing, blocked legitimate use of the public code
+- Added disclaimer block to `readme.md` — educational/research only, not financial advice, no liability
+- Rewrote "Credits & licence" section in readme — removed "Internal use only · confidential · not for redistribution" line that contradicted public visibility
+- Updated `pipeline_reference_v14_1.html` → `pipeline_reference_v14_5.html` (title/meta/footer/cross-ref bumped; pipeline content itself unchanged since v14.1, since v14.x changes affect Performance sheet only, not the funnel/scoring/verdict pipeline)
+- Confirmed via secrets audit: no API keys, tokens, passwords, or PII hardcoded anywhere in code or git history; `.env` properly gitignored and never committed; workflow uses GitHub Secrets correctly for all 6 credentials
+
+**No user-visible behaviour change in core pipeline.** v14.5 is purely a Performance-sheet addition + supporting docs hardening.
 
 ---
 
