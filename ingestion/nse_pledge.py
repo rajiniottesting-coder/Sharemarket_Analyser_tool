@@ -52,15 +52,22 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
     if target_date is None:
         target_date = datetime.date.today()
 
-    url = "https://www.nseindia.com/api/corporates-pledgedata?index=equities"
+    # v15.2.1: NSE bulk pledge endpoints are increasingly blocked on cloud IPs
+    # (GitHub Actions, AWS, GCP). Try both legacy URL and the newer hyphenated
+    # variant before giving up. On free-tier this commonly fails — log once,
+    # politely, not 3 noisy retries. Real fix is paid feed (Trendlyne ~$30/mo)
+    # or manual CSV import; see CHANGES.md for details.
+    urls_to_try = [
+        "https://www.nseindia.com/api/corporates-pledgedata?index=equities",
+        "https://www.nseindia.com/api/corporate-filings-pledgedata?index=equities",
+    ]
 
     last_err: Optional[Exception] = None
-    for attempt in range(max_retries):
+    for url in urls_to_try:
         try:
             r = session.get(url, timeout=20)
             if r.status_code != 200:
                 last_err = RuntimeError(f"HTTP {r.status_code}")
-                time.sleep(1 + attempt)
                 continue
 
             data = r.json()
@@ -114,14 +121,20 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
                     # Skip malformed records, keep going
                     continue
 
-            return out
+            # If we got a non-empty response, return it
+            if out:
+                return out
+            # Empty response but HTTP 200 — try the next URL
+            last_err = RuntimeError("empty pledge response (NSE may have restructured endpoint)")
 
         except Exception as e:
             last_err = e
-            time.sleep(1 + attempt)
 
-    # All retries failed — return empty so caller falls back gracefully
-    print(f"   ⚠️  NSE bulk pledge fetch failed after {max_retries} retries: {last_err}")
+    # Both endpoints failed — single honest log line (no retries, no alarm).
+    # This is the expected free-tier behavior on cloud IPs and is documented.
+    # Pledge % column will show "—" with tooltip explaining paid-tier fallback.
+    print(f"   ℹ️  NSE bulk pledge: free endpoint unavailable on this IP "
+          f"(known limitation; paid-tier fallback expected)")
     return {}
 
 

@@ -64,11 +64,47 @@ def stage_1_filter(all_stocks: list) -> list:
             # Index / international ETFs
             "QNIFTY","MSCIINDIA","MASPTOP50","N50ETF","MAFSETF",
             "NIFTY50","NIFTYMID","NIFTYIT",
+            # v15.2: AMC family prefixes that escaped the filter on 12 May 2026
+            # (18 ETFs slipped through into the Full Dashboard with no
+            # fundamentals, polluting the score distribution).
+            # IMPORTANT: keep prefixes specific. Broad prefixes like "MO" or
+            # "MOTI" wrongly block real stocks (MOIL, MOSCHIP, MOTHERSON,
+            # MOTILALOFS = parent operating co — all legitimate). Same for
+            # "HDFC" / "ICICI" / "AXIS" / "KOTAK" — those families have real
+            # operating companies (HDFCAMC parent co, ICICIBANK, etc.).
+            "GROWWLIQ","GROWWNIFTY","GROWWBOND",    # Groww funds
+            "EBBETF","BHARATBOND","BHARATETF",      # Bharat Bond ETFs
+            # Specific symbols seen on 12 May 2026 that don't match a family
+            # prefix (one-offs go here so future runs catch them too)
+            "MOTOUR","MOSILVER","MOREALTY","MODEFENCE","MOCAPITAL",
+            "MON100","NEXT50","ESENSEX","SENSEXBETA","NIFTYBETA",
+            "GSEC10YEAR","NIFTY1","HDFCSML250","HDFCNIFTY",
+            "AXISILVER","ICICIAMC",
         )
-        if any(sym_up.startswith(k) or sym_up.endswith("ETF") or
-               sym_up.endswith("BEES") or sym_up.endswith("LIQUID") or
-               sym_up.endswith("ADD") or sym_up.endswith("INDEX")
-               for k in _etf_kw):
+        if any(sym_up.startswith(k) for k in _etf_kw) or \
+           sym_up.endswith("ETF") or sym_up.endswith("BEES") or \
+           sym_up.endswith("LIQUID") or sym_up.endswith("ADD") or \
+           sym_up.endswith("INDEX") or sym_up in _etf_kw:
+            dropped.setdefault("etf_mf", 0)
+            dropped["etf_mf"] += 1
+            continue
+
+        # v15.2: Company-name-based ETF/MF detection (most robust — catches
+        # any AMC product regardless of ticker convention). yfinance and NSE
+        # bhavcopy both populate the company name; this is a reliable signal
+        # even when symbol-based heuristics miss exotic ticker formats.
+        # Patterns that uniquely identify a non-operating-company instrument:
+        _name_up = str(stock.get("company_name", "") or "").upper()
+        _name_etf_markers = (
+            " ETF",            # leading space prevents matching e.g. "PETF Ltd"
+            "MUTUAL FUND",
+            "ASSET MANAGEMENT", "ASSET MGMT",
+            "INDEX FUND",
+            "GOLD BEES", "SILVER ETF",
+            "FUND OF FUND", "NIFTY 50 ETF", "SENSEX ETF",
+            "BOND ETF", "LIQUID ETF", "G-SEC ETF",
+        )
+        if any(m in _name_up for m in _name_etf_markers):
             dropped.setdefault("etf_mf", 0)
             dropped["etf_mf"] += 1
             continue

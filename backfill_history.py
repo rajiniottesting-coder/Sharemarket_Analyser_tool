@@ -742,6 +742,51 @@ def compute_adx(high, low, close, period=14):
     return dx.ewm(com=period - 1, min_periods=period).mean()
 
 
+def compute_historical_atr_series(hist):
+    """v15.2: Compute atr_14 at EACH historical date in `hist`.
+
+    Returns a list of dicts: [{'date': 'YYYY-MM-DD', 'atr_14': float}, ...]
+    one per row where atr_14 is computable (needs ≥14 prior bars).
+
+    Used by historical_technicals_backfill() to populate the
+    technical_indicators table with full historical atr_14 — required
+    so the v15.0 regime detection's 252-trading-day baseline query can
+    actually produce meaningful values from day 1 rather than waiting
+    60-252 days for daily-pipeline accumulation.
+
+    Only emits atr_14 + date — NOT the full TI dict — because:
+    (a) Other indicators (RSI, MACD, support1, etc.) are read by the
+        pipeline as latest-only; only atr_14 is queried as a historical
+        series for the baseline window.
+    (b) Storing all 30 TI columns × 400 days × 700 stocks = ~8.4M rows.
+        Just atr_14 keeps it to ~280K rows (~3 MB), trivial.
+    """
+    if hist is None or len(hist) < 15:
+        return []
+    df = hist.sort_values('date').reset_index(drop=True)
+    df = df.dropna(subset=['close', 'high', 'low']).reset_index(drop=True)
+    if len(df) < 15:
+        return []
+
+    h  = df['high'].astype(float)
+    l  = df['low'].astype(float)
+    c  = df['close'].astype(float)
+    pc = c.shift(1)
+    tr = pd.concat([(h - l), (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
+    atr14 = tr.rolling(14).mean()
+
+    out = []
+    for i in range(len(df)):
+        atr_v = atr14.iloc[i]
+        if pd.notna(atr_v) and atr_v > 0:
+            out.append({
+                'symbol': None,                    # caller fills in
+                'date':   str(df['date'].iloc[i]),
+                'atr_14': round(float(atr_v), 2),
+            })
+    return out
+
+
 def compute_technicals(hist):
     if hist is None or len(hist) < 20:
         return {}
@@ -1225,6 +1270,7 @@ def _compute_all_indicators(conn):
           flush=True)
 
     ti_rows   = []
+    ti_hist_rows = []   # v15.2: historical atr_14 per (symbol, date)
     wm_rows   = []
     processed = 0
 
@@ -1314,6 +1360,21 @@ def _compute_all_indicators(conn):
                     ti['date']   = latest_date
                     ti_rows.append(ti)
 
+                # v15.2: Also produce historical atr_14 series for this symbol.
+                # Each date gets its own row in technical_indicators with just
+                # symbol/date/atr_14 populated. Used by regime detection's
+                # 252-trading-day baseline query in master_funnel.py:1431.
+                # Other TI columns stay at their default (0) for historical
+                # rows — only the latest-date row has the full TI snapshot.
+                atr_series = compute_historical_atr_series(hist)
+                for row in atr_series:
+                    # Skip the latest_date row — full TI row already added
+                    # above; let upsert merge cleanly without overwriting.
+                    if row['date'] == latest_date:
+                        continue
+                    row['symbol'] = sym
+                    ti_hist_rows.append(row)
+
                 wm = compute_weekly_momentum(hist)
                 wm['symbol'] = sym
                 wm['date']   = latest_date
@@ -1344,6 +1405,18 @@ def _compute_all_indicators(conn):
     if ti_rows:
         upsert(pd.DataFrame(ti_rows), 'technical_indicators', conn)
         print(f"   ✅ technical_indicators: {len(ti_rows)} rows")
+
+    # v15.2: Historical atr_14 backfill — one row per (symbol, historical_date).
+    # Required so regime detection's 252-trading-day baseline query
+    # (master_funnel.py:1431) produces meaningful values from day 1.
+    # Pre-v15.2: technical_indicators had 1 latest row per symbol → baseline
+    # always equaled current ATR → ratio=1.0 → always NEUTRAL regime.
+    # Post-v15.2: full historical series, regime starts producing
+    # HIGH/NEUTRAL/LOW classifications from the first pipeline run.
+    if ti_hist_rows:
+        upsert(pd.DataFrame(ti_hist_rows), 'technical_indicators', conn)
+        print(f"   ✅ technical_indicators (historical atr_14): "
+              f"{len(ti_hist_rows)} rows")
 
     if wm_rows:
         upsert(pd.DataFrame(wm_rows), 'weekly_momentum', conn)
@@ -2295,8 +2368,7 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
                 _pledge_updated = merge_pledge_into_rows(sh_rows, _pledge_map)
                 print(f"   NSE bulk pledge: {len(_pledge_map):,} symbols in source, "
                       f"{_pledge_updated} matched in funnel")
-            else:
-                print("   NSE bulk pledge: empty response (network or auth)")
+            # else: fetch_bulk_pledge_data already logged a single ℹ️ line (v15.2.1)
         except Exception as _ple:
             print(f"   ⚠️  NSE bulk pledge fetch skipped: {_ple}")
 

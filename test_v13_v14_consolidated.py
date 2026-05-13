@@ -2722,6 +2722,108 @@ def test_g19_v15_1_sl_differentiation():
 
     return f"✅ v15.1 SL spread {spread:.1f}%, {len(unique_pcts)} unique values, {at_cap}/16 at cap (was 44/100 in v15.0)"
 
+def test_g20_v15_2_etf_filter_and_historical_atr():
+    """v15.2 regression test — TWO related fixes verified end-to-end:
+
+    Fix A: ETF/Index-fund filter expansion. Production output (12 May 2026)
+    showed 18 ETFs polluting the dashboard with missing fundamentals. Tests
+    that all 18 are now blocked while real-stock false positives stay 0.
+
+    Fix B: Historical atr_14 series in technical_indicators table.
+    Pre-v15.2, backfill wrote only the latest TI snapshot, so the v15.0
+    regime detection's 252-day baseline query (master_funnel.py:1431)
+    always saw 1 row → baseline≡current_atr → ratio=1.0 → always NEUTRAL.
+    Tests that the new compute_historical_atr_series() produces one
+    atr_14 dict per historical date and matches the simple rolling formula.
+    """
+    # ----- Fix A: ETF filter -----
+    from screening.pre_screener import stage_1_filter
+
+    # 18 ETFs that escaped the v15.0/v15.1 filter
+    escaped_etfs = [
+        'MOTOUR','MOSILVER','GROWWLIQID','ESENSEX','NEXT50','GSEC10YEAR',
+        'SENSEXBETA','AXISILVER','MODEFENCE','ICICIAMC','HDFCSML250','MOREALTY',
+        'MOCAPITAL','MON100','NIFTYBETA','EBBETF0430','NIFTY1','HDFCNIFTY',
+    ]
+    # Real stocks that must NOT be filtered
+    real_stocks = [
+        'MOIL','MOSCHIP','MOTHERSON','MOTILALOFS','HDFCAMC','HDFCBANK',
+        'HDFCLIFE','ICICIBANK','ICICIGI','AXISBANK','KOTAKBANK','TCS','RELIANCE',
+    ]
+
+    # Build minimal pseudo-stock dicts that satisfy non-ETF gates
+    # (volume, delivery, etc.) so the only filter that fires is ETF detection.
+    def _stock(sym, name=""):
+        return {
+            'symbol': sym, 'company_name': name,
+            'sc_group': '', 'close': 100.0, 'prev_close': 99.0,
+            'volume': 100000, 'delivery_pct': 50.0,
+            'suspended': False, 'status': '', 'exchange_tag': 'NSE_ONLY',
+        }
+
+    # ETFs should all be dropped
+    etf_in  = [_stock(s) for s in escaped_etfs]
+    etf_out = stage_1_filter(etf_in)
+    etf_out_syms = {r['symbol'] for r in etf_out}
+    leaked = [s for s in escaped_etfs if s in etf_out_syms]
+    assert not leaked, (
+        f"v15.2: {len(leaked)} ETFs leaked through stage_1_filter: {leaked}. "
+        f"Filter must catch all 18 known escapees."
+    )
+
+    # Real stocks should all pass
+    real_in  = [_stock(s) for s in real_stocks]
+    real_out = stage_1_filter(real_in)
+    real_out_syms = {r['symbol'] for r in real_out}
+    false_pos = [s for s in real_stocks if s not in real_out_syms]
+    assert not false_pos, (
+        f"v15.2: stage_1_filter FALSE POSITIVE on {len(false_pos)} real stocks: "
+        f"{false_pos}. These are operating companies that must NOT be blocked."
+    )
+
+    # ----- Fix B: compute_historical_atr_series -----
+    from backfill_history import compute_historical_atr_series
+    import pandas as pd
+
+    # Build a synthetic 30-day OHLC history
+    dates = pd.date_range('2026-04-01', periods=30, freq='D').strftime('%Y-%m-%d').tolist()
+    # Synthetic prices: trending up with daily noise
+    hist = pd.DataFrame({
+        'date':   dates,
+        'high':   [100 + i + (i % 3) * 0.5 for i in range(30)],
+        'low':    [ 99 + i - (i % 4) * 0.3 for i in range(30)],
+        'close':  [ 99.5 + i + ((i+1) % 5) * 0.2 for i in range(30)],
+        'volume': [100000 + i * 1000 for i in range(30)],
+    })
+
+    series = compute_historical_atr_series(hist)
+    # Should return rows for indices 13 onwards (14-day rolling needs ≥14 obs)
+    assert len(series) >= 14, (
+        f"v15.2 historical ATR: expected >=14 rows from 30-day input, got {len(series)}"
+    )
+
+    # Each row should have the required keys
+    for row in series:
+        assert 'symbol' in row and 'date' in row and 'atr_14' in row, (
+            f"v15.2 historical ATR row missing keys: {row}"
+        )
+        assert row['atr_14'] > 0, f"v15.2 atr_14 must be positive, got {row['atr_14']}"
+
+    # Latest-date atr_14 should equal what compute_technicals would give —
+    # both use the same rolling(14).mean() of True Range.
+    from backfill_history import compute_technicals
+    latest = compute_technicals(hist)
+    assert latest, "compute_technicals returned empty"
+    latest_atr_match = next((r for r in series if r['date'] == dates[-1]), None)
+    if latest_atr_match:
+        diff = abs(latest['atr_14'] - latest_atr_match['atr_14'])
+        assert diff < 0.05, (
+            f"v15.2 historical ATR last-date mismatch with compute_technicals: "
+            f"{latest['atr_14']} vs {latest_atr_match['atr_14']}"
+        )
+
+    return f"✅ v15.2: 18/18 ETFs blocked, 0 false positives; historical atr_14 produces {len(series)} rows"
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -2977,6 +3079,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g17_trailing_stop_ratcheting_and_no_lookahead))
     v14_1_results.append(_run_one_test(test_g18_v15_audit_trail_end_to_end))
     v14_1_results.append(_run_one_test(test_g19_v15_1_sl_differentiation))
+    v14_1_results.append(_run_one_test(test_g20_v15_2_etf_filter_and_historical_atr))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
