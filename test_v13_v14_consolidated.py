@@ -2566,6 +2566,95 @@ def test_g17_trailing_stop_ratcheting_and_no_lookahead():
 
     return "✅ Trailing-stop ratcheting works; no look-ahead bias"
 
+def test_g18_v15_audit_trail_end_to_end():
+    """v15.0 regression test: audit fields make it from helper → stock dict
+    → _rec dict → SQL INSERT → gold_recommendations columns.
+
+    Catches the bug where insert_gold_recommendation() INSERT statement
+    didn't include the 4 new v15.0 columns (original_stop_loss, atr_at_rec,
+    regime_at_rec, next_earnings_date), silently dropping audit data.
+
+    Catches the parallel bug where master_funnel's _rec dict didn't pass
+    those keys even when the INSERT supported them.
+
+    Also verifies get_outcome_stats() SELECT pulls trailing_sl_pct/price/peak
+    so the Performance sheet can render them.
+    """
+    test_db, original = _setup_temp_db('g18_audit')
+    try:
+        from database.data_bridge import (
+            initialize_v7_tables, insert_gold_recommendation, get_outcome_stats
+        )
+        conn = sqlite3.connect("market_data.db")
+        initialize_v7_tables(conn)
+        conn.close()
+
+        # Insert a recommendation with all v15.0 audit fields populated
+        rec = {
+            "recommendation_date": "2026-05-13", "symbol": "AUDIT", "company_name": "Audit Co",
+            "sector": "FMCG", "cap_category": "MID", "cmp_at_recommendation": 100.0,
+            "entry_low": 98.0, "entry_high": 101.0, "stop_loss": 92.0,
+            "t1": 115.0, "t2": 130.0, "t3": 150.0, "cfv": 130.0, "mos_pct": 30.0,
+            "composite_score": 78.0, "early_entry_score": 55.0, "quick_pick_label": "TREND",
+            "verdict": "BUY", "time_horizon": "POSITIONAL", "predicted_rr": 2.5,
+            "expiry_days": 90, "expiry_date": "2026-08-11",
+            # v15.0 audit fields under test
+            "original_stop_loss": 92.0,
+            "atr_at_rec": 2.5,
+            "regime_at_rec": "high",
+            "next_earnings_date": "2026-07-25",
+        }
+        assert insert_gold_recommendation(rec) is True, "insert returned False"
+
+        # Read back and verify ALL audit fields persisted
+        conn = sqlite3.connect("market_data.db")
+        cur = conn.execute("""SELECT original_stop_loss, atr_at_rec,
+                                     regime_at_rec, next_earnings_date
+                              FROM gold_recommendations WHERE symbol='AUDIT'""")
+        row = cur.fetchone()
+        conn.close()
+        assert row is not None, "AUDIT row not found in gold_recommendations"
+        osl, atr_r, regime_r, earn_date = row
+        assert abs(float(osl) - 92.0) < 0.01, (
+            f"original_stop_loss not persisted: got {osl}, expected 92.0. "
+            f"Bug: INSERT statement may be missing this column."
+        )
+        assert abs(float(atr_r) - 2.5) < 0.01, (
+            f"atr_at_rec not persisted: got {atr_r}, expected 2.5"
+        )
+        assert str(regime_r) == "high", (
+            f"regime_at_rec not persisted: got {regime_r!r}, expected 'high'"
+        )
+        assert str(earn_date) == "2026-07-25", (
+            f"next_earnings_date not persisted: got {earn_date!r}"
+        )
+
+        # Now verify get_outcome_stats() pulls trailing fields too
+        stats = get_outcome_stats()
+        df = stats.get("all_recommendations", pd.DataFrame())
+        assert not df.empty, "get_outcome_stats returned empty"
+        for required_col in [
+            "original_stop_loss", "atr_at_rec", "regime_at_rec",
+            "next_earnings_date", "trailing_sl_pct", "trailing_sl_price",
+            "peak_price_seen"
+        ]:
+            assert required_col in df.columns, (
+                f"get_outcome_stats() SELECT missing column: {required_col}. "
+                f"Performance sheet won't be able to render this. "
+                f"Available columns: {list(df.columns)}"
+            )
+
+        # And one row should be our AUDIT pick with audit fields readable
+        audit_row = df[df["symbol"] == "AUDIT"]
+        assert len(audit_row) == 1, f"AUDIT row missing from SELECT, got {len(audit_row)}"
+        assert str(audit_row.iloc[0]["regime_at_rec"]) == "high"
+        assert abs(float(audit_row.iloc[0]["original_stop_loss"]) - 92.0) < 0.01
+
+    finally:
+        _restore(original, test_db)
+
+    return "✅ v15.0 audit trail (4 cols) + trailing-state SELECT all working end-to-end"
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -2819,6 +2908,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g15_sl_t_v14_6_multi_factor_formula))
     v14_1_results.append(_run_one_test(test_g16_v15_enhancements_5tier_regime_volume_earnings))
     v14_1_results.append(_run_one_test(test_g17_trailing_stop_ratcheting_and_no_lookahead))
+    v14_1_results.append(_run_one_test(test_g18_v15_audit_trail_end_to_end))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

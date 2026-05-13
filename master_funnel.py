@@ -3589,6 +3589,15 @@ def run_master_pipeline():
                     "predicted_rr":          _pred_rr,
                     "expiry_days":           _expiry_days_v,
                     "expiry_date":           _expiry_date_v,
+                    # v15.0: audit trail of multi-factor context at log time
+                    # so post-hoc analysis can answer "did high-regime picks
+                    # do worse than low-regime?" etc. original_stop_loss is
+                    # frozen at log time; stop_loss may be updated by trailing
+                    # later, but original_stop_loss preserves the entry contract.
+                    "original_stop_loss":    _sl_v,  # = stop_loss at log time
+                    "atr_at_rec":            _num(_grow.get("atr_at_rec", 0)),
+                    "regime_at_rec":         str(_grow.get("regime_at_rec", "neutral") or "neutral"),
+                    "next_earnings_date":    str(_grow.get("next_earnings_date", "") or ""),
                 }
                 if insert_gold_recommendation(_rec):
                     _logged += 1

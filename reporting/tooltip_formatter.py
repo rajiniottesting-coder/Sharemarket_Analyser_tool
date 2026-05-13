@@ -1110,6 +1110,25 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "how much pain you'd have endured before winning — useful\n"
                        "for sizing future positions. -10% drawdown to win T1 is\n"
                        "very different from -2%."),
+    # v15.0: OPEN POSITIONS new columns
+    "Trailing": ("Current trailing-SL state (v15.0)",
+                 "Shows the v15.0 trailing-stop level locked in so far:\n"
+                 "  '—' = trailing not yet activated (peak gain < +5%)\n"
+                 "  'BE locked' = peak gain ≥ +5%, SL ratcheted to break-even\n"
+                 "  '+3% locked' = peak gain ≥ +10%, SL ratcheted to entry+3%\n"
+                 "  '+7% locked' = peak gain ≥ +15%, SL ratcheted to entry+7%\n"
+                 "Effective SL = MAX(original_sl, trailing_sl). Trailing SL\n"
+                 "never moves down once activated — only ratchets up. Logic\n"
+                 "uses no-lookahead discipline: today's high cannot tighten\n"
+                 "today's stop and trip it on today's low."),
+    "Regime": ("Volatility regime classified at recommendation time (v15.0)",
+               "v15.0 audit field. Compares current 14-day ATR to 252-day\n"
+               "baseline ATR (your 1-year volatility average):\n"
+               "  HIGH = current ≥ 1.20× baseline → SL widened 10% at log time\n"
+               "  LOW  = current ≤ 0.80× baseline → SL tightened 10% at log time\n"
+               "  NEUTRAL = within the band → no adjustment\n"
+               "Useful for post-hoc analysis: did HIGH-regime picks suffer\n"
+               "worse outcomes? Frozen at log time, so the audit stays clean."),
 }
 
 

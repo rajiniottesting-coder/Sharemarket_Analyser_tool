@@ -1421,14 +1421,22 @@ def insert_gold_recommendation(rec: dict) -> bool:
         conn = sqlite3.connect("market_data.db")
         try:
             c = conn.cursor()
+            # v15.0: INSERT now writes 4 audit columns (original_stop_loss,
+            # atr_at_rec, regime_at_rec, next_earnings_date) so the
+            # Performance sheet and any future analyzer can see the v15.0
+            # multi-factor context per pick. Schema migration in v15.0
+            # already added these columns; the INSERT was previously
+            # leaving them at DEFAULT (0 / '' / 'neutral') — silent loss
+            # of audit trail.
             c.execute("""
                 INSERT OR IGNORE INTO gold_recommendations
                 (recommendation_date, symbol, company_name, sector, cap_category,
                  cmp_at_recommendation, entry_low, entry_high, stop_loss,
                  t1, t2, t3, cfv, mos_pct, composite_score, early_entry_score,
                  quick_pick_label, verdict, time_horizon, predicted_rr,
-                 expiry_days, expiry_date, times_reappeared)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 expiry_days, expiry_date, times_reappeared,
+                 original_stop_loss, atr_at_rec, regime_at_rec, next_earnings_date)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 rec.get("recommendation_date", ""),
                 rec.get("symbol", ""),
@@ -1453,6 +1461,11 @@ def insert_gold_recommendation(rec: dict) -> bool:
                 int(rec.get("expiry_days", 90) or 90),
                 rec.get("expiry_date", ""),
                 0,  # times_reappeared starts at 0
+                # v15.0 audit columns
+                float(rec.get("original_stop_loss", rec.get("stop_loss", 0)) or 0),
+                float(rec.get("atr_at_rec", 0) or 0),
+                str(rec.get("regime_at_rec", "neutral") or "neutral"),
+                str(rec.get("next_earnings_date", "") or ""),
             ))
             # v14.3: capture rowcount BEFORE the second INSERT overwrites it
             inserted = (c.rowcount == 1)
@@ -1570,14 +1583,21 @@ def update_outcome(symbol: str, recommendation_date: str,
 
 def get_outcome_stats() -> dict:
     """v14.0: Aggregate stats across all closed outcomes — used by the
-    Excel Performance sheet. Returns headline counts + breakdowns."""
+    Excel Performance sheet. Returns headline counts + breakdowns.
+
+    v15.0: SELECT now pulls trailing-SL state (trailing_sl_pct,
+    trailing_sl_price, peak_price_seen) and audit columns
+    (original_stop_loss, atr_at_rec, regime_at_rec, next_earnings_date)
+    so the Performance sheet can render the v15.0 context per row.
+    """
     try:
         conn = sqlite3.connect("market_data.db")
         try:
             df = pd.read_sql_query("""
                 SELECT r.*, o.outcome_type, o.outcome_date, o.outcome_price,
                        o.days_to_outcome, o.max_drawdown_pct, o.max_runup_pct,
-                       o.current_price, o.current_pnl_pct
+                       o.current_price, o.current_pnl_pct,
+                       o.trailing_sl_pct, o.trailing_sl_price, o.peak_price_seen
                 FROM gold_recommendations r
                 INNER JOIN gold_outcomes o
                   ON r.symbol = o.symbol

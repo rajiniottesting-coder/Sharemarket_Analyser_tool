@@ -3448,59 +3448,75 @@ Key observations:
 
 ---
 
-### v15.0 — A- technical rigor + Performance-sheet reset
+### v15.0 — A- technical rigor + audit-complete Performance sheet
 
-**Date:** May 12, 2026
-**Trigger:** User goal: "improve rating to A-... let today be day 1 of data collection in performance sheet." Also: ensure tooltips, glossary, and supporting docs reflect new logic; verify free-tier compatibility; use full 400-day retention for SL/T derivation.
+**Date:** May 13, 2026
+**User goals:** "Improve rating to A- by implementing all 5 enhancements... let today be day 1 of data collection in performance sheet." Then in audit pass: "act as an expert and do analysis and provide prompt fix" — caught the audit-trail gaps below.
 
-**Five enhancements over v14.6:**
+**Five enhancements over v14.6 (the A- delta):**
 
-1. **5-tier sector classification** — replaces v14.6 binary HIGH/LOW with very-high (+0.6: Realty/Sugar/Aviation/Real Estate), high (+0.3: Metals/PSU Bank/Coal/Power/Capital Markets/Defence/Capital Goods/Iron & Steel), neutral (0), low (-0.2: Banking/IT-Services/Auto/Auto Components/Chemicals), very-low (-0.35: FMCG/Pharma/Healthcare/Utilities/Consumer Goods/Personal Products/Telecom/Insurance). Captures finer differentiation.
+1. **5-tier sector classification** — replaces v14.6 binary HIGH/LOW with very-high (+0.6), high (+0.3), neutral (0), low (-0.2), very-low (-0.35). Defined in `_V14_7_SECTOR_TIER` at master_funnel.py:374+.
 
-2. **ATR-percentile regime detection** — new SELECT subquery fetches AVG(atr_14) over **252 days** as baseline (extended from initial 60-day plan to use the full 400-day price retention). Ratio current/baseline classifies regime: ≥1.20 = high (SL widened 10%), ≤0.80 = low (SL tightened 10%), else neutral. Stored on stock dict as `atr_baseline_60d` (key name kept for backward compat; value is 252-day avg).
+2. **ATR-percentile regime detection** — new SELECT subquery fetches AVG(atr_14) over **252 days** as baseline (uses full 400-day price retention, industry-standard 1-trading-year window). Ratio current/baseline classifies: HIGH (≥1.20× baseline → SL widened 10%), LOW (≤0.80× → tightened 10%), NEUTRAL.
 
-3. **Volume-confirmed support** — support1 (20-day low) only used as SL floor when `vol_ratio` (today's vol / 50-day avg) ≥ 1.20. Filters out random lows that have no buying conviction.
+3. **Volume-confirmed support** — support1 only used as SL floor when vol_ratio (today's vol / 50-day avg) ≥ 1.20. Filters out random lows with no buying conviction.
 
-4. **Trailing stops** in `track_outcomes.py` — ratchets up at peak gain ≥ +5% (BE), ≥ +10% (+3%), ≥ +15% (+7%). Effective SL = MAX(original, trailing). Zero look-ahead bias: trailing update happens at END of bar (after event check), so today's high cannot tighten today's stop and trip it on today's low. Caught and fixed during development; G17 unit test prevents regression.
+4. **Trailing stops** in track_outcomes.py — ratchets at peak gain ≥ +5% (BE), ≥ +10% (+3%), ≥ +15% (+7%). Effective SL = MAX(original, trailing). Zero look-ahead bias: trailing update happens at END of bar (after event check). G17 unit test guards this.
 
-5. **Earnings-near SL widening** — helper accepts `days_to_earnings` parameter; when 0-5 days, SL widens 20%. **Data source NOT plumbed**: yfinance earnings data is unreliable for Indian stocks. Infrastructure is fully ready (schema column `next_earnings_date`, helper logic, G16 unit test); awaits a reliable data source (NSE corporate actions feed, manual CSV, paid API).
+5. **Earnings-near SL widening** — helper accepts days_to_earnings; when 0-5 days, SL widens 20%. Infrastructure ready; data source NOT plumbed (yfinance unreliable for Indian stocks).
 
-**Performance-sheet reset:**
+**The audit-trail gap fixes (4 confirmed gaps, all closed):**
 
-`wipe_v15_prep.py` script wipes gold_recommendations + gold_outcomes with mandatory timestamped backup. Interactive confirmation (type "WIPE"). `--restore` flag rolls back. `--force` for CI. **Critical**: this script is NOT referenced in `.github/workflows/market_run.yml` or any automation — it's a one-shot manual operation. To wipe in the pipeline context (where DB lives in GitHub artifacts), the cleanest approach is to delete the GitHub Actions artifact named `market-data-db` via Settings → Actions → Caches and artifacts. The next pipeline run will start with a fresh DB; the auto-backfill step at workflow line 49 rebuilds 400 days of daily_prices; the gold_recommendations and gold_outcomes tables stay empty until new picks are recommended.
+User asked "will Performance sheet capture data based on the new change?" Expert audit found 4 silent gaps:
+
+- **Gap 1 — INSERT missing audit columns**: `insert_gold_recommendation()` INSERT statement didn't include 4 new v15.0 columns (original_stop_loss, atr_at_rec, regime_at_rec, next_earnings_date). Schema migration had ADDED the columns but rows were always written with DEFAULT values — audit trail silently lost. Fixed: INSERT now writes all 27 columns including the 4 v15.0 audit fields.
+
+- **Gap 2 — caller dict missing keys**: Even if INSERT supported them, master_funnel.py's `_rec` dict at line ~3569 didn't pass the v15.0 keys. Fixed: dict now includes original_stop_loss, atr_at_rec, regime_at_rec, next_earnings_date sourced from the stock dict (where helper at line 3227-3229 already placed them).
+
+- **Gap 3 — SELECT missing trailing fields**: `get_outcome_stats()` SELECT didn't pull trailing_sl_pct, trailing_sl_price, peak_price_seen from gold_outcomes. Even if the tracker writes them, the Performance sheet couldn't see them. Fixed: SELECT extended to include all three. (Audit columns r.* already covered via wildcard once gap 1 fix populates them.)
+
+- **Gap 4 — Performance sheet not rendering trailing/regime**: OPEN POSITIONS table had 16 columns; trailing-SL state and regime were invisible. Fixed: widened to 18 columns. Added "Trailing" column showing human-readable state (— / BE locked / +3% locked / +7% locked / +X.X% locked) with green text when locked. Added "Regime" column showing HIGH (red) / NEUTRAL / LOW (green). Merge spans (title row + empty-state row + approaching-summary row) all bumped 16→18.
+
+**Tooltips + glossary updates:**
+
+- `reporting/tooltip_formatter.py`: SL, T1, T2, T3, R:R, Time Horizon all updated to reflect v15.0 multi-factor formula. OPEN POSITIONS SL/T1/T2/T3 updated to mention effective_sl = MAX(original, trailing). 2 new tooltips added for Trailing column and Regime column (explaining the v15.0 audit field).
+- `reporting/excel_generator.py` in-Excel Glossary: 3 new entries added — "v15.0 SL/T derivation methodology", "Trailing Stop logic (v15.0)", "Sector Tier / Regime / Volume confirmation columns".
 
 **Schema migrations (idempotent ALTER TABLE)**:
-- gold_recommendations: `original_stop_loss`, `atr_at_rec`, `regime_at_rec`, `next_earnings_date`
-- gold_outcomes: `trailing_sl_pct`, `trailing_sl_price`, `peak_price_seen`
+- gold_recommendations: original_stop_loss, atr_at_rec, regime_at_rec, next_earnings_date
+- gold_outcomes: trailing_sl_pct, trailing_sl_price, peak_price_seen
 
-**Documentation updates:**
-- `reporting/tooltip_formatter.py`: SL, T1, T2, T3, R:R Ratio, Time Horizon tooltips updated to reflect multi-factor formula + trailing-SL semantics. OPEN POSITIONS section SL/T1/T2/T3 tooltips also updated (e.g. SL now explains effective_sl = MAX(original, trailing) and the +5%/+10%/+15% ratchet tiers).
-- `reporting/excel_generator.py` Glossary: 3 new entries added — "v15.0 SL/T derivation methodology", "Trailing Stop logic (v15.0)", "Sector Tier / Regime / Volume confirmation columns".
+**Wipe script (manual one-shot)**:
 
-**Free-tier compatibility verified:**
-- Only one new SQL feature (AVG subquery in technical_indicators SELECT). Tested on full test suite: zero performance regression, total runtime stable at ~12s for 69 tests.
-- No new external API calls. Earnings logic awaits data source; trailing stops use existing daily_prices.
-- All v15.0 inputs optional with graceful fallback to v14.6 behavior when data is missing.
-- GitHub Actions free tier: public repo → unlimited storage + minutes. DB persistence via artifacts (workflow line 32 download, line 195 upload) unchanged.
+`wipe_v15_prep.py` deletes gold_recommendations + gold_outcomes with mandatory timestamped backup. Interactive confirmation ("WIPE"). `--restore` rolls back. **Never auto-invoked**: grep confirmed zero references in `.github/workflows/`, master_funnel.py, or any cron/hook path. Manual one-shot only.
+
+**For GitHub Actions DB persistence**: Since DB lives in workflow artifacts (not git), the cleanest wipe path is to delete the `market-data-db` artifact via Actions UI. Next pipeline run won't find it (workflow line 38: `if_no_artifact_found: ignore`), auto-backfill at line 49 rebuilds 400-day daily_prices, gold_recommendations + gold_outcomes stay empty until new picks recommended. Tomorrow's run = clean Day 1.
+
+**Free-tier compatibility verified**:
+- Only one new SQL feature (AVG subquery, indexed by symbol+date) — negligible cost.
+- No new external API calls (earnings logic deferred).
+- All new fields optional; missing data falls back gracefully to v14.6 behavior.
+- Test suite stable at ~12s for 70 tests.
+- GitHub Actions public repo: unlimited storage + minutes.
 
 **Test changes:**
-- v14.6 had 67 tests. v15.0 has 69 (+2).
-- G16: 5-tier sector ranking, regime widening, volume confirmation, earnings widening (4 sub-assertions).
-- G17: trailing-stop ratcheting + no-lookahead verification (2 scenarios; catches the look-ahead bug fixed during development).
-- All pre-v15.0 tests still pass unchanged.
-- 5/5 consecutive runs all 69/69 green.
+- v14.6 had 67 tests. v15.0 has **70** (+3).
+- G16: 5-tier + regime + volume confirmation + earnings widening (4 sub-assertions).
+- G17: trailing-stop ratcheting + no-lookahead (2 scenarios).
+- **G18 (NEW): audit-trail end-to-end** (helper → stock dict → _rec → INSERT → SELECT). Catches each of the 4 gap-1-to-3 regressions if reintroduced.
+- 5/5 consecutive runs all 70/70 green.
 
 **Files changed:**
-- `master_funnel.py` (helper extended; 252-day baseline; 3 new call-site args)
-- `track_outcomes.py` (trailing-SL ratchet; persistent trailing fields)
-- `database/data_bridge.py` (schema migrations + update_outcome signature)
-- `reporting/tooltip_formatter.py` (SL/T tooltips for v15.0 semantics)
-- `reporting/excel_generator.py` (3 new glossary entries)
-- `test_v13_v14_consolidated.py` (G16 + G17)
-- `wipe_v15_prep.py` (NEW: wipe script with mandatory backup)
+- `master_funnel.py` (252-day baseline; 3 new audit fields on stock dict; _rec dict updated)
+- `track_outcomes.py` (trailing-SL ratchet with no-lookahead discipline)
+- `database/data_bridge.py` (schema migrations + INSERT 27 cols + SELECT 3 trailing cols + update_outcome signature)
+- `reporting/excel_generator.py` (OPEN POSITIONS widened to 18 columns; 3 new glossary entries)
+- `reporting/tooltip_formatter.py` (6 SL/T tooltips + 2 new column tooltips)
+- `test_v13_v14_consolidated.py` (G16 + G17 + G18)
+- `wipe_v15_prep.py` (NEW: manual wipe with backup)
 
-**Honest grade**: A- on technical-rigor scale. True A still requires walk-forward backtest calibration (needs 3+ years of corporate-action-adjusted historical data — deferred). v15.0 is "smart heuristics" with audit trail (atr_at_rec, regime_at_rec stored per recommendation), thorough testing, no-lookahead discipline, and clear documentation. Defensible to any reviewer.
+**Honest grade**: A- on technical-rigor scale. Smart heuristics with full audit trail. True A requires walk-forward backtest calibration (deferred, needs 3+ years corporate-action-adjusted historical data).
 
 ---
 
-*Last updated: May 12, 2026 · v15.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 13, 2026 · v15.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

@@ -2445,21 +2445,26 @@ class ExcelGeneratorV6:
         #        distance-from-current-price hints. A reader can now see at a
         #        glance "where are we vs where do we expect to go?" without
         #        cross-referencing the Gold sheet.
-        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+        # v15.0: span widened 16→18 to cover new Trailing + Regime columns.
+        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=18)
         c = ws.cell(next_row,1,
             "📂  OPEN POSITIONS  ·  Currently-tracked stocks with running P&L vs targets")
         c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
         ws.row_dimensions[next_row].height = 22
         next_row += 1
 
-        # v14.4: 16-column header (was 12 in v14.1). New: SL, T1, T2, T3 between
-        # Max Runup % and Score. Each shows "₹price (±X.X%)" — the % is distance
-        # from CURRENT price (not from entry), so it updates dynamically each run.
+        # v14.4: SL/T1/T2/T3 columns between Max Runup % and Score.
+        # v15.0: Two new columns appended at end — "Trailing" (current trailing
+        # state: '—', 'BE locked', '+3% locked', '+7% locked') and "Regime"
+        # (high/neutral/low at log time). Total now 18 columns.
+        # Each price/level cell shows "₹price (±X.X%)" — the % is distance
+        # from CURRENT price (not entry), updated dynamically each run.
         open_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",15),("Days Held",10),
                      ("Days Left",10),("Re-app",8),("CMP at Rec",12),("Current Price",12),
                      ("P&L %",10),("Max Runup %",12),
                      ("SL",18),("T1",18),("T2",18),("T3",18),
-                     ("Score",8),("⚠",6)]
+                     ("Score",8),("⚠",6),
+                     ("Trailing",14),("Regime",10)]
         for ci,(h,w) in enumerate(open_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
@@ -2470,7 +2475,7 @@ class ExcelGeneratorV6:
         _open_df = _df_all[_df_all["outcome_type"] == "OPEN"].copy()
         _approaching_count = 0   # for an end-of-table summary
         if _open_df.empty:
-            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=18)
             c = ws.cell(next_row,1,"  No currently-open positions.")
             c.fill = _f(LG); c.font = _ft(False,"6B7280",9,True); c.alignment = _al("left")
             next_row += 1
@@ -2514,6 +2519,21 @@ class ExcelGeneratorV6:
                 _t1_str = _level_str(_t1_v)
                 _t2_str = _level_str(_t2_v)
                 _t3_str = _level_str(_t3_v)
+                # v15.0: derive Trailing-SL label + Regime label for columns 17/18.
+                _trailing_pct   = float(row_o.get("trailing_sl_pct", 0) or 0)
+                _trailing_price = float(row_o.get("trailing_sl_price", 0) or 0)
+                if _trailing_price <= 0:
+                    _trail_label = "—"
+                elif abs(_trailing_pct) < 0.5:
+                    _trail_label = "BE locked"
+                elif _trailing_pct >= 6.5:
+                    _trail_label = "+7% locked"
+                elif _trailing_pct >= 2.5:
+                    _trail_label = "+3% locked"
+                else:
+                    _trail_label = f"+{_trailing_pct:.1f}% locked"
+                _regime = str(row_o.get("regime_at_rec", "") or "").strip().lower()
+                _regime_label = _regime.upper() if _regime in ("high","low","neutral") else "—"
                 vals = [
                     str(row_o.get("symbol","—")),
                     str(row_o.get("recommendation_date","—")),
@@ -2528,6 +2548,8 @@ class ExcelGeneratorV6:
                     _sl_str, _t1_str, _t2_str, _t3_str,
                     round(float(row_o.get("composite_score",0) or 0), 1),
                     "⚠" if _is_approaching else "",
+                    _trail_label,           # v15.0 col 17
+                    _regime_label,          # v15.0 col 18
                 ]
                 for ci, v in enumerate(vals, 1):
                     cc = ws.cell(next_row, ci, v); cc.fill = _f(bg)
@@ -2550,10 +2572,18 @@ class ExcelGeneratorV6:
                 # Bold the warning emoji (column 16 in v14.4, was 12 in v14.1)
                 if _is_approaching:
                     ws.cell(next_row, 16).font = _ft(True, "92400E", 11)
+                # v15.0: color Trailing column (17) green when locked, Regime
+                # column (18) red for HIGH, green for LOW, default for NEUTRAL.
+                if _trailing_price > 0:
+                    ws.cell(next_row, 17).font = _ft(True, "065F46", 9)
+                if _regime == "high":
+                    ws.cell(next_row, 18).font = _ft(True, "991B1B", 9)
+                elif _regime == "low":
+                    ws.cell(next_row, 18).font = _ft(True, "065F46", 9)
                 next_row += 1
             # End-of-table summary line if any approaching expiry
             if _approaching_count > 0:
-                ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+                ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=18)
                 c = ws.cell(next_row,1,
                     f"  ⚠ {_approaching_count} position(s) within 14 days of expiry — "
                     "review for manual exit or accept EXPIRED outcome at the hard cutoff.")
