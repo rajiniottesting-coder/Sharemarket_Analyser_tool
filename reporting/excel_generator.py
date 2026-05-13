@@ -2332,7 +2332,8 @@ class ExcelGeneratorV6:
             ["SL_HIT","T1_HIT","T2_HIT","T3_HIT","EXPIRED"])].copy()
         ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
         c = ws.cell(next_row,1,
-            "📜  CLOSED POSITIONS  ·  Realised outcomes — historical track record")
+            "📜  CLOSED POSITIONS  ·  Realised outcomes — historical track record  ·  "
+            "v15.0: SL_HIT with POSITIVE P&L = trailing SL fire (locked profit)")
         c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
         ws.row_dimensions[next_row].height = 22
         next_row += 1
