@@ -2369,11 +2369,11 @@ def test_g15_sl_t_v14_6_multi_factor_formula():
                 f"T3 not above T2 for {s}: T2={r['t2_pct']}, T3={r['t3_pct']}"
             )
 
-    # Test 6: SL bounds [4.5%, 12%]
+    # Test 6: SL bounds [4.5%, 15%] (v15.1: raised max from 12% to 15%)
     for s in test_scenarios:
         r = _compute_sl_t_v14_6(*s)
         if r['sl_pct'] > 0:
-            assert 4.5 <= r['sl_pct'] <= 12.0, (
+            assert 4.5 <= r['sl_pct'] <= 15.0, (
                 f"SL out of bounds for {s}: got {r['sl_pct']}%"
             )
 
@@ -2655,6 +2655,73 @@ def test_g18_v15_audit_trail_end_to_end():
 
     return "✅ v15.0 audit trail (4 cols) + trailing-state SELECT all working end-to-end"
 
+def test_g19_v15_1_sl_differentiation():
+    """v15.1 regression test: SL_MAX_PCT raised 12% → 15% to preserve multi-factor
+    differentiation. Catches accidental re-tightening.
+
+    Production observation (12 May 2026): 44/100 stocks hit the v15.0 12% cap and
+    all showed identical SL. v15.1 raised to 15%. This test verifies that with
+    typical Indian small/mid-cap inputs (ATR 3-5%, POSITIONAL/SHORT TERM horizon),
+    we get a meaningful spread of SL values — not all clustered at the cap.
+    """
+    from master_funnel import _compute_sl_t_v14_6, _V14_6_SL_MAX_PCT
+
+    # Sanity check on constant
+    assert _V14_6_SL_MAX_PCT == 15.0, (
+        f"SL_MAX_PCT must be 15.0 in v15.1, got {_V14_6_SL_MAX_PCT}"
+    )
+
+    # Simulate 16 representative Indian-market scenarios
+    scenarios = [
+        # (cmp, atr_14, cap, sector, horizon)
+        (100, 1.5, 'LARGE', 'Banking',         'POSITIONAL'),    # large + low-vol
+        (100, 2.0, 'LARGE', 'IT - Services',   'POSITIONAL'),
+        (100, 2.5, 'LARGE', 'FMCG',            'POSITIONAL'),
+        (100, 3.0, 'MID',   'Banking',         'POSITIONAL'),
+        (100, 3.5, 'MID',   'Auto Components', 'POSITIONAL'),
+        (100, 4.0, 'MID',   'Industrials',     'POSITIONAL'),
+        (100, 4.5, 'SMALL', 'Chemicals',       'POSITIONAL'),
+        (100, 5.0, 'SMALL', 'Industrials',     'POSITIONAL'),
+        (100, 5.5, 'SMALL', 'Realty',          'POSITIONAL'),
+        (100, 3.0, 'MID',   'Banking',         'SHORT TERM'),
+        (100, 3.5, 'SMALL', 'FMCG',            'SHORT TERM'),
+        (100, 2.5, 'LARGE', 'IT - Services',   'LONG TERM'),
+        (100, 3.5, 'MID',   'Banking',         'LONG TERM'),
+        (100, 4.5, 'SMALL', 'Chemicals',       'LONG TERM'),
+        (100, 2.0, 'LARGE', 'Auto',            'POSITIONAL'),
+        (100, 3.0, 'MID',   'Pharmaceuticals', 'POSITIONAL'),
+    ]
+    sl_pcts = []
+    for cmp, atr, cap, sec, hor in scenarios:
+        r = _compute_sl_t_v14_6(cmp, atr, 130, cap, sec, hor)
+        sl_pcts.append(r['sl_pct'])
+
+    # Distribution checks
+    unique_pcts = set(round(p, 1) for p in sl_pcts)
+    assert len(unique_pcts) >= 8, (
+        f"v15.1: Insufficient differentiation — only {len(unique_pcts)} unique "
+        f"SL values across 16 scenarios. Cap likely too tight again. "
+        f"Values: {sorted(unique_pcts)}"
+    )
+
+    # No more than 40% of stocks should cluster at the 15% cap
+    at_cap = sum(1 for p in sl_pcts if abs(p - 15.0) < 0.1)
+    assert at_cap <= 6, (
+        f"v15.1: Too many stocks ({at_cap}/16) hitting the 15% cap. "
+        f"In v15.0 with 12% cap, this was 44/100 = 44%. "
+        f"v15.1 target: <40% at cap = <6/16."
+    )
+
+    # Min should be well below max (real spread)
+    spread = max(sl_pcts) - min(sl_pcts)
+    assert spread >= 5.0, (
+        f"v15.1: SL spread too narrow ({spread:.1f}%). Multi-factor formula "
+        f"should produce at least 5%+ range across cap/sector/horizon combinations. "
+        f"Min={min(sl_pcts):.1f}%, Max={max(sl_pcts):.1f}%"
+    )
+
+    return f"✅ v15.1 SL spread {spread:.1f}%, {len(unique_pcts)} unique values, {at_cap}/16 at cap (was 44/100 in v15.0)"
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -2909,6 +2976,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g16_v15_enhancements_5tier_regime_volume_earnings))
     v14_1_results.append(_run_one_test(test_g17_trailing_stop_ratcheting_and_no_lookahead))
     v14_1_results.append(_run_one_test(test_g18_v15_audit_trail_end_to_end))
+    v14_1_results.append(_run_one_test(test_g19_v15_1_sl_differentiation))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

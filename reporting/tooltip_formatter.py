@@ -796,7 +796,7 @@ TIPS: Dict[str, Tuple[str, str]] = {
                          "Avoid chasing if CMP moves significantly above upper bound."),
     "Stop Loss (₹)": ("Multi-factor SL — exit if CMP closes below this level",
                        "v15.0 multi-factor: SL = ATR-14 × horizon × (1 + sector_tier) × regime,\n"
-                       "bounded [4.5%, 12%], floored at volume-confirmed support1.\n"
+                       "bounded [4.5%, 15%], floored at volume-confirmed support1.\n"
                        "Earnings within 5 days → widened 20%. Trailing SL ratchets up at\n"
                        "+5%/+10%/+15% peak gain (BE/+3%/+7%). Never risk >2–3% of portfolio."),
     "Target 1 (₹)": ("First profit target — book 30–50% here",

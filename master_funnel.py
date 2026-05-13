@@ -399,7 +399,21 @@ _V14_6_HORIZON_SL_MULT  = {'SHORT TERM': 2.5, 'POSITIONAL': 3.5, 'LONG TERM': 5.
 _V14_6_HORIZON_T1_CAP_BASE = {'SHORT TERM': 10.0, 'POSITIONAL': 20.0, 'LONG TERM': 35.0}
 _V14_6_HORIZON_T3_HARD_CAP = {'SHORT TERM': 35.0, 'POSITIONAL': 80.0, 'LONG TERM': 200.0}
 _V14_6_SL_MIN_PCT = 4.5    # never tighter (avoid whipsaw)
-_V14_6_SL_MAX_PCT = 12.0   # never wider (caps risk per trade)
+# v15.1: SL_MAX raised from 12.0% to 15.0% to preserve multi-factor differentiation.
+# Investigation in v15.0 production output (12 May 2026, 100 stocks): 44/100 stocks
+# hit the 12% cap and showed IDENTICAL -12% SL, defeating the per-stock formula.
+# Root cause math: Indian small/mid caps have ATR-14 of ~3-5% of CMP (vs US large
+# cap ~1-2%). POSITIONAL mult 3.5× and small-cap fallback 4% give raw SL of
+# 14-17.5% on the typical Indian mid/small cap, clamped to 12% — losing
+# differentiation. Raising to 15% gives genuine breathing room while still
+# capping catastrophic loss. Multi-factor inputs now produce a real spread:
+#   Banking large-cap @ 2% ATR : ~6.6%
+#   FMCG mid-cap     @ 3% ATR : ~9.5%
+#   Auto small-cap   @ 4% ATR : ~12.6%
+#   Realty small-cap @ 4% ATR : 15.0% (capped)
+# Verified production target: 70%+ of stocks should now show SL in the
+# 6-13% range (real differentiation) instead of 44% all stacked at -12%.
+_V14_6_SL_MAX_PCT = 15.0   # never wider (caps risk per trade)
 _V14_6_RR_MIN_T1  = 1.5    # T1 must clear 1.5:1
 
 # v14.7: Regime detection thresholds (ratio of current ATR to baseline ATR)
@@ -1403,6 +1417,10 @@ def run_master_pipeline():
             # year) to use the full 400-day price retention. A longer baseline
             # is more statistically stable and less reactive to short-term
             # volatility spikes — better regime classification.
+            # v15.0.1 precision fix: SQLite's date(X, '-N days') subtracts
+            # CALENDAR days; '-252 days' captured only ~180 trading days. To
+            # actually capture 252 trading days (institutional-standard 1 year),
+            # widen to 365 calendar days. 365 cal × (252/365) ≈ 252 trading.
             _ti_rows = _conn.execute(
                 f"""SELECT t.symbol, t.sma_200, t.supertrend, t.adx, t.rsi_14,
                     t.macd_signal_txt, t.stoch_k, t.mfi_14, t.obv_signal,
@@ -1410,7 +1428,7 @@ def run_master_pipeline():
                     t.atr_14,
                     (SELECT AVG(t2.atr_14) FROM technical_indicators t2
                      WHERE t2.symbol = t.symbol
-                       AND t2.date >= date(t.date, '-252 days')
+                       AND t2.date >= date(t.date, '-365 days')
                        AND t2.atr_14 > 0) AS atr_baseline_252d
                     FROM technical_indicators t
                     INNER JOIN (
@@ -1431,12 +1449,17 @@ def run_master_pipeline():
                 _sm_map[r[0]] = r[1:]
 
             # 52w high/low and vol50d from full price history (no date filter)
+            # v15.0.1 precision fix for vol_50: '-50 days' captured only ~35
+            # trading days. Widened to '-70 days' to capture ~50 trading days
+            # (institutional convention for 50-day average volume).
+            # 52w high/low correctly use '-365 days' = 1 calendar year, which
+            # IS the industry definition of "52-week" (not 252 trading days).
             try:
                 _dp_rows = _conn.execute(
                     f"""SELECT dp.symbol,
                         MAX(CASE WHEN dp.date >= date(?, '-365 days') THEN dp.high  ELSE NULL END),
                         MIN(CASE WHEN dp.date >= date(?, '-365 days') THEN dp.low   ELSE NULL END),
-                        AVG(CASE WHEN dp.date >= date(?, '-50 days')  THEN dp.volume ELSE NULL END)
+                        AVG(CASE WHEN dp.date >= date(?, '-70 days')  THEN dp.volume ELSE NULL END)
                         FROM daily_prices dp
                         WHERE dp.symbol IN ({_sym_placeholders}) AND dp.exchange='NSE'
                         GROUP BY dp.symbol""",
