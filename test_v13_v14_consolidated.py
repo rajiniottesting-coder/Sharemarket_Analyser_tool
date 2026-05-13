@@ -2252,10 +2252,16 @@ def test_g14_closed_positions_section_renders_correctly():
         expected_headers = ["Symbol","Rec Date","Time Horizon","Outcome","Outcome Date",
             "Days to Outcome","Entry CMP","Outcome Price","P&L %","Max Runup %",
             "Max Drawdown %","Score"]
+        # v15.5: CLOSED POSITIONS header row now gets tooltips via
+        # _apply_col_tips, which appends the ⓘ cue character (U+24D8) to each
+        # header cell that has a tooltip entry. Strip the cue for comparison.
+        _CUE = " \u24d8"   # space + ⓘ; matches tooltip_formatter._CUE
         for i, expected in enumerate(expected_headers, 1):
-            got = cv(cl_r + 1, i)
+            got_raw = cv(cl_r + 1, i)
+            got = got_raw.rstrip(_CUE).strip()
             assert got == expected, (
-                f"CLOSED POSITIONS header col {i}: got {got!r}, expected {expected!r}"
+                f"CLOSED POSITIONS header col {i}: got {got_raw!r} (stripped: {got!r}), "
+                f"expected {expected!r}"
             )
 
         symbols_in_table = []
@@ -2824,6 +2830,299 @@ def test_g20_v15_2_etf_filter_and_historical_atr():
 
     return f"✅ v15.2: 18/18 ETFs blocked, 0 false positives; historical atr_14 produces {len(series)} rows"
 
+def test_g21_v15_4_phases_1_3_4():
+    """v15.4 regression test — covers all 3 ACTIVE phases (Phase 2 withdrawn):
+
+    Phase 1: Trading-day calendar — n_trading_days_ago + trading_day_window_iso
+             must (a) return valid dates with non-empty calendar, (b) fall
+             back gracefully with empty calendar.
+    Phase 3: Backtest infrastructure — walk_forward module imports cleanly,
+             refuses to calibrate with empty data.
+    Phase 4 (v15.4): INSTITUTIONAL risk-parity (volatility-adjusted) sizing.
+             Per-position size = risk_budget / SL_pct. Sector exposure cap
+             is a hard limit, not a linear penalty.
+
+    NOTE: v15.3 Phase 2 (tax-aware T1/T2/T3 nudge) was WITHDRAWN in v15.4
+    because inflating exit targets to compensate for STCG is not how
+    institutional portfolios handle tax. Real practice: portfolio-level
+    tax management, not per-trade target shifts.
+    """
+    # ----- Phase 1: trading-day calendar (unchanged from v15.3) -----
+    from ingestion.trading_day_calendar import (
+        n_trading_days_ago, trading_day_window_iso, is_trading_day
+    )
+
+    # With empty holiday set, returns None (caller falls back)
+    result_empty = n_trading_days_ago("2026-05-13", 10, holiday_set=set())
+    assert result_empty is None, (
+        f"Phase 1: n_trading_days_ago with empty calendar should return None, "
+        f"got {result_empty}"
+    )
+
+    holidays = {"2026-04-30"}
+    result = n_trading_days_ago("2026-05-13", 10, holiday_set=holidays)
+    assert result is not None, "Phase 1: should not return None with holidays"
+    from datetime import date
+    days_diff = (date.fromisoformat("2026-05-13") - date.fromisoformat(result)).days
+    assert 14 <= days_diff <= 16, (
+        f"Phase 1: 10 trading days back from 2026-05-13 should be ~14 cal days, "
+        f"got {days_diff} (result={result})"
+    )
+
+    window = trading_day_window_iso("2026-05-13", 252)
+    assert window is not None and len(window) == 10, (
+        f"Phase 1: trading_day_window_iso must always return ISO date, "
+        f"got {window}"
+    )
+
+    assert not is_trading_day("2026-05-09"), "Phase 1: Saturday not trading day"
+    assert not is_trading_day("2026-05-10"), "Phase 1: Sunday not trading day"
+    assert is_trading_day("2026-05-13", holiday_set=set()), (
+        "Phase 1: Wednesday should be a trading day"
+    )
+
+    # ----- v15.4: Verify Phase 2 (tax-aware) was WITHDRAWN -----
+    from master_funnel import _compute_sl_t_v14_6
+    r = _compute_sl_t_v14_6(100.0, 2.0, 130, 'MID', 'IT - Services', 'POSITIONAL')
+
+    # Original v15.3 fields must still be present (backward compat)
+    for k in ('stop_loss', 't1', 't2', 't3', 'sl_pct', 't1_pct', 'rr_t1'):
+        assert k in r, f"v15.4: backward-compat field {k} missing"
+
+    # v15.3 Phase 2 fields must be GONE (withdrawn)
+    for k in ('t1_tax_adj', 't2_tax_adj', 't3_tax_adj', 'tax_regime'):
+        assert k not in r, (
+            f"v15.4: field {k} should be REMOVED (v15.3 Phase 2 was withdrawn "
+            f"as institutionally incorrect; got {k}={r.get(k)})"
+        )
+
+    # ----- Phase 3: backtest infrastructure (unchanged from v15.3) -----
+    from backtest.walk_forward import (
+        _hit_rate_summary, _classify_outcome,
+        MIN_SAMPLE_FOR_CALIBRATION, RECOMMENDED_SAMPLE
+    )
+
+    assert MIN_SAMPLE_FOR_CALIBRATION >= 20
+    assert RECOMMENDED_SAMPLE > MIN_SAMPLE_FOR_CALIBRATION
+    assert _classify_outcome({'outcome_type': 'T1_HIT'}) == 'win'
+    assert _classify_outcome({'outcome_type': 'SL_HIT'}) == 'loss'
+
+    s_empty = _hit_rate_summary([])
+    assert s_empty['total'] == 0
+
+    synth = [
+        {'outcome_type': 'T1_HIT', 'current_pnl_pct': 20.0, 'days_to_outcome': 30},
+        {'outcome_type': 'T1_HIT', 'current_pnl_pct': 22.0, 'days_to_outcome': 40},
+        {'outcome_type': 'SL_HIT', 'current_pnl_pct': -10.0, 'days_to_outcome': 15},
+        {'outcome_type': 'EXPIRED', 'current_pnl_pct': 2.0, 'days_to_outcome': 90},
+    ]
+    s = _hit_rate_summary(synth)
+    assert s['total'] == 4 and s['wins'] == 2 and s['losses'] == 1
+    assert abs(s['hit_rate_pct'] - 66.7) < 0.1
+
+    # ----- Phase 4 (v15.4): RISK PARITY sizing -----
+    from risk.correlation_aware_sizing import (
+        compute_suggested_allocation,
+        MIN_ALLOCATION_PCT, MAX_ALLOCATION_PCT,
+        MAX_SECTOR_EXPOSURE_PCT, DEFAULT_RISK_BUDGET_PCT
+    )
+
+    # Test 1: Risk-parity arithmetic.
+    # 1% risk budget / 5% SL = 20% raw → capped at MAX_ALLOCATION_PCT (15%)
+    alloc, why = compute_suggested_allocation(
+        "Banking", "LARGE CAP", sl_pct=5.0, open_positions=[]
+    )
+    assert alloc == 15.0, (
+        f"Phase 4: 1%/5% = 20% raw, should clamp to MAX 15%, got {alloc}"
+    )
+    assert "Risk parity" in why, f"Phase 4: rationale should mention risk parity"
+
+    # Test 2: SMALL CAP gets 0.85x multiplier
+    # 1% / 10% × 0.85 = 8.5% (under MAX, no clamp)
+    alloc_small, _ = compute_suggested_allocation(
+        "Realty", "SMALL CAP", sl_pct=10.0, open_positions=[]
+    )
+    assert 8.0 <= alloc_small <= 9.0, (
+        f"Phase 4: SMALL CAP 1%/10%*0.85=8.5%, got {alloc_small}"
+    )
+
+    # Test 3: Different SL → different size (risk parity invariant)
+    alloc_tight, _ = compute_suggested_allocation(
+        "Banking", "LARGE CAP", sl_pct=6.0, open_positions=[]
+    )
+    alloc_wide, _ = compute_suggested_allocation(
+        "Banking", "LARGE CAP", sl_pct=12.0, open_positions=[]
+    )
+    # Tight SL → larger position; wide SL → smaller position
+    # 1%/6% = 16.67 → clamped to 15.0
+    # 1%/12% = 8.33 (unclamped)
+    assert alloc_tight > alloc_wide, (
+        f"Phase 4: tight SL ({alloc_tight}%) should give larger position "
+        f"than wide SL ({alloc_wide}%) — institutional risk parity"
+    )
+
+    # Test 4: Sector exposure cap (hard limit, not linear)
+    # Build heavy FMCG concentration
+    heavy_fmcg = [
+        {'symbol': f'FMCG{i}', 'sector': 'FMCG', 'cap_category': 'LARGE CAP',
+         'cmp_at_rec': 100.0, 'sl': 92.0}   # -8% SL → ~12.5% raw size each
+        for i in range(3)
+    ]
+    alloc_capped, why_capped = compute_suggested_allocation(
+        "FMCG", "LARGE CAP", sl_pct=8.0, open_positions=heavy_fmcg
+    )
+    # 3 positions × ~12.5% each = ~37.5% in FMCG (over 30% cap)
+    # New FMCG position should be capped tightly
+    assert alloc_capped < 5.0, (
+        f"Phase 4: heavy sector concentration should cap allocation; "
+        f"got {alloc_capped}% (rationale: {why_capped})"
+    )
+    assert "sector cap" in why_capped, "Phase 4: rationale should mention cap"
+
+    # Test 5: Bounds enforcement
+    alloc_floor, _ = compute_suggested_allocation(
+        "Banking", "LARGE CAP", sl_pct=50.0, open_positions=[]   # absurd SL
+    )
+    assert alloc_floor >= MIN_ALLOCATION_PCT, (
+        f"Phase 4: tiny raw alloc must be floored at MIN ({MIN_ALLOCATION_PCT}%); "
+        f"got {alloc_floor}"
+    )
+
+    # Test 6: Fallback when SL unavailable
+    alloc_fb, why_fb = compute_suggested_allocation(
+        "Banking", "LARGE CAP", sl_pct=None, open_positions=[]
+    )
+    assert alloc_fb > 0, "Phase 4: fallback must produce positive allocation"
+    assert "Fallback" in why_fb, "Phase 4: fallback rationale should be explicit"
+
+    return ("✅ v15.4 Phases 1/3/4: trading calendar, backtest infra, "
+            "risk-parity sizing — institutional patterns verified; Phase 2 "
+            "(tax nudge) correctly withdrawn")
+
+def test_g22_v15_5_risk_parity_wired_to_excel():
+    """v15.5 regression test — verifies risk-parity sizing is wired into
+    Excel rendering pipeline:
+
+    1. master_funnel.py recommendation loop populates `suggested_alloc_pct`
+       and `alloc_rationale` on the stock dict (via compute_for_stock_dict).
+    2. reporting/excel_generator.py FULL_COLS includes the 2 new columns
+       at the expected positions (after Risk Level, before Key Catalyst).
+    3. reporting/excel_generator.py GOLD_COLS also includes them.
+    4. reporting/tooltip_formatter.py has tooltips for both new columns.
+    5. Performance sheet OPEN POSITIONS tooltips: all 18 column names
+       must have entries in TIPS dict (full coverage per v15.5 audit).
+    """
+    # ----- Test 1: master_funnel exposes risk-parity helper import path -----
+    from risk.correlation_aware_sizing import compute_for_stock_dict
+    stock_test = {'sector': 'Banking', 'cap_category': 'LARGE CAP'}
+    alloc, why = compute_for_stock_dict(stock_test, sl_pct=8.0,
+                                         open_positions=[])
+    assert alloc > 0, "v15.5: compute_for_stock_dict must return positive alloc"
+    assert "Risk parity" in why, "v15.5: rationale must mention 'Risk parity'"
+
+    # ----- Test 2: FULL_COLS contains the 2 new columns -----
+    from reporting.excel_generator import FULL_COLS, GOLD_COLS, FULL_GROUPS, GOLD_GROUPS
+
+    full_keys = [k for (h, w, k) in FULL_COLS]
+    assert "suggested_alloc_pct" in full_keys, (
+        "v15.5: FULL_COLS missing 'suggested_alloc_pct' column key"
+    )
+    assert "alloc_rationale" in full_keys, (
+        "v15.5: FULL_COLS missing 'alloc_rationale' column key"
+    )
+
+    # Position check: should be right after Risk Level
+    full_headers = [h for (h, w, k) in FULL_COLS]
+    risk_idx = full_headers.index("Risk Level")
+    alloc_idx = full_headers.index("Suggested Alloc %")
+    rationale_idx = full_headers.index("Sizing Rationale")
+    assert alloc_idx == risk_idx + 1, (
+        f"v15.5: 'Suggested Alloc %' should be right after 'Risk Level' "
+        f"got col_idx Risk={risk_idx} Alloc={alloc_idx}"
+    )
+    assert rationale_idx == alloc_idx + 1, (
+        f"v15.5: 'Sizing Rationale' should be right after 'Suggested Alloc %'"
+    )
+
+    # ----- Test 3: GOLD_COLS contains the 2 new columns -----
+    gold_keys = [k for (h, w, k) in GOLD_COLS]
+    assert "suggested_alloc_pct" in gold_keys, (
+        "v15.5: GOLD_COLS missing 'suggested_alloc_pct'"
+    )
+    assert "alloc_rationale" in gold_keys, (
+        "v15.5: GOLD_COLS missing 'alloc_rationale'"
+    )
+
+    # ----- Test 4: Band definitions accommodate the 2 new columns -----
+    # Sum of band spans must equal len(FULL_COLS)
+    total_span = sum(sp for (sc, nm, col, sp) in FULL_GROUPS)
+    assert total_span == len(FULL_COLS), (
+        f"v15.5: FULL_GROUPS span sum {total_span} != FULL_COLS len {len(FULL_COLS)}"
+    )
+    gold_total_span = sum(sp for (sc, nm, col, sp) in GOLD_GROUPS)
+    assert gold_total_span == len(GOLD_COLS), (
+        f"v15.5: GOLD_GROUPS span sum {gold_total_span} != GOLD_COLS len {len(GOLD_COLS)}"
+    )
+
+    # TRADE PLAN band must span 9 cols (was 7 pre-v15.5)
+    trade_plan_fd = next(
+        (sp for (sc, nm, col, sp) in FULL_GROUPS if nm == "TRADE PLAN"), None
+    )
+    assert trade_plan_fd == 9, (
+        f"v15.5: Full Dashboard TRADE PLAN band should span 9 cols, got {trade_plan_fd}"
+    )
+    trade_plan_gold = next(
+        (sp for (sc, nm, col, sp) in GOLD_GROUPS if nm == "TRADE PLAN"), None
+    )
+    assert trade_plan_gold == 9, (
+        f"v15.5: Gold sheet TRADE PLAN band should span 9 cols, got {trade_plan_gold}"
+    )
+
+    # ----- Test 5: Tooltips exist for the 2 new columns -----
+    from reporting.tooltip_formatter import TIPS
+    assert "Suggested Alloc %" in TIPS, (
+        "v15.5: tooltip missing for 'Suggested Alloc %'"
+    )
+    assert "Sizing Rationale" in TIPS, (
+        "v15.5: tooltip missing for 'Sizing Rationale'"
+    )
+    sa_short, sa_long = TIPS["Suggested Alloc %"]
+    full_text = (sa_short + " " + sa_long).lower()
+    assert "risk-parity" in full_text or "risk parity" in full_text, (
+        "v15.5: 'Suggested Alloc %' tooltip should mention risk-parity"
+    )
+
+    # ----- Test 6: All 18 Performance OPEN POSITIONS columns have tooltips -----
+    perf_open_cols = [
+        "Symbol", "Rec Date", "Time Horizon", "Days Held", "Days Left",
+        "Re-app", "CMP at Rec", "Current Price", "P&L %", "Max Runup %",
+        "SL", "T1", "T2", "T3", "Score", "\u26a0", "Trailing", "Regime",
+    ]
+    missing = [c for c in perf_open_cols if c not in TIPS]
+    assert not missing, (
+        f"v15.5: Performance OPEN POSITIONS tooltips missing for: {missing}. "
+        f"All 18 columns must have entries in TIPS dict."
+    )
+
+    # ----- Test 7: Glossary entries present -----
+    from reporting.excel_generator import GLOSSARY_DATA
+    glossary_terms = {term for (sec, term, defn, sheet) in GLOSSARY_DATA}
+    has_alloc_glossary = any(
+        "Suggested Alloc" in t for t in glossary_terms
+    )
+    has_rationale_glossary = any(
+        "Sizing Rationale" in t for t in glossary_terms
+    )
+    assert has_alloc_glossary, (
+        "v15.5: Glossary missing entry for 'Suggested Alloc'"
+    )
+    assert has_rationale_glossary, (
+        "v15.5: Glossary missing entry for 'Sizing Rationale'"
+    )
+
+    return ("\u2705 v15.5: risk-parity wired to Excel (2 new cols + bands + "
+            "tooltips + glossary + Performance sheet tooltip coverage 18/18)")
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -3080,6 +3379,8 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g18_v15_audit_trail_end_to_end))
     v14_1_results.append(_run_one_test(test_g19_v15_1_sl_differentiation))
     v14_1_results.append(_run_one_test(test_g20_v15_2_etf_filter_and_historical_atr))
+    v14_1_results.append(_run_one_test(test_g21_v15_4_phases_1_3_4))
+    v14_1_results.append(_run_one_test(test_g22_v15_5_risk_parity_wired_to_excel))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

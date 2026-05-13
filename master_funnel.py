@@ -569,13 +569,21 @@ def _compute_sl_t_v14_6(cmp_price, atr_14, cfv, cap_category, sector,
     t3 = round(cmp_price * (1 + t3_pct / 100), 2)
     rr_t1 = t1_pct / sl_pct if sl_pct > 0 else 0
 
+    # v15.4 NOTE: v15.3's "tax-aware T1/T2/T3 nudge" was WITHDRAWN here.
+    # Reason: inflating exit targets by 5% to compensate for STCG is not
+    # how institutional portfolios actually handle tax. Real practice:
+    # treat SL/T as the trade plan (chosen for market-structure reasons),
+    # manage tax at portfolio level (loss harvesting, LTCG threshold
+    # timing). Inflating T1 would have materially hurt hit rate without
+    # benefit. See CHANGES.md (v15.4) for full rationale.
+
     return {
         'stop_loss': stop_loss, 't1': t1, 't2': t2, 't3': t3,
         'sl_pct': round(sl_pct, 2), 't1_pct': round(t1_pct, 2),
         't2_pct': round(t2_pct, 2), 't3_pct': round(t3_pct, 2),
         'rr_t1': round(rr_t1, 2),
         'regime': regime_label, 'support_used': support_used,
-        'earnings_widened': earnings_widened, 'atr_pct': round(atr_pct, 2)
+        'earnings_widened': earnings_widened, 'atr_pct': round(atr_pct, 2),
     }
 
 
@@ -1414,29 +1422,57 @@ def run_master_pipeline():
             # Technical indicators (latest date per symbol)
             # v14.7: also pull 252-day avg ATR as baseline for regime detection.
             # v15.0 update: window extended from 60 days → 252 days (1 trading
-            # year) to use the full 400-day price retention. A longer baseline
-            # is more statistically stable and less reactive to short-term
-            # volatility spikes — better regime classification.
-            # v15.0.1 precision fix: SQLite's date(X, '-N days') subtracts
-            # CALENDAR days; '-252 days' captured only ~180 trading days. To
-            # actually capture 252 trading days (institutional-standard 1 year),
-            # widen to 365 calendar days. 365 cal × (252/365) ≈ 252 trading.
-            _ti_rows = _conn.execute(
-                f"""SELECT t.symbol, t.sma_200, t.supertrend, t.adx, t.rsi_14,
-                    t.macd_signal_txt, t.stoch_k, t.mfi_14, t.obv_signal,
-                    t.above_vwap, t.support1, t.support2, t.resist1, t.resist2,
-                    t.atr_14,
-                    (SELECT AVG(t2.atr_14) FROM technical_indicators t2
-                     WHERE t2.symbol = t.symbol
-                       AND t2.date >= date(t.date, '-365 days')
-                       AND t2.atr_14 > 0) AS atr_baseline_252d
-                    FROM technical_indicators t
-                    INNER JOIN (
-                        SELECT symbol, MAX(date) as md FROM technical_indicators
-                        WHERE symbol IN ({_sym_placeholders}) GROUP BY symbol
-                    ) latest ON t.symbol=latest.symbol AND t.date=latest.md""",
-                _syms
-            ).fetchall()
+            # year) to use the full 400-day price retention.
+            # v15.0.1: SQLite's date(X, '-N days') subtracts CALENDAR days;
+            #          '-252 days' captured only ~180 trading days. Widened
+            #          to 365 cal ≈ 252 trading days.
+            # v15.3 Phase 1: NSE trading-day calendar — compute EXACT 252-
+            # trading-day cutoff via market_holidays table. Falls back to
+            # 365-cal-day approximation if calendar empty (first run).
+            try:
+                from ingestion.trading_day_calendar import trading_day_window_iso
+                _baseline_cutoff = trading_day_window_iso(_date_str, 252, "NSE")
+                _baseline_filter_sql = "t2.date >= ?"
+                _baseline_filter_arg = [_baseline_cutoff]
+            except Exception:
+                _baseline_cutoff = None
+                _baseline_filter_sql = "t2.date >= date(t.date, '-365 days')"
+                _baseline_filter_arg = []
+            # Build the SQL — note correlated subquery needs different binding
+            if _baseline_cutoff:
+                _ti_rows = _conn.execute(
+                    f"""SELECT t.symbol, t.sma_200, t.supertrend, t.adx, t.rsi_14,
+                        t.macd_signal_txt, t.stoch_k, t.mfi_14, t.obv_signal,
+                        t.above_vwap, t.support1, t.support2, t.resist1, t.resist2,
+                        t.atr_14,
+                        (SELECT AVG(t2.atr_14) FROM technical_indicators t2
+                         WHERE t2.symbol = t.symbol
+                           AND t2.date >= ?
+                           AND t2.atr_14 > 0) AS atr_baseline_252d
+                        FROM technical_indicators t
+                        INNER JOIN (
+                            SELECT symbol, MAX(date) as md FROM technical_indicators
+                            WHERE symbol IN ({_sym_placeholders}) GROUP BY symbol
+                        ) latest ON t.symbol=latest.symbol AND t.date=latest.md""",
+                    [_baseline_cutoff] + _syms
+                ).fetchall()
+            else:
+                _ti_rows = _conn.execute(
+                    f"""SELECT t.symbol, t.sma_200, t.supertrend, t.adx, t.rsi_14,
+                        t.macd_signal_txt, t.stoch_k, t.mfi_14, t.obv_signal,
+                        t.above_vwap, t.support1, t.support2, t.resist1, t.resist2,
+                        t.atr_14,
+                        (SELECT AVG(t2.atr_14) FROM technical_indicators t2
+                         WHERE t2.symbol = t.symbol
+                           AND t2.date >= date(t.date, '-365 days')
+                           AND t2.atr_14 > 0) AS atr_baseline_252d
+                        FROM technical_indicators t
+                        INNER JOIN (
+                            SELECT symbol, MAX(date) as md FROM technical_indicators
+                            WHERE symbol IN ({_sym_placeholders}) GROUP BY symbol
+                        ) latest ON t.symbol=latest.symbol AND t.date=latest.md""",
+                    _syms
+                ).fetchall()
             for r in _ti_rows:
                 _ti_map[r[0]] = r[1:]
 
@@ -1448,23 +1484,41 @@ def run_master_pipeline():
             for r in _sm_rows:
                 _sm_map[r[0]] = r[1:]
 
-            # 52w high/low and vol50d from full price history (no date filter)
-            # v15.0.1 precision fix for vol_50: '-50 days' captured only ~35
-            # trading days. Widened to '-70 days' to capture ~50 trading days
-            # (institutional convention for 50-day average volume).
-            # 52w high/low correctly use '-365 days' = 1 calendar year, which
-            # IS the industry definition of "52-week" (not 252 trading days).
+            # 52w high/low and vol50d from full price history
+            # v15.0.1: vol_50 widened to '-70 days' to capture ~50 trading days
+            # 52w high/low correctly use '-365 days' = 1 calendar year, the
+            # industry definition of "52-week".
+            # v15.3 Phase 1: vol_50 uses EXACT 50 trading-day cutoff via
+            # NSE calendar; falls back to 70-cal-day approximation.
             try:
-                _dp_rows = _conn.execute(
-                    f"""SELECT dp.symbol,
-                        MAX(CASE WHEN dp.date >= date(?, '-365 days') THEN dp.high  ELSE NULL END),
-                        MIN(CASE WHEN dp.date >= date(?, '-365 days') THEN dp.low   ELSE NULL END),
-                        AVG(CASE WHEN dp.date >= date(?, '-70 days')  THEN dp.volume ELSE NULL END)
-                        FROM daily_prices dp
-                        WHERE dp.symbol IN ({_sym_placeholders}) AND dp.exchange='NSE'
-                        GROUP BY dp.symbol""",
-                    [_date_str, _date_str, _date_str] + _syms
-                ).fetchall()
+                from ingestion.trading_day_calendar import trading_day_window_iso
+                _vol50_cutoff = trading_day_window_iso(_date_str, 50, "NSE")
+            except Exception:
+                _vol50_cutoff = None
+
+            try:
+                if _vol50_cutoff:
+                    _dp_rows = _conn.execute(
+                        f"""SELECT dp.symbol,
+                            MAX(CASE WHEN dp.date >= date(?, '-365 days') THEN dp.high  ELSE NULL END),
+                            MIN(CASE WHEN dp.date >= date(?, '-365 days') THEN dp.low   ELSE NULL END),
+                            AVG(CASE WHEN dp.date >= ? THEN dp.volume ELSE NULL END)
+                            FROM daily_prices dp
+                            WHERE dp.symbol IN ({_sym_placeholders}) AND dp.exchange='NSE'
+                            GROUP BY dp.symbol""",
+                        [_date_str, _date_str, _vol50_cutoff] + _syms
+                    ).fetchall()
+                else:
+                    _dp_rows = _conn.execute(
+                        f"""SELECT dp.symbol,
+                            MAX(CASE WHEN dp.date >= date(?, '-365 days') THEN dp.high  ELSE NULL END),
+                            MIN(CASE WHEN dp.date >= date(?, '-365 days') THEN dp.low   ELSE NULL END),
+                            AVG(CASE WHEN dp.date >= date(?, '-70 days')  THEN dp.volume ELSE NULL END)
+                            FROM daily_prices dp
+                            WHERE dp.symbol IN ({_sym_placeholders}) AND dp.exchange='NSE'
+                            GROUP BY dp.symbol""",
+                        [_date_str, _date_str, _date_str] + _syms
+                    ).fetchall()
                 for r in _dp_rows:
                     _dp_map[r[0]] = r[1:]
             except Exception:
@@ -3250,9 +3304,33 @@ def run_master_pipeline():
                 stock.setdefault("regime_at_rec", _r.get("regime", "neutral"))
                 stock.setdefault("atr_at_rec", _r.get("atr_pct", 0))
                 stock.setdefault("original_stop_loss", _r["stop_loss"])
+                # v15.5: wire risk-parity (institutional volatility-adjusted)
+                # position sizing. Uses |SL_pct| + cap_category + current OPEN
+                # positions' sector exposure. Helper is read-only (queries
+                # gold_recommendations + gold_outcomes via _load_open_positions)
+                # — falls back to FALLBACK_ALLOCATION_PCT if SL unavailable.
+                # See risk/correlation_aware_sizing.py for institutional rationale.
+                try:
+                    from risk.correlation_aware_sizing import compute_for_stock_dict
+                    _sl_pct_abs = abs(float(_r.get("sl_pct", 0) or 0))
+                    _alloc_pct, _alloc_why = compute_for_stock_dict(
+                        stock, sl_pct=_sl_pct_abs
+                    )
+                    stock.setdefault("suggested_alloc_pct", _alloc_pct)
+                    stock.setdefault("alloc_rationale", _alloc_why)
+                except Exception as _ras_err:
+                    # Defense in depth: any failure in sizing helper must NOT
+                    # break the recommendation logging. Fallback to "—" so
+                    # Excel shows blank, pipeline continues.
+                    stock.setdefault("suggested_alloc_pct", "—")
+                    stock.setdefault("alloc_rationale", "—")
             else:
                 for k in ["t1","t2","t3","stop_loss","entry_range"]:
                     stock.setdefault(k, "—")
+                # v15.5: when SL/T not computed (e.g. ATR missing), alloc
+                # also shows "—" for consistency.
+                stock.setdefault("suggested_alloc_pct", "—")
+                stock.setdefault("alloc_rationale", "—")
 
             # early_signals — combine spike triggers + EE-scorer labels + mover badge
             # Session 20: previously this block overwrote stock["early_signals"],

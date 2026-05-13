@@ -828,6 +828,35 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Risk Level": ("LOW=safest | VERY HIGH=speculative only",
                    "LOW: High score + low beta + low D/E + no pledge\n"
                    "MEDIUM: Acceptable | HIGH: Small/micro | VERY HIGH: Speculative"),
+    # ── v15.5: Institutional risk-parity (volatility-adjusted) sizing ──────
+    "Suggested Alloc %": ("v15.5: institutional risk-parity sizing",
+                          "Suggested position size as % of total portfolio.\n"
+                          "Formula: position_size = risk_budget / |SL_pct|\n"
+                          "  • risk_budget default = 1.0% (lose ≤1% portfolio if SL fires)\n"
+                          "  • × cap-category multiplier (LARGE 1.0, MID 1.0,\n"
+                          "    SMALL 0.85, MICRO 0.70) — illiquidity premium\n"
+                          "  • Hard sector exposure cap at 30% (SEBI-RIA norm)\n"
+                          "  • Safety clamps: [1%, 15%]\n"
+                          "EXAMPLES (1% risk budget):\n"
+                          "  LARGE Bank, SL=-6%  → 1%/6%=16.7% → clamped to 15.0%\n"
+                          "  LARGE IT,   SL=-8%  → 1%/8%=12.5%\n"
+                          "  MID Auto,   SL=-10% → 1%/10%=10.0%\n"
+                          "  SMALL Real, SL=-15% → 1%/15%×0.85=5.7%\n"
+                          "  MICRO Chem, SL=-15% → 1%/15%×0.70=4.7%\n"
+                          "INVARIANT: every position contributes ~1% portfolio risk\n"
+                          "regardless of stock volatility. This is what Bridgewater,\n"
+                          "Winton, and SEBI-RIA portfolio managers actually do."),
+    "Sizing Rationale": ("v15.5: human-readable breakdown of allocation math",
+                         "Step-by-step rationale for the Suggested Alloc %:\n"
+                         "  'Risk parity: 1.0% / X% = Y%'\n"
+                         "      → base risk-parity calculation\n"
+                         "  'LARGE×1.0' or 'SMALL×0.85' or 'MICRO×0.70'\n"
+                         "      → cap-category multiplier applied\n"
+                         "  'sector cap: A% used, B% headroom'\n"
+                         "      → 30% sector exposure cap forced a tighter size\n"
+                         "  'clamped to Y%'\n"
+                         "      → safety clamp (above 15% or below 1%) fired\n"
+                         "If SL is unavailable (rare), shows 'Fallback: 3.0%'."),
     "R:R Ratio": ("v15.0: enforced ≥ 1.5 by formula construction",
                   "R:R = (T1 − Entry mid) / (Entry mid − SL).\n"
                   ">2 Excellent, 1.5–2 Acceptable, <1.5 Avoid.\n"
@@ -1110,7 +1139,52 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "how much pain you'd have endured before winning — useful\n"
                        "for sizing future positions. -10% drawdown to win T1 is\n"
                        "very different from -2%."),
-    # v15.0: OPEN POSITIONS new columns
+    # ────────────────────────────────────────────────────────────────────
+    # v15.5: Performance sheet OPEN POSITIONS column tooltips
+    # The 18 OPEN columns are: Symbol, Rec Date, Time Horizon, Days Held,
+    # Days Left, Re-app, CMP at Rec, Current Price, P&L %, Max Runup %,
+    # SL, T1, T2, T3, Score, ⚠, Trailing, Regime
+    # Most are already covered above; this block fills the gaps so all 18
+    # have hoverable tooltips.
+    # ────────────────────────────────────────────────────────────────────
+    "Rec Date": ("Calendar date this stock was first logged to gold_recommendations",
+                  "Frozen at log time — never updated even on re-appearance.\n"
+                  "Format: YYYY-MM-DD. Days Held = today - Rec Date.\n"
+                  "The 90-day expiry window (or horizon-specific window) is\n"
+                  "measured from this date."),
+    "Re-app": ("Re-appearances in Gold sheet since first recommendation",
+                "Number of subsequent pipeline runs where this stock re-qualified\n"
+                "for Gold while the original recommendation is still open. A high\n"
+                "Re-app count (e.g., 5+) means the system keeps flagging this\n"
+                "stock as a continued opportunity — additional conviction signal."),
+    "CMP at Rec": ("Closing price on the day this stock was first recommended",
+                    "Frozen at log time — used as the reference entry price for\n"
+                    "all P&L / Max Runup / Max Drawdown calculations. Even if you\n"
+                    "actually entered at a slightly different price, the system's\n"
+                    "tracking metrics are anchored to this benchmark."),
+    "Current Price": ("Latest closing price as of the most recent pipeline run",
+                      "Updated daily by the tracker. Compared against SL/T1/T2/T3\n"
+                      "levels to detect events. Note: the Performance sheet uses\n"
+                      "end-of-bar prices (no intraday checks) for no-lookahead\n"
+                      "discipline — today's bar is fully formed before evaluation."),
+    "P&L %": ("Current unrealized return: (Current Price - CMP at Rec) / CMP × 100",
+              "Positive = winning trade in progress. Negative = losing position\n"
+              "still being monitored. The tracker uses this to determine when\n"
+              "trailing-SL ratchets fire (peak gain crosses +5%/+10%/+15%).\n"
+              "Color: green if ≥ +5%, amber if 0 to +5%, red if negative."),
+    "Score": ("Score at log time (frozen — does not refresh)",
+              "The composite v15.x score (0-100) computed at the moment this\n"
+              "stock was first recommended. NOT updated as the position ages.\n"
+              "Useful for post-hoc analysis: did high-score picks (≥75) outperform\n"
+              "moderate-score picks (60-75)? Phase 3 backtest analysis uses this\n"
+              "to bucket performance."),
+    "⚠": ("Approaching-expiry warning flag",
+          "v14.1: Shows ⚠ when Days Left ≤ 14, indicating this position is\n"
+          "within 2 weeks of forced expiry (becomes EXPIRED outcome on next run\n"
+          "if no SL/T event fires before then).\n"
+          "Use this column as a quick scan for 'positions needing attention' —\n"
+          "either review your conviction (still believe in T1?) or consider\n"
+          "manual exit if you've decided to give up."),
     "Trailing": ("Current trailing-SL state (v15.0)",
                  "Shows the v15.0 trailing-stop level locked in so far:\n"
                  "  '—' = trailing not yet activated (peak gain < +5%)\n"
@@ -1284,7 +1358,10 @@ _ICON_FAMILIES = {
            "New Mkt Entry", "Capex / Rev %", "Key Catalyst"},
     "🎚": {"Entry Range (₹)", "Stop Loss (₹)", "Target 1 (₹)", "Target 2 (₹)",
            "Target 3 (₹)", "Time Horizon", "R:R Ratio",
-           "Support 1 (₹)", "Support 2 (₹)", "Resist 1 (₹)", "Resist 2 (₹)"},
+           "Support 1 (₹)", "Support 2 (₹)", "Resist 1 (₹)", "Resist 2 (₹)",
+           "Risk Level",
+           # v15.5: institutional risk-parity sizing
+           "Suggested Alloc %", "Sizing Rationale"},
     "🏷": {"Symbol", "Company Name", "Company", "Sector", "Exchange",
            "Cap Category", "Date", "Time (IST)", "Alert Type", "Trigger Detail",
            "Prev Score", "New Score", "Score Δ", "BSE Code",

@@ -3519,4 +3519,59 @@ User asked "will Performance sheet capture data based on the new change?" Expert
 
 ---
 
-*Last updated: May 13, 2026 · v15.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+## v15.x evolution post-v15.0 (the path to A-)
+
+### v15.0.1 — Calendar-day precision fix
+SQLite `date(X, '-N days')` subtracts CALENDAR days. v15.0's `'-252 days'` captured only ~180 trading days. Widened: 252→365 for baseline ATR, 50→70 for vol_50. 52w high/low correctly stays at 365 cal (industry definition). Files: master_funnel.py only.
+
+### v15.1 — SL_MAX 12% → 15%
+Production audit: 44/100 stocks collapsed at -12% SL cap, masking per-stock differentiation. Raised `_V14_6_SL_MAX_PCT` to 15.0. Stocks at cap dropped 44→24; SL distribution gained 32 unique values; mean Score 51.2→54.6. New G19 test. **71/71 tests**.
+
+### v15.2 — Historical ATR backfill + ETF filter expansion
+Two production issues:
+1. Regime detection always NEUTRAL because backfill wrote only LATEST TI row → baseline ATR query had 1 row. Fix: `compute_historical_atr_series()` walks 400 days, writes ~280K historical atr_14 rows. Regime now real from Day 1.
+2. 18 ETFs (MOTOUR, MOSILVER, GROWWLIQID, etc.) leaked into dashboard with empty fundamentals. Fix: 17 specific symbol keywords + company-name-based detection ("MUTUAL FUND", "ASSET MANAGEMENT", "INDEX FUND"). Did NOT add broad prefixes (would false-positive MOIL, MOSCHIP, HDFCAMC parent co). 18/18 blocked, 0 false positives.
+Requires artifact deletion for historical ATR to populate. New G20 test. **72/72 tests**.
+
+### v15.2.1 — NSE pledge log cleanup (cosmetic)
+NSE pledge endpoint returns HTTP 404 on cloud-provider IPs (GitHub Actions, AWS, Azure). Reduced from 4 noisy log lines (3 retries + summary) to 1 honest line: "free endpoint unavailable on this IP (known limitation; paid-tier fallback expected)". Behavior unchanged.
+
+### v15.3 — Phases 1-4 institutional enhancements
+- **Phase 1 (kept)**: NSE trading-day calendar — exact 252-trading-day cutoffs via `market_holidays` table. Falls back to v15.0.1 calendar-day approximation if calendar empty (first-run safety). New module `ingestion/trading_day_calendar.py`.
+- **Phase 2 (withdrawn in v15.4)**: tax-aware T1/T2/T3 nudge — turned out to be institutionally incorrect.
+- **Phase 3 (kept)**: backtest infrastructure — standalone CLI `backtest/walk_forward.py`. Refuses calibration below N=30 (statistical hygiene).
+- **Phase 4 (replaced in v15.4)**: correlation-aware sizing — initial linear penalty replaced with risk parity.
+
+### v15.4 — Institutional-correctness audit
+User challenged: "are your enhancements inline with top-tier institutional approach?"
+- **Phase 2 withdrawn**: Inflating T1/T2/T3 by ~5% to compensate for STCG would have harmed hit rate by ~17 percentage points on a typical LARGE CAP (the climb from +12% to +17.6% halves win probability). Institutions handle tax at portfolio level (loss harvesting, LTCG timing), not by inflating exit targets.
+- **Phase 4 replaced** with institutional **volatility-adjusted risk parity** (Markowitz 1952; Bridgewater All-Weather; SEBI-RIA norm):
+  ```
+  position_size = risk_budget / |SL_pct|
+  × cap-category multiplier (LARGE 1.0, MID 1.0, SMALL 0.85, MICRO 0.70)
+  Hard 30% sector exposure cap
+  Clamps: [1%, 15%]
+  ```
+  **Invariant**: every position contributes ~1% portfolio risk regardless of stock volatility. Phases 1 + 3 kept. G21 rewritten. **73/73 tests**.
+
+### v15.5 — Risk-parity wired to Excel + Performance tooltip audit + band schema fix
+- Surfaces v15.4 risk-parity sizing into Full Dashboard + Gold sheets as 2 new columns: "Suggested Alloc %" (e.g., 12.5%) and "Sizing Rationale" (e.g., "Risk parity: 1.0% / 8.0% = 12.50%"). FULL_COLS 124→126; GOLD_COLS 41→43.
+- **Band schema fix**: discovered FULL_GROUPS/GOLD_GROUPS schema was `(start_col, name, color, span)`, not `(end_col, ...)`. Initial v15.5 draft caused 9 MergedCell errors due to overlapping bands. Fixed.
+- **Performance sheet tooltip audit**: added 7 missing tooltips (Rec Date, Re-app, CMP at Rec, Current Price, P&L %, Score, ⚠), wired `_apply_col_tips` on both OPEN and CLOSED POSITIONS header rows. All 18 OPEN + 12 CLOSED columns now have hoverable tooltips.
+- Glossary + Tooltip Reference sync: 2 new entries each; "Trade Plan" icon family (🎚) extended.
+- G14 test updated for ⓘ cue character; new G22 test for v15.5 wire-up.
+- **74/74 tests** across 5/5 runs.
+
+### Test count evolution
+- v14.5: 66 → v14.6: 67 (G15: multi-factor SL/T)
+- v15.0: 69 (G16 + G17) → v15.1: 71 (G18 + G19) → v15.2: 72 (G20)
+- v15.3: 73 (G21) → v15.4: 73 (G21 rewritten) → v15.5: 74 (G22)
+
+### Honest grade after v15.5: still A-
+**What changed since v15.0**: trading-day calendar precision (Phase 1), backtest infrastructure (Phase 3), institutional risk-parity sizing wired into Excel (Phase 4 + v15.5), production audit fixes (v15.1/v15.2/v15.2.1).
+
+**Path to true A**: walk-forward backtest calibration of multipliers (cap multipliers, regime thresholds, sector tiers). Requires 30+ closed positions accumulated under v15.5 rules (currently 0 — needs ~60-90 days of pipeline runs). `python -m backtest.walk_forward --calibrate` will produce optimized `multipliers_calibrated.json` once data threshold is met.
+
+---
+
+*Last updated: May 13, 2026 · v15.5 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

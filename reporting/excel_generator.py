@@ -50,8 +50,13 @@ FULL_GROUPS = [
     (76, "SHAREHOLDING",    "7C3AED",9),(85,"QUALITY SCORES",  "0D9488",4),
     (89, "PIPELINE / OB",   "1D4ED8",5),(94,"EARLY DETECTION", "B45309",3),
     (97, "TECHNICAL",       "6D28D9",14),(111,"BALANCE SHEET", "D97706",2),
-    (113,"TRADE PLAN",      "059669",7),(120,"NEWS & RISK",    "475569",4),
-    (124,"ANALYSIS SUMMARY","0F172A",1),
+    # v15.5: TRADE PLAN widened 7→9 cols (added Suggested Alloc % + Sizing
+    # Rationale after Risk Level). Schema = (START_col, name, color, span).
+    # TRADE PLAN: cols 113-121 (start=113, span=9)
+    # NEWS & RISK: cols 122-125 (start=122, span=4) — shifted right by 2
+    # ANALYSIS SUMMARY: col 126 (start=126, span=1) — shifted right by 2
+    (113,"TRADE PLAN",      "059669",9),(122,"NEWS & RISK",    "475569",4),
+    (126,"ANALYSIS SUMMARY","0F172A",1),
 ]
 
 FULL_COLS = [
@@ -127,6 +132,11 @@ FULL_COLS = [
     ("Entry Range (₹)",15,"entry_range"),("Stop Loss (₹)",13,"stop_loss"),
     ("Target 1 (₹)",12,"t1"),("Target 2 (₹)",12,"t2"),("Target 3 (₹)",12,"t3"),
     ("Time Horizon",22,"horizon"),("Risk Level",11,"risk_level"),
+    # v15.5: institutional risk-parity (volatility-adjusted) position sizing.
+    # See risk/correlation_aware_sizing.py — base size = 1% risk budget /
+    # |SL_pct|, × cap-category multiplier, with 30% sector cap.
+    ("Suggested Alloc %",16,"suggested_alloc_pct"),
+    ("Sizing Rationale",55,"alloc_rationale"),
     ("Key Catalyst",42,"key_catalyst"),("News Sentiment",15,"news_sentiment"),
     ("Primary Risk",42,"primary_risk"),("SEBI Flags",22,"sebi_flags"),
     ("View Analysis Summary",70,"Analysis_Summary_Block_H"),
@@ -142,11 +152,14 @@ GOLD_GROUPS = [
     # Sum of spans now = 6+4+1+4+3+6+3+3+7+2+1 = 40 = len(GOLD_COLS). ✓
     # v13.x: SCORES band widened 4→5 for new "Quick Pick" column inserted
     # right after Verdict. All subsequent starts shift +1. New sum = 41.
+    # v15.5: TRADE PLAN widened 7→9 cols on Gold sheet too (added Suggested
+    # Alloc % + Sizing Rationale after Risk Level — same as Full Dashboard).
+    # NEWS shifts 39→41, ANALYSIS SUMMARY 41→43. New sum = 43 = len(GOLD_COLS).
     (1,"IDENTITY","1E293B",6),(7,"SCORES","7C3AED",5),(12,"PRICE","0369A1",1),
     (13,"WEEKLY CHANGE %","0F766E",4),(17,"FAIR VALUE","B45309",3),
     (20,"KEY METRICS","0891B2",6),(26,"EARLY DETECTION","B45309",3),
-    (29,"TECHNICAL","6D28D9",3),(32,"TRADE PLAN","059669",7),
-    (39,"NEWS","475569",2),(41,"ANALYSIS SUMMARY","0F172A",1),
+    (29,"TECHNICAL","6D28D9",3),(32,"TRADE PLAN","059669",9),
+    (41,"NEWS","475569",2),(43,"ANALYSIS SUMMARY","0F172A",1),
 ]
 
 GOLD_COLS = [
@@ -174,6 +187,10 @@ GOLD_COLS = [
     ("Entry Range (₹)",16,"entry_range"),("Stop Loss (₹)",12,"stop_loss"),
     ("Target 1 (₹)",12,"t1"),("Target 2 (₹)",12,"t2"),("Target 3 (₹)",12,"t3"),
     ("Time Horizon",22,"horizon"),("Risk Level",10,"risk_level"),
+    # v15.5: risk-parity sizing surfaced on Gold sheet (these are the picks
+    # users actually trade — most useful place to see allocation guidance)
+    ("Suggested Alloc %",16,"suggested_alloc_pct"),
+    ("Sizing Rationale",55,"alloc_rationale"),
     ("Key Catalyst",42,"key_catalyst"),("Primary Risk",42,"primary_risk"),
     ("View Analysis Summary",70,"Analysis_Summary_Block_H"),
 ]
@@ -603,6 +620,23 @@ GLOSSARY_DATA = [
      "LOW = large cap, low beta, positive MoS, strong balance sheet | "
      "MEDIUM = mid cap or slight premium or moderate debt | "
      "HIGH = small/micro cap or negative MoS or high D/E or high beta","Trade Summary"),
+    # v15.5: Institutional risk-parity sizing (Phase 4)
+    ("TRADE PLAN","Suggested Alloc %",
+     "v15.5: Institutional risk-parity position sizing. Formula: "
+     "position_size = risk_budget / |SL_pct| × cap_multiplier. "
+     "Default risk_budget = 1% (lose ≤1% portfolio if SL fires). "
+     "Cap multipliers: LARGE 1.0, MID 1.0, SMALL 0.85, MICRO 0.70. "
+     "Hard sector exposure cap at 30%. Clamped to [1%, 15%]. "
+     "Examples (1% budget): LARGE+SL6% → 15% capped, MID+SL10% → 10%, "
+     "SMALL+SL15% → 5.7%. INVARIANT: every position contributes ~1% "
+     "portfolio risk regardless of stock volatility — the institutional "
+     "standard (Bridgewater, Winton, SEBI-RIA portfolio managers).","All sheets"),
+    ("TRADE PLAN","Sizing Rationale",
+     "v15.5: Human-readable breakdown of how Suggested Alloc % was computed. "
+     "Shows the formula step-by-step: 'Risk parity: 1.0% / X% = Y%' + "
+     "any cap-category multiplier (LARGE×1.0 / SMALL×0.85 / MICRO×0.70) + "
+     "any sector exposure cap or safety clamp adjustments. "
+     "Lets you audit the sizing decision without re-computing manually.","All sheets"),
     ("ANALYSIS SUMMARY","View Analysis Summary","150–250 word AI note with exact ₹ figures, catalysts, risks","All sheets"),
 
     # ── IDENTITY ──────────────────────────────────────────────────────────────
@@ -878,6 +912,23 @@ GLOSSARY_DATA = [
      "Final price target = CFV (Composite Fair Value). "
      "Hold remaining 20–30% position for full re-rating. "
      "Only applicable for BUY stocks with positive MoS.","All sheets"),
+    # v15.5: Institutional risk-parity (volatility-adjusted) position sizing
+    ("TRADE PLAN","Suggested Alloc % (v15.5)",
+     "Institutional risk-parity position sizing: "
+     "position_size = risk_budget / |SL_pct|, × cap-category multiplier "
+     "(LARGE 1.0, MID 1.0, SMALL 0.85, MICRO 0.70), with 30% sector cap. "
+     "Default risk budget = 1% of portfolio per position. "
+     "Example: LARGE Banking SL=6% → 1%/6% = 16.67% → clamped to 15%. "
+     "MID Auto SL=10% → 1%/10% = 10%. SMALL Realty SL=15% → 1%/15%×0.85 = 5.7%. "
+     "INVARIANT: every position contributes ~1% portfolio risk regardless of "
+     "individual stock volatility — the institutional risk-parity standard "
+     "(Markowitz 1952; Bridgewater All-Weather; Winton; SEBI-RIA norm).","Full Dashboard, Gold"),
+    ("TRADE PLAN","Sizing Rationale (v15.5)",
+     "Step-by-step audit trail for the Suggested Alloc % calculation. "
+     "Shows 'Risk parity: 1.0% / X% = Y%' (base formula), then any "
+     "cap multiplier ('SMALL×0.85'), sector cap ('A% used, B% headroom'), "
+     "or safety clamp ('clamped to Z%'). Lets you verify the sizing "
+     "decision was made correctly per the institutional formula.","Full Dashboard, Gold"),
 
     # ── NEWS & RISK ───────────────────────────────────────────────────────────
     ("NEWS & RISK","Key Catalyst",
@@ -2351,6 +2402,8 @@ class ExcelGeneratorV6:
             # in the next section will re-set them with its own widths anyway.
             ws.column_dimensions[get_column_letter(ci)].width = w
         ws.row_dimensions[next_row].height = 20
+        # v15.5: tooltips on CLOSED POSITIONS header row
+        self._apply_col_tips(ws, next_row, [h for h, _ in closed_cols])
         next_row += 1
 
         if _closed_df.empty:
@@ -2471,6 +2524,10 @@ class ExcelGeneratorV6:
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
             ws.column_dimensions[get_column_letter(ci)].width = w
         ws.row_dimensions[next_row].height = 20
+        # v15.5: wire tooltips onto OPEN POSITIONS header cells so users can
+        # hover and see what each of the 18 columns means. All 18 column names
+        # now have entries in tooltip_formatter.TIPS (audit pass v15.5).
+        self._apply_col_tips(ws, next_row, [h for h, _ in open_cols])
         next_row += 1
 
         _open_df = _df_all[_df_all["outcome_type"] == "OPEN"].copy()
