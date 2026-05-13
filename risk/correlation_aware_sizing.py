@@ -176,23 +176,48 @@ def compute_suggested_allocation(
         ]
 
     # Apply sector exposure cap (hard limit, not linear penalty)
+    # v15.7 fix: only emit "sector cap" text when sector cap is the ACTUAL
+    # binding constraint (i.e., sector headroom is below the MAX_ALLOCATION
+    # ceiling). Otherwise the MAX_ALLOCATION clamp is the real constraint
+    # and the user should see "clamped to 15.0%", not a misleading sector-cap
+    # message that incidentally has the same numeric value.
+    #
+    # Pre-v15.7 bug example (ITC, LARGE CAP, SL=6.2%, alone in Consumer Defensive):
+    #   - _current_sector_exposure counted ITC's own OPEN position → 15% used
+    #   - headroom_in_sector = 30 - 15 = 15.0%
+    #   - cap_adjusted_alloc (16.16%) > headroom (15.0%) → "sector cap" branch fired
+    #   - final_alloc became 15.0% — but only because MAX_ALLOCATION_PCT was also 15%
+    #   - The TRUE binding constraint was MAX_ALLOCATION, not sector cap
     sector_exposures = _current_sector_exposure(open_positions)
     current_sector_pct = sector_exposures.get(sector_norm, 0.0)
     headroom_in_sector = max(0.0, MAX_SECTOR_EXPOSURE_PCT - current_sector_pct)
 
-    if cap_adjusted_alloc > headroom_in_sector:
+    sector_was_binding = False
+    if cap_adjusted_alloc > headroom_in_sector and headroom_in_sector < MAX_ALLOCATION_PCT:
+        # Sector cap genuinely constrains BELOW the MAX_ALLOCATION ceiling
         rationale_parts.append(
             f"sector cap: {current_sector_pct:.1f}% used, "
             f"{headroom_in_sector:.1f}% headroom"
         )
         final_alloc = headroom_in_sector
+        sector_was_binding = True
+    elif cap_adjusted_alloc > headroom_in_sector:
+        # cap_adjusted > headroom, but headroom ≥ MAX_ALLOCATION_PCT means the
+        # MAX_ALLOCATION clamp will be the binding constraint anyway — don't
+        # emit the misleading "sector cap" message. Let the clamp message
+        # below handle the explanation.
+        final_alloc = cap_adjusted_alloc
     else:
         final_alloc = cap_adjusted_alloc
 
-    # Safety clamps
+    # Safety clamps — emit "clamped to" message when the MAX/MIN clamp fires
+    # AND sector wasn't already the announced binding constraint
     pre_clamp = final_alloc
     final_alloc = max(MIN_ALLOCATION_PCT, min(MAX_ALLOCATION_PCT, final_alloc))
-    if final_alloc != pre_clamp:
+    if final_alloc != pre_clamp and not sector_was_binding:
+        rationale_parts.append(f"clamped to {final_alloc:.1f}%")
+    elif final_alloc != pre_clamp and sector_was_binding:
+        # Edge case: sector cap brought us above MAX or below MIN — note it
         rationale_parts.append(f"clamped to {final_alloc:.1f}%")
 
     rationale = " · ".join(rationale_parts)

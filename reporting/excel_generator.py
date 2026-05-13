@@ -912,23 +912,10 @@ GLOSSARY_DATA = [
      "Final price target = CFV (Composite Fair Value). "
      "Hold remaining 20–30% position for full re-rating. "
      "Only applicable for BUY stocks with positive MoS.","All sheets"),
-    # v15.5: Institutional risk-parity (volatility-adjusted) position sizing
-    ("TRADE PLAN","Suggested Alloc % (v15.5)",
-     "Institutional risk-parity position sizing: "
-     "position_size = risk_budget / |SL_pct|, × cap-category multiplier "
-     "(LARGE 1.0, MID 1.0, SMALL 0.85, MICRO 0.70), with 30% sector cap. "
-     "Default risk budget = 1% of portfolio per position. "
-     "Example: LARGE Banking SL=6% → 1%/6% = 16.67% → clamped to 15%. "
-     "MID Auto SL=10% → 1%/10% = 10%. SMALL Realty SL=15% → 1%/15%×0.85 = 5.7%. "
-     "INVARIANT: every position contributes ~1% portfolio risk regardless of "
-     "individual stock volatility — the institutional risk-parity standard "
-     "(Markowitz 1952; Bridgewater All-Weather; Winton; SEBI-RIA norm).","Full Dashboard, Gold"),
-    ("TRADE PLAN","Sizing Rationale (v15.5)",
-     "Step-by-step audit trail for the Suggested Alloc % calculation. "
-     "Shows 'Risk parity: 1.0% / X% = Y%' (base formula), then any "
-     "cap multiplier ('SMALL×0.85'), sector cap ('A% used, B% headroom'), "
-     "or safety clamp ('clamped to Z%'). Lets you verify the sizing "
-     "decision was made correctly per the institutional formula.","Full Dashboard, Gold"),
+    # v15.7 dedup: previously had duplicate Suggested Alloc % / Sizing Rationale
+    # entries here (with "(v15.5)" suffix). The non-suffixed entries earlier in
+    # the Trade Summary glossary block (rows 87-88 of rendered output) carry
+    # the same content under cleaner names — those are the canonical entries.
 
     # ── NEWS & RISK ───────────────────────────────────────────────────────────
     ("NEWS & RISK","Key Catalyst",
@@ -2500,7 +2487,9 @@ class ExcelGeneratorV6:
         #        glance "where are we vs where do we expect to go?" without
         #        cross-referencing the Gold sheet.
         # v15.0: span widened 16→18 to cover new Trailing + Regime columns.
-        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=18)
+        # v15.7: span widened 18→20 to surface Suggested Alloc % + Sizing
+        # Rationale on the Performance sheet (same as Full Dashboard/Gold).
+        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=20)
         c = ws.cell(next_row,1,
             "📂  OPEN POSITIONS  ·  Currently-tracked stocks with running P&L vs targets")
         c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
@@ -2511,6 +2500,10 @@ class ExcelGeneratorV6:
         # v15.0: Two new columns appended at end — "Trailing" (current trailing
         # state: '—', 'BE locked', '+3% locked', '+7% locked') and "Regime"
         # (high/neutral/low at log time). Total now 18 columns.
+        # v15.7: Two more columns appended — "Suggested Alloc %" (the v15.5
+        # risk-parity recommendation) and "Sizing Rationale" (the human-readable
+        # derivation). Both frozen at log time, pulled from gold_recommendations.
+        # Total now 20 columns.
         # Each price/level cell shows "₹price (±X.X%)" — the % is distance
         # from CURRENT price (not entry), updated dynamically each run.
         open_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",15),("Days Held",10),
@@ -2518,7 +2511,9 @@ class ExcelGeneratorV6:
                      ("P&L %",10),("Max Runup %",12),
                      ("SL",18),("T1",18),("T2",18),("T3",18),
                      ("Score",8),("⚠",6),
-                     ("Trailing",14),("Regime",10)]
+                     ("Trailing",14),("Regime",10),
+                     # v15.7: risk-parity sizing surfaced on Performance sheet
+                     ("Suggested Alloc %",16),("Sizing Rationale",50)]
         for ci,(h,w) in enumerate(open_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
@@ -2527,13 +2522,14 @@ class ExcelGeneratorV6:
         # v15.5: wire tooltips onto OPEN POSITIONS header cells so users can
         # hover and see what each of the 18 columns means. All 18 column names
         # now have entries in tooltip_formatter.TIPS (audit pass v15.5).
+        # v15.7: now 20 columns (added Suggested Alloc % + Sizing Rationale).
         self._apply_col_tips(ws, next_row, [h for h, _ in open_cols])
         next_row += 1
 
         _open_df = _df_all[_df_all["outcome_type"] == "OPEN"].copy()
         _approaching_count = 0   # for an end-of-table summary
         if _open_df.empty:
-            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=18)
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=20)
             c = ws.cell(next_row,1,"  No currently-open positions.")
             c.fill = _f(LG); c.font = _ft(False,"6B7280",9,True); c.alignment = _al("left")
             next_row += 1
@@ -2592,6 +2588,12 @@ class ExcelGeneratorV6:
                     _trail_label = f"+{_trailing_pct:.1f}% locked"
                 _regime = str(row_o.get("regime_at_rec", "") or "").strip().lower()
                 _regime_label = _regime.upper() if _regime in ("high","low","neutral") else "—"
+                # v15.7: pull risk-parity sizing fields (frozen at log time).
+                # If a legacy row predates the v15.7 schema, both fields will
+                # be 0/"" — render as "—" so the column looks clean.
+                _alloc_v = float(row_o.get("suggested_alloc_pct", 0) or 0)
+                _alloc_str = f"{_alloc_v:.1f}%" if _alloc_v > 0 else "—"
+                _rationale_str = str(row_o.get("alloc_rationale", "") or "") or "—"
                 vals = [
                     str(row_o.get("symbol","—")),
                     str(row_o.get("recommendation_date","—")),
@@ -2608,6 +2610,8 @@ class ExcelGeneratorV6:
                     "⚠" if _is_approaching else "",
                     _trail_label,           # v15.0 col 17
                     _regime_label,          # v15.0 col 18
+                    _alloc_str,             # v15.7 col 19
+                    _rationale_str,         # v15.7 col 20
                 ]
                 for ci, v in enumerate(vals, 1):
                     cc = ws.cell(next_row, ci, v); cc.fill = _f(bg)
@@ -2641,7 +2645,7 @@ class ExcelGeneratorV6:
                 next_row += 1
             # End-of-table summary line if any approaching expiry
             if _approaching_count > 0:
-                ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=18)
+                ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=20)
                 c = ws.cell(next_row,1,
                     f"  ⚠ {_approaching_count} position(s) within 14 days of expiry — "
                     "review for manual exit or accept EXPIRED outcome at the hard cutoff.")

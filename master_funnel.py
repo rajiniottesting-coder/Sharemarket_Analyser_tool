@@ -3699,6 +3699,13 @@ def run_master_pipeline():
                     "atr_at_rec":            _num(_grow.get("atr_at_rec", 0)),
                     "regime_at_rec":         str(_grow.get("regime_at_rec", "neutral") or "neutral"),
                     "next_earnings_date":    str(_grow.get("next_earnings_date", "") or ""),
+                    # v15.7: risk-parity sizing frozen at log time. v15.5
+                    # already populated these on the stock dict during the
+                    # SL/T computation block. Freezing them at INSERT time
+                    # means the Performance sheet can render them later
+                    # without re-querying or re-computing.
+                    "suggested_alloc_pct":   _num(_grow.get("suggested_alloc_pct", 0)),
+                    "alloc_rationale":       str(_grow.get("alloc_rationale", "") or ""),
                 }
                 if insert_gold_recommendation(_rec):
                     _logged += 1

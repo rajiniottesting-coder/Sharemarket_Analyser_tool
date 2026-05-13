@@ -272,6 +272,19 @@ def initialize_v7_tables(conn):
         ("gold_outcomes",        "trailing_sl_pct REAL DEFAULT 0"),
         ("gold_outcomes",        "trailing_sl_price REAL DEFAULT 0"),
         ("gold_outcomes",        "peak_price_seen REAL DEFAULT 0"),
+        # ────────────────────────────────────────────────────────────────
+        # v15.7 — Institutional risk-parity sizing surface on Performance
+        # ────────────────────────────────────────────────────────────────
+        # gold_recommendations gets:
+        #   suggested_alloc_pct REAL — v15.5 risk-parity allocation % at
+        #                              log time (frozen for audit; can be
+        #                              recomputed any time from sector+cap+sl_pct)
+        #   alloc_rationale     TEXT — human-readable derivation, e.g.,
+        #                              "Risk parity: 1.0% / 8.0% = 12.50%"
+        # These let Performance sheet's OPEN POSITIONS render the sizing
+        # alongside running P&L without needing to re-compute every refresh.
+        ("gold_recommendations", "suggested_alloc_pct REAL DEFAULT 0"),
+        ("gold_recommendations", "alloc_rationale TEXT DEFAULT ''"),
     ]:
         try:
             c.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]}")
@@ -1435,8 +1448,9 @@ def insert_gold_recommendation(rec: dict) -> bool:
                  t1, t2, t3, cfv, mos_pct, composite_score, early_entry_score,
                  quick_pick_label, verdict, time_horizon, predicted_rr,
                  expiry_days, expiry_date, times_reappeared,
-                 original_stop_loss, atr_at_rec, regime_at_rec, next_earnings_date)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 original_stop_loss, atr_at_rec, regime_at_rec, next_earnings_date,
+                 suggested_alloc_pct, alloc_rationale)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 rec.get("recommendation_date", ""),
                 rec.get("symbol", ""),
@@ -1466,6 +1480,9 @@ def insert_gold_recommendation(rec: dict) -> bool:
                 float(rec.get("atr_at_rec", 0) or 0),
                 str(rec.get("regime_at_rec", "neutral") or "neutral"),
                 str(rec.get("next_earnings_date", "") or ""),
+                # v15.7: risk-parity sizing frozen at log time
+                float(rec.get("suggested_alloc_pct", 0) or 0),
+                str(rec.get("alloc_rationale", "") or ""),
             ))
             # v14.3: capture rowcount BEFORE the second INSERT overwrites it
             inserted = (c.rowcount == 1)

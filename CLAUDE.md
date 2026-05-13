@@ -3562,16 +3562,31 @@ User challenged: "are your enhancements inline with top-tier institutional appro
 - G14 test updated for ⓘ cue character; new G22 test for v15.5 wire-up.
 - **74/74 tests** across 5/5 runs.
 
+### v15.6 — Pre-existing test failures fixed + documentation sync
+- Discovered v15.5 had introduced band-schema overlap causing 9 MergedCell errors. Fixed by aligning FULL_GROUPS/GOLD_GROUPS values: TRADE PLAN at start=113 (Full Dashboard) / start=32 (Gold), span=9 cols. Sum of band spans now equals len(FULL_COLS)=126 and len(GOLD_COLS)=43.
+- Completed v15.5 Performance sheet tooltip work — all 18 OPEN + 12 CLOSED columns have hoverable ⓘ tooltips and the underlying `_apply_col_tips` wiring.
+- Documentation sync: readme.md + CLAUDE.md updated with v15.0.1 → v15.5 entries (previously stopped at v14.6 / v15.0).
+- **74/74 tests** across 5/5 runs.
+
+### v15.7 — Minor cleanups: rationale text + Glossary dedup + Performance +2 cols
+Three issues surfaced in v15.6 production audit:
+1. **Sizing Rationale text bug** (ITC scenario): when a stock was already an OPEN position in its own sector, `_current_sector_exposure()` counted that stock against itself, falsely triggering the "sector cap" rationale branch. The actual binding constraint was MAX_ALLOCATION clamp (15%). Allocation value was correct; only the rationale text was misleading. Fix: only emit "sector cap" text when `headroom_in_sector < MAX_ALLOCATION_PCT`.
+2. **Glossary dedup**: duplicate "Suggested Alloc %" / "Sizing Rationale" entries (rows 87-88 + 155-156). Kept cleaner non-suffixed entries.
+3. **Performance OPEN POSITIONS extended 18→20 cols**: added "Suggested Alloc %" + "Sizing Rationale" to Performance sheet (they were on Full Dashboard / Gold but missing from Performance — the daily-check view). Schema migration: `gold_recommendations.suggested_alloc_pct REAL`, `alloc_rationale TEXT`. master_funnel `_rec` dict + INSERT updated. `get_outcome_stats()` uses `r.*` wildcard so auto-picks up new columns. Legacy OPEN rows (pre-v15.7 schema) render "—" in new cols — correct backward-compat.
+
+**New G23 test** locks: rationale-text correctness, glossary dedup, Performance col count = 20, schema migration present, INSERT extension, `_rec` dict has new keys. **75/75 tests** across 5/5 runs.
+
 ### Test count evolution
 - v14.5: 66 → v14.6: 67 (G15: multi-factor SL/T)
 - v15.0: 69 (G16 + G17) → v15.1: 71 (G18 + G19) → v15.2: 72 (G20)
 - v15.3: 73 (G21) → v15.4: 73 (G21 rewritten) → v15.5: 74 (G22)
+- v15.6: 74 (band fix, no new test) → **v15.7: 75 (G23)**
 
-### Honest grade after v15.5: still A-
-**What changed since v15.0**: trading-day calendar precision (Phase 1), backtest infrastructure (Phase 3), institutional risk-parity sizing wired into Excel (Phase 4 + v15.5), production audit fixes (v15.1/v15.2/v15.2.1).
+### Honest grade after v15.7: still A-
+**What changed since v15.0**: trading-day calendar precision (Phase 1), backtest infrastructure (Phase 3), institutional risk-parity sizing wired into Excel (Phase 4 + v15.5), Performance sheet completeness (v15.5/v15.6/v15.7), production audit fixes (v15.1/v15.2/v15.2.1/v15.7).
 
-**Path to true A**: walk-forward backtest calibration of multipliers (cap multipliers, regime thresholds, sector tiers). Requires 30+ closed positions accumulated under v15.5 rules (currently 0 — needs ~60-90 days of pipeline runs). `python -m backtest.walk_forward --calibrate` will produce optimized `multipliers_calibrated.json` once data threshold is met.
+**Path to true A**: walk-forward backtest calibration of multipliers. Requires 30+ closed positions accumulated under v15.5+ rules (currently 0 — needs ~60-90 days of pipeline runs). `python -m backtest.walk_forward --calibrate` will produce optimized `multipliers_calibrated.json` once data threshold is met.
 
 ---
 
-*Last updated: May 13, 2026 · v15.5 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 13, 2026 · v15.7 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

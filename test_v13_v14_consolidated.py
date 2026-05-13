@@ -3123,6 +3123,118 @@ def test_g22_v15_5_risk_parity_wired_to_excel():
     return ("\u2705 v15.5: risk-parity wired to Excel (2 new cols + bands + "
             "tooltips + glossary + Performance sheet tooltip coverage 18/18)")
 
+def test_g23_v15_7_minor_cleanups():
+    """v15.7 regression test — locks in 3 minor cleanups:
+
+    1. Sizing rationale text correctness: when the MAX_ALLOCATION_PCT clamp
+       is the binding constraint (not sector cap), the rationale should NOT
+       mention 'sector cap'. Pre-v15.7 bug: ITC-like scenario where the
+       stock's own OPEN position inflated sector-exposure check, causing
+       'sector cap: 15.0% used, 15.0% headroom' to appear when the real
+       binding constraint was the 15% MAX_ALLOCATION clamp.
+
+    2. Glossary deduplication: pre-v15.7 had duplicate Suggested Alloc % /
+       Sizing Rationale entries (rows 87-88 and 155-156 in rendered output).
+       v15.7 keeps only the cleaner non-suffixed entries.
+
+    3. Performance OPEN POSITIONS extended 18→20 columns. New cols:
+       'Suggested Alloc %' (frozen at log time, pulled from
+       gold_recommendations.suggested_alloc_pct) and 'Sizing Rationale'
+       (from gold_recommendations.alloc_rationale).
+    """
+    # ----- Cleanup 1: rationale text correctness -----
+    from risk.correlation_aware_sizing import compute_suggested_allocation
+
+    # ITC scenario: self counted in sector exposure, MAX clamp binding
+    fake_open = [{
+        'symbol': 'ITC', 'sector': 'Consumer Defensive', 'cap_category': 'LARGE CAP',
+        'cmp_at_rec': 300.0, 'sl': 281.4
+    }]
+    alloc, why = compute_suggested_allocation(
+        "Consumer Defensive", "LARGE CAP", sl_pct=6.2, open_positions=fake_open
+    )
+    assert alloc == 15.0, f"v15.7: ITC scenario should still allocate 15%, got {alloc}"
+    assert "sector cap" not in why, (
+        f"v15.7: ITC scenario should NOT mention 'sector cap' "
+        f"(MAX_ALLOCATION clamp is the binding constraint). Got: {why}"
+    )
+    assert "clamped to" in why, (
+        f"v15.7: ITC scenario should mention 'clamped to'. Got: {why}"
+    )
+
+    # Real sector saturation: should STILL mention sector cap
+    real_sector_cap = [
+        {'symbol': f'B{i}', 'sector': 'Banking', 'cap_category': 'LARGE CAP',
+         'cmp_at_rec': 100.0, 'sl': 92.0} for i in range(3)
+    ]
+    alloc2, why2 = compute_suggested_allocation(
+        "Banking", "LARGE CAP", sl_pct=8.0, open_positions=real_sector_cap
+    )
+    assert "sector cap" in why2, (
+        f"v15.7: real sector saturation MUST still mention 'sector cap'. Got: {why2}"
+    )
+
+    # ----- Cleanup 2: Glossary dedup -----
+    from reporting.excel_generator import GLOSSARY_DATA
+    alloc_entries = [(sec, term) for (sec, term, defn, sheet) in GLOSSARY_DATA
+                      if "Suggested Alloc" in term]
+    rat_entries   = [(sec, term) for (sec, term, defn, sheet) in GLOSSARY_DATA
+                      if "Sizing Rationale" in term]
+    assert len(alloc_entries) == 1, (
+        f"v15.7: Glossary should have EXACTLY 1 'Suggested Alloc' entry, "
+        f"got {len(alloc_entries)}: {alloc_entries}"
+    )
+    assert len(rat_entries) == 1, (
+        f"v15.7: Glossary should have EXACTLY 1 'Sizing Rationale' entry, "
+        f"got {len(rat_entries)}: {rat_entries}"
+    )
+
+    # ----- Cleanup 3: Performance OPEN POSITIONS extended 18→20 -----
+    # Read excel_generator.py source to verify open_cols definition
+    import re
+    with open('reporting/excel_generator.py', 'r', encoding='utf-8') as f:
+        src = f.read()
+    # Find the open_cols list assignment
+    m = re.search(r'open_cols\s*=\s*\[(.+?)\]\s*\n\s*for\s+ci', src, re.DOTALL)
+    assert m, "v15.7: could not locate open_cols definition"
+    open_cols_text = m.group(1)
+    assert '"Suggested Alloc %"' in open_cols_text, (
+        "v15.7: Performance open_cols missing 'Suggested Alloc %'"
+    )
+    assert '"Sizing Rationale"' in open_cols_text, (
+        "v15.7: Performance open_cols missing 'Sizing Rationale'"
+    )
+    # Count tuples in open_cols — should be 20
+    tuple_count = len(re.findall(r'\("[^"]+"\s*,\s*\d+\)', open_cols_text))
+    assert tuple_count == 20, (
+        f"v15.7: Performance open_cols should have 20 tuples, got {tuple_count}"
+    )
+
+    # ----- Cleanup 3b: schema has the new columns -----
+    src_db = open('database/data_bridge.py', 'r', encoding='utf-8').read()
+    assert 'suggested_alloc_pct REAL DEFAULT 0' in src_db, (
+        "v15.7: schema migration missing suggested_alloc_pct column"
+    )
+    assert 'alloc_rationale TEXT DEFAULT' in src_db, (
+        "v15.7: schema migration missing alloc_rationale column"
+    )
+    # INSERT must include them
+    assert 'suggested_alloc_pct, alloc_rationale' in src_db, (
+        "v15.7: INSERT into gold_recommendations missing v15.7 columns"
+    )
+
+    # ----- Cleanup 3c: master_funnel passes them in _rec -----
+    src_mf = open('master_funnel.py', 'r', encoding='utf-8').read()
+    assert '"suggested_alloc_pct":' in src_mf, (
+        "v15.7: master_funnel _rec dict missing 'suggested_alloc_pct'"
+    )
+    assert '"alloc_rationale":' in src_mf, (
+        "v15.7: master_funnel _rec dict missing 'alloc_rationale'"
+    )
+
+    return ("\u2705 v15.7: rationale-text fix + glossary dedup + Performance "
+            "OPEN POSITIONS extended 18→20 cols (Suggested Alloc % + Rationale)")
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -3381,6 +3493,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g20_v15_2_etf_filter_and_historical_atr))
     v14_1_results.append(_run_one_test(test_g21_v15_4_phases_1_3_4))
     v14_1_results.append(_run_one_test(test_g22_v15_5_risk_parity_wired_to_excel))
+    v14_1_results.append(_run_one_test(test_g23_v15_7_minor_cleanups))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
