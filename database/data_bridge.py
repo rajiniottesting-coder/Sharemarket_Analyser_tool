@@ -249,6 +249,29 @@ def initialize_v7_tables(conn):
         ("gold_recommendations", "expiry_date TEXT DEFAULT ''"),
         ("gold_recommendations", "times_reappeared INTEGER DEFAULT 0"),
         ("gold_outcomes",        "last_reappeared_date TEXT DEFAULT ''"),
+        # ────────────────────────────────────────────────────────────────
+        # v15.0 — Trailing stop + earnings awareness + ATR snapshot
+        # ────────────────────────────────────────────────────────────────
+        # gold_recommendations gets:
+        #   original_stop_loss  REAL — frozen SL at log time (for audit even
+        #                              if trailing SL has moved up); equal
+        #                              to stop_loss at log time
+        #   atr_at_rec          REAL — ATR-14 % at recommendation (audit/debug)
+        #   regime_at_rec       TEXT — 'high'/'neutral'/'low' regime at log
+        #   next_earnings_date  TEXT — YYYY-MM-DD of next quarterly results
+        # gold_outcomes gets:
+        #   trailing_sl_pct     REAL — current trailing SL as % below CMP
+        #                              (0 means trailing hasn't activated)
+        #   trailing_sl_price   REAL — absolute price level of trailing SL
+        #   peak_price_seen     REAL — highest price observed during tracking
+        # ────────────────────────────────────────────────────────────────
+        ("gold_recommendations", "original_stop_loss REAL DEFAULT 0"),
+        ("gold_recommendations", "atr_at_rec REAL DEFAULT 0"),
+        ("gold_recommendations", "regime_at_rec TEXT DEFAULT 'neutral'"),
+        ("gold_recommendations", "next_earnings_date TEXT DEFAULT ''"),
+        ("gold_outcomes",        "trailing_sl_pct REAL DEFAULT 0"),
+        ("gold_outcomes",        "trailing_sl_price REAL DEFAULT 0"),
+        ("gold_outcomes",        "peak_price_seen REAL DEFAULT 0"),
     ]:
         try:
             c.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]}")
@@ -1497,10 +1520,18 @@ def update_outcome(symbol: str, recommendation_date: str,
                    max_runup_pct: float = 0,
                    current_price: float = 0,
                    current_pnl_pct: float = 0,
-                   last_checked_date: str = "") -> bool:
+                   last_checked_date: str = "",
+                   trailing_sl_pct: float = 0,
+                   trailing_sl_price: float = 0,
+                   peak_price_seen: float = 0) -> bool:
     """v14.0: Update gold_outcomes row for a recommendation. Used by
     track_outcomes.py both to finalize closed outcomes (SL/T1/T2/T3/EXPIRED)
-    and to update OPEN row tracking (current_price, max_runup, last_checked)."""
+    and to update OPEN row tracking (current_price, max_runup, last_checked).
+
+    v15.0: Also persists trailing-stop state (trailing_sl_pct, trailing_sl_price,
+    peak_price_seen). Default 0 means trailing has not yet activated; once
+    activated, these fields ratchet up only.
+    """
     try:
         conn = sqlite3.connect("market_data.db")
         try:
@@ -1515,13 +1546,17 @@ def update_outcome(symbol: str, recommendation_date: str,
                     max_runup_pct = ?,
                     current_price = ?,
                     current_pnl_pct = ?,
-                    last_checked_date = ?
+                    last_checked_date = ?,
+                    trailing_sl_pct = ?,
+                    trailing_sl_price = ?,
+                    peak_price_seen = ?
                 WHERE symbol = ?
                   AND recommendation_date = ?
             """, (
                 outcome_type, outcome_date, outcome_price,
                 days_to_outcome, max_drawdown_pct, max_runup_pct,
                 current_price, current_pnl_pct, last_checked_date,
+                trailing_sl_pct, trailing_sl_price, peak_price_seen,
                 symbol, recommendation_date,
             ))
             conn.commit()

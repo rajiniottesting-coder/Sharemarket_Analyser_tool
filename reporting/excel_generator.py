@@ -1082,6 +1082,19 @@ GLOSSARY_DATA = [
      "Realised P&L is computed live from entry vs outcome_price (so it reflects what actually happened, not what was projected). Max Runup % is especially revealing for SL_HIT rows: a high value (e.g. +9%) means the stock rallied significantly BEFORE hitting SL — possible SL too tight. "
      "Max Drawdown % matters for T-HIT rows: shows how much pain you'd have suffered before winning, useful for sizing future positions. Section appears between Diagnostic Breakdowns and Open Positions in the sheet — natural reading flow from aggregates to detail to current state. "
      "Footer summarises counts per outcome bucket.","🎯 Performance"),
+    # v15.0: Multi-factor SL/T derivation
+    ("PERFORMANCE","v15.0 SL/T derivation methodology",
+     "v15.0 replaces the pre-v14.6 fixed -7%/+12.5% rule with a multi-factor formula that derives SL/T1/T2/T3 from six inputs: (1) ATR-14 daily volatility, (2) cap-category fallback (LARGE/MID/SMALL/MICRO), (3) time horizon (SHORT TERM=2.5×ATR, POSITIONAL=3.5×, LONG TERM=5×), (4) sector tier (very-high/high/neutral/low/very-low, ±0.6 to ±0.35), (5) ATR-percentile regime (current 14-day ATR vs 252-day baseline: high regime widens SL 10%, low tightens 10%), (6) volume-confirmed support floor (support1 only used when vol_ratio ≥ 1.20). "
+     "SL bounded [4.5%, 12.0%]. Earnings within 5 days → SL widened 20% (infrastructure ready, data source pending). T1 = max(1.5 × SL_pct, 0.40 × CFV_upside) — guarantees R:R ≥ 1.5:1. T2 = max(2.5 × SL_pct, 0.70 × CFV_upside) ≥ T1 × 1.35. T3 = max(4.0 × SL_pct, 1.00 × CFV_upside) ≥ T2 × 1.35. "
+     "Hard T3 caps prevent absurd long-horizon stretches: SHORT TERM 35%, POSITIONAL 80%, LONG TERM 200%. Grade: A- (smart heuristics, not walk-forward backtested).","🎯 Performance"),
+    ("PERFORMANCE","Trailing Stop logic (v15.0)",
+     "v15.0 outcome tracker now ratchets up the stop-loss as the position gains. Peak gain thresholds: ≥+5% → trailing SL moves to break-even (entry); ≥+10% → moves to entry+3% (locks small profit); ≥+15% → moves to entry+7% (locks bigger profit). "
+     "Effective SL = MAX(original_sl, trailing_sl_price) — once activated, trailing SL only moves UP, never down. Zero look-ahead bias: trailing-SL update happens at END of each bar after the day's event check, so today's high cannot tighten today's stop and immediately trip it on today's low. "
+     "Persisted in gold_outcomes: trailing_sl_pct (current trailing SL as %), trailing_sl_price (absolute), peak_price_seen (highest price observed). Original SL preserved in gold_recommendations.original_stop_loss for audit. SL_HIT outcomes now record the effective SL price (which may be above entry for trailing fires).","🎯 Performance"),
+    ("PERFORMANCE","Sector Tier / Regime / Volume confirmation columns",
+     "v15.0 audit columns logged with each recommendation. regime_at_rec: 'high' (current 14-day ATR ≥ 1.20× 252-day baseline → SL widened 10%), 'low' (≤ 0.80× → SL tightened 10%), or 'neutral'. atr_at_rec: ATR-14 as % of CMP at log time (debug/audit value). "
+     "Sector tier comes from a 5-tier static map: very-high (+0.6: Realty/Sugar/Aviation/Real Estate), high (+0.3: Metals/PSU Bank/Coal/Power/etc), neutral (0: default for sectors not in map), low (-0.2: Banking/IT-Services/Auto/Chemicals), very-low (-0.35: FMCG/Pharma/Healthcare/Utilities/etc). "
+     "Volume-confirmed support: support1 (20-day low from technicals) only used as SL floor when vol_ratio (today's vol / 50-day avg) ≥ 1.20, filtering out random lows with no buying conviction.","🎯 Performance"),
 ]
 
 GRP_COLORS = {

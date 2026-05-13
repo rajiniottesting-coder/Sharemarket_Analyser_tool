@@ -3373,4 +3373,134 @@ The distance percentage updates dynamically each pipeline run as `current_price`
 
 ---
 
-*Last updated: May 11, 2026 · v14.5 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+### v14.6 — Multi-factor SL/T1/T2/T3 formula
+
+**Date:** May 12, 2026
+**Trigger:** User concern after two SHORT TERM stocks hit -7% SL on what looked like routine volatility: "I dont want any fixed values like SL,T1,T2,T3 as X% ... rather it should analyse various factors such as stock volatility, sector it belong, and other applicable factors."
+
+**The problem:** Pre-v14.6, `master_funnel.py:2941` hardcoded `_sl_default = cmp * 0.93` and derived T1/T2/T3 from a risk-symmetric formula that always produced T1 ≈ +12.5%, T2 ≈ +18.1%, T3 ≈ +27.8% — identical for every pick regardless of cap, sector, horizon, or volatility. Every position got -7% SL, every position got +12.5% T1. The AI prompt didn't override these — it just echoed back whatever values master_funnel wrote into the stock dict. So the AI was never inventing trade levels; it was always the fallback firing.
+
+This is too tight for mid/small caps. Typical ATR for SMALL cap = 4% daily. A -7% SL = 1.75× ATR — well inside the noise envelope. Industry standard is 2.5-3.5× ATR for swing trades. So routine downside volatility was triggering false stop-outs.
+
+**The fix:** Replaced the fixed-percentage block with `_compute_sl_t_v14_6()`, a multi-factor helper that derives levels from:
+
+1. **ATR-14** (true daily volatility) — pulled from technical_indicators (Edit 1: added to SELECT at line 1178; Edit 2: unpacked into stock dict at line 1820)
+2. **Cap-category fallback** when ATR missing — LARGE 2.0%, MID 2.8%, SMALL 4.0%, MICRO 5.5%
+3. **Horizon multiplier** — SHORT TERM 2.5×, POSITIONAL 3.5×, LONG TERM 5.0×
+4. **Sector adjustment** — HIGH_VOL sectors (Realty/PSU Bank/Metals/Sugar/Power/Aviation/Capital Markets/Iron&Steel/Coal/Defence/Real Estate) add +0.5×; LOW_VOL sectors (FMCG/Pharma/Utilities/IT-Services/Consumer Goods/Personal Products/Healthcare/Telecom/Insurance) subtract 0.3×
+5. **CFV upside** — targets scale with fair-value-cushion (deep-value stocks get bigger T2/T3)
+6. **Support floor** — SL never placed above nearest support level (support1 from technicals)
+
+**Bounds and discipline:**
+- SL clamped to [4.5%, 12.0%] — never tighter than 4.5% (whipsaw protection), never wider than 12% (caps risk per trade)
+- T1 must clear 1.5:1 R:R minimum — even when horizon-cap fires, R:R is preserved
+- T2 ≥ T1 × 1.35, T3 ≥ T2 × 1.35 (spacing rule, relaxes when T3 hits hard cap)
+- T3 hard caps: SHORT TERM 35%, POSITIONAL 80%, LONG TERM 200%
+
+**Honest framing:** This is textbook-standard technical analysis (taught in CMT curriculum, Van Tharp position-sizing literature). It's NOT proprietary alpha. It's significantly better than fixed -7%/+12.5%, but a SEBI-RIA with Bloomberg tools would do better — they'd add walk-forward backtested multipliers, volatility regime detection, time-decay on stops, and earnings-event awareness. v14.6 is a B+ on the technical-rigor scale: defensible, transparent, not state-of-the-art.
+
+**Forward-looking only:** Existing 11 OPEN positions in `gold_recommendations` keep their original -7%/+12.5% values (frozen at log time via `INSERT OR IGNORE`). New picks from this pipeline run onward get the multi-factor levels. The Performance sheet's OPEN POSITIONS table will gradually show varied SL%/T1%/T2%/T3% per stock as old picks close out and new picks are added — two eras coexist naturally during transition.
+
+**Why not retroactively update existing picks:** The 11 picks are real recorded contracts. Rewriting their SL/T after the fact would destroy outcome-tracking integrity and create credibility damage. The two eras (pre-v14.6 fixed-% picks vs post-v14.6 multi-factor picks) need to coexist so future Performance sheet analysis can compare hit rates between them — that comparison IS the empirical validation of v14.6.
+
+**Files changed:**
+- `master_funnel.py` only. Three edits:
+  - Edit 1 (line ~1178): added `t.atr_14` to technical_indicators SELECT
+  - Edit 2 (line ~1820): tuple unpacking now includes atr_14, stored on stock dict
+  - Edit 3 (line ~344): new top-level helper `_compute_sl_t_v14_6` (~140 lines)
+  - Edit 4 (line ~2941): replaced fixed-percentage block with call to helper. Preserved `stock.setdefault(...)` semantics — if AI ever provides SL/T values, they still take precedence
+
+**Test count after v14.6:** 67 (was 66). New regression test `test_g15_sl_t_v14_6_multi_factor_formula` with 10 sub-assertions:
+- Cap-category sensitivity (LARGE < MID < SMALL SL%)
+- Horizon sensitivity (SHORT < POSITIONAL < LONG SL%)
+- Sector adjustment (HIGH_VOL > LOW_VOL SL%)
+- R:R ≥ 1.5 across all 9 scenarios + all 11 real positions
+- T1 < T2 < T3 ordering (spacing rule relaxed when T3 caps)
+- SL bounds [4.5%, 12.0%]
+- Missing ATR → cap-based fallback fires
+- CFV ≤ CMP → R:R-only targets, no crash
+- Invalid CMP=0 → graceful zeros, no exception
+- User's 11 actual positions all clear R:R floor
+
+**Stability:** 5/5 consecutive test runs all 67/67 pass.
+
+**Before/after preview on user's 11 current open positions** (what v14.6 WOULD produce if they were re-recommended today — the actual frozen values stay at -7%/+12.5%):
+
+| Stock | OLD SL/T1/R:R | NEW SL / T1 / T2 / T3 / R:R |
+|---|---|---|
+| PETRONET | -7.0%/+12.5%/1.79 | -7.0% / +10.4% / +17.4% / +27.8% / 1.50 |
+| ITC | -7.0%/+12.5%/1.79 | **-4.7%** / +18.6% / +32.5% / +46.4% / **3.96** |
+| BSOFT | -7.0%/+12.5%/1.79 | -8.7% / +13.0% / +21.6% / +34.6% / 1.50 |
+| HEXT | -7.0%/+12.5%/1.79 | -5.4% / +8.2% / +13.6% / +21.7% / 1.50 |
+| FIEMIND | -7.0%/+12.5%/1.79 | -7.2% / +10.8% / +18.8% / +26.9% / 1.50 |
+| VIKRAMSOLR | -7.0%/+12.5%/1.79 | **-12.0%** / +18.0% / +30.0% / +48.0% / 1.50 |
+| CIEINDIA | -7.0%/+12.5%/1.79 | -10.3% / +15.4% / +25.7% / +41.0% / 1.50 |
+| KANPRPLA | -7.0%/+12.5%/1.79 | -9.4% / +14.1% / +21.9% / +35.0% / 1.50 |
+| HERITGFOOD | -7.0%/+12.5%/1.79 | -9.7% / +14.6% / +24.3% / +38.9% / 1.50 |
+| AARTISURF | -7.0%/+12.5%/1.79 | **-12.0%** / +18.0% / +30.0% / +48.0% / 1.50 |
+| MARUTI | -7.0%/+12.5%/1.79 | -5.2% / +7.9% / +13.1% / +21.0% / 1.50 |
+
+Key observations:
+- ITC's R:R of 3.96 reflects its 46% CFV upside — formula stretched targets up to match
+- VIKRAMSOLR and AARTISURF (small-cap, neutral sector): wider SL (-12%) gives breathing room against routine volatility
+- Large-cap low-vol stocks (ITC, MARUTI, HEXT): tighter SL (-4.7% to -5.4%)
+- All 11 clear the 1.5:1 R:R floor that industry treats as minimum acceptable swing-trade quality
+
+---
+
+### v15.0 — A- technical rigor + Performance-sheet reset
+
+**Date:** May 12, 2026
+**Trigger:** User goal: "improve rating to A-... let today be day 1 of data collection in performance sheet." Also: ensure tooltips, glossary, and supporting docs reflect new logic; verify free-tier compatibility; use full 400-day retention for SL/T derivation.
+
+**Five enhancements over v14.6:**
+
+1. **5-tier sector classification** — replaces v14.6 binary HIGH/LOW with very-high (+0.6: Realty/Sugar/Aviation/Real Estate), high (+0.3: Metals/PSU Bank/Coal/Power/Capital Markets/Defence/Capital Goods/Iron & Steel), neutral (0), low (-0.2: Banking/IT-Services/Auto/Auto Components/Chemicals), very-low (-0.35: FMCG/Pharma/Healthcare/Utilities/Consumer Goods/Personal Products/Telecom/Insurance). Captures finer differentiation.
+
+2. **ATR-percentile regime detection** — new SELECT subquery fetches AVG(atr_14) over **252 days** as baseline (extended from initial 60-day plan to use the full 400-day price retention). Ratio current/baseline classifies regime: ≥1.20 = high (SL widened 10%), ≤0.80 = low (SL tightened 10%), else neutral. Stored on stock dict as `atr_baseline_60d` (key name kept for backward compat; value is 252-day avg).
+
+3. **Volume-confirmed support** — support1 (20-day low) only used as SL floor when `vol_ratio` (today's vol / 50-day avg) ≥ 1.20. Filters out random lows that have no buying conviction.
+
+4. **Trailing stops** in `track_outcomes.py` — ratchets up at peak gain ≥ +5% (BE), ≥ +10% (+3%), ≥ +15% (+7%). Effective SL = MAX(original, trailing). Zero look-ahead bias: trailing update happens at END of bar (after event check), so today's high cannot tighten today's stop and trip it on today's low. Caught and fixed during development; G17 unit test prevents regression.
+
+5. **Earnings-near SL widening** — helper accepts `days_to_earnings` parameter; when 0-5 days, SL widens 20%. **Data source NOT plumbed**: yfinance earnings data is unreliable for Indian stocks. Infrastructure is fully ready (schema column `next_earnings_date`, helper logic, G16 unit test); awaits a reliable data source (NSE corporate actions feed, manual CSV, paid API).
+
+**Performance-sheet reset:**
+
+`wipe_v15_prep.py` script wipes gold_recommendations + gold_outcomes with mandatory timestamped backup. Interactive confirmation (type "WIPE"). `--restore` flag rolls back. `--force` for CI. **Critical**: this script is NOT referenced in `.github/workflows/market_run.yml` or any automation — it's a one-shot manual operation. To wipe in the pipeline context (where DB lives in GitHub artifacts), the cleanest approach is to delete the GitHub Actions artifact named `market-data-db` via Settings → Actions → Caches and artifacts. The next pipeline run will start with a fresh DB; the auto-backfill step at workflow line 49 rebuilds 400 days of daily_prices; the gold_recommendations and gold_outcomes tables stay empty until new picks are recommended.
+
+**Schema migrations (idempotent ALTER TABLE)**:
+- gold_recommendations: `original_stop_loss`, `atr_at_rec`, `regime_at_rec`, `next_earnings_date`
+- gold_outcomes: `trailing_sl_pct`, `trailing_sl_price`, `peak_price_seen`
+
+**Documentation updates:**
+- `reporting/tooltip_formatter.py`: SL, T1, T2, T3, R:R Ratio, Time Horizon tooltips updated to reflect multi-factor formula + trailing-SL semantics. OPEN POSITIONS section SL/T1/T2/T3 tooltips also updated (e.g. SL now explains effective_sl = MAX(original, trailing) and the +5%/+10%/+15% ratchet tiers).
+- `reporting/excel_generator.py` Glossary: 3 new entries added — "v15.0 SL/T derivation methodology", "Trailing Stop logic (v15.0)", "Sector Tier / Regime / Volume confirmation columns".
+
+**Free-tier compatibility verified:**
+- Only one new SQL feature (AVG subquery in technical_indicators SELECT). Tested on full test suite: zero performance regression, total runtime stable at ~12s for 69 tests.
+- No new external API calls. Earnings logic awaits data source; trailing stops use existing daily_prices.
+- All v15.0 inputs optional with graceful fallback to v14.6 behavior when data is missing.
+- GitHub Actions free tier: public repo → unlimited storage + minutes. DB persistence via artifacts (workflow line 32 download, line 195 upload) unchanged.
+
+**Test changes:**
+- v14.6 had 67 tests. v15.0 has 69 (+2).
+- G16: 5-tier sector ranking, regime widening, volume confirmation, earnings widening (4 sub-assertions).
+- G17: trailing-stop ratcheting + no-lookahead verification (2 scenarios; catches the look-ahead bug fixed during development).
+- All pre-v15.0 tests still pass unchanged.
+- 5/5 consecutive runs all 69/69 green.
+
+**Files changed:**
+- `master_funnel.py` (helper extended; 252-day baseline; 3 new call-site args)
+- `track_outcomes.py` (trailing-SL ratchet; persistent trailing fields)
+- `database/data_bridge.py` (schema migrations + update_outcome signature)
+- `reporting/tooltip_formatter.py` (SL/T tooltips for v15.0 semantics)
+- `reporting/excel_generator.py` (3 new glossary entries)
+- `test_v13_v14_consolidated.py` (G16 + G17)
+- `wipe_v15_prep.py` (NEW: wipe script with mandatory backup)
+
+**Honest grade**: A- on technical-rigor scale. True A still requires walk-forward backtest calibration (needs 3+ years of corporate-action-adjusted historical data — deferred). v15.0 is "smart heuristics" with audit trail (atr_at_rec, regime_at_rec stored per recommendation), thorough testing, no-lookahead discipline, and clear documentation. Defensible to any reviewer.
+
+---
+
+*Last updated: May 12, 2026 · v15.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

@@ -132,6 +132,20 @@ def _walk_forward(rec: dict) -> dict:
     last_close       = cmp_rec
     last_date        = rec_date
 
+    # ─────────────────────────────────────────────────────────────────────
+    # v15.0: Trailing stop tracking
+    # Peak price seen so far drives the trailing-SL ratchet:
+    #   peak_gain ≥ +5%  → trailing_sl = entry (break-even)
+    #   peak_gain ≥ +10% → trailing_sl = entry + 3%
+    #   peak_gain ≥ +15% → trailing_sl = entry + 7%
+    # Effective SL = max(original_sl, trailing_sl_price) — only ratchets UP.
+    # Once activated, trailing SL never moves down even if peak retraces.
+    # ─────────────────────────────────────────────────────────────────────
+    peak_price_seen  = cmp_rec
+    trailing_sl_price = 0.0    # 0 = not activated
+    trailing_sl_pct   = 0.0    # negative = below entry, positive = above entry
+    original_sl = sl           # preserve for audit; sl variable becomes effective SL
+
     if prices.empty:
         # No price history yet — could be brand-new recommendation
         # OR symbol's prices haven't refreshed since. Stay OPEN.
@@ -185,6 +199,10 @@ def _walk_forward(rec: dict) -> dict:
                 "current_price":   last_close,
                 "current_pnl_pct": round((last_close - cmp_rec) / cmp_rec * 100, 2),
                 "last_checked_date": today.strftime("%Y-%m-%d"),
+                # v15.0: trailing-stop snapshot
+                "trailing_sl_pct":   trailing_sl_pct,
+                "trailing_sl_price": trailing_sl_price,
+                "peak_price_seen":   peak_price_seen,
             }
 
         hi  = float(row.get("high", 0) or 0)
@@ -200,19 +218,32 @@ def _walk_forward(rec: dict) -> dict:
             last_close = cl
             last_date  = d_str
 
+        # v15.0: Effective SL = MAX(original_sl, trailing_sl_at_start_of_day)
+        # CRITICAL: trailing SL is checked against TODAY's low using the value
+        # ratcheted at end-of-PREVIOUS-day. We cannot use today's high to set
+        # trailing SL and then check today's low against it — intraday order
+        # (high-first vs low-first) is unknowable from daily OHLC, so this
+        # would be look-ahead bias. Therefore: SL check uses previous-day
+        # trailing_sl_price; trailing update happens AFTER event checks.
+        effective_sl = max(original_sl, trailing_sl_price) if trailing_sl_price > 0 else original_sl
+
         # ─── Event check — SL beats target on same-day ties ───
-        # SL hit: daily low touched/breached SL
-        if lo > 0 and lo <= sl:
+        # SL hit: daily low touched/breached EFFECTIVE SL (trailing-aware)
+        if lo > 0 and lo <= effective_sl:
             return {
                 "outcome_type": "SL_HIT",
                 "outcome_date": d_str,
-                "outcome_price": sl,    # the SL level (where exit would have triggered)
+                "outcome_price": effective_sl,
                 "days_to_outcome": days_in,
                 "max_drawdown_pct": round(max_drawdown_pct, 2),
                 "max_runup_pct":   round(max_runup_pct, 2),
-                "current_price":   sl,
-                "current_pnl_pct": round((sl - cmp_rec) / cmp_rec * 100, 2),
+                "current_price":   effective_sl,
+                "current_pnl_pct": round((effective_sl - cmp_rec) / cmp_rec * 100, 2),
                 "last_checked_date": today.strftime("%Y-%m-%d"),
+                # v15.0: persist trailing snapshot
+                "trailing_sl_pct":   trailing_sl_pct,
+                "trailing_sl_price": trailing_sl_price,
+                "peak_price_seen":   peak_price_seen,
             }
         # Target hit: highest target wins on a single day
         if hi > 0:
@@ -227,6 +258,10 @@ def _walk_forward(rec: dict) -> dict:
                     "current_price":   t3,
                     "current_pnl_pct": round((t3 - cmp_rec) / cmp_rec * 100, 2),
                     "last_checked_date": today.strftime("%Y-%m-%d"),
+                # v15.0: trailing-stop snapshot
+                "trailing_sl_pct":   trailing_sl_pct,
+                "trailing_sl_price": trailing_sl_price,
+                "peak_price_seen":   peak_price_seen,
                 }
             if t2 > 0 and hi >= t2:
                 return {
@@ -239,6 +274,10 @@ def _walk_forward(rec: dict) -> dict:
                     "current_price":   t2,
                     "current_pnl_pct": round((t2 - cmp_rec) / cmp_rec * 100, 2),
                     "last_checked_date": today.strftime("%Y-%m-%d"),
+                # v15.0: trailing-stop snapshot
+                "trailing_sl_pct":   trailing_sl_pct,
+                "trailing_sl_price": trailing_sl_price,
+                "peak_price_seen":   peak_price_seen,
                 }
             if t1 > 0 and hi >= t1:
                 return {
@@ -251,7 +290,29 @@ def _walk_forward(rec: dict) -> dict:
                     "current_price":   t1,
                     "current_pnl_pct": round((t1 - cmp_rec) / cmp_rec * 100, 2),
                     "last_checked_date": today.strftime("%Y-%m-%d"),
+                    # v15.0: trailing-stop snapshot
+                    "trailing_sl_pct":   trailing_sl_pct,
+                    "trailing_sl_price": trailing_sl_price,
+                    "peak_price_seen":   peak_price_seen,
                 }
+
+        # v15.0: Trailing-SL update at END of bar (after event checks).
+        # This guarantees no look-ahead bias — today's high cannot tighten
+        # today's stop and then have today's low be checked against it.
+        # The ratcheted trailing_sl_price will be used on the NEXT bar.
+        if hi > 0 and hi > peak_price_seen:
+            peak_price_seen = hi
+            peak_gain_pct = (peak_price_seen - cmp_rec) / cmp_rec * 100
+            new_trailing = 0.0
+            if peak_gain_pct >= 15:
+                new_trailing = round(cmp_rec * 1.07, 2)   # lock in +7%
+            elif peak_gain_pct >= 10:
+                new_trailing = round(cmp_rec * 1.03, 2)   # lock in +3%
+            elif peak_gain_pct >= 5:
+                new_trailing = round(cmp_rec * 1.00, 2)   # break-even
+            if new_trailing > trailing_sl_price:
+                trailing_sl_price = new_trailing
+                trailing_sl_pct   = round((new_trailing - cmp_rec) / cmp_rec * 100, 2)
 
     # End of price data, no event, not yet expired → OPEN, refresh metrics
     return {
@@ -264,6 +325,10 @@ def _walk_forward(rec: dict) -> dict:
         "current_price":   last_close,
         "current_pnl_pct": round((last_close - cmp_rec) / cmp_rec * 100, 2),
         "last_checked_date": today.strftime("%Y-%m-%d"),
+        # v15.0: trailing-stop snapshot
+        "trailing_sl_pct":   trailing_sl_pct,
+        "trailing_sl_price": trailing_sl_price,
+        "peak_price_seen":   peak_price_seen,
     }
 
 
@@ -301,6 +366,10 @@ def main():
                 current_price=r["current_price"],
                 current_pnl_pct=r["current_pnl_pct"],
                 last_checked_date=r["last_checked_date"],
+                # v15.0: trailing-stop persistence
+                trailing_sl_pct=r.get("trailing_sl_pct", 0) or 0,
+                trailing_sl_price=r.get("trailing_sl_price", 0) or 0,
+                peak_price_seen=r.get("peak_price_seen", 0) or 0,
             )
             counts[r["outcome_type"]] = counts.get(r["outcome_type"], 0) + 1
             tag = r["outcome_type"]

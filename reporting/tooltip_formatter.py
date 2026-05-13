@@ -794,14 +794,20 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # ── Trade plan ──────────────────────────────────────────────────────────
     "Entry Range (₹)": ("Ideal buy zone = CMP ± 0.5 × ATR",
                          "Avoid chasing if CMP moves significantly above upper bound."),
-    "Stop Loss (₹)": ("Exit if CMP closes below this level",
-                       "Never risk >2–3% of portfolio per trade."),
-    "Target 1 (₹)": ("First target = Resistance 1",
-                     "Book 30–50% of position here. R:R should be >1:2."),
-    "Target 2 (₹)": ("Second target = Resistance 2",
-                     "Hold remainder after Target 1."),
-    "Target 3 (₹)": ("Final target = Fair Value (CFV)",
-                     "High MoS stocks can give 20–50% upside."),
+    "Stop Loss (₹)": ("Multi-factor SL — exit if CMP closes below this level",
+                       "v15.0 multi-factor: SL = ATR-14 × horizon × (1 + sector_tier) × regime,\n"
+                       "bounded [4.5%, 12%], floored at volume-confirmed support1.\n"
+                       "Earnings within 5 days → widened 20%. Trailing SL ratchets up at\n"
+                       "+5%/+10%/+15% peak gain (BE/+3%/+7%). Never risk >2–3% of portfolio."),
+    "Target 1 (₹)": ("First profit target — book 30–50% here",
+                     "v15.0: T1 = max(1.5 × SL_pct, 0.40 × CFV_upside).\n"
+                     "Guarantees R:R ≥ 1.5:1. Book partial profit here."),
+    "Target 2 (₹)": ("Second profit target — hold remainder after T1",
+                     "v15.0: T2 = max(2.5 × SL_pct, 0.70 × CFV_upside), with T2 ≥ T1 × 1.35.\n"
+                     "Tighten trailing SL after T1 hit."),
+    "Target 3 (₹)": ("Final stretch target — anchored to fair value",
+                     "v15.0: T3 = max(4.0 × SL_pct, 1.00 × CFV_upside), with T3 ≥ T2 × 1.35.\n"
+                     "Hard caps: SHORT 35%, POSITIONAL 80%, LONG 200%."),
     "Time Horizon": ("How long the system claims to hold this pick",
                      "Time-horizon classification at recommendation time, set by the\n"
                      "pipeline based on verdict + spike + supertrend + MACD signals:\n"
@@ -816,19 +822,20 @@ TIPS: Dict[str, Tuple[str, str]] = {
                      "  SHORT TERM  → expiry 30 days  (upper bound of '2-4 weeks')\n"
                      "  POSITIONAL  → expiry 90 days  (median of '1-3 months')\n"
                      "  LONG TERM   → expiry 270 days (median of '3-12 months')\n"
-                     "Frozen at log time — outcome judgment uses this stamped value\n"
-                     "so changing the constants later doesn't retroactively re-bucket\n"
-                     "stocks already being tracked."),
+                     "\n"
+                     "v15.0: Also drives SL multiplier (SHORT 2.5×ATR, POSITIONAL 3.5×ATR,\n"
+                     "LONG 5×ATR) and T1/T3 horizon caps. Frozen at log time."),
     "Risk Level": ("LOW=safest | VERY HIGH=speculative only",
                    "LOW: High score + low beta + low D/E + no pledge\n"
                    "MEDIUM: Acceptable | HIGH: Small/micro | VERY HIGH: Speculative"),
-    "R:R Ratio": ("Aim for >1:2 · Higher = better risk/reward",
+    "R:R Ratio": ("v15.0: enforced ≥ 1.5 by formula construction",
                   "R:R = (T1 − Entry mid) / (Entry mid − SL).\n"
-                  ">2 Excellent, 1–2 Acceptable, <1 Avoid.\n"
-                  "Session 22: T1 auto-derived to ensure R:R ≥ 2.0:\n"
-                  "T1 = max(Entry + 2×risk_distance, CFV-weighted target).\n"
-                  "High-CFV stocks get value-anchored targets; others get\n"
-                  "pure risk-symmetric targets."),
+                  ">2 Excellent, 1.5–2 Acceptable, <1.5 Avoid.\n"
+                  "v15.0 multi-factor formula enforces R:R ≥ 1.5 at construction:\n"
+                  "T1 = max(1.5 × SL_pct, 0.40 × CFV_upside).\n"
+                  "Even when horizon T1-cap fires, R:R discipline is preserved\n"
+                  "(cap is effectively max(base_cap, 1.5×SL)).\n"
+                  "Some picks have higher R:R (3-4) when CFV upside is large."),
 
     # ── Narrative / AI ──────────────────────────────────────────────────────
     "Key Catalyst": ("Primary near-term growth driver",
@@ -1047,28 +1054,31 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # v14.4: SL/T1/T2/T3 columns in OPEN POSITIONS
     # Each cell shows "₹price (±X.X%)" — distance is from current_price
     # (not entry), so it updates dynamically as the tracker refreshes price.
+    # v15.0 update: SL is now the EFFECTIVE SL — MAX(original_sl, trailing_sl).
     # ────────────────────────────────────────────────────────────────────
-    "SL": ("Stop-loss level for this open position",
-            "Format: ₹price (distance%). Distance is from CURRENT price, not\n"
-            "from entry — so as the stock moves, the distance updates each\n"
-            "pipeline run. SL distance is naturally negative (price would need\n"
-            "to drop for SL to fire). Frozen at recommendation time — never\n"
-            "updated even on re-appearance, preserving measurement integrity.\n"
-            "Red text indicates downside risk."),
-    "T1": ("First profit target for this open position",
+    "SL": ("Effective stop-loss (original or trailing, whichever is higher)",
             "Format: ₹price (distance%). Distance is from CURRENT price.\n"
-            "Positive distance (e.g. +9.3%) means we still need to rally to\n"
-            "reach T1; negative would mean we've passed it but not closed (rare\n"
-            "edge case). T1 is the realistic 'first take-profit' level — most\n"
-            "Gold picks aim to hit at minimum T1 within their horizon window."),
-    "T2": ("Second profit target for this open position",
-            "Format: ₹price (distance%). Distance from CURRENT price. T2 is\n"
-            "the 'extended' target — typically +20% above entry. Reaching T2\n"
-            "means the recommendation overdelivered vs the realistic case."),
-    "T3": ("Stretch profit target for this open position",
-            "Format: ₹price (distance%). Distance from CURRENT price. T3 is\n"
-            "the 'home run' target — typically +30% above entry. T3_HIT outcomes\n"
-            "are rare in the wild but mark the system's strongest validations."),
+            "v15.0: This is the EFFECTIVE SL = MAX(original_sl, trailing_sl).\n"
+            "Trailing SL ratchets up as peak gain crosses thresholds:\n"
+            "  Peak gain ≥ +5%  → trailing SL = break-even (entry price)\n"
+            "  Peak gain ≥ +10% → trailing SL = entry + 3% (locks small profit)\n"
+            "  Peak gain ≥ +15% → trailing SL = entry + 7% (locks bigger profit)\n"
+            "Once activated, trailing SL never moves down. Original SL preserved\n"
+            "in original_stop_loss column for audit. Red = downside risk."),
+    "T1": ("First profit target (1.5:1 R:R minimum by v15.0 formula)",
+            "Format: ₹price (distance%). Distance from CURRENT price.\n"
+            "v15.0: T1 = max(1.5 × SL_pct, 0.40 × CFV_upside) from CMP at\n"
+            "recommendation time. Guaranteed R:R ≥ 1.5:1. Most Gold picks aim\n"
+            "to hit at minimum T1 within their horizon window. Book partial here."),
+    "T2": ("Second profit target — multi-factor derived",
+            "Format: ₹price (distance%). Distance from CURRENT price.\n"
+            "v15.0: T2 = max(2.5 × SL_pct, 0.70 × CFV_upside), spaced at\n"
+            "least 1.35× above T1. Reaching T2 means overdelivery vs realistic case."),
+    "T3": ("Stretch profit target — anchored to fair value",
+            "Format: ₹price (distance%). Distance from CURRENT price.\n"
+            "v15.0: T3 = max(4.0 × SL_pct, 1.00 × CFV_upside), spaced at\n"
+            "least 1.35× above T2. Hard caps: SHORT 35%, POSITIONAL 80%, LONG 200%.\n"
+            "T3_HIT outcomes are rare but mark the system's strongest wins."),
     # ────────────────────────────────────────────────────────────────────
     # v14.5: CLOSED POSITIONS columns
     # ────────────────────────────────────────────────────────────────────
