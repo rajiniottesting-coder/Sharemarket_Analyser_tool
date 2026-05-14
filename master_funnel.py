@@ -1593,57 +1593,58 @@ def run_master_pipeline():
                 if not stock.get("cap_category") or stock.get("cap_category") == "—":
                     if cap:
                         stock["cap_category"] = cap
+                # Parse EPS and mcap from the tag in updated_on.
+                # v15.8.1 fix: this block lives INSIDE `if sym in _sm_map:`
+                # (where `upd` is defined). The v15.8 ETF-filter insertion
+                # accidentally orphaned this block, making it dead code under
+                # an unreachable branch — which dropped EPS/mcap/PE silently
+                # for ALL stocks and caused Score/Storm/Spike/Altman to fall
+                # systematically. Restored to original location.
+                # Session 23 fix preserved: regex matches negative values for
+                # loss-making stocks (P/E and EPS can both be negative).
+                if upd and "|eps=" in str(upd):
+                    import re as _re
+                    _eps_m  = _re.search(r"eps=(-?[0-9.]+)", str(upd))
+                    _mcap_m = _re.search(r"mcap=([0-9.]+)",  str(upd))
+                    _pe_m   = _re.search(r"pe=(-?[0-9.]+)",  str(upd))
+                    if _eps_m  and not stock.get("eps"):
+                        stock["eps"]     = float(_eps_m.group(1))
+                    if _mcap_m and not stock.get("mcap_cr"):
+                        stock["mcap_cr"] = float(_mcap_m.group(1))
+                    if _pe_m   and not stock.get("pe"):
+                        stock["pe"]      = float(_pe_m.group(1))
 
             # ────────────────────────────────────────────────────────────
             # v15.8: POST-ENRICHMENT ETF/MF FILTER (second-pass)
             # ────────────────────────────────────────────────────────────
-            # WHY THIS EXISTS:
             # NSE bhavcopy does NOT include descriptive company names — only
             # tickers. The v15.2 name-marker filter in pre_screener.py runs
             # BEFORE enrichment, when `company_name` is still empty → markers
             # like " ETF" / "MUTUAL FUND" never match → ETFs leak through.
             #
-            # The 13 May 2026 production run leaked 12 ETFs through this gap:
-            # HDFCVALUE, SBIETFPB, HSBCGOLD, GROWWHOSPI, ENIFTY, MAHKTECH,
-            # SBISILVER, AXISGOLD, SETFNIFBK, SETFGOLD, NAM-INDIA*, HDFCSILVER.
-            # (* NAM-INDIA was a false-leak — it IS a real AMC parent stock.)
+            # The 13 May 2026 production run leaked 12 ETFs through this gap.
+            # Solution: re-check markers now that company_name is loaded from
+            # symbol_master. Two-stage filter with AMC-parent carve-out.
             #
-            # TWO-STAGE LOGIC (with AMC parent carve-out):
+            #   Stage 1: HARD-BLOCK markers (' ETF', 'MUTUAL FUND', 'BEES',
+            #            etc.) — any match → BLOCK immediately.
             #
-            #   Stage 1: HARD-BLOCK markers (unambiguous fund-instrument
-            #            signals). Any match → BLOCK immediately. Cannot be
-            #            overridden by a carve-out, because these names tag
-            #            the actual fund product, not the issuer.
-            #            Examples: " ETF", "ETF -", "MUTUAL FUND", "BEES",
-            #            "INDEX FUND", "GOLD ETF", "BOND ETF", "HANG SENG".
+            #   Stage 2: SOFT-AMC markers ('ASSET MANAGEMENT', 'ASSET MGMT').
+            #            ALLOW if name ENDS with AMC-parent suffix:
+            #              'ASSET MANAGEMENT COMPANY LIMITED' / '...LTD'
+            #              'ASSET MANAGEMENT LIMITED'         / '...LTD'
+            #              'AMC LIMITED'                      / 'AMC LTD'
+            #            BLOCK otherwise.
             #
-            #   Stage 2: SOFT-AMC markers ("ASSET MANAGEMENT", "ASSET MGMT").
-            #            Match here means "AMC involvement somewhere in
-            #            name" — could be either the parent company or a
-            #            fund product. The carve-out applies:
+            # AMC PARENT COMPANIES preserved (real operating businesses):
+            #   HDFCAMC, NAM-INDIA, UTIAMC, ABSLAMC
             #
-            #     Allow if the name ENDS with an AMC-parent suffix:
-            #       "ASSET MANAGEMENT COMPANY LIMITED" / "...LTD"
-            #       "ASSET MANAGEMENT LIMITED"        / "...LTD"
-            #       "AMC LIMITED"                     / "AMC LTD"
-            #     Otherwise → BLOCK.
-            #
-            #   AMC PARENT COMPANIES (publicly-listed, real operating
-            #   businesses with revenue from fund management) preserved:
-            #     HDFCAMC      "HDFC Asset Management Company Limited"
-            #     NAM-INDIA    "Nippon Life India Asset Management Limited"
-            #     UTIAMC       "UTI Asset Management Company Limited"
-            #     ABSLAMC      "Aditya Birla Sun Life AMC Limited"
-            #
-            # HSBC EDGE CASE explained:
-            #   "Hsbc Asset Management (India) Private Limited - Hsbc Mutual
-            #    Fund - Hsbc Gold ETF" — has BOTH "Asset Management" AND
-            #    " ETF". Stage 1 catches " ETF" → BLOCKED before stage 2
-            #    even evaluates the AMC carve-out. Correct outcome.
+            # HSBC EDGE CASE: name has BOTH 'Asset Management' AND ' ETF' —
+            # Stage 1 hard-block fires before Stage 2 carve-out evaluates,
+            # so still correctly blocked.
             _cn_check = str(stock.get("company_name", "") or "").upper().strip().rstrip(".")
-            # Stage 1: hard-block markers
             _hard_block_markers = (
-                " ETF",            # " ETF" with leading space prevents "PETF"
+                " ETF",            # leading space prevents matching "PETF"
                 "ETF -",           # "Edelweiss ETF - Nifty 50"
                 "ETF \u2013",      # em-dash variant
                 "MUTUAL FUND",
@@ -1687,23 +1688,6 @@ def run_master_pipeline():
                 stock["early_entry_score"] = 0
                 continue   # skip the rest of enrichment for this ETF/MF
             # ────────────────────────────────────────────────────────────
-                # Parse EPS and mcap from the tag in updated_on
-                if upd and "|eps=" in str(upd):
-                    import re as _re
-                    # Session 23 fix: regex now matches negative values (`-` prefix)
-                    # for loss-making stocks. Previously only `[0-9.]+` → negative
-                    # EPS silently dropped → P/E = 0 / EPS_none → value engine breaks
-                    # for distressed / turnaround stocks. Same fix applied to PE
-                    # (can be reported negative by some feeds when EPS is negative).
-                    _eps_m  = _re.search(r"eps=(-?[0-9.]+)", str(upd))
-                    _mcap_m = _re.search(r"mcap=([0-9.]+)", str(upd))
-                    _pe_m   = _re.search(r"pe=(-?[0-9.]+)",  str(upd))
-                    if _eps_m  and not stock.get("eps"):
-                        stock["eps"]     = float(_eps_m.group(1))
-                    if _mcap_m and not stock.get("mcap_cr"):
-                        stock["mcap_cr"] = float(_mcap_m.group(1))
-                    if _pe_m   and not stock.get("pe"):
-                        stock["pe"]      = float(_pe_m.group(1))
 
             # cap_category from mcap (always computable from market cap thresholds)
             if not stock.get("cap_category") or stock.get("cap_category") == "—":
