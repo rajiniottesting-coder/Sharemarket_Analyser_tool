@@ -118,6 +118,10 @@ def _walk_forward(rec: dict) -> dict:
             "current_price":   cmp_rec,
             "current_pnl_pct": 0.0,
             "last_checked_date": datetime.now().strftime("%Y-%m-%d"),
+            # v16.0: DD-duration defaults — this branch fires BEFORE we
+            # initialize the tracking state, so use literal defaults.
+            "dd_duration_days": 0,
+            "dd_recovered":     1,
             "_note": "missing trade levels — bucketed as EXPIRED",
         }
 
@@ -131,6 +135,25 @@ def _walk_forward(rec: dict) -> dict:
     max_drawdown_pct = 0.0
     last_close       = cmp_rec
     last_date        = rec_date
+
+    # ─────────────────────────────────────────────────────────────────────
+    # v16.0: Max DD Duration tracking (Item 2)
+    # Track LONGEST consecutive run of days the position spent underwater
+    # (close ≤ entry CMP). Reset the running counter every time the close
+    # recovers back to entry. The MAX of these consecutive-runs is the
+    # institutional "time-under-water" metric.
+    #
+    #   underwater_run_days : current consecutive days underwater (reset on recovery)
+    #   max_dd_duration_days: largest underwater_run_days seen so far
+    #   dd_recovered        : did the position recover from its longest DD
+    #                         before close? Vacuously True if it never went underwater.
+    # ─────────────────────────────────────────────────────────────────────
+    underwater_run_days  = 0
+    max_dd_duration_days = 0
+    dd_recovered         = 1   # default: vacuously true (never went underwater)
+    # Once we've seen ANY drawdown day, dd_recovered defaults to 1 if we
+    # later see a recovery, else flips to 0 at close. Track via a state var:
+    in_drawdown          = False  # are we currently underwater?
 
     # ─────────────────────────────────────────────────────────────────────
     # v15.0: Trailing stop tracking
@@ -161,6 +184,9 @@ def _walk_forward(rec: dict) -> dict:
                 "current_price":   cmp_rec,
                 "current_pnl_pct": 0.0,
                 "last_checked_date": today.strftime("%Y-%m-%d"),
+                # v16.0: DD-duration defaults (no prices → no DD measured)
+                "dd_duration_days": max_dd_duration_days,
+                "dd_recovered":     dd_recovered,
             }
         return {
             "outcome_type": "OPEN",
@@ -172,6 +198,9 @@ def _walk_forward(rec: dict) -> dict:
             "current_price":   cmp_rec,
             "current_pnl_pct": 0.0,
             "last_checked_date": today.strftime("%Y-%m-%d"),
+            # v16.0: DD-duration defaults (no prices → 0/1)
+            "dd_duration_days": max_dd_duration_days,
+            "dd_recovered":     dd_recovered,
         }
 
     # Walk each day chronologically
@@ -203,6 +232,9 @@ def _walk_forward(rec: dict) -> dict:
                 "trailing_sl_pct":   trailing_sl_pct,
                 "trailing_sl_price": trailing_sl_price,
                 "peak_price_seen":   peak_price_seen,
+                # v16.0: DD-duration metrics (Item 2)
+                "dd_duration_days": max_dd_duration_days,
+                "dd_recovered":     dd_recovered,
             }
 
         hi  = float(row.get("high", 0) or 0)
@@ -217,6 +249,39 @@ def _walk_forward(rec: dict) -> dict:
             if day_drawdown < max_drawdown_pct: max_drawdown_pct = day_drawdown
             last_close = cl
             last_date  = d_str
+
+            # ──────────────────────────────────────────────────────────
+            # v16.0: DD-duration state-machine update (Item 2)
+            # If today's CLOSE ≤ entry CMP → still underwater (or just dropped).
+            # If today's CLOSE > entry CMP → recovered (reset the counter).
+            # We track this with the *close*, not high/low, because:
+            #   - It's the institutional convention (close-to-close DD)
+            #   - It avoids double-counting same-day intra-day dips
+            #   - It's consistent with end-of-bar no-lookahead discipline
+            # ──────────────────────────────────────────────────────────
+            if cl <= cmp_rec:
+                # underwater today
+                if not in_drawdown:
+                    in_drawdown = True
+                    underwater_run_days = 1
+                else:
+                    underwater_run_days += 1
+                if underwater_run_days > max_dd_duration_days:
+                    max_dd_duration_days = underwater_run_days
+                # If we're currently in a drawdown that's the longest one,
+                # mark dd_recovered=0 — it'll get flipped back to 1 if we
+                # recover later (next branch).
+                if underwater_run_days == max_dd_duration_days:
+                    dd_recovered = 0
+            else:
+                # recovered or never went underwater
+                if in_drawdown:
+                    # We've recovered from a drawdown — set flag accordingly.
+                    # If THIS recovery is from the longest DD we've seen,
+                    # mark dd_recovered=1.
+                    dd_recovered = 1
+                in_drawdown = False
+                underwater_run_days = 0
 
         # v15.0: Effective SL = MAX(original_sl, trailing_sl_at_start_of_day)
         # CRITICAL: trailing SL is checked against TODAY's low using the value
@@ -244,6 +309,9 @@ def _walk_forward(rec: dict) -> dict:
                 "trailing_sl_pct":   trailing_sl_pct,
                 "trailing_sl_price": trailing_sl_price,
                 "peak_price_seen":   peak_price_seen,
+                # v16.0: DD-duration metrics (Item 2)
+                "dd_duration_days": max_dd_duration_days,
+                "dd_recovered":     dd_recovered,
             }
         # Target hit: highest target wins on a single day
         if hi > 0:
@@ -262,6 +330,9 @@ def _walk_forward(rec: dict) -> dict:
                 "trailing_sl_pct":   trailing_sl_pct,
                 "trailing_sl_price": trailing_sl_price,
                 "peak_price_seen":   peak_price_seen,
+                # v16.0: DD-duration metrics (Item 2)
+                "dd_duration_days": max_dd_duration_days,
+                "dd_recovered":     dd_recovered,
                 }
             if t2 > 0 and hi >= t2:
                 return {
@@ -278,6 +349,9 @@ def _walk_forward(rec: dict) -> dict:
                 "trailing_sl_pct":   trailing_sl_pct,
                 "trailing_sl_price": trailing_sl_price,
                 "peak_price_seen":   peak_price_seen,
+                # v16.0: DD-duration metrics (Item 2)
+                "dd_duration_days": max_dd_duration_days,
+                "dd_recovered":     dd_recovered,
                 }
             if t1 > 0 and hi >= t1:
                 return {
@@ -294,6 +368,9 @@ def _walk_forward(rec: dict) -> dict:
                     "trailing_sl_pct":   trailing_sl_pct,
                     "trailing_sl_price": trailing_sl_price,
                     "peak_price_seen":   peak_price_seen,
+                    # v16.0: DD-duration metrics (Item 2)
+                    "dd_duration_days": max_dd_duration_days,
+                    "dd_recovered":     dd_recovered,
                 }
 
         # v15.0: Trailing-SL update at END of bar (after event checks).
@@ -329,6 +406,9 @@ def _walk_forward(rec: dict) -> dict:
         "trailing_sl_pct":   trailing_sl_pct,
         "trailing_sl_price": trailing_sl_price,
         "peak_price_seen":   peak_price_seen,
+        # v16.0: DD-duration metrics (Item 2)
+        "dd_duration_days": max_dd_duration_days,
+        "dd_recovered":     dd_recovered,
     }
 
 
@@ -370,6 +450,9 @@ def main():
                 trailing_sl_pct=r.get("trailing_sl_pct", 0) or 0,
                 trailing_sl_price=r.get("trailing_sl_price", 0) or 0,
                 peak_price_seen=r.get("peak_price_seen", 0) or 0,
+                # v16.0: DD-duration persistence (Item 2)
+                dd_duration_days=r.get("dd_duration_days", 0) or 0,
+                dd_recovered=r.get("dd_recovered", 1) or 0,
             )
             counts[r["outcome_type"]] = counts.get(r["outcome_type"], 0) + 1
             tag = r["outcome_type"]

@@ -285,6 +285,28 @@ def initialize_v7_tables(conn):
         # alongside running P&L without needing to re-compute every refresh.
         ("gold_recommendations", "suggested_alloc_pct REAL DEFAULT 0"),
         ("gold_recommendations", "alloc_rationale TEXT DEFAULT ''"),
+        # ────────────────────────────────────────────────────────────────
+        # v16.0 — Max DD Duration tracking (Item 2 of v16.0)
+        # ────────────────────────────────────────────────────────────────
+        # The tracker already records max_drawdown_pct (the WORST dip).
+        # v16.0 adds the institutional companion metric: how LONG was the
+        # position underwater? Two fields:
+        #
+        #   dd_duration_days INTEGER — longest consecutive trading-day run
+        #     where the position's effective close was at or below the
+        #     entry CMP. Reset to 0 on any close that recovered to entry.
+        #     For positions that never went underwater: 0.
+        #
+        #   dd_recovered INTEGER — 1 if at some point after the drawdown
+        #     started the position recovered back to entry (or higher)
+        #     before close. 0 if the drawdown was still active at close.
+        #     For positions that never went underwater: 1 (vacuously true).
+        #
+        # These let the v16.0 risk-adjusted metrics report 'avg time under
+        # water' alongside Sharpe / Sortino / Calmar — a standard
+        # institutional addition.
+        ("gold_outcomes", "dd_duration_days INTEGER DEFAULT 0"),
+        ("gold_outcomes", "dd_recovered INTEGER DEFAULT 1"),
     ]:
         try:
             c.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]}")
@@ -1553,7 +1575,9 @@ def update_outcome(symbol: str, recommendation_date: str,
                    last_checked_date: str = "",
                    trailing_sl_pct: float = 0,
                    trailing_sl_price: float = 0,
-                   peak_price_seen: float = 0) -> bool:
+                   peak_price_seen: float = 0,
+                   dd_duration_days: int = 0,
+                   dd_recovered: int = 1) -> bool:
     """v14.0: Update gold_outcomes row for a recommendation. Used by
     track_outcomes.py both to finalize closed outcomes (SL/T1/T2/T3/EXPIRED)
     and to update OPEN row tracking (current_price, max_runup, last_checked).
@@ -1561,6 +1585,13 @@ def update_outcome(symbol: str, recommendation_date: str,
     v15.0: Also persists trailing-stop state (trailing_sl_pct, trailing_sl_price,
     peak_price_seen). Default 0 means trailing has not yet activated; once
     activated, these fields ratchet up only.
+
+    v16.0: Also persists Max DD Duration tracking (Item 2):
+      dd_duration_days : longest consecutive days underwater observed so far
+      dd_recovered     : 1 if the deepest underwater run was recovered before
+                         close; 0 if still underwater at close.
+    These let the v16.0 risk-adjusted metrics report 'time-under-water'
+    alongside Sharpe / Sortino / Calmar.
     """
     try:
         conn = sqlite3.connect("market_data.db")
@@ -1579,7 +1610,9 @@ def update_outcome(symbol: str, recommendation_date: str,
                     last_checked_date = ?,
                     trailing_sl_pct = ?,
                     trailing_sl_price = ?,
-                    peak_price_seen = ?
+                    peak_price_seen = ?,
+                    dd_duration_days = ?,
+                    dd_recovered = ?
                 WHERE symbol = ?
                   AND recommendation_date = ?
             """, (
@@ -1587,6 +1620,7 @@ def update_outcome(symbol: str, recommendation_date: str,
                 days_to_outcome, max_drawdown_pct, max_runup_pct,
                 current_price, current_pnl_pct, last_checked_date,
                 trailing_sl_pct, trailing_sl_price, peak_price_seen,
+                dd_duration_days, dd_recovered,
                 symbol, recommendation_date,
             ))
             conn.commit()
@@ -1614,7 +1648,8 @@ def get_outcome_stats() -> dict:
                 SELECT r.*, o.outcome_type, o.outcome_date, o.outcome_price,
                        o.days_to_outcome, o.max_drawdown_pct, o.max_runup_pct,
                        o.current_price, o.current_pnl_pct,
-                       o.trailing_sl_pct, o.trailing_sl_price, o.peak_price_seen
+                       o.trailing_sl_pct, o.trailing_sl_price, o.peak_price_seen,
+                       o.dd_duration_days, o.dd_recovered
                 FROM gold_recommendations r
                 INNER JOIN gold_outcomes o
                   ON r.symbol = o.symbol

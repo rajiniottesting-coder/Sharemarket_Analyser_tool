@@ -3636,18 +3636,60 @@ User reported incorrect tooltip text on Performance sheet CLOSED POSITIONS colum
 
 **New G26 test** verifies all 6 shared-header tooltips correctly mention BOTH contexts and use canonical terminology. **78/78 tests** across 5/5 runs.
 
+### v16.0 — Institutional risk-adjusted metrics + DD-duration tracking + survivorship audit
+First "Option A+B" of the free-tier improvement plan from the project-rating discussion. Three institutional-grade additions, all free-tier compatible (no paid data, no external services).
+
+**Item 1: Sharpe / Sortino / Calmar reporting**
+- New module: `analysis/risk_metrics.py` — pure-Python (math module only), zero external deps
+- Sharpe: annualized `(mean − rf) / σ × √(252/avg_days)`. Risk-free rate = 6.5% (India 91-day T-bill).
+- Sortino: same numerator, downside-only std denominator.
+- Calmar: annualized mean / |max DD|.
+- Plus supporting stats: win rate, profit factor, expectancy, avg win/loss.
+- Sample-size caveat rendered when n<30 (statistically noisy).
+- Performance sheet: new "RISK-ADJUSTED RETURNS" section between CLOSED and OPEN POSITIONS. 8-metric ratios row + 8-metric supporting-stats row + empty-state handling.
+
+**Item 2: Max DD Duration tracking**
+- Schema migration: `gold_outcomes.dd_duration_days INTEGER` + `dd_recovered INTEGER` (additive ALTER TABLE, idempotent).
+- Tracker state machine in `_walk_forward`: close-to-close underwater-run counter, reset on recovery, longest-run captured. 
+- Persisted via extended `update_outcome()` signature.
+- `get_outcome_stats` SELECT pulls new columns (INNER JOIN).
+- Rendered as Avg DD Duration + Recovery Rate alongside Sharpe/Sortino/Calmar.
+
+**Item 5: Survivorship bias audit**
+- New module: `analysis/survivorship_audit.py` — cross-checks OPEN gold positions against today's `latest_analysis_results` universe.
+- 5 status branches: CLEAN (green ✓), STALE_FOUND (amber ⚠), NO_OPEN_POSITIONS (neutral), UNIVERSE_UNAVAILABLE (grey), ERROR (red).
+- Performance sheet renders the audit line + explanatory caption at the end.
+- Detects stocks delisted / suspended / symbol-changed while in OPEN portfolio.
+
+**3 new regression tests**:
+- G27: Sharpe/Sortino/Calmar math correctness (synthetic 4-trade case + 6 edge cases)
+- G28: DD-duration tracker state machine structurally verified (variables present, reset-on-recovery, 6 return-dict sites populate fields, schema/update_outcome/SELECT all wired)
+- G29: Survivorship audit handles all 5 status branches + graceful missing-DB
+
+**81/81 tests** across 5/5 stability runs.
+
+### Grade impact assessment
+Per the institutional-rating analysis from this session, v16.0 changes are:
+- Performance Attribution: C → **B+** (immediate)
+- Risk Management Framework: A- → **A** (immediate)
+- Documentation: A → **A+** (immediate)
+- Empirical Validation: D → still D (needs DATA, not code — wait for 30+ closed positions)
+- Out-of-Sample Evidence: D → still D (needs separate held-out period)
+- Composite: remains **A-** today, lifts to **A** automatically once 30+ closed positions accumulate (60-90 days of pipeline runs).
+
+The v16.0 infrastructure means that as soon as data accumulates, the metrics populate automatically — no further code work needed for the empirical-validation jump.
+
 ### Test count evolution
-- v14.5: 66 → v14.6: 67 (G15: multi-factor SL/T)
-- v15.0: 69 (G16 + G17) → v15.1: 71 (G18 + G19) → v15.2: 72 (G20)
-- v15.3: 73 (G21) → v15.4: 73 (G21 rewritten) → v15.5: 74 (G22)
-- v15.6: 74 (band fix, no new test) → v15.7: 75 (G23)
-- v15.8: 76 (G24) → v15.8.1: 77 (G25) → **v15.9: 78 (G26)**
+- v14.5: 66 → v14.6: 67 → v15.0: 69 (G16+G17) → v15.1: 71 (G18+G19)
+- v15.2: 72 → v15.3: 73 → v15.4: 73 → v15.5: 74 (G22)
+- v15.6: 74 → v15.7: 75 (G23) → v15.8: 76 (G24) → v15.8.1: 77 (G25)
+- v15.9: 78 (G26) → **v16.0: 81 (G27 + G28 + G29)**
 
-### Honest grade after v15.9: still A-
-**What changed since v15.0**: trading-day calendar precision (Phase 1), backtest infrastructure (Phase 3), institutional risk-parity sizing wired into Excel (Phase 4 + v15.5), Performance sheet completeness (v15.5/v15.6/v15.7), ETF filter robustness (v15.8 + v15.8.1 hotfix for indentation), tooltip context-correctness (v15.9).
+### Honest grade after v16.0: A- today, A in ~60-90 days
+**What changed since v15.0**: trading-day calendar precision (Phase 1), backtest infrastructure (Phase 3), institutional risk-parity sizing (Phase 4 + v15.5), Performance sheet completeness (v15.5-v15.7), ETF filter robustness (v15.8 + v15.8.1 hotfix), tooltip context-correctness (v15.9), risk-adjusted metrics + DD duration + survivorship audit (v16.0).
 
-**Path to true A**: walk-forward backtest calibration of multipliers. Requires 30+ closed positions accumulated under v15.5+ rules. `python -m backtest.walk_forward --calibrate` available once data threshold met.
+**Path to true A+**: cannot reach on free tier. Requires (a) walk-forward backtest with 60-90 days of data — now achievable, (b) independent code review by external quant — needs people, not code, (c) execution-cost modeling with real broker fills — needs paid data. v16.0 closes the code gaps that are fixable on free tier.
 
 ---
 
-*Last updated: May 14, 2026 · v15.9 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 14, 2026 · v16.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

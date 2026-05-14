@@ -2478,6 +2478,113 @@ class ExcelGeneratorV6:
                 c.fill = _f(LG); c.font = _ft(False,NAVY,9,True); c.alignment = _al("left")
                 next_row += 1
 
+        next_row += 1   # blank spacer before v16.0 section
+
+        # ── Section 5: RISK-ADJUSTED RETURNS (v16.0) ──────────────────────
+        # Institutional-grade risk metrics computed from the CLOSED
+        # POSITIONS in this Performance dataset:
+        #   • Sharpe Ratio  — annualized (mean − rf) / σ × √(252/avg_days)
+        #   • Sortino Ratio — same but uses downside-only std
+        #   • Calmar Ratio  — annualized mean / |max DD|
+        #   • Max DD Duration + recovery rate (v16.0 Item 2)
+        # Plus supporting stats: win rate, profit factor, expectancy,
+        # avg win/loss, avg days held.
+        #
+        # When n < 30: a sample-size caveat is rendered. After ~60-90 days
+        # of pipeline runs you'll have enough closed positions for these
+        # to converge to reliable values.
+        try:
+            from analysis.risk_metrics import compute_risk_metrics, summarize_dd_duration
+            # Build the closed-positions list from _closed_df
+            _rm_closed = []
+            for _, _row in _closed_df.iterrows() if not _closed_df.empty else []:
+                _rm_closed.append({
+                    "pnl_pct": float(_row.get("current_pnl_pct", 0) or 0),
+                    "days_held": int(_row.get("days_to_outcome", 0) or 0),
+                    "max_drawdown_pct": float(_row.get("max_drawdown_pct", 0) or 0),
+                    "outcome_type": str(_row.get("outcome_type", "") or ""),
+                    "dd_duration_days": int(_row.get("dd_duration_days", 0) or 0),
+                    "dd_recovered": int(_row.get("dd_recovered", 1) or 1),
+                })
+            _metrics = compute_risk_metrics(_rm_closed)
+            _dd_summary = summarize_dd_duration(_rm_closed)
+        except Exception as _e_rm:
+            _metrics = {"n_trades": 0}
+            _dd_summary = {"n_trades": 0}
+
+        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+        c = ws.cell(next_row,1,
+            "📈  RISK-ADJUSTED RETURNS  ·  Sharpe · Sortino · Calmar · DD Duration  ·  v16.0")
+        c.fill = _f("4338CA"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
+        ws.row_dimensions[next_row].height = 22
+        next_row += 1
+
+        if _metrics.get("n_trades", 0) == 0:
+            # No closed positions yet — show informative empty-state line.
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+            c = ws.cell(next_row,1,
+                "  No closed positions yet — risk-adjusted metrics will populate as "
+                "picks resolve (need 30+ closed trades for statistical reliability).")
+            c.fill = _f(LG); c.font = _ft(False,"6B7280",9,True); c.alignment = _al("left")
+            next_row += 1
+        else:
+            # Render in two compact rows: ratios row + supporting stats row.
+            # Row A — risk-adjusted RATIOS
+            def _fmt(v, suffix=""):
+                return "—" if v is None else f"{v}{suffix}"
+
+            _label_fmt = lambda lbl: (lbl, _ft(True,NAVY,9), _al("left"))
+            _val_fmt   = lambda val: (val, _ft(False,"1F2937",10), _al())
+
+            # Ratios row (8 metric pairs)
+            cols_a = [
+                ("n Trades",            f"{_metrics['n_trades']}"),
+                ("Sharpe Ratio",        _fmt(_metrics.get('sharpe_ratio'))),
+                ("Sortino Ratio",       _fmt(_metrics.get('sortino_ratio'))),
+                ("Calmar Ratio",        _fmt(_metrics.get('calmar_ratio'))),
+                ("Win Rate",            _fmt(_metrics.get('win_rate_pct'), '%')),
+                ("Profit Factor",       _fmt(_metrics.get('profit_factor'))),
+                ("Expectancy",          _fmt(_metrics.get('expectancy_pct'), '%')),
+                ("Max DD (worst)",      _fmt(_metrics.get('max_drawdown_pct'), '%')),
+            ]
+            for i, (lbl, val) in enumerate(cols_a):
+                ci = i*2 + 1
+                lc = ws.cell(next_row, ci, lbl)
+                lc.fill = _f("EEF2FF"); lc.font = _ft(True,"4338CA",9); lc.alignment = _al("left")
+                vc = ws.cell(next_row, ci+1, val)
+                vc.fill = _f("F5F3FF"); vc.font = _ft(False,"1F2937",10); vc.alignment = _al()
+                ws.column_dimensions[get_column_letter(ci)].width = 14
+                ws.column_dimensions[get_column_letter(ci+1)].width = 9
+            ws.row_dimensions[next_row].height = 22
+            next_row += 1
+
+            # Supporting stats row
+            cols_b = [
+                ("Mean Return",         _fmt(_metrics.get('mean_return_pct'), '%')),
+                ("Median Return",       _fmt(_metrics.get('median_return_pct'), '%')),
+                ("Std Dev",             _fmt(_metrics.get('std_return_pct'), '%')),
+                ("Avg Win",             _fmt(_metrics.get('avg_win_pct'), '%')),
+                ("Avg Loss",            _fmt(_metrics.get('avg_loss_pct'), '%')),
+                ("Avg Days Held",       _fmt(_metrics.get('avg_days_held'))),
+                ("Avg DD Duration",     _fmt(_dd_summary.get('avg_dd_duration_days'), 'd')),
+                ("DD Recovery Rate",    _fmt(_dd_summary.get('recovery_rate_pct'), '%')),
+            ]
+            for i, (lbl, val) in enumerate(cols_b):
+                ci = i*2 + 1
+                lc = ws.cell(next_row, ci, lbl)
+                lc.fill = _f("EEF2FF"); lc.font = _ft(True,"4338CA",9); lc.alignment = _al("left")
+                vc = ws.cell(next_row, ci+1, val)
+                vc.fill = _f("F5F3FF"); vc.font = _ft(False,"1F2937",10); vc.alignment = _al()
+            ws.row_dimensions[next_row].height = 22
+            next_row += 1
+
+            # Caveat line (sample size warning)
+            if "_caveat" in _metrics:
+                ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+                c = ws.cell(next_row,1, f"  ⚠ {_metrics['_caveat']}")
+                c.fill = _f("FEF3C7"); c.font = _ft(False,"92400E",9,True); c.alignment = _al("left")
+                next_row += 1
+
         next_row += 1   # blank spacer before OPEN POSITIONS
 
         # ── Section 5: OPEN POSITIONS ─────────────────────────────────────
@@ -2689,6 +2796,66 @@ class ExcelGeneratorV6:
             c.fill = _f(LG); c.font = _ft(False, "475569", 9, True); c.alignment = _al("left", "center", True)
             ws.row_dimensions[next_row].height = 30
             next_row += 1
+
+        # ── v16.0 Section 6: SURVIVORSHIP AUDIT (Item 5) ──────────────────
+        # Renders a one-line institutional audit confirming that all OPEN
+        # gold positions are still present in today's universe (i.e., have
+        # not been silently delisted, suspended, or symbol-changed). This
+        # is the "survivorship bias guard" — a top-tier quant concern.
+        #
+        # Behavior:
+        #   CLEAN status        → small green confirm line
+        #   STALE_FOUND         → amber warning with stale symbol list
+        #   NO_OPEN_POSITIONS   → neutral confirmation line
+        #   UNIVERSE_UNAVAILABLE / ERROR → grey neutral line (avoids alarm
+        #                         when latest_analysis_results not populated)
+        try:
+            from analysis.survivorship_audit import audit_open_positions, format_audit_line
+            _audit = audit_open_positions()
+            _audit_line = format_audit_line(_audit)
+            _audit_status = _audit.get("audit_status", "UNKNOWN")
+        except Exception as _e_audit:
+            _audit_status = "ERROR"
+            _audit_line = f"⚠ Survivorship audit unavailable: {_e_audit}"
+
+        next_row += 1  # spacer
+        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+        c = ws.cell(next_row, 1,
+            "🛡  SURVIVORSHIP AUDIT  ·  Are all OPEN positions still tracked in today's universe?  ·  v16.0")
+        c.fill = _f("4338CA"); c.font = _ft(True, WHITE, 11); c.alignment = _al("left")
+        ws.row_dimensions[next_row].height = 22
+        next_row += 1
+
+        # Color the audit line based on status
+        if _audit_status == "CLEAN":
+            _audit_fill = "D1FAE5"  # green
+            _audit_color = "065F46"
+        elif _audit_status == "STALE_FOUND":
+            _audit_fill = "FEF3C7"  # amber
+            _audit_color = "92400E"
+        elif _audit_status in ("NO_OPEN_POSITIONS",):
+            _audit_fill = LG
+            _audit_color = "475569"
+        else:
+            _audit_fill = "FEE2E2"  # red for errors
+            _audit_color = "991B1B"
+
+        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+        c = ws.cell(next_row, 1, "  " + _audit_line)
+        c.fill = _f(_audit_fill); c.font = _ft(False, _audit_color, 9, True); c.alignment = _al("left", "center", True)
+        ws.row_dimensions[next_row].height = 24
+        next_row += 1
+
+        # Explanatory caption (so a reader unfamiliar with survivorship
+        # bias understands what's being checked).
+        ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+        c = ws.cell(next_row, 1,
+            "  Survivorship bias guard: if a stock is delisted or suspended while in our OPEN portfolio, "
+            "it would silently stop receiving price updates — biasing reported hit rates upward. "
+            "This check confirms freshness of every OPEN position against today's traded universe.")
+        c.fill = _f(LG); c.font = _ft(False, "475569", 9, True); c.alignment = _al("left", "center", True)
+        ws.row_dimensions[next_row].height = 30
+        next_row += 1
 
     def _glossary(self,wb):
         ws=wb.create_sheet("📖 Glossary"); ws.sheet_properties.tabColor="475569"

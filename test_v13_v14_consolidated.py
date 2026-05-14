@@ -3635,6 +3635,300 @@ def test_g26_v15_9_tooltip_context_correctness():
             "Drawdown %, Days Held, Outcome Price, Entry CMP) all rewritten "
             "to be correct in BOTH OPEN and CLOSED POSITIONS contexts")
 
+def test_g27_v16_0_risk_adjusted_metrics_math():
+    """v16.0 regression test (Item 1) — verifies Sharpe/Sortino/Calmar +
+    supporting statistics produce correct, reference-checkable values from
+    synthetic inputs. Locks the institutional risk-adjusted metric module.
+
+    The 4-trade synthetic case used here is small enough to verify by hand:
+      Trades: +10%, -5%, +15%, -7%
+      Mean   = +3.25%
+      Win rate = 50% (2 wins / 4 trades)
+      Avg win = +12.5%   Avg loss = -6.0%
+      Profit factor = (10+15) / (5+7) = 25/12 ≈ 2.0833
+
+    This test also verifies edge cases:
+      • Empty list → all metrics None or 0, sample-size caveat present
+      • Single trade → no Sharpe (std undefined, n<2)
+      • DD duration summary computes correctly
+    """
+    from analysis.risk_metrics import (
+        compute_risk_metrics, summarize_dd_duration,
+        DEFAULT_RISK_FREE_RATE_PCT, TRADING_DAYS_PER_YEAR,
+    )
+
+    # ── Test 1: Known 4-trade synthetic ──
+    trades = [
+        {"pnl_pct": 10,  "days_held": 30, "max_drawdown_pct": -2},
+        {"pnl_pct": -5,  "days_held": 20, "max_drawdown_pct": -5},
+        {"pnl_pct": 15,  "days_held": 45, "max_drawdown_pct": -3},
+        {"pnl_pct": -7,  "days_held": 25, "max_drawdown_pct": -8},
+    ]
+    m = compute_risk_metrics(trades)
+    assert m["n_trades"] == 4, f"n_trades expected 4, got {m['n_trades']}"
+    assert m["mean_return_pct"] == 3.25, f"mean expected 3.25, got {m['mean_return_pct']}"
+    assert m["win_rate_pct"] == 50.0, f"win_rate expected 50.0, got {m['win_rate_pct']}"
+    assert m["avg_win_pct"] == 12.5, f"avg_win expected 12.5, got {m['avg_win_pct']}"
+    assert m["avg_loss_pct"] == -6.0, f"avg_loss expected -6.0, got {m['avg_loss_pct']}"
+    assert abs(m["profit_factor"] - 2.08) < 0.01, (
+        f"profit_factor expected ≈ 2.08 (25/12), got {m['profit_factor']}"
+    )
+    assert m["max_drawdown_pct"] == -8.0, f"max_dd expected -8.0, got {m['max_drawdown_pct']}"
+    assert m["sharpe_ratio"] is not None, "Sharpe should be computable with n=4 and std>0"
+    assert m["sortino_ratio"] is not None, "Sortino should be computable"
+    assert m["calmar_ratio"] is not None, "Calmar should be computable (max_dd<0, avg_days>0)"
+    # Sample size caveat MUST appear for n=4 (less than 30)
+    assert "_caveat" in m, "Sample-size caveat must appear for n<30"
+    assert "n=4" in m["_caveat"], "Caveat must report actual sample size"
+
+    # ── Test 2: Empty input ──
+    m_empty = compute_risk_metrics([])
+    assert m_empty["n_trades"] == 0
+    assert m_empty["sharpe_ratio"] is None
+    assert m_empty["sortino_ratio"] is None
+    assert m_empty["calmar_ratio"] is None
+
+    # ── Test 3: Single trade (insufficient for std) ──
+    m_one = compute_risk_metrics([
+        {"pnl_pct": 10, "days_held": 30, "max_drawdown_pct": -2},
+    ])
+    assert m_one["n_trades"] == 1
+    assert m_one["sharpe_ratio"] is None, "Sharpe must be None when n<2 (std undefined)"
+    assert m_one["sortino_ratio"] is None, "Sortino must be None when n<2"
+
+    # ── Test 4: Zero-drawdown set (no Calmar) ──
+    m_no_dd = compute_risk_metrics([
+        {"pnl_pct": 10, "days_held": 30, "max_drawdown_pct": 0},
+        {"pnl_pct": 5,  "days_held": 30, "max_drawdown_pct": 0},
+    ])
+    assert m_no_dd["calmar_ratio"] is None, "Calmar must be None when max_dd is 0 (division by zero)"
+
+    # ── Test 5: All-winning set (profit_factor=None — no losses) ──
+    m_all_win = compute_risk_metrics([
+        {"pnl_pct": 5,  "days_held": 30, "max_drawdown_pct": -1},
+        {"pnl_pct": 8,  "days_held": 30, "max_drawdown_pct": -1},
+        {"pnl_pct": 12, "days_held": 30, "max_drawdown_pct": -1},
+    ])
+    assert m_all_win["profit_factor"] is None, (
+        "profit_factor must be None when there are no losses (infinite ratio)"
+    )
+
+    # ── Test 6: DD-duration summary ──
+    closed = [
+        {"dd_duration_days": 5,  "dd_recovered": 1},
+        {"dd_duration_days": 15, "dd_recovered": 0},
+        {"dd_duration_days": 0,  "dd_recovered": 1},
+        {"dd_duration_days": 22, "dd_recovered": 1},
+    ]
+    s = summarize_dd_duration(closed)
+    assert s["n_trades"] == 4
+    assert s["avg_dd_duration_days"] == 10.5
+    assert s["max_dd_duration_days"] == 22
+    assert s["recovery_rate_pct"] == 75.0   # 3 of 4 recovered
+
+    # ── Test 7: Defensive on missing keys ──
+    # Should NOT raise — should treat missing as 0
+    m_missing = compute_risk_metrics([
+        {"pnl_pct": 5},    # no days_held, no max_drawdown_pct
+        {"pnl_pct": -3},
+    ])
+    assert m_missing["n_trades"] == 2  # don't crash
+
+    # ── Test 8: constants exposed for documentation ──
+    assert DEFAULT_RISK_FREE_RATE_PCT == 6.5, (
+        "DEFAULT_RISK_FREE_RATE_PCT should be 6.5 (India 91-day T-bill ≈ 6.5%)"
+    )
+    assert TRADING_DAYS_PER_YEAR == 252
+
+    return ("\u2705 v16.0 Item 1: Sharpe/Sortino/Calmar + supporting stats "
+            "verified on 4-trade synthetic (mean=3.25%, win_rate=50%, "
+            "profit_factor=2.08), empty/single/no-dd/no-loss edge cases, "
+            "and DD-duration summary (n=4, avg=10.5d, recovery=75%)")
+
+
+def test_g28_v16_0_dd_duration_tracker_state_machine():
+    """v16.0 regression test (Item 2) — verifies the underwater-run state
+    machine in track_outcomes._walk_forward correctly tracks the longest
+    consecutive days below entry CMP.
+
+    Verifies:
+      1. The schema migration is in place (gold_outcomes has the 2 new cols).
+      2. update_outcome accepts the v16.0 fields.
+      3. The state-machine logic in the tracker (reset-on-recovery,
+         longest-run capture) is structurally present.
+      4. The Excel-render path imports the new module.
+    """
+    # ── Check 1: schema migration is registered ──
+    src_db = open('database/data_bridge.py', 'r', encoding='utf-8').read()
+    assert "dd_duration_days INTEGER DEFAULT 0" in src_db, (
+        "v16.0 Item 2: schema migration for gold_outcomes.dd_duration_days missing"
+    )
+    assert "dd_recovered INTEGER DEFAULT 1" in src_db, (
+        "v16.0 Item 2: schema migration for gold_outcomes.dd_recovered missing"
+    )
+
+    # ── Check 2: update_outcome accepts the new fields ──
+    assert "dd_duration_days: int = 0" in src_db, (
+        "v16.0 Item 2: update_outcome() signature missing dd_duration_days param"
+    )
+    assert "dd_recovered: int = 1" in src_db, (
+        "v16.0 Item 2: update_outcome() signature missing dd_recovered param"
+    )
+    # SELECT in get_outcome_stats must include the new columns so the
+    # Performance sheet receives them.
+    assert "o.dd_duration_days, o.dd_recovered" in src_db, (
+        "v16.0 Item 2: get_outcome_stats SELECT missing dd_duration / dd_recovered"
+    )
+
+    # ── Check 3: tracker has the state-machine logic ──
+    src_tr = open('track_outcomes.py', 'r', encoding='utf-8').read()
+    assert "underwater_run_days" in src_tr, (
+        "v16.0 Item 2: tracker missing underwater_run_days state variable"
+    )
+    assert "max_dd_duration_days" in src_tr, (
+        "v16.0 Item 2: tracker missing max_dd_duration_days state variable"
+    )
+    # Reset-on-recovery logic must be present
+    assert "underwater_run_days = 0" in src_tr, (
+        "v16.0 Item 2: tracker missing reset-on-recovery for underwater_run_days"
+    )
+    # Longest-run capture logic
+    assert "if underwater_run_days > max_dd_duration_days" in src_tr, (
+        "v16.0 Item 2: tracker missing longest-run capture logic"
+    )
+    # State machine must be inside the daily-walk loop (after cl > 0 check)
+    # — verified structurally by checking the dd_duration_days field is
+    # in the return dicts.
+    dd_return_count = src_tr.count('"dd_duration_days":')
+    assert dd_return_count >= 6, (
+        f"v16.0 Item 2: tracker must populate dd_duration_days in all "
+        f"return-dict sites (SL_HIT/T1/T2/T3/EXPIRED/OPEN + early exits). "
+        f"Found only {dd_return_count} references."
+    )
+
+    # ── Check 4: tracker passes the fields to update_outcome ──
+    assert "dd_duration_days=r.get" in src_tr or "dd_duration_days=" in src_tr, (
+        "v16.0 Item 2: tracker call site to update_outcome must pass dd_duration_days"
+    )
+    assert "dd_recovered=r.get" in src_tr or "dd_recovered=" in src_tr, (
+        "v16.0 Item 2: tracker call site to update_outcome must pass dd_recovered"
+    )
+
+    # ── Check 5: Excel-render path imports risk_metrics + survivorship_audit ──
+    src_xl = open('reporting/excel_generator.py', 'r', encoding='utf-8').read()
+    assert "from analysis.risk_metrics import" in src_xl, (
+        "v16.0: Excel generator must import risk_metrics module"
+    )
+    assert "RISK-ADJUSTED RETURNS" in src_xl, (
+        "v16.0 Item 1: Performance sheet must render RISK-ADJUSTED RETURNS section"
+    )
+
+    return ("\u2705 v16.0 Item 2: DD-duration tracker state machine in place "
+            "(underwater_run_days reset-on-recovery, longest-run captured, "
+            "persisted to schema via update_outcome, SELECTed by get_outcome_stats, "
+            "rendered on Performance sheet)")
+
+
+def test_g29_v16_0_survivorship_audit_invariant():
+    """v16.0 regression test (Item 5) — verifies the survivorship audit
+    module behaves correctly across all status branches.
+
+    Survivorship bias: if a stock is delisted/suspended while in our
+    OPEN portfolio, it silently stops getting price updates — making
+    reported hit rates upward-biased (only survivors counted). The audit
+    detects this by cross-checking OPEN positions against today's
+    universe (latest_analysis_results).
+
+    Verifies:
+      1. Module exists and exports the expected API.
+      2. Each audit status branch produces a meaningful summary line.
+      3. The Performance sheet rendering path imports + calls it.
+      4. Graceful handling of missing DB / empty universe.
+    """
+    from analysis.survivorship_audit import audit_open_positions, format_audit_line
+
+    # ── Check 1: format_audit_line handles all status branches ──
+    # NO_OPEN_POSITIONS — neutral confirm
+    line_none = format_audit_line({"n_open_total": 0, "audit_status": "NO_OPEN_POSITIONS"})
+    assert "no OPEN positions" in line_none, (
+        "v16.0 Item 5: NO_OPEN_POSITIONS line should mention no positions"
+    )
+    assert line_none.startswith("✓"), "NO_OPEN_POSITIONS line should start with ✓"
+
+    # CLEAN — green confirm
+    line_clean = format_audit_line({
+        "n_open_total": 5, "n_stale": 0, "freshness_pct": 100.0,
+        "audit_status": "CLEAN",
+    })
+    assert "100.0%" in line_clean
+    assert "5/5" in line_clean
+    assert "No delisted" in line_clean or "no delisted" in line_clean.lower()
+    assert line_clean.startswith("✓")
+
+    # STALE_FOUND — amber warning
+    line_stale = format_audit_line({
+        "n_open_total": 5, "n_stale": 2, "stale_symbols": ["FOO", "BAR"],
+        "freshness_pct": 60.0, "audit_status": "STALE_FOUND",
+    })
+    assert "FOO" in line_stale and "BAR" in line_stale, (
+        "STALE_FOUND line must list stale symbols"
+    )
+    assert "60.0%" in line_stale
+    assert line_stale.startswith("⚠"), "STALE_FOUND line should start with ⚠"
+    assert "delisting" in line_stale.lower() or "suspension" in line_stale.lower(), (
+        "STALE_FOUND line should suggest investigation reasons"
+    )
+
+    # UNIVERSE_UNAVAILABLE — informative grey line
+    line_no_univ = format_audit_line({
+        "n_open_total": 3, "audit_status": "UNIVERSE_UNAVAILABLE",
+    })
+    assert "universe" in line_no_univ.lower()
+    assert line_no_univ.startswith("⚠")
+
+    # ERROR — defensive error display
+    line_err = format_audit_line({
+        "audit_status": "ERROR: no such table: gold_recommendations",
+    })
+    assert "ERROR" in line_err
+    assert line_err.startswith("⚠")
+
+    # Many-stale truncation — show first 5 then "+N more"
+    line_many = format_audit_line({
+        "n_open_total": 20, "n_stale": 8,
+        "stale_symbols": ["A","B","C","D","E","F","G","H"],
+        "freshness_pct": 60.0, "audit_status": "STALE_FOUND",
+    })
+    assert "+3 more" in line_many, "Many-stale line should truncate with '+N more'"
+
+    # ── Check 2: audit_open_positions handles missing DB gracefully ──
+    r_missing = audit_open_positions(db_path="/nonexistent/path/to/db.db")
+    assert "audit_status" in r_missing, "Must return audit_status on error"
+    # Should be ERROR (sqlite raises) or NO_OPEN_POSITIONS (defensive default)
+    assert r_missing["audit_status"].startswith("ERROR") or \
+           r_missing["audit_status"] == "NO_OPEN_POSITIONS", (
+        f"Missing DB should give ERROR or NO_OPEN_POSITIONS status, "
+        f"got {r_missing['audit_status']}"
+    )
+
+    # ── Check 3: Performance sheet rendering imports survivorship_audit ──
+    src_xl = open('reporting/excel_generator.py', 'r', encoding='utf-8').read()
+    assert "from analysis.survivorship_audit import" in src_xl, (
+        "v16.0 Item 5: Excel generator must import survivorship_audit"
+    )
+    assert "SURVIVORSHIP AUDIT" in src_xl, (
+        "v16.0 Item 5: Performance sheet must render SURVIVORSHIP AUDIT section"
+    )
+    # The audit line must use color-coded status indicators
+    assert "STALE_FOUND" in src_xl, (
+        "v16.0 Item 5: Excel must branch on STALE_FOUND status for color coding"
+    )
+
+    return ("\u2705 v16.0 Item 5: survivorship audit module verified — "
+            "all 5 status branches format correctly, graceful missing-DB "
+            "handling, Performance sheet integration wired")
+
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -3897,6 +4191,9 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g24_v15_8_post_enrichment_etf_filter))
     v14_1_results.append(_run_one_test(test_g25_v15_8_1_eps_mcap_parsing_reachable))
     v14_1_results.append(_run_one_test(test_g26_v15_9_tooltip_context_correctness))
+    v14_1_results.append(_run_one_test(test_g27_v16_0_risk_adjusted_metrics_math))
+    v14_1_results.append(_run_one_test(test_g28_v16_0_dd_duration_tracker_state_machine))
+    v14_1_results.append(_run_one_test(test_g29_v16_0_survivorship_audit_invariant))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
