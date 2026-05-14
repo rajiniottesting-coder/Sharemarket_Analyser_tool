@@ -3612,17 +3612,42 @@ Filtered stocks get sentinel flag `_v158_etf_filtered=True` + `verdict='FILTERED
 
 **New G24 test** verifies: 11 confirmed leakers BLOCKED, 4 AMC parents ALLOWED, 3 legacy ETFs (NIFTYBEES/GOLDBEES/LIQUIDBEES) still BLOCKED, HSBC edge case correct, filter wired. **76/76 tests** across 5/5 runs.
 
+### v15.8.1 — HOTFIX for v15.8 indentation bug
+User reported Gold sheet went BLANK (4 picks → 0 picks) after v15.8 deploy. Investigation: comparing pre-v15.8 vs post-v15.8 Excels for SAME stocks on SAME date showed scores systematically dropped (OMFREIGHT 100→97.5, ITC 80→76.8, BSOFT 76.7→68). CMP identical — meaning code change, not market variation.
+
+**Root cause**: v15.8 ETF-filter insertion accidentally orphaned the EPS/mcap/PE parsing block. Originally inside `if sym in _sm_map:` at indent 16, the parsing block ended up at indent 16 INSIDE `if _hit_marker:` AFTER a `continue` statement. Result: parsing block became DEAD CODE that never ran for ANY stock. EPS/mcap/PE stayed at 0 → P/E and Altman Z calculations broken → Score / Storm / Spike all dropped just enough to fail strict 11-criteria Gold gate.
+
+**Fix**: restored EPS/mcap parsing block to its original location inside `if sym in _sm_map:`. v15.8 ETF filter preserved. **New G25 test** locks the structural invariant — verifies parsing block at indent 16, no orphaning `continue` before it, v15.8 filter sits AFTER parsing. **77/77 tests** across 5/5 runs.
+
+### v15.9 — Tooltip context-correctness audit + fixes
+User reported incorrect tooltip text on Performance sheet CLOSED POSITIONS column 'P&L %': "Current unrealized return... trade in progress" — wrong because CLOSED positions are FINAL realised outcomes.
+
+**Root cause**: TIPS dict is keyed by header name. The same header name appears in BOTH OPEN POSITIONS (where 'unrealized', 'in progress' is correct) AND CLOSED POSITIONS (where 'realised', 'final outcome' is correct). Pre-v15.9 tooltips assumed only OPEN context.
+
+**Fixed 6 shared-header tooltips**:
+- **P&L %** — bullet points for OPEN (unrealized return, tracker logic) and CLOSED (realised return)
+- **Max Runup %** — QUICK READ rewritten neutral; DETAIL clarifies OPEN vs CLOSED
+- **Max Drawdown %** + 'Max DD %' alias — same neutral pattern
+- **Days Held** — was outdated 'hits 90 days'; now mentions all 3 horizon-specific expiries (SHORT=30, POSITIONAL=90, LONG=270 per v14.1+)
+- **Outcome Price** — formula consistent with P&L % terminology: `(Outcome Price - CMP at Rec) / CMP at Rec × 100`
+- **Entry CMP** — notes alias relationship with 'CMP at Rec'
+
+**Value display audit** (end-to-end across 8 sheets): 0 violations across all invariants — CMP within 52w range, SL<CMP<T1<T2<T3 monotonicity (16/16 BUY stocks), Score [0-100] bounds, Suggested Alloc [1%, 15%] bounds, risk-parity invariant (mean 0.98%, range 0.70-1.01%), Gold↔Full Dashboard cross-sheet consistency 4/4.
+
+**New G26 test** verifies all 6 shared-header tooltips correctly mention BOTH contexts and use canonical terminology. **78/78 tests** across 5/5 runs.
+
 ### Test count evolution
 - v14.5: 66 → v14.6: 67 (G15: multi-factor SL/T)
 - v15.0: 69 (G16 + G17) → v15.1: 71 (G18 + G19) → v15.2: 72 (G20)
 - v15.3: 73 (G21) → v15.4: 73 (G21 rewritten) → v15.5: 74 (G22)
-- v15.6: 74 (band fix, no new test) → v15.7: 75 (G23) → **v15.8: 76 (G24)**
+- v15.6: 74 (band fix, no new test) → v15.7: 75 (G23)
+- v15.8: 76 (G24) → v15.8.1: 77 (G25) → **v15.9: 78 (G26)**
 
-### Honest grade after v15.8: still A-
-**What changed since v15.0**: trading-day calendar precision (Phase 1), backtest infrastructure (Phase 3), institutional risk-parity sizing wired into Excel (Phase 4 + v15.5), Performance sheet completeness (v15.5/v15.6/v15.7), production audit fixes (v15.1/v15.2/v15.2.1/v15.7/v15.8 ETF leak).
+### Honest grade after v15.9: still A-
+**What changed since v15.0**: trading-day calendar precision (Phase 1), backtest infrastructure (Phase 3), institutional risk-parity sizing wired into Excel (Phase 4 + v15.5), Performance sheet completeness (v15.5/v15.6/v15.7), ETF filter robustness (v15.8 + v15.8.1 hotfix for indentation), tooltip context-correctness (v15.9).
 
-**Path to true A**: walk-forward backtest calibration of multipliers. Requires 30+ closed positions accumulated under v15.5+ rules (currently 0 — needs ~60-90 days of pipeline runs). `python -m backtest.walk_forward --calibrate` will produce optimized `multipliers_calibrated.json` once data threshold is met.
+**Path to true A**: walk-forward backtest calibration of multipliers. Requires 30+ closed positions accumulated under v15.5+ rules. `python -m backtest.walk_forward --calibrate` available once data threshold met.
 
 ---
 
-*Last updated: May 14, 2026 · v15.8 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 14, 2026 · v15.9 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

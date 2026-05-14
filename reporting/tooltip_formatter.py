@@ -997,14 +997,16 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "How long, on average, losing trades take to hit stop. Short\n"
                        "AVG (e.g., <10 days) suggests entries on weak setups; longer\n"
                        "AVG (>30 days) suggests gradual drift after entry."),
-    "Max Runup %": ("Best unrealized gain reached during tracking",
-                    "Highest (high − cmp_at_recommendation) / cmp × 100 observed since\n"
-                    "the recommendation was logged. For closed rows, this is the peak\n"
-                    "before the close event fired. For open rows, this is the running\n"
-                    "max as of the last tracker run. Use to spot 'left money on the\n"
-                    "table' situations where SL fired AFTER a +20% runup."),
-    "Max DD %": ("Worst unrealized loss reached during tracking",
-                  "Lowest (low − cmp_at_recommendation) / cmp × 100 observed. Negative\n"
+    "Max Runup %": ("Best gain reached since the recommendation was logged",
+                    "Highest (high − CMP at Rec) / CMP at Rec × 100 observed since\n"
+                    "the recommendation was logged.\n"
+                    "  • OPEN rows: running max as of the last tracker run\n"
+                    "    (still unrealized — may grow further).\n"
+                    "  • CLOSED rows: the peak BEFORE the close event fired.\n"
+                    "    Useful to spot 'left money on the table' situations\n"
+                    "    where SL fired AFTER a +20% runup."),
+    "Max DD %": ("Worst loss reached since the recommendation was logged",
+                  "Lowest (low − CMP at Rec) / CMP at Rec × 100 observed. Negative\n"
                   "value (e.g., -8.5%). For SL_HIT rows, this matches the SL distance.\n"
                   "For T1+/T2+/T3+ winners, a deep DD before the win is informative —\n"
                   "the system held conviction through a drawdown."),
@@ -1015,9 +1017,12 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "  amber 40-60% — mixed\n"
                   "  red <40% — weak group, candidate for filter tightening"),
     "Days Held": ("Calendar days since recommendation_date",
-                   "For open positions only. Computed as (today - recommendation_date).\n"
-                   "When this hits 90 days with no event, the tracker bumps the row\n"
-                   "to EXPIRED on the next run."),
+                   "For OPEN positions only. Computed as (today - Rec Date).\n"
+                   "When this reaches the horizon-specific expiry, the tracker\n"
+                   "moves the row to EXPIRED on the next run (v14.1+):\n"
+                   "  SHORT TERM  → expiry at 30 days\n"
+                   "  POSITIONAL  → expiry at 90 days\n"
+                   "  LONG TERM   → expiry at 270 days"),
     "Archetype": ("Quick Pick label at recommendation time",
                    "The Quick Pick assigned the day this stock was added to Gold.\n"
                    "Frozen at log time — even if today's score/EE would change the\n"
@@ -1125,20 +1130,28 @@ TIPS: Dict[str, Tuple[str, str]] = {
                         "T2 in 25-50; T3 in 40-90. SL_HITs are usually fast (5-15\n"
                         "days) — meaningful info: if SL_HIT averages slower than\n"
                         "T1_HIT, the stop is well-calibrated."),
-    "Entry CMP": ("CMP price the day this stock was first recommended",
+    "Entry CMP": ("Closing price the day this stock was first recommended (frozen)",
+                  "Same value as 'CMP at Rec' (just a shorter column name used\n"
+                  "on the CLOSED POSITIONS table).\n"
                   "Frozen at log time — never updated even on re-appearance.\n"
-                  "This is the reference price the realised P&L is computed from."),
-    "Outcome Price": ("Price at which the outcome event fired",
-                      "For T-HIT: the relevant target level (e.g. T1 ≈ +10% entry).\n"
-                      "For SL_HIT: the stop-loss level (e.g. -7% entry).\n"
-                      "For EXPIRED: the daily close on the expiry date.\n"
-                      "P&L % is computed as (outcome - entry) / entry × 100."),
-    "Max Drawdown %": ("Worst unrealized loss seen during tracking",
-                       "Running min of (low - entry) / entry × 100 as the tracker\n"
-                       "walks daily prices forward. For T-HIT outcomes, this shows\n"
-                       "how much pain you'd have endured before winning — useful\n"
-                       "for sizing future positions. -10% drawdown to win T1 is\n"
-                       "very different from -2%."),
+                  "This is the reference price the realised P&L is computed from:\n"
+                  "  Realised P&L % = (Outcome Price - Entry CMP) / Entry CMP × 100."),
+    "Outcome Price": ("Price at which the closing event fired (CLOSED rows only)",
+                      "  • For T1_HIT / T2_HIT / T3_HIT: the relevant target level\n"
+                      "    crossed (e.g. T1 ≈ +20% above entry).\n"
+                      "  • For SL_HIT: the stop-loss price touched (e.g. -7% below entry).\n"
+                      "  • For EXPIRED: the daily close on the expiry date (no\n"
+                      "    SL/T event fired within the horizon window).\n"
+                      "Realised P&L % = (Outcome Price - CMP at Rec) / CMP at Rec × 100."),
+    "Max Drawdown %": ("Worst loss reached since the recommendation was logged",
+                       "Running min of (low - CMP at Rec) / CMP at Rec × 100 as the\n"
+                       "tracker walks daily prices forward.\n"
+                       "  • OPEN rows: lowest dip seen so far (still recoverable).\n"
+                       "  • CLOSED rows: worst pain endured BEFORE the close event.\n"
+                       "For T-HIT outcomes, this shows how much drawdown you'd\n"
+                       "have endured before winning — useful for sizing future\n"
+                       "positions. -10% drawdown to win T1 is very different\n"
+                       "from -2% drawdown to win T1."),
     # ────────────────────────────────────────────────────────────────────
     # v15.5: Performance sheet OPEN POSITIONS column tooltips
     # The 18 OPEN columns are: Symbol, Rec Date, Time Horizon, Days Held,
@@ -1167,10 +1180,15 @@ TIPS: Dict[str, Tuple[str, str]] = {
                       "levels to detect events. Note: the Performance sheet uses\n"
                       "end-of-bar prices (no intraday checks) for no-lookahead\n"
                       "discipline — today's bar is fully formed before evaluation."),
-    "P&L %": ("Current unrealized return: (Current Price - CMP at Rec) / CMP × 100",
-              "Positive = winning trade in progress. Negative = losing position\n"
-              "still being monitored. The tracker uses this to determine when\n"
-              "trailing-SL ratchets fire (peak gain crosses +5%/+10%/+15%).\n"
+    "P&L %": ("Return on this position — unrealized for OPEN rows, realised for CLOSED rows",
+              "Formula: (price - CMP at Rec) / CMP at Rec × 100\n"
+              "  • OPEN rows: price = Current Price (latest close).\n"
+              "    Positive = winning trade in progress. Negative = losing\n"
+              "    position still being monitored. Tracker uses this for\n"
+              "    trailing-SL ratchets (BE at +5%, +3% lock at +10%,\n"
+              "    +7% lock at +15%).\n"
+              "  • CLOSED rows: price = Outcome Price (level where the\n"
+              "    closing event fired). This is the FINAL realised return.\n"
               "Color: green if ≥ +5%, amber if 0 to +5%, red if negative."),
     "Score": ("Score at log time (frozen — does not refresh)",
               "The composite v15.x score (0-100) computed at the moment this\n"

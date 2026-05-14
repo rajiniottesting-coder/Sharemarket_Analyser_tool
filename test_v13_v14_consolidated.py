@@ -3521,6 +3521,120 @@ def test_g25_v15_8_1_eps_mcap_parsing_reachable():
             "inside `if sym in _sm_map:`, no orphaning `continue` before it, "
             "v15.8 filter sits AFTER parsing)")
 
+def test_g26_v15_9_tooltip_context_correctness():
+    """v15.9 regression test — locks tooltip-correctness fixes for shared
+    headers between Performance OPEN and CLOSED POSITIONS tables.
+
+    BACKGROUND:
+    The TIPS dict in tooltip_formatter.py is keyed by header name. The SAME
+    header name appears in BOTH the OPEN POSITIONS (where 'unrealized',
+    'trade in progress' is correct context) and CLOSED POSITIONS (where
+    'realised', 'final outcome' is correct context) tables. Pre-v15.9
+    tooltips for shared headers were written assuming only the OPEN context.
+
+    Specific bugs:
+      • 'P&L %' tooltip said "Current unrealized return... trade in progress"
+         — wrong for CLOSED rows (realised P&L, final outcome).
+      • 'Max Runup %' / 'Max Drawdown %' QUICK READ said "during tracking"
+         which is open-context-toned.
+      • 'Days Held' said "hits 90 days" — outdated (v14.1+ uses horizon-
+         specific expiry: SHORT=30, POSITIONAL=90, LONG=270).
+      • Formula text used "/ CMP × 100" — ambiguous denominator. Should be
+         "/ CMP at Rec × 100" (always the frozen entry, never the latest CMP).
+      • 'Outcome Price' formula used "(outcome - entry) / entry × 100" with
+         different terminology than the 'P&L %' tooltip — both reference
+         the same calculation but use different field names.
+
+    THIS TEST verifies the v15.9 fix:
+      1. P&L % tooltip explicitly handles BOTH OPEN and CLOSED contexts.
+      2. Max Runup % / Max Drawdown % QUICK READs are context-neutral.
+      3. Days Held tooltip mentions horizon-specific expiry (not just 90 days).
+      4. Outcome Price formula uses 'CMP at Rec' (matches P&L % terminology).
+      5. Entry CMP tooltip notes its alias relationship with 'CMP at Rec'.
+    """
+    from reporting.tooltip_formatter import TIPS
+
+    # ── Test 1: P&L % covers BOTH contexts ──
+    short, long_text = TIPS["P&L %"]
+    full = short + " " + long_text
+    assert "OPEN" in full.upper() and "CLOSED" in full.upper(), (
+        f"v15.9: 'P&L %' tooltip must explicitly mention both OPEN and "
+        f"CLOSED contexts. Got QUICK READ: {short!r}"
+    )
+    # Realised/realized must appear (CLOSED context)
+    assert "realised" in full.lower() or "realized" in full.lower(), (
+        "v15.9: 'P&L %' tooltip must mention 'realised' return (CLOSED context)"
+    )
+    # Unrealized must also appear (OPEN context)
+    assert "unrealized" in full.lower(), (
+        "v15.9: 'P&L %' tooltip must mention 'unrealized' (OPEN context)"
+    )
+
+    # ── Test 2: Max Runup % is context-neutral ──
+    runup_short, runup_long = TIPS["Max Runup %"]
+    runup_full = runup_short + " " + runup_long
+    assert "OPEN" in runup_full.upper() and "CLOSED" in runup_full.upper(), (
+        f"v15.9: 'Max Runup %' tooltip must mention both contexts. "
+        f"Got QUICK READ: {runup_short!r}"
+    )
+    # The QUICK READ should NOT say 'unrealized' (that's OPEN-only language)
+    assert "unrealized" not in runup_short.lower(), (
+        f"v15.9: 'Max Runup %' QUICK READ should be context-neutral, "
+        f"not say 'unrealized'. Got: {runup_short!r}"
+    )
+
+    # ── Test 3: Max Drawdown % is context-neutral ──
+    dd_short, dd_long = TIPS["Max Drawdown %"]
+    dd_full = dd_short + " " + dd_long
+    assert "OPEN" in dd_full.upper() and "CLOSED" in dd_full.upper(), (
+        f"v15.9: 'Max Drawdown %' tooltip must mention both contexts"
+    )
+    assert "unrealized" not in dd_short.lower(), (
+        f"v15.9: 'Max Drawdown %' QUICK READ should not say 'unrealized'"
+    )
+
+    # ── Test 4: Days Held mentions horizon-specific expiry ──
+    held_short, held_long = TIPS["Days Held"]
+    held_full = held_short + " " + held_long
+    assert "30 days" in held_full and "90 days" in held_full and "270 days" in held_full, (
+        f"v15.9: 'Days Held' tooltip must mention all three horizon "
+        f"expiry windows (SHORT=30, POSITIONAL=90, LONG=270). Got: {held_long!r}"
+    )
+
+    # ── Test 5: Outcome Price formula uses 'CMP at Rec' ──
+    op_short, op_long = TIPS["Outcome Price"]
+    op_full = op_short + " " + op_long
+    assert "CMP at Rec" in op_full, (
+        f"v15.9: 'Outcome Price' formula must reference 'CMP at Rec' "
+        f"(matches P&L % terminology). Got: {op_long!r}"
+    )
+    # Old "(outcome - entry) / entry × 100" pattern should be replaced
+    assert "(outcome - entry) / entry" not in op_full, (
+        f"v15.9: 'Outcome Price' uses old formula terminology. "
+        f"Should use 'Outcome Price' and 'CMP at Rec' consistently."
+    )
+
+    # ── Test 6: Entry CMP notes the alias relationship ──
+    entry_short, entry_long = TIPS["Entry CMP"]
+    entry_full = entry_short + " " + entry_long
+    assert "CMP at Rec" in entry_full, (
+        f"v15.9: 'Entry CMP' tooltip must explain that it's the same as "
+        f"'CMP at Rec' (different column name on CLOSED table). Got: {entry_long!r}"
+    )
+
+    # ── Test 7: Max DD % alias mirrors Max Drawdown % ──
+    dd2_short, dd2_long = TIPS["Max DD %"]
+    assert "unrealized" not in dd2_short.lower(), (
+        "v15.9: 'Max DD %' QUICK READ should not say 'unrealized'"
+    )
+    assert "CMP at Rec" in dd2_long, (
+        "v15.9: 'Max DD %' formula must reference 'CMP at Rec'"
+    )
+
+    return ("\u2705 v15.9: shared-header tooltips (P&L %, Max Runup %, Max "
+            "Drawdown %, Days Held, Outcome Price, Entry CMP) all rewritten "
+            "to be correct in BOTH OPEN and CLOSED POSITIONS contexts")
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -3782,6 +3896,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g23_v15_7_minor_cleanups))
     v14_1_results.append(_run_one_test(test_g24_v15_8_post_enrichment_etf_filter))
     v14_1_results.append(_run_one_test(test_g25_v15_8_1_eps_mcap_parsing_reachable))
+    v14_1_results.append(_run_one_test(test_g26_v15_9_tooltip_context_correctness))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
