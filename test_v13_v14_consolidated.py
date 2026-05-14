@@ -3235,6 +3235,150 @@ def test_g23_v15_7_minor_cleanups():
     return ("\u2705 v15.7: rationale-text fix + glossary dedup + Performance "
             "OPEN POSITIONS extended 18→20 cols (Suggested Alloc % + Rationale)")
 
+def test_g24_v15_8_post_enrichment_etf_filter():
+    """v15.8 regression test — locks the second-pass ETF filter that catches
+    ETFs slipping past the pre_screener gap.
+
+    Background: NSE bhavcopy doesn't populate descriptive company names —
+    only tickers. The v15.2 pre_screener name-marker filter (' ETF',
+    'MUTUAL FUND', etc.) runs BEFORE enrichment when company_name is empty,
+    so name-based detection silently misses NSE-listed ETFs.
+
+    13 May 2026 production: 12 ETFs leaked through the gap.
+
+    v15.8 fix: re-check name markers immediately AFTER symbol_master enrichment
+    populates company_name. Uses a two-stage filter with AMC-parent carve-out.
+
+    Two-stage logic:
+      Stage 1 — HARD-BLOCK markers (' ETF', 'MUTUAL FUND', 'BEES', etc.)
+                Any match → BLOCK. Catches fund instruments unambiguously.
+
+      Stage 2 — SOFT-AMC markers ('ASSET MANAGEMENT', 'ASSET MGMT')
+                Carve-out: ALLOW if name ENDS with AMC-parent suffix
+                ('ASSET MANAGEMENT COMPANY LIMITED', 'AMC LIMITED', etc.).
+                Otherwise BLOCK.
+
+      AMC parent companies preserved: HDFCAMC, NAM-INDIA, UTIAMC, ABSLAMC.
+    """
+    # Inline copy of master_funnel v15.8 filter — KEEP IN SYNC.
+    _hard_block_markers = (
+        " ETF", "ETF -", "ETF \u2013",
+        "MUTUAL FUND", "INDEX FUND", "FUND OF FUND",
+        "BEES", "G-SEC ETF", "BOND ETF", "LIQUID ETF",
+        "GOLD ETF", "SILVER ETF", "BANK ETF",
+        "NIFTY 50 ETF", "SENSEX ETF",
+        "HOSPITALS ETF", "TECH ETF",
+        "NIFTY50 VALUE", "HANG SENG",
+    )
+    _soft_amc = ("ASSET MANAGEMENT", "ASSET MGMT")
+    _amc_parent_suffixes = (
+        "ASSET MANAGEMENT COMPANY LIMITED",
+        "ASSET MANAGEMENT COMPANY LTD",
+        "ASSET MANAGEMENT LIMITED",
+        "ASSET MANAGEMENT LTD",
+        "AMC LIMITED",
+        "AMC LTD",
+    )
+
+    def _should_block(name: str) -> bool:
+        cn = str(name or "").upper().strip().rstrip(".")
+        for m in _hard_block_markers:
+            if m in cn:
+                return True
+        if any(m in cn for m in _soft_amc):
+            if not any(cn.endswith(s) for s in _amc_parent_suffixes):
+                return True
+        return False
+
+    # ── 11 confirmed ETFs from 13 May 2026 (must BLOCK) ──
+    # NAM-INDIA excluded — it's a real AMC parent stock.
+    confirmed_etfs_to_block = [
+        ("HDFCVALUE",  "HDFC NIFTY50 Value 20 ETF"),
+        ("SBIETFPB",   "SBI Nifty Private Bank ETF"),
+        ("HSBCGOLD",   "Hsbc Asset Management (India) Private Limited - "
+                       "Hsbc Mutual Fund - Hsbc Gold ETF"),
+        ("GROWWHOSPI", "Groww Mutual Fund - Groww BSE Hospitals ETF"),
+        ("ENIFTY",     "Edelweiss Mutual Fund - Edelweiss ETF - Nifty 50"),
+        ("MAHKTECH",   "Mirae Asset Hang Seng TECH ETF"),
+        ("SBISILVER",  "SBI Silver ETF"),
+        ("AXISGOLD",   "Axis Gold ETF"),
+        ("SETFNIFBK",  "SBI Nifty Bank ETF"),
+        ("SETFGOLD",   "SBI Gold ETF"),
+        ("HDFCSILVER", "HDFC Silver ETF"),
+    ]
+    for sym, name in confirmed_etfs_to_block:
+        assert _should_block(name), (
+            f"v15.8: {sym} ({name!r}) must be BLOCKED but wasn't"
+        )
+
+    # ── AMC parents (must ALLOW — real operating businesses) ──
+    amc_parents_to_allow = [
+        ("HDFCAMC",   "HDFC Asset Management Company Limited"),
+        ("NAM-INDIA", "Nippon Life India Asset Management Limited"),
+        ("UTIAMC",    "UTI Asset Management Company Limited"),
+        ("ABSLAMC",   "Aditya Birla Sun Life AMC Limited"),
+    ]
+    for sym, name in amc_parents_to_allow:
+        assert not _should_block(name), (
+            f"v15.8: AMC parent {sym} ({name!r}) must be ALLOWED but was blocked"
+        )
+
+    # ── Operating stocks (must ALLOW — control group) ──
+    operating_stocks_to_allow = [
+        ("RELIANCE",   "Reliance Industries Limited"),
+        ("HDFCBANK",   "HDFC Bank Limited"),
+        ("BANKBARODA", "Bank of Baroda"),
+        ("HDFCLIFE",   "HDFC Life Insurance Company Limited"),
+        ("BAJAJFINSV", "Bajaj Finserv Limited"),
+        ("MOTILALOFS", "Motilal Oswal Financial Services Limited"),
+        ("ANANDRATHI", "Anand Rathi Wealth Limited"),
+    ]
+    for sym, name in operating_stocks_to_allow:
+        assert not _should_block(name), (
+            f"v15.8: operating stock {sym} ({name!r}) must be ALLOWED but was blocked"
+        )
+
+    # ── Legacy ETFs from v15.2 list (must still BLOCK) ──
+    legacy_etfs_to_block = [
+        ("NIFTYBEES",  "Nippon India ETF Nifty BeES"),
+        ("GOLDBEES",   "Nippon India ETF Gold BeES"),
+        ("LIQUIDBEES", "Nippon India ETF Liquid BeES"),
+    ]
+    for sym, name in legacy_etfs_to_block:
+        assert _should_block(name), (
+            f"v15.8: legacy ETF {sym} ({name!r}) must still be BLOCKED"
+        )
+
+    # ── Critical HSBC edge case: 'Asset Management' AND ' ETF' in same name ──
+    # Hard-block takes precedence over AMC carve-out (otherwise the AMC
+    # suffix check could wrongly let "Hsbc Asset Management ... ETF" through).
+    hsbc = ("Hsbc Asset Management (India) Private Limited - Hsbc Mutual Fund "
+            "- Hsbc Gold ETF")
+    assert _should_block(hsbc), (
+        "v15.8: HSBC edge case (Asset Management + ETF in same name) must "
+        "be BLOCKED — hard-block markers take precedence over AMC carve-out"
+    )
+
+    # ── Verify the filter is actually wired in master_funnel.py ──
+    src = open('master_funnel.py', 'r', encoding='utf-8').read()
+    assert "_v158_etf_filtered" in src, (
+        "v15.8: sentinel flag '_v158_etf_filtered' missing from master_funnel.py"
+    )
+    assert "_amc_parent_suffixes" in src, (
+        "v15.8: AMC parent carve-out missing from master_funnel.py"
+    )
+    assert "hard-block markers" in src.lower() or "_hard_block_markers" in src, (
+        "v15.8: two-stage filter (hard-block markers) missing from master_funnel.py"
+    )
+    # Verify the prune step before Excel generation
+    assert "ETF/MF leakers" in src or "_v158_etf_filtered" in src, (
+        "v15.8: prune-before-Excel step missing from master_funnel.py"
+    )
+
+    return ("\u2705 v15.8: post-enrichment ETF filter (11 confirmed leakers "
+            "BLOCKED, 4 AMC parents ALLOWED via carve-out, 3 legacy ETFs still "
+            "BLOCKED, HSBC edge case correct)")
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -3494,6 +3638,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g21_v15_4_phases_1_3_4))
     v14_1_results.append(_run_one_test(test_g22_v15_5_risk_parity_wired_to_excel))
     v14_1_results.append(_run_one_test(test_g23_v15_7_minor_cleanups))
+    v14_1_results.append(_run_one_test(test_g24_v15_8_post_enrichment_etf_filter))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

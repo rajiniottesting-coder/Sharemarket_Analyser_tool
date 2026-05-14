@@ -1593,6 +1593,100 @@ def run_master_pipeline():
                 if not stock.get("cap_category") or stock.get("cap_category") == "—":
                     if cap:
                         stock["cap_category"] = cap
+
+            # ────────────────────────────────────────────────────────────
+            # v15.8: POST-ENRICHMENT ETF/MF FILTER (second-pass)
+            # ────────────────────────────────────────────────────────────
+            # WHY THIS EXISTS:
+            # NSE bhavcopy does NOT include descriptive company names — only
+            # tickers. The v15.2 name-marker filter in pre_screener.py runs
+            # BEFORE enrichment, when `company_name` is still empty → markers
+            # like " ETF" / "MUTUAL FUND" never match → ETFs leak through.
+            #
+            # The 13 May 2026 production run leaked 12 ETFs through this gap:
+            # HDFCVALUE, SBIETFPB, HSBCGOLD, GROWWHOSPI, ENIFTY, MAHKTECH,
+            # SBISILVER, AXISGOLD, SETFNIFBK, SETFGOLD, NAM-INDIA*, HDFCSILVER.
+            # (* NAM-INDIA was a false-leak — it IS a real AMC parent stock.)
+            #
+            # TWO-STAGE LOGIC (with AMC parent carve-out):
+            #
+            #   Stage 1: HARD-BLOCK markers (unambiguous fund-instrument
+            #            signals). Any match → BLOCK immediately. Cannot be
+            #            overridden by a carve-out, because these names tag
+            #            the actual fund product, not the issuer.
+            #            Examples: " ETF", "ETF -", "MUTUAL FUND", "BEES",
+            #            "INDEX FUND", "GOLD ETF", "BOND ETF", "HANG SENG".
+            #
+            #   Stage 2: SOFT-AMC markers ("ASSET MANAGEMENT", "ASSET MGMT").
+            #            Match here means "AMC involvement somewhere in
+            #            name" — could be either the parent company or a
+            #            fund product. The carve-out applies:
+            #
+            #     Allow if the name ENDS with an AMC-parent suffix:
+            #       "ASSET MANAGEMENT COMPANY LIMITED" / "...LTD"
+            #       "ASSET MANAGEMENT LIMITED"        / "...LTD"
+            #       "AMC LIMITED"                     / "AMC LTD"
+            #     Otherwise → BLOCK.
+            #
+            #   AMC PARENT COMPANIES (publicly-listed, real operating
+            #   businesses with revenue from fund management) preserved:
+            #     HDFCAMC      "HDFC Asset Management Company Limited"
+            #     NAM-INDIA    "Nippon Life India Asset Management Limited"
+            #     UTIAMC       "UTI Asset Management Company Limited"
+            #     ABSLAMC      "Aditya Birla Sun Life AMC Limited"
+            #
+            # HSBC EDGE CASE explained:
+            #   "Hsbc Asset Management (India) Private Limited - Hsbc Mutual
+            #    Fund - Hsbc Gold ETF" — has BOTH "Asset Management" AND
+            #    " ETF". Stage 1 catches " ETF" → BLOCKED before stage 2
+            #    even evaluates the AMC carve-out. Correct outcome.
+            _cn_check = str(stock.get("company_name", "") or "").upper().strip().rstrip(".")
+            # Stage 1: hard-block markers
+            _hard_block_markers = (
+                " ETF",            # " ETF" with leading space prevents "PETF"
+                "ETF -",           # "Edelweiss ETF - Nifty 50"
+                "ETF \u2013",      # em-dash variant
+                "MUTUAL FUND",
+                "INDEX FUND",
+                "FUND OF FUND",
+                "BEES",            # NIFTYBEES, GOLDBEES, BANKBEES, etc.
+                "G-SEC ETF",
+                "BOND ETF", "LIQUID ETF",
+                "GOLD ETF", "SILVER ETF", "BANK ETF",
+                "NIFTY 50 ETF", "SENSEX ETF",
+                "HOSPITALS ETF", "TECH ETF",
+                "NIFTY50 VALUE",   # HDFCVALUE pattern
+                "HANG SENG",       # Mirae Asset Hang Seng TECH
+            )
+            _hit_marker = None
+            for _m in _hard_block_markers:
+                if _m in _cn_check:
+                    _hit_marker = _m
+                    break
+
+            if _hit_marker is None:
+                # Stage 2: soft AMC markers WITH parent carve-out
+                _soft_amc = ("ASSET MANAGEMENT", "ASSET MGMT")
+                _soft_matched = any(m in _cn_check for m in _soft_amc)
+                if _soft_matched:
+                    _amc_parent_suffixes = (
+                        "ASSET MANAGEMENT COMPANY LIMITED",
+                        "ASSET MANAGEMENT COMPANY LTD",
+                        "ASSET MANAGEMENT LIMITED",
+                        "ASSET MANAGEMENT LTD",
+                        "AMC LIMITED",
+                        "AMC LTD",
+                    )
+                    if not any(_cn_check.endswith(s) for s in _amc_parent_suffixes):
+                        _hit_marker = "ASSET MANAGEMENT (no parent-co suffix)"
+
+            if _hit_marker:
+                stock["_v158_etf_filtered"] = True
+                stock["verdict"] = "FILTERED_ETF"
+                stock["composite_score"] = 0
+                stock["early_entry_score"] = 0
+                continue   # skip the rest of enrichment for this ETF/MF
+            # ────────────────────────────────────────────────────────────
                 # Parse EPS and mcap from the tag in updated_on
                 if upd and "|eps=" in str(upd):
                     import re as _re
@@ -3443,6 +3537,21 @@ def run_master_pipeline():
         print("📝 [Section 9/10] Constructing Final Deliverables...")
         from reporting.excel_generator import ExcelGeneratorV6
         from reporting.daily_report_generator import DailyReportGenerator
+
+        # v15.8: Prune ETF-filtered stocks before Excel render. These were
+        # detected during enrichment (post-symbol_master company_name lookup)
+        # but never removed from final_100_list to avoid restructuring the
+        # earlier enrichment loop. Here at the Excel hand-off, we drop them
+        # so they don't appear in the Full Dashboard / Gold sheets.
+        _pre_prune = len(final_100_list)
+        _etf_pruned = [s.get("symbol","?") for s in final_100_list
+                        if s.get("_v158_etf_filtered")]
+        final_100_list = [s for s in final_100_list
+                          if not s.get("_v158_etf_filtered")]
+        if _etf_pruned:
+            print(f"   🧹 v15.8: pruned {len(_etf_pruned)} ETF/MF leakers post-enrichment: "
+                  f"{', '.join(_etf_pruned[:8])}"
+                  f"{' (+' + str(len(_etf_pruned)-8) + ' more)' if len(_etf_pruned) > 8 else ''}")
 
         date_str = target_date.strftime("%Y%m%d")
 

@@ -3576,17 +3576,53 @@ Three issues surfaced in v15.6 production audit:
 
 **New G23 test** locks: rationale-text correctness, glossary dedup, Performance col count = 20, schema migration present, INSERT extension, `_rec` dict has new keys. **75/75 tests** across 5/5 runs.
 
+### v15.8 — Post-enrichment ETF filter with AMC-parent carve-out
+13 May 2026 production audit: **12 ETFs leaked** into the Full Dashboard despite the v15.2 filter.
+
+**Root cause**: NSE bhavcopy doesn't populate descriptive company names — only tickers. The v15.2 name-marker filter in pre_screener.py runs BEFORE enrichment, when `company_name` is empty → markers like " ETF" / "MUTUAL FUND" never match → ETFs slip through.
+
+**Leaked ETFs**: HDFCVALUE, SBIETFPB, HSBCGOLD, GROWWHOSPI, ENIFTY, MAHKTECH, SBISILVER, AXISGOLD, SETFNIFBK, SETFGOLD, HDFCSILVER (11 confirmed). NAM-INDIA was a false-leak — it's actually Nippon Life India Asset Management Limited, a publicly-listed real AMC parent company.
+
+**Fix**: second-pass filter in master_funnel.py immediately AFTER symbol_master enrichment populates `company_name` (around line 1590). Two-stage logic with AMC-parent carve-out:
+
+```
+Stage 1 — HARD-BLOCK markers (fund-instrument signals):
+  " ETF", "ETF -", "MUTUAL FUND", "INDEX FUND", "BEES",
+  "GOLD ETF", "SILVER ETF", "BANK ETF", "BOND ETF", "LIQUID ETF",
+  "NIFTY50 VALUE", "HANG SENG", "HOSPITALS ETF", "TECH ETF"
+  → any match → BLOCK immediately
+
+Stage 2 — SOFT-AMC markers ("ASSET MANAGEMENT", "ASSET MGMT"):
+  Carve-out: ALLOW if name ENDS with:
+    "ASSET MANAGEMENT COMPANY LIMITED/LTD"
+    "ASSET MANAGEMENT LIMITED/LTD"
+    "AMC LIMITED/LTD"
+  Otherwise → BLOCK
+```
+
+**AMC parents preserved** (publicly-listed real operating businesses):
+- HDFCAMC — HDFC Asset Management Company Limited
+- NAM-INDIA — Nippon Life India Asset Management Limited
+- UTIAMC — UTI Asset Management Company Limited
+- ABSLAMC — Aditya Birla Sun Life AMC Limited
+
+**HSBC edge case** (name has BOTH "Asset Management" AND " ETF"): Stage 1 hard-block fires before Stage 2 carve-out evaluates → correctly blocked.
+
+Filtered stocks get sentinel flag `_v158_etf_filtered=True` + `verdict='FILTERED_ETF'` + scores=0, then pruned from `final_100_list` immediately before Excel generation. Visible log line on each run: `🧹 v15.8: pruned N ETF/MF leakers post-enrichment: ...`.
+
+**New G24 test** verifies: 11 confirmed leakers BLOCKED, 4 AMC parents ALLOWED, 3 legacy ETFs (NIFTYBEES/GOLDBEES/LIQUIDBEES) still BLOCKED, HSBC edge case correct, filter wired. **76/76 tests** across 5/5 runs.
+
 ### Test count evolution
 - v14.5: 66 → v14.6: 67 (G15: multi-factor SL/T)
 - v15.0: 69 (G16 + G17) → v15.1: 71 (G18 + G19) → v15.2: 72 (G20)
 - v15.3: 73 (G21) → v15.4: 73 (G21 rewritten) → v15.5: 74 (G22)
-- v15.6: 74 (band fix, no new test) → **v15.7: 75 (G23)**
+- v15.6: 74 (band fix, no new test) → v15.7: 75 (G23) → **v15.8: 76 (G24)**
 
-### Honest grade after v15.7: still A-
-**What changed since v15.0**: trading-day calendar precision (Phase 1), backtest infrastructure (Phase 3), institutional risk-parity sizing wired into Excel (Phase 4 + v15.5), Performance sheet completeness (v15.5/v15.6/v15.7), production audit fixes (v15.1/v15.2/v15.2.1/v15.7).
+### Honest grade after v15.8: still A-
+**What changed since v15.0**: trading-day calendar precision (Phase 1), backtest infrastructure (Phase 3), institutional risk-parity sizing wired into Excel (Phase 4 + v15.5), Performance sheet completeness (v15.5/v15.6/v15.7), production audit fixes (v15.1/v15.2/v15.2.1/v15.7/v15.8 ETF leak).
 
 **Path to true A**: walk-forward backtest calibration of multipliers. Requires 30+ closed positions accumulated under v15.5+ rules (currently 0 — needs ~60-90 days of pipeline runs). `python -m backtest.walk_forward --calibrate` will produce optimized `multipliers_calibrated.json` once data threshold is met.
 
 ---
 
-*Last updated: May 13, 2026 · v15.7 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 14, 2026 · v15.8 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
