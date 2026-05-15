@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>NSE/BSE Stock Analyser — Pipeline Reference (v15.0)</title>
+<title>NSE/BSE Stock Analyser — Pipeline Reference (v16.3)</title>
 <style>
   :root {
     --bg-primary:#fff;--bg-secondary:#f8f7f3;--bg-tertiary:#f1efe8;
@@ -77,7 +77,7 @@
 <body>
 <div class="wrap">
 <h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
-<div class="meta">v15.0 · Daily pre-market intelligence pipeline · Single source of truth for end-to-end logic · Outcome tracking layer (v14.0+), v14.5 CLOSED POSITIONS section, v14.6 multi-factor SL/T, and v15.0 A- enhancements (5-tier sectors, regime detection, trailing stops, volume-confirmed support) covered separately in CLAUDE.md §34+</div>
+<div class="meta">v16.3 · Daily pre-market intelligence pipeline · Single source of truth for end-to-end logic · Post-pipeline layers (outcome tracking from v14.0+, trailing stops + regime detection from v15.0, risk-parity sizing from v15.5, institutional risk metrics + DD-duration tracking + survivorship audit from v16.0, Gold-tier Quality Floor gate (ROE ≥ 10% · PEG ≤ 8) from v16.2, Excel column-width fixes from v16.3) covered separately in CLAUDE.md</div>
 <div class="toc">
   <h3>Contents</h3>
   <ol>
@@ -742,7 +742,7 @@
 
 <g class="c-gray"><rect x="40" y="1284" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1306" text-anchor="middle">Side-output 2 · Gold-tier filter (binary include/exclude)</text></g>
 
-<g class="c-amber"><rect x="40" y="1342" width="600" height="124" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1362" text-anchor="middle" dominant-baseline="central">Gold sheet membership — ALL 11 conditions must pass (excel_generator.py:2004)</text><text class="ts" x="340" y="1384" text-anchor="middle" dominant-baseline="central">1) verdict==BUY · 2) score≥70 · 3) MoS 15-100 · 4) Storm≥5 · 5) RSI≤70</text><text class="ts" x="340" y="1402" text-anchor="middle" dominant-baseline="central">6) bs_status≠ALERT · 7) <tspan font-family="ui-monospace,Menlo,monospace" font-size="11">pledge_pct≤10</tspan> · 8) spike_suppressed=False</text><text class="ts" x="340" y="1420" text-anchor="middle" dominant-baseline="central">9) Altman Z≥1.8 OR "—" · 10) Earn Quality≠LOW · 11) Int Coverage≥1.5 OR "—"</text><text class="ts" x="340" y="1442" text-anchor="middle" dominant-baseline="central">High pledge → never reaches Gold even if score=95+verdict=BUY (binary exclusion)</text></g>
+<g class="c-amber"><rect x="40" y="1342" width="600" height="160" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1362" text-anchor="middle" dominant-baseline="central">Gold sheet membership — ALL 13 conditions must pass (excel_generator.py::_get_gold)</text><text class="ts" x="340" y="1384" text-anchor="middle" dominant-baseline="central">1) verdict==BUY · 2) score≥70 · 3) MoS 15-100 · 4) Storm≥5 · 5) RSI≤70</text><text class="ts" x="340" y="1402" text-anchor="middle" dominant-baseline="central">6) bs_status≠ALERT · 7) <tspan font-family="ui-monospace,Menlo,monospace" font-size="11">pledge_pct≤10</tspan> · 8) spike_suppressed=False</text><text class="ts" x="340" y="1420" text-anchor="middle" dominant-baseline="central">9) Altman Z≥1.8 OR "—" · 10) Earn Quality≠LOW · 11) Int Coverage≥1.5 OR "—"</text><text class="ts" x="340" y="1442" text-anchor="middle" dominant-baseline="central">12) ROE≥10% OR "—" · 13) PEG≤8 OR "—" OR ≤0 (v16.2 Quality Floor)</text><text class="ts" x="340" y="1464" text-anchor="middle" dominant-baseline="central">High pledge → never reaches Gold even if score=95+verdict=BUY (binary exclusion)</text><text class="ts" x="340" y="1486" text-anchor="middle" dominant-baseline="central">Permissive on missing data: ROE=None / PEG=None / loss-makers pass these gates</text></g>
 </svg>
 </div>
 
@@ -879,8 +879,8 @@ Stage 3 reads <code>latest_analysis_results</code> table at startup via <code>ge
 </p>
 
 <div class="footer">
-NSE/BSE Stock Analyser · v15.0 · Pipeline reference document<br>
-For ongoing changes see CLAUDE.md (Sections 25+ cover v12.4 → v15.0, including v14.0 Gold-pick outcome tracking, v14.1 horizon-aware expiry, v14.3 Performance-sheet audit, v14.4 SL/T1/T2/T3 dynamic-distance columns, v14.5 CLOSED POSITIONS section, v14.6 multi-factor SL/T, and v15.0 A- enhancements (5-tier sectors, regime detection, trailing stops, volume-confirmed support)) and scoring_logic_3Stagefunnel_explained.md. Note: this document covers the daily scoring pipeline only; outcome tracking runs as a post-pipeline layer and is documented separately.
+NSE/BSE Stock Analyser · v16.3 · Pipeline reference document<br>
+This document covers the daily scoring pipeline only (Stage 1 eligibility → Composite Score → Verdict). For ongoing post-pipeline enhancements see CLAUDE.md and the per-release CHANGES.md files. Key post-v15.0 layers: <strong>v15.5</strong> institutional risk-parity sizing (1% risk budget per position, cap-category multipliers, 30% sector cap, MAX_ALLOCATION clamp); <strong>v15.7</strong> Performance-sheet alloc columns; <strong>v15.8 / v15.8.1</strong> ETF filter with AMC-parent carve-out (hotfix for EPS/mcap parsing); <strong>v15.9</strong> tooltip context-correctness for shared OPEN/CLOSED headers; <strong>v16.0</strong> institutional risk-adjusted metrics (Sharpe / Sortino / Calmar), Max DD Duration tracking, survivorship-bias audit; <strong>v16.2</strong> Gold-tier Quality Floor gate (ROE ≥ 10% and PEG ≤ 8) — Gold filter now has 13 must-pass criteria, up from 11; <strong>v16.3</strong> Excel column-width fixes across Performance / Gold / Full Dashboard sheets to eliminate header-text overlap.
 </div>
 
 </div>

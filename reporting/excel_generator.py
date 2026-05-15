@@ -79,17 +79,19 @@ FULL_COLS = [
     ("Spike Score /6",11,"spike_count"),("Storm Score /10",12,"storm_score"),
     ("CMP (₹)",11,"close"),("Day Chg %",10,"day_change"),("52W High (₹)",12,"high_52w"),
     ("52W Low (₹)",12,"low_52w"),("Vol Spike (×50D)",14,"vol_ratio"),("Delivery %",11,"delivery_pct"),
-    ("Beta",8,"beta"),("Chg% [2-Weekly]",14,"2w_chg"),("Chg% [4-Weekly]",14,"4w_chg"),
+    ("Beta",10,"beta"),("Chg% [2-Weekly]",14,"2w_chg"),("Chg% [4-Weekly]",14,"4w_chg"),
     ("Chg% [6-Weekly]",14,"6w_chg"),("Chg% [8-Weekly]",14,"8w_chg"),
     ("CFV (₹)",11,"cfv"),("FV Low (₹)",11,"cfv_low"),("FV High (₹)",11,"cfv_high"),
     ("MoS %",10,"mos_pct"),("MoS Label",22,"mos_label"),
     ("M1: DCF FV (₹)",14,"M1_DCF"),("M2: Graham FV (₹)",16,"M2_Graham"),
     ("M3: PE FV (₹)",14,"M3_PE"),("M4: PB FV (₹)",14,"M4_PB"),
     ("M5: EV FV (₹)",14,"M5_EV"),("M6: DDM FV (₹)",14,"M6_DDM"),("M7: PEG FV (₹)",14,"M7_PEG"),
-    ("P/E TTM",9,"pe"),("Earn Yield %",11,"earnings_yield"),("P/CF",9,"p_cf"),
-    ("PEG Ratio",10,"peg"),("P/B",9,"pb"),("P/S",9,"ps"),("EV/EBITDA",11,"ev_ebitda"),
-    ("ROE %",9,"roe"),("ROCE %",9,"roce"),("ROA %",9,"roa"),
-    ("Gross Mgn %",11,"gross_margin"),("EBITDA Mgn %",12,"ebitda_margin"),("NPM %",9,"npm"),
+    # v16.3: ratio columns widened from 9 to 11. The headers ("P/E TTM ⓘ",
+    # "ROE % ⓘ", etc.) plus the ⓘ symbol crowd the cell at width 9.
+    ("P/E TTM",11,"pe"),("Earn Yield %",12,"earnings_yield"),("P/CF",11,"p_cf"),
+    ("PEG Ratio",11,"peg"),("P/B",11,"pb"),("P/S",11,"ps"),("EV/EBITDA",12,"ev_ebitda"),
+    ("ROE %",11,"roe"),("ROCE %",11,"roce"),("ROA %",11,"roa"),
+    ("Gross Mgn %",12,"gross_margin"),("EBITDA Mgn %",13,"ebitda_margin"),("NPM %",11,"npm"),
     # v12.6 (#11): renamed from NPM Q1/Q2/Q3 → NPM Q (latest)/Q-1/Q-2 to
     # eliminate the inverse-chronological confusion. Pre-v12.6 labels read
     # left-to-right as "Q1 Q2 Q3" which suggested chronological order, but
@@ -113,18 +115,20 @@ FULL_COLS = [
     ("Capex / Rev %",12,"capex_rev"),
     ("Promoter %",11,"promoter_pct"),("Pro QoQ Δ",10,"promoter_qoq"),
     ("Pledge %",10,"pledge_pct"),("Pledge Direction",15,"pledge_direction"),
-    ("FII %",9,"fii_pct"),("FII QoQ Δ",10,"fii_qoq"),
-    ("DII %",9,"dii_pct"),("DII QoQ Δ",10,"dii_qoq"),("Public Float %",13,"public_float"),
-    ("Piotroski F /9",13,"piotroski_f"),("Altman Z",10,"altman_z"),
-    ("Beneish M",10,"beneish_m"),("Earn Quality",12,"earnings_quality"),
-    ("OB/Bill Ratio",12,"ob_bill_ratio"),("Pipeline Vis",12,"pipeline_vis"),
+    ("FII %",11,"fii_pct"),("FII QoQ Δ",11,"fii_qoq"),
+    ("DII %",11,"dii_pct"),("DII QoQ Δ",11,"dii_qoq"),("Public Float %",13,"public_float"),
+    ("Piotroski F /9",14,"piotroski_f"),("Altman Z",11,"altman_z"),
+    ("Beneish M",11,"beneish_m"),("Earn Quality",13,"earnings_quality"),
+    ("OB/Bill Ratio",13,"ob_bill_ratio"),("Pipeline Vis",12,"pipeline_vis"),
     ("L1 Wins 90D",12,"l1_wins"),("L1 Est (₹Cr)",13,"l1_value"),
     ("New Mkt Entry",26,"new_market_entry"),
-    ("Early Signals",42,"early_signals"),("Sector Stage",11,"rotation_stage"),
+    ("Early Signals",42,"early_signals"),("Sector Stage",12,"rotation_stage"),
     ("Smart Money",28,"smart_money_signals"),
-    ("SMA 200",10,"sma_200"),("Supertrend",12,"supertrend"),("ADX",8,"adx"),
-    ("RSI (14)",9,"rsi"),("MACD Signal",18,"macd_signal"),("Stoch %K",9,"stoch_k"),
-    ("MFI",8,"mfi"),("OBV Signal",14,"obv_signal"),("Above VWAP",11,"above_vwap"),
+    # v16.3: technical-indicator columns widened from 8/9 to 11. Headers like
+    # "RSI (14) ⓘ", "ADX ⓘ", "MFI ⓘ", "Stoch %K ⓘ" crowd the cell when narrow.
+    ("SMA 200",11,"sma_200"),("Supertrend",12,"supertrend"),("ADX",11,"adx"),
+    ("RSI (14)",11,"rsi"),("MACD Signal",18,"macd_signal"),("Stoch %K",11,"stoch_k"),
+    ("MFI",11,"mfi"),("OBV Signal",14,"obv_signal"),("Above VWAP",12,"above_vwap"),
     ("Chart Pattern",22,"chart_pattern"),
     ("Support 1 (₹)",12,"support_1"),("Support 2 (₹)",12,"support_2"),
     ("Resist 1 (₹)",12,"resist_1"),("Resist 2 (₹)",12,"resist_2"),
@@ -167,29 +171,35 @@ GOLD_COLS = [
     ("Exchange",13,"exchange_tag"),("Cap Category",13,"cap_category"),("Verdict",26,"verdict_display"),
     # v13.x: Quick Pick — same as in FULL_COLS. See note there for full context.
     ("Quick Pick",26,"label"),
-    ("Score /100",10,"composite_score"),("Early Entry /100",14,"early_entry_score"),
-    ("Spike /6",9,"spike_count"),("Storm /10",9,"storm_score"),
-    ("CMP (₹)",11,"close"),("Chg% [2-Wk]",13,"2w_chg"),("Chg% [4-Wk]",13,"4w_chg"),
+    ("Score /100",11,"composite_score"),("Early Entry /100",15,"early_entry_score"),
+    # v16.3: widened from 9 to 11 — width 9 was too narrow to fit headers like
+    # "Spike /6 ⓘ" or "Storm /10 ⓘ" without truncation in some Excel zoom levels.
+    ("Spike /6",11,"spike_count"),("Storm /10",11,"storm_score"),
+    ("CMP (₹)",12,"close"),("Chg% [2-Wk]",13,"2w_chg"),("Chg% [4-Wk]",13,"4w_chg"),
     ("Chg% [6-Wk]",13,"6w_chg"),("Chg% [8-Wk]",13,"8w_chg"),
-    ("CFV (₹)",11,"cfv"),("MoS %",10,"mos_pct"),
+    ("CFV (₹)",12,"cfv"),("MoS %",10,"mos_pct"),
     # Session 23: "Upside %" removed — it was always identical to MoS %
     # ((CFV-CMP)/CMP×100 computed once, displayed under two labels).
     # Kept in stock dict as 'upside' key for backward compat with scorer and Trade Summary.
-    ("MoS Label",20,"mos_label"),("P/E",9,"pe"),("PEG",9,"peg"),
-    ("ROE %",9,"roe"),("D/E",9,"debt_equity"),("PAT YoY %",10,"pat_yoy"),
+    ("MoS Label",20,"mos_label"),
+    # v16.3: ratio columns widened from 9 to 11. Values like "29.05" and the
+    # ⓘ tooltip cue need ~11 char width to display cleanly without crowding.
+    ("P/E",11,"pe"),("PEG",11,"peg"),
+    ("ROE %",11,"roe"),("D/E",11,"debt_equity"),("PAT YoY %",11,"pat_yoy"),
     # v12.5: renamed from "F-Score /9" to "Piotroski F /9" to match the
     # Full Dashboard. Same data, same key — just a label sync so the
     # Glossary entry "Piotroski F /9" applies to both sheets.
-    ("Piotroski F /9",13,"piotroski_f"),
+    ("Piotroski F /9",14,"piotroski_f"),
     ("Early Signals",42,"early_signals"),("Smart Money",28,"smart_money_signals"),
-    ("Sector Stage",11,"rotation_stage"),("Supertrend",12,"supertrend"),
-    ("RSI (14)",9,"rsi"),("Pattern",24,"chart_pattern"),
-    ("Entry Range (₹)",16,"entry_range"),("Stop Loss (₹)",12,"stop_loss"),
-    ("Target 1 (₹)",12,"t1"),("Target 2 (₹)",12,"t2"),("Target 3 (₹)",12,"t3"),
-    ("Time Horizon",22,"horizon"),("Risk Level",10,"risk_level"),
+    ("Sector Stage",12,"rotation_stage"),("Supertrend",12,"supertrend"),
+    # v16.3: RSI widened from 9 to 11.
+    ("RSI (14)",11,"rsi"),("Pattern",24,"chart_pattern"),
+    ("Entry Range (₹)",16,"entry_range"),("Stop Loss (₹)",13,"stop_loss"),
+    ("Target 1 (₹)",13,"t1"),("Target 2 (₹)",13,"t2"),("Target 3 (₹)",13,"t3"),
+    ("Time Horizon",22,"horizon"),("Risk Level",11,"risk_level"),
     # v15.5: risk-parity sizing surfaced on Gold sheet (these are the picks
     # users actually trade — most useful place to see allocation guidance)
-    ("Suggested Alloc %",16,"suggested_alloc_pct"),
+    ("Suggested Alloc %",17,"suggested_alloc_pct"),
     ("Sizing Rationale",55,"alloc_rationale"),
     ("Key Catalyst",42,"key_catalyst"),("Primary Risk",42,"primary_risk"),
     ("View Analysis Summary",70,"Analysis_Summary_Block_H"),
@@ -2379,12 +2389,16 @@ class ExcelGeneratorV6:
         ws.row_dimensions[next_row].height = 22
         next_row += 1
 
-        # 12-column header — matches OPEN POSITIONS density. Outcome column
-        # gets color treatment based on the actual outcome_type value.
-        closed_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",13),
-                       ("Outcome",10),("Outcome Date",13),("Days to Outcome",14),
+        # v16.3: widths aligned with OPEN POSITIONS (same sheet, columns A-L
+        # are shared between the two tables). OPEN runs SECOND and overrides,
+        # so CLOSED-specific values like Outcome Date (col E)/Days to Outcome
+        # (col F)/Max Drawdown % (col K)/Score (col L) need to fit within the
+        # widths OPEN sets afterward. Widening these to match keeps the cells
+        # readable in CLOSED render too, no overlapping header text.
+        closed_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",15),
+                       ("Outcome",12),("Outcome Date",13),("Days to Outcome",14),
                        ("Entry CMP",12),("Outcome Price",13),("P&L %",10),
-                       ("Max Runup %",12),("Max Drawdown %",14),("Score",8)]
+                       ("Max Runup %",13),("Max Drawdown %",15),("Score",10)]
         for ci,(h,w) in enumerate(closed_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
@@ -2616,14 +2630,14 @@ class ExcelGeneratorV6:
         # Total now 20 columns.
         # Each price/level cell shows "₹price (±X.X%)" — the % is distance
         # from CURRENT price (not entry), updated dynamically each run.
-        open_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",15),("Days Held",10),
-                     ("Days Left",10),("Re-app",8),("CMP at Rec",12),("Current Price",12),
-                     ("P&L %",10),("Max Runup %",12),
+        open_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",15),("Days Held",12),
+                     ("Days Left",12),("Re-app",10),("CMP at Rec",12),("Current Price",13),
+                     ("P&L %",10),("Max Runup %",13),
                      ("SL",18),("T1",18),("T2",18),("T3",18),
-                     ("Score",8),("⚠",6),
-                     ("Trailing",14),("Regime",10),
+                     ("Score",10),("⚠",6),
+                     ("Trailing",14),("Regime",11),
                      # v15.7: risk-parity sizing surfaced on Performance sheet
-                     ("Suggested Alloc %",16),("Sizing Rationale",50)]
+                     ("Suggested Alloc %",17),("Sizing Rationale",52)]
         for ci,(h,w) in enumerate(open_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()

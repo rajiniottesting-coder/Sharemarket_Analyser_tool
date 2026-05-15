@@ -4059,6 +4059,117 @@ def test_g30_v16_2_gold_quality_floor_gate():
             "tooltips reference the new gates, all 11 legacy gates preserved")
 
 
+def test_g31_v16_3_column_width_floor():
+    """v16.3 regression test — verifies column widths in FULL_COLS and
+    GOLD_COLS meet a minimum threshold for header-text readability.
+
+    BACKGROUND:
+    User reported visible header-text overlap in the Performance sheet
+    (Days Held, Days Left, Re-app, Score columns) and similar narrow
+    columns in Gold + Full Dashboard. Root cause: many columns were sized
+    at width 8 or 9, which doesn't fit headers like "Days Held ⓘ",
+    "Storm /10 ⓘ", "RSI (14) ⓘ" — the ⓘ tooltip cue plus the header
+    text overflows the cell.
+
+    THIS TEST verifies:
+      1. FULL_COLS minimum width is ≥ 10 (no narrower columns)
+      2. GOLD_COLS minimum width is ≥ 10 (no narrower columns)
+      3. Performance OPEN POSITIONS narrow columns are ≥ 10
+         (Days Held, Days Left, Re-app, Score)
+      4. Performance CLOSED POSITIONS widths are aligned with OPEN's
+         shared columns (avoids width-conflict when OPEN overrides)
+
+    Width threshold is 10 because Excel's default character width approx
+    7 pixels — header texts up to 10 chars + the ⓘ symbol fit cleanly.
+    """
+    src_xl = open('reporting/excel_generator.py', 'r', encoding='utf-8').read()
+
+    # ── Check 1: FULL_COLS minimum width ≥ 10 ──
+    # Extract FULL_COLS block
+    start = src_xl.find('FULL_COLS = [')
+    end = src_xl.find(']\n\nGOLD_COLS', start)
+    assert start > 0 and end > 0, "Could not locate FULL_COLS block"
+    full_block = src_xl[start:end]
+    import re as _re
+    full_widths = []
+    for m in _re.finditer(r'\("([^"]+)",\s*(\d+),', full_block):
+        name, width = m.group(1), int(m.group(2))
+        full_widths.append((name, width))
+    narrow_full = [(n, w) for n, w in full_widths if w < 10]
+    assert len(narrow_full) == 0, (
+        f"v16.3: FULL_COLS has {len(narrow_full)} columns narrower than width 10: "
+        f"{narrow_full[:5]}... All columns should be ≥ 10 for header readability."
+    )
+
+    # ── Check 2: GOLD_COLS minimum width ≥ 10 ──
+    start2 = src_xl.find('GOLD_COLS = [')
+    end2 = src_xl.find(']\n\nGLOSSARY_DATA', start2)
+    assert start2 > 0 and end2 > 0, "Could not locate GOLD_COLS block"
+    gold_block = src_xl[start2:end2]
+    gold_widths = []
+    for m in _re.finditer(r'\("([^"]+)",\s*(\d+),', gold_block):
+        name, width = m.group(1), int(m.group(2))
+        gold_widths.append((name, width))
+    narrow_gold = [(n, w) for n, w in gold_widths if w < 10]
+    assert len(narrow_gold) == 0, (
+        f"v16.3: GOLD_COLS has {len(narrow_gold)} columns narrower than width 10: "
+        f"{narrow_gold}. All columns should be ≥ 10 for header readability."
+    )
+
+    # ── Check 3: Performance OPEN POSITIONS narrow columns widened ──
+    # Find the open_cols literal in source — it's inside _performance method
+    open_cols_match = _re.search(
+        r'open_cols\s*=\s*\[\s*\("Symbol",\s*(\d+)\).*?\("Sizing Rationale",\s*\d+\)\s*\]',
+        src_xl, _re.DOTALL,
+    )
+    assert open_cols_match, "Couldn't find open_cols literal in source"
+    open_cols_block = open_cols_match.group(0)
+    # Extract all (name, width) pairs from the open_cols block
+    open_widths = {}
+    for m in _re.finditer(r'\("([^"]+)",\s*(\d+)\)', open_cols_block):
+        open_widths[m.group(1)] = int(m.group(2))
+    # Specific columns we widened in v16.3
+    assert open_widths.get("Days Held", 0) >= 11, (
+        f"v16.3: open_cols Days Held width should be ≥ 11 (was 10), "
+        f"got {open_widths.get('Days Held')}"
+    )
+    assert open_widths.get("Days Left", 0) >= 11, (
+        f"v16.3: open_cols Days Left width should be ≥ 11 (was 10), "
+        f"got {open_widths.get('Days Left')}"
+    )
+    assert open_widths.get("Re-app", 0) >= 10, (
+        f"v16.3: open_cols Re-app width should be ≥ 10 (was 8), "
+        f"got {open_widths.get('Re-app')}"
+    )
+    assert open_widths.get("Score", 0) >= 10, (
+        f"v16.3: open_cols Score width should be ≥ 10 (was 8), "
+        f"got {open_widths.get('Score')}"
+    )
+
+    # ── Check 4: Performance CLOSED POSITIONS aligned with OPEN ──
+    closed_cols_match = _re.search(
+        r'closed_cols\s*=\s*\[\s*\("Symbol",\s*(\d+)\).*?\("Score",\s*\d+\)\s*\]',
+        src_xl, _re.DOTALL,
+    )
+    assert closed_cols_match, "Couldn't find closed_cols literal in source"
+    closed_block = closed_cols_match.group(0)
+    closed_widths = {}
+    for m in _re.finditer(r'\("([^"]+)",\s*(\d+)\)', closed_block):
+        closed_widths[m.group(1)] = int(m.group(2))
+    # Shared columns (A=Symbol, B=Rec Date, C=Time Horizon) must match
+    for shared_col in ["Symbol", "Rec Date", "Time Horizon"]:
+        if shared_col in open_widths and shared_col in closed_widths:
+            assert open_widths[shared_col] == closed_widths[shared_col], (
+                f"v16.3: shared column '{shared_col}' width differs: "
+                f"OPEN={open_widths[shared_col]} CLOSED={closed_widths[shared_col]}. "
+                f"OPEN overrides CLOSED on this sheet — they must match."
+            )
+
+    return ("\u2705 v16.3: column-width floor verified — FULL_COLS all ≥ 10, "
+            "GOLD_COLS all ≥ 10, Performance OPEN narrow columns widened "
+            "(Days Held/Days Left/Re-app/Score), CLOSED widths aligned with OPEN")
+
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -4325,6 +4436,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g28_v16_0_dd_duration_tracker_state_machine))
     v14_1_results.append(_run_one_test(test_g29_v16_0_survivorship_audit_invariant))
     v14_1_results.append(_run_one_test(test_g30_v16_2_gold_quality_floor_gate))
+    v14_1_results.append(_run_one_test(test_g31_v16_3_column_width_floor))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

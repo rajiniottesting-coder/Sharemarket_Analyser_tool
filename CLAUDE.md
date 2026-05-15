@@ -3751,6 +3751,39 @@ The gate-tightening makes the screener more institutionally credible (no longer 
 
 **Trade-off acknowledged**: v16.2 will produce empty-Gold days more often than v16.0, but ONLY when fundamentals are weak market-wide. This is the right institutional behavior — "no picks meet our criteria today" is better than admitting borderline picks just to fill the sheet.
 
+### v16.3 — Excel column-width fixes + HTML pipeline reference refresh
+
+User reported header-text overlap in Performance sheet (Days Held / Days Left / Re-app / Score columns crowded). Root cause: many columns sized below width 10, which doesn't fit headers like "Days Held ⓘ", "Storm /10 ⓘ", "RSI (14) ⓘ" — the ⓘ tooltip cue plus header text overflows.
+
+**Width fixes across 4 column tables**:
+- **Performance OPEN POSITIONS**: Days Held 10→12, Days Left 10→12, Re-app 8→10, Score 8→10, plus minor bumps on Regime, Current Price, Max Runup %, Suggested Alloc %, Sizing Rationale
+- **Performance CLOSED POSITIONS**: aligned shared-column widths with OPEN to eliminate the OPEN-overrides-CLOSED conflict on the same sheet (Symbol, Rec Date, Time Horizon must match)
+- **GOLD_COLS**: all ratio columns widened from 9→11 (Spike, Storm, P/E, PEG, ROE, D/E, RSI)
+- **FULL_COLS**: all narrow ratio + technical-indicator columns widened from 8/9 to 11 (Beta, P/E TTM, P/CF, P/B, P/S, ROE%, ROCE%, ROA%, NPM%, FII%, DII%, Altman Z, Beneish M, ADX, RSI, Stoch %K, MFI)
+
+**HTML pipeline reference** (`pipeline_reference.html`, renamed from `pipeline_reference_v15_0.html`):
+- Title: "Pipeline Reference (v15.0)" → "Pipeline Reference (v16.3)"
+- Meta line rewritten with full post-v15.0 enhancement summary
+- Gold-tier filter SVG section updated from "ALL 11 conditions must pass" to "ALL 13 conditions must pass" with criteria 12 (ROE ≥ 10%) and 13 (PEG ≤ 8) listed
+- Footer rewritten with layer-by-layer summary covering v15.5 / v15.7 / v15.8 / v15.9 / v16.0 / v16.2 / v16.3
+
+**New G31 regression test** (4 structural invariants):
+- FULL_COLS minimum width ≥ 10
+- GOLD_COLS minimum width ≥ 10
+- Performance OPEN POSITIONS narrow columns widened
+- CLOSED POSITIONS aligned with OPEN for shared columns
+
+**83/83 tests** across 5/5 stability runs.
+
+### Test count evolution
+- v14.5: 66 → v14.6: 67 → v15.0: 69 → v15.1: 71 → v15.2: 72
+- v15.3: 73 → v15.4: 73 → v15.5: 74 → v15.6: 74 → v15.7: 75 (G23)
+- v15.8: 76 (G24) → v15.8.1: 77 (G25) → v15.9: 78 (G26)
+- v16.0: 81 (G27 + G28 + G29) → v16.2: 82 (G30) → **v16.3: 83 (G31)**
+
+### Honest grade after v16.3: still A− today
+v16.3 is a cosmetic / documentation update. No change to data flow, scoring, filtering, or schema. The grade trajectory remains the same: A− today, A in ~60-90 days as closed positions accumulate enough for Sharpe to become statistically meaningful.
+
 ---
 
-*Last updated: May 14, 2026 · v16.2 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 15, 2026 · v16.3 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
