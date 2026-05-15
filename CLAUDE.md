@@ -3690,6 +3690,67 @@ The v16.0 infrastructure means that as soon as data accumulates, the metrics pop
 
 **Path to true A+**: cannot reach on free tier. Requires (a) walk-forward backtest with 60-90 days of data — now achievable, (b) independent code review by external quant — needs people, not code, (c) execution-cost modeling with real broker fills — needs paid data. v16.0 closes the code gaps that are fixable on free tier.
 
+### v16.2 — Gold-tier Quality Floor gate + Excel version-history cleanup
+
+User flagged SONAMLTD admitted to Gold on 14 May 2026 — passed all 11 mechanical gates but failed qualitative review (MICRO CAP, ROE 9.5%, PEG 8.63, CFV ₹82.59 inflated by M5 outlier of ₹207). After empirical calibration analysis (see below), v16.2 implements **Option B only** with relaxed thresholds.
+
+**Why Option A (method-agreement) was rejected**: Empirical analysis on 7 real Gold picks showed SONAMLTD's 50% method-agreement was identical to KOVAI's 50% and higher than ITC's 42.9%. There is no threshold of method-agreement that catches SONAMLTD while keeping the known good picks. Option A is a poorly-aimed filter because the 7 valuation methods (DCF/Graham/PE/PB/EV/DDM/PEG) inherently measure different things — wide spreads are normal even for healthy stocks.
+
+**Option B (Quality Floor) — calibrated thresholds**:
+- **ROE ≥ 10%** (or missing/None passes)
+  - Catches SONAMLTD (9.5%)
+  - Preserves ITC (29%), KOVAI (19.7%), BSOFT (13.4%), CIEINDIA (11.6%)
+  - Threshold 12% would over-filter; 8% would miss SONAMLTD
+- **PEG ≤ 8.0** (or missing/≤0 passes)
+  - Catches SONAMLTD (8.63), INDUSTOWER (19.47)
+  - Preserves BSOFT (PEG 6.36) — legitimate borderline value pick
+  - Threshold 5.0 would reject BSOFT; threshold 10 would miss SONAMLTD
+
+Both gates permissive on missing data — small caps without ratios pass, since Altman / BS Health / Int Coverage gates already cover them.
+
+**Excel version-history cleanup** (per project policy):
+- Removed `· v16.0` markers from "RISK-ADJUSTED RETURNS" and "SURVIVORSHIP AUDIT" section headers
+- Removed `v15.0:` marker from "CLOSED POSITIONS" header
+- Removed `v6.2` marker from Glossary header
+- Excel now shows ONLY current state — no inline version annotations
+- Internal docs (readme.md, CLAUDE.md, CHANGES.md) continue tracking full history
+
+**Documentation updates**:
+- Glossary entries for "ROE %" and "PEG Ratio" updated with Gold-tier gate role
+- Tooltip quick-reads for ROE and PEG updated to mention "disqualifies from Gold tier"
+- Gold criteria header text: "ALL 11 must pass" → "ALL 13 must pass"
+
+**Real-data validation (empirical)**:
+- 13 May 2026: v16.0 admits 3 (ITC, KOVAI, BSOFT) → v16.2 admits 3 (same — no change)
+- 14 May 2026: v16.0 admits 3 (SONAMLTD, INDUSTOWER, CIEINDIA) → v16.2 admits 1 (CIEINDIA only)
+- Net effect: 2 bad-quality picks correctly dropped across both days, all 4 quality picks preserved
+
+**New G30 regression test** (9 structural invariants):
+- Threshold constants present (10, 8)
+- Permissive-on-missing logic verified (.isna() in both gates)
+- Mask wires _roe_gate and _peg_gate
+- Gold criteria text updated to "ALL 13 must pass"
+- Stale "ALL 11" text removed
+- All 11 legacy gates preserved (regression guard)
+- Glossary entries reference Gold-tier role
+- Tooltip text mentions disqualification threshold
+- Version markers removed from new section headers
+
+**82/82 tests** across 5/5 stability runs.
+
+### Test count evolution
+- v14.5: 66 → v14.6: 67 → v15.0: 69 → v15.1: 71 → v15.2: 72
+- v15.3: 73 → v15.4: 73 → v15.5: 74 → v15.6: 74 → v15.7: 75 (G23)
+- v15.8: 76 (G24) → v15.8.1: 77 (G25) → v15.9: 78 (G26)
+- v16.0: 81 (G27 + G28 + G29) → **v16.2: 82 (G30)**
+
+(Note: v16.1 was designed but never shipped — empirical analysis showed Option A as designed was ineffective. v16.2 is the production successor with calibrated Option B only.)
+
+### Honest grade after v16.2: still A− today, A in ~60-90 days
+The gate-tightening makes the screener more institutionally credible (no longer admitting low-ROE, high-PEG picks) but doesn't accelerate the empirical-validation timeline. Still needs 30+ closed positions for Sharpe to become statistically meaningful.
+
+**Trade-off acknowledged**: v16.2 will produce empty-Gold days more often than v16.0, but ONLY when fundamentals are weak market-wide. This is the right institutional behavior — "no picks meet our criteria today" is better than admitting borderline picks just to fill the sheet.
+
 ---
 
-*Last updated: May 14, 2026 · v16.0 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 14, 2026 · v16.2 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

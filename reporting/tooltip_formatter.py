@@ -363,18 +363,20 @@ TIPS: Dict[str, Tuple[str, str]] = {
                      "EPS/CMP × 100. >6%: Cheap. Compare to 10Y bond yield."),
     "P/CF": ("<15 value | >25 expensive",
             "More reliable than P/E (cash harder to fake)."),
-    "PEG Ratio": ("<1 undervalued | >2 expensive",
+    "PEG Ratio": ("<1 undervalued | >2 expensive | >8 disqualifies from Gold",
                   "P/E / Growth. <1: Undervalued (Peter Lynch favourite).\n"
                   "Source: yfinance .info['pegRatio'] primary; 4-tier\n"
                   "fallback computes PE / PAT-growth, PE / Rev-growth,\n"
                   "or PE / sustainable-growth (ROE × retention).\n"
-                  "Display: v10.16 shows '—' when any tier yields ≥ 50.\n"
+                  "Display: shows '—' when any tier yields ≥ 50.\n"
                   "PEG beyond 50 means P/E divided by near-zero growth —\n"
                   "pure arithmetic noise, not a 'very expensive' signal.\n"
-                  "Even extreme glamour stocks rarely exceed PEG of 10."),
-    "PEG": ("<1 undervalued | >2 expensive",
+                  "Even extreme glamour stocks rarely exceed PEG of 10.\n"
+                  "Gold-tier gate: PEG ≤ 8 (or missing/≤0 passes —\n"
+                  "permissive on loss-makers and stocks without ratios)."),
+    "PEG": ("<1 undervalued | >2 expensive | >8 disqualifies from Gold",
             "P/E / Growth. <1: Undervalued.\n"
-            "v10.16: display '—' when value ≥ 50."),
+            "Display: '—' when value ≥ 50 (near-zero growth → arithmetic noise)."),
     "P/B": ("<2 value | >5 expensive",
             "<1: Below asset value | >5: Only justified by very high ROE.\n"
             "Source: yfinance .info['priceToBook'].\n"
@@ -393,14 +395,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "(RHETAN hit 1,352 pre-fix). These aren't real 'expensive'\n"
                   "signals — they mean EBITDA ≈ 0, valuation undefined.\n"
                   "Even richly-valued growth names rarely exceed 50x."),
-    "ROE %": (">20% excellent | <10% weak",
+    "ROE %": (">20% excellent | <10% weak (disqualifies from Gold tier)",
              "Score: >20% = +12 | >10% = +6 | <5% = −5.\n"
              "Source: yfinance .info['returnOnEquity'] × 100 when\n"
              "available; else derived as Earnings Yield × P/B when\n"
              "both are positive (ROE ≈ EPS/BVPS).\n"
-             "Display: v10.15 FIX #1 now stores as a FLOAT (was a\n"
-             "quoted string pre-v10.15, which broke Excel sorting,\n"
-             "filtering, and conditional formatting on this column).\n"
+             "Stored as a numeric float so Excel sort/filter/conditional-\n"
+             "formatting work correctly on this column.\n"
+             "Gold-tier gate: ROE ≥ 10% (or missing passes).\n"
              "Shows '—' when neither direct nor derivable."),
     "ROCE %": (">15% good capital allocation",
                "Return on Capital Employed. ROCE > cost of capital = value-creating.\n"

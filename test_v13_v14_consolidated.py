@@ -3929,6 +3929,136 @@ def test_g29_v16_0_survivorship_audit_invariant():
             "handling, Performance sheet integration wired")
 
 
+def test_g30_v16_2_gold_quality_floor_gate():
+    """v16.2 regression test — verifies Gold-tier Quality Floor gate
+    (ROE ≥ 10% AND PEG ≤ 8.0) is wired into the Gold filter with
+    correct thresholds and permissive-on-missing behavior.
+
+    TRIGGER: SONAMLTD admitted to Gold on 14 May 2026 despite ROE=9.5%
+    and PEG=8.63. All 11 pre-v16.2 gates passed because there was no
+    quality floor on profitability or growth-vs-valuation.
+
+    CALIBRATION RATIONALE (empirically verified against 7 real Gold picks):
+      • ROE ≥ 10%   — Catches SONAMLTD (9.5%). Preserves quality picks
+                      ITC (29%), KOVAI (19.7%), BSOFT (13.4%), CIEINDIA (11.6%).
+                      Threshold 12% would over-filter (rejects CIEINDIA);
+                      threshold 8% would miss SONAMLTD.
+      • PEG ≤ 8.0   — Catches SONAMLTD (8.63), INDUSTOWER (19.47). Preserves
+                      BSOFT (6.36) which is a legitimate borderline pick.
+                      Threshold 5.0 would over-filter (rejects BSOFT);
+                      threshold 10 would miss SONAMLTD.
+      • Both gates permissive on missing data: stocks with ROE=None or
+        PEG=None pass (legacy stocks, small caps without ratios). Negative
+        PEG (loss-making) also passes — other gates handle losers.
+
+    THIS TEST verifies:
+      1. The 2 threshold constants (10, 8) are present in source.
+      2. The gate logic uses .isna() for permissive missing-data behavior.
+      3. The mask includes both _roe_gate and _peg_gate.
+      4. The Gold criteria text reflects "ALL 13 must pass" + new gates.
+      5. The 11-criteria text is gone (no stale reference).
+      6. Existing 11 gates remain in place (no regression).
+    """
+    src_xl = open('reporting/excel_generator.py', 'r', encoding='utf-8').read()
+
+    # ── Check 1: threshold constants present ──
+    assert "QUALITY_FLOOR_ROE_PCT = 10" in src_xl, (
+        "v16.2: Gold gate must use QUALITY_FLOOR_ROE_PCT = 10"
+    )
+    assert "QUALITY_FLOOR_PEG_MAX = 8" in src_xl, (
+        "v16.2: Gold gate must use QUALITY_FLOOR_PEG_MAX = 8"
+    )
+
+    # ── Check 2: permissive-on-missing logic present ──
+    assert "_roe_num.isna()" in src_xl, (
+        "v16.2: ROE gate must use .isna() for permissive missing-data handling"
+    )
+    assert "_peg_num.isna()" in src_xl, (
+        "v16.2: PEG gate must use .isna() for permissive missing-data handling"
+    )
+    # Negative PEG also passes
+    assert "_peg_num <= 0" in src_xl, (
+        "v16.2: PEG gate must allow negative PEG (loss-makers) to pass"
+    )
+
+    # ── Check 3: mask includes both new gates ──
+    mask_start = src_xl.find("mask = (")
+    assert mask_start > 0, "Couldn't find Gold gate mask"
+    mask_end = src_xl.find(")\n            return self.df[mask]", mask_start)
+    mask_block = src_xl[mask_start:mask_end]
+    assert "_roe_gate" in mask_block, (
+        "v16.2: Gold gate mask must include _roe_gate"
+    )
+    assert "_peg_gate" in mask_block, (
+        "v16.2: Gold gate mask must include _peg_gate"
+    )
+
+    # ── Check 4: Gold criteria text updated to 13 ──
+    assert "ALL 13 must pass" in src_xl, (
+        "v16.2: Gold criteria header text must say 'ALL 13 must pass'"
+    )
+    assert "ROE\u226510%" in src_xl, (
+        "v16.2: Gold criteria header text must mention ROE≥10%"
+    )
+    assert "PEG\u22648" in src_xl, (
+        "v16.2: Gold criteria header text must mention PEG≤8"
+    )
+
+    # ── Check 5: stale 11-criteria text is gone ──
+    # The phrase "ALL 11 must pass" should NOT appear in any rendered text
+    # (it's allowed in comments — we only check the cell-value strings).
+    # Find the c2 = ws.cell(...) line that renders the header
+    assert "ALL 11 must pass" not in src_xl or src_xl.count("ALL 11 must pass") == 0, (
+        "v16.2: Stale 'ALL 11 must pass' text must be removed"
+    )
+
+    # ── Check 6: existing 11 gates still present (no regression) ──
+    for legacy_gate in ["_alt_gate", "_eq_gate", "_ic_gate"]:
+        assert legacy_gate in mask_block, (
+            f"v16.2 REGRESSION: legacy gate {legacy_gate} missing from mask"
+        )
+    # Verify the original criteria still in the mask
+    for legacy_check in [
+        'self.df["verdict"] == "BUY"',
+        'self.df["composite_score"] >= 70',
+        '_storm >= 5',
+        '_pledge <= 10',
+        'self.df["spike_suppressed"] == False',
+    ]:
+        assert legacy_check in mask_block, (
+            f"v16.2 REGRESSION: legacy check `{legacy_check}` missing from mask"
+        )
+
+    # ── Check 7: Glossary entries updated for ROE and PEG ──
+    # The glossary text in GLOSSARY_DATA should mention Gold-tier gate
+    assert "Gold-tier gate: ROE \u2265 10%" in src_xl, (
+        "v16.2: ROE glossary entry must mention Gold-tier gate"
+    )
+    assert "Gold-tier gate: PEG \u2264 8" in src_xl, (
+        "v16.2: PEG glossary entry must mention Gold-tier gate"
+    )
+
+    # ── Check 8: Tooltip Reference / TIPS updated ──
+    src_tt = open('reporting/tooltip_formatter.py', 'r', encoding='utf-8').read()
+    assert "disqualifies from Gold tier" in src_tt or "disqualifies from Gold" in src_tt, (
+        "v16.2: ROE/PEG tooltip quick-read must mention Gold-tier disqualification"
+    )
+
+    # ── Check 9: No version markers in NEW Excel-rendered text ──
+    # The 3 section headers cleaned up in v16.2 should NOT have version markers
+    assert "RISK-ADJUSTED RETURNS  ·  Sharpe · Sortino · Calmar · DD Duration\"" in src_xl, (
+        "v16.2: RISK-ADJUSTED RETURNS section header must not have version marker"
+    )
+    assert "SURVIVORSHIP AUDIT  ·  Are all OPEN positions still tracked in today's universe?\"" in src_xl, (
+        "v16.2: SURVIVORSHIP AUDIT section header must not have version marker"
+    )
+
+    return ("\u2705 v16.2: Quality Floor gate verified — ROE ≥ 10%, PEG ≤ 8, "
+            "permissive on missing data, mask wires both gates correctly, "
+            "Gold criteria header updated to 'ALL 13 must pass', glossary + "
+            "tooltips reference the new gates, all 11 legacy gates preserved")
+
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -4194,6 +4324,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g27_v16_0_risk_adjusted_metrics_math))
     v14_1_results.append(_run_one_test(test_g28_v16_0_dd_duration_tracker_state_machine))
     v14_1_results.append(_run_one_test(test_g29_v16_0_survivorship_audit_invariant))
+    v14_1_results.append(_run_one_test(test_g30_v16_2_gold_quality_floor_gate))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

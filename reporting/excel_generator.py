@@ -310,14 +310,15 @@ GLOSSARY_DATA = [
      "0.5–1.0 = Undervalued vs growth (good value) | "
      "1.0 = Fairly valued (Peter Lynch's neutral benchmark) | "
      "1.0–2.0 = Slight premium (acceptable for quality compounder) | "
-     "> 2.0 = Expensive relative to growth (avoid unless market leader) | "
+     "> 2.0 = Expensive relative to growth (caution) | "
+     "> 8.0 = Disqualifies from Gold tier (extreme valuation premium) | "
      "'—' = Display when any tier yields ≥ 50 (P/E divided by near-zero "
      "growth — pure arithmetic noise). Even extreme glamour stocks rarely "
      "exceed PEG of 10. "
-     "v10.16 (Option B): threshold tightened from 100 → 50 for honest '—' "
-     "display. 4-tier fallback: direct pegRatio → PE/PAT-growth → PE/Rev-"
+     "4-tier fallback: direct pegRatio → PE/PAT-growth → PE/Rev-"
      "growth → PE/sustainable-growth. If all tiers yield ≥ 50 or fail, "
-     "display is '—'.","All sheets"),
+     "display is '—'. Gold-tier gate: PEG ≤ 8 (or missing/≤0 passes — "
+     "permissive on loss-makers and stocks without ratios).","All sheets"),
     ("VALUATION","P/B",
      "Price ÷ Book Value per Share. "
      "< 1.0 = Trading below book (potential deep value or value trap) | "
@@ -345,12 +346,13 @@ GLOSSARY_DATA = [
      "> 8% = High yield (deep value territory)","All sheets"),
     ("PROFITABILITY","ROE %",
      "Return on Equity = Net Income ÷ Shareholders' Equity. "
-     ">20% excellent | >15% good | >10% acceptable | <10% weak. "
+     ">20% excellent | >15% good | >10% acceptable | <10% weak (disqualifies from Gold). "
      "Source: yfinance .info['returnOnEquity'] × 100 when available; "
      "else derived as Earnings Yield × P/B (ROE ≈ EPS/BVPS). "
-     "v10.15 FIX #1: values now stored as FLOAT (were quoted strings "
-     "pre-v10.15 — '12.47' as text, not 12.47 as number — broke Excel "
-     "sort/filter/conditional-formatting on this column for 69/86 stocks).",
+     "Stored as a numeric float so Excel sort, filter, and conditional "
+     "formatting work correctly on this column. "
+     "Gold-tier gate: ROE ≥ 10% (or missing passes — permissive on stocks "
+     "without ratios, since other gates cover them).",
      "All sheets"),
     ("PROFITABILITY","ROA %",
      "Return on Assets = Net Income ÷ Total Assets. "
@@ -962,7 +964,8 @@ GLOSSARY_DATA = [
      "<15=Cheap | 15–25=Fair | 25–40=Premium | >40=Expensive.","Gold Sheet"),
     ("VALUATION","PEG",
      "PEG Ratio (abbreviated). P/E ÷ Earnings Growth Rate. "
-     "<1=Undervalued vs growth | 1–2=Fair | >2=Expensive vs growth.","Gold Sheet"),
+     "<1=Undervalued vs growth | 1–2=Fair | >2=Expensive vs growth | "
+     ">8=Disqualifies from Gold tier (extreme premium).","Gold Sheet"),
     ("VALUATION","D/E",
      "Debt-to-Equity ratio (abbreviated in Gold sheet). "
      "<0.5=Low debt | 0.5–1.5=Moderate | >2=High leverage risk.","Gold Sheet"),
@@ -1840,7 +1843,7 @@ class ExcelGeneratorV6:
         ws.merge_cells(start_row=2,start_column=1,end_row=2,end_column=N)
         # v10.11: criteria text expanded from 8 → 11 conditions to match the
         # _get_gold() filter. New gates: Altman Z≥1.8 | EQ≠LOW | IntCov≥1.5×.
-        c2=ws.cell(2,1,f"Gold-Tier Criteria (ALL 11 must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed · Altman Z≥1.8 · EQ≠LOW · Int Coverage≥1.5×  ·  {gc} stocks qualify")
+        c2=ws.cell(2,1,f"Gold-Tier Criteria (ALL 13 must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed · Altman Z≥1.8 · EQ≠LOW · Int Coverage≥1.5× · ROE≥10% · PEG≤8  ·  {gc} stocks qualify")
         c2.fill=_f("FEF3C7"); c2.font=_ft(False,"92400E",8,True); c2.alignment=_al("left","center")
         ws.row_dimensions[2].height=14
         # R3 summary strip
@@ -2371,7 +2374,7 @@ class ExcelGeneratorV6:
         ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
         c = ws.cell(next_row,1,
             "📜  CLOSED POSITIONS  ·  Realised outcomes — historical track record  ·  "
-            "v15.0: SL_HIT with POSITIVE P&L = trailing SL fire (locked profit)")
+            "SL_HIT with POSITIVE P&L = trailing SL fire (locked profit)")
         c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
         ws.row_dimensions[next_row].height = 22
         next_row += 1
@@ -2514,7 +2517,7 @@ class ExcelGeneratorV6:
 
         ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
         c = ws.cell(next_row,1,
-            "📈  RISK-ADJUSTED RETURNS  ·  Sharpe · Sortino · Calmar · DD Duration  ·  v16.0")
+            "📈  RISK-ADJUSTED RETURNS  ·  Sharpe · Sortino · Calmar · DD Duration")
         c.fill = _f("4338CA"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
         ws.row_dimensions[next_row].height = 22
         next_row += 1
@@ -2821,7 +2824,7 @@ class ExcelGeneratorV6:
         next_row += 1  # spacer
         ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
         c = ws.cell(next_row, 1,
-            "🛡  SURVIVORSHIP AUDIT  ·  Are all OPEN positions still tracked in today's universe?  ·  v16.0")
+            "🛡  SURVIVORSHIP AUDIT  ·  Are all OPEN positions still tracked in today's universe?")
         c.fill = _f("4338CA"); c.font = _ft(True, WHITE, 11); c.alignment = _al("left")
         ws.row_dimensions[next_row].height = 22
         next_row += 1
@@ -2860,7 +2863,7 @@ class ExcelGeneratorV6:
     def _glossary(self,wb):
         ws=wb.create_sheet("📖 Glossary"); ws.sheet_properties.tabColor="475569"
         ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=5)
-        c=ws.cell(1,1,"GLOSSARY  ·  Full Forms & Descriptions of All Column Abbreviations  ·  NSE/BSE Stock Analyser v6.2")
+        c=ws.cell(1,1,"GLOSSARY  ·  Full Forms & Descriptions of All Column Abbreviations  ·  NSE/BSE Stock Analyser")
         c.fill=_f(NAVY); c.font=_ft(True,WHITE,12); c.alignment=_al()
         ws.row_dimensions[1].height=28
         ws.column_dimensions["A"].width=3
@@ -2887,18 +2890,8 @@ class ExcelGeneratorV6:
     def _get_gold(self):
         if self.df.empty: return pd.DataFrame()
         try:
-            # Session 19 + v10.11 strict Gold-tier filter.
-            # Session 19 (8 conditions): Verdict=BUY, Score>=70, 15<=MoS<=100,
-            #   Storm>=5, RSI<=70, BS!=ALERT, Pledge<=10, not suppressed.
-            # v10.11 (3 new forensic gates using v10.8+v10.9 populated fields):
-            #   9. Altman Z >= 1.8  (not in distress zone — if field populated)
-            #   10. Earn Quality != "LOW"  (no accounting concern)
-            #   11. Int Coverage >= 1.5x  (can service interest — if populated)
-            # Fields populated as "—" (missing data) PASS these gates so small
-            # caps without forensic data aren't unfairly excluded — the existing
-            # 8 gates already cover them via BS Health + Pledge.
+            # Strict Gold-tier filter — all 13 conditions must be true:
             #
-            # All 11 conditions must be true for Gold-tier:
             #  1. Verdict = BUY                 — system-confident, not WATCHLIST
             #  2. Score >= 70                   — uniform Gold bar, not cap-adjusted
             #  3. 15 <= MoS <= 100              — real upside, not phantom inflation
@@ -2907,9 +2900,15 @@ class ExcelGeneratorV6:
             #  6. BS Health Flag != ALERT       — no balance-sheet red flags
             #  7. Pledge % <= 10                — Gold = clean, not just "not awful"
             #  8. spike_suppressed == False     — Altman/Beneish/pledge all clear
-            #  9. Altman Z >= 1.8 OR "—"         — v10.11: not in distress zone
-            # 10. Earn Quality != "LOW"         — v10.11: no accounting concern
-            # 11. Int Coverage >= 1.5 OR "—"    — v10.11: can service interest
+            #  9. Altman Z >= 1.8 OR "—"         — not in distress zone
+            # 10. Earn Quality != "LOW"         — no accounting concern
+            # 11. Int Coverage >= 1.5 OR "—"    — can service interest
+            # 12. ROE >= 10% OR "—"             — quality floor on return on capital
+            # 13. PEG <= 8 OR "—" OR negative   — quality floor on valuation/growth
+            #
+            # Fields populated as "—" (missing data) PASS each respective gate so
+            # small caps without forensic / fundamental ratios aren't unfairly
+            # excluded — the existing core gates already cover those cases.
             _mos = self.df["mos_pct"]
             _rsi = self.df.get("rsi", pd.Series([50]*len(self.df)))
             _storm = self.df.get("storm_score", pd.Series([0]*len(self.df)))
@@ -2935,6 +2934,47 @@ class ExcelGeneratorV6:
             # Pass if Int Coverage ≥ 1.5 OR is missing
             _ic_gate = (_ic_num >= 1.5) | _ic_num.isna()
 
+            # ────────────────────────────────────────────────────────────
+            # Quality Floor — two institutional gates on profitability +
+            # growth-vs-valuation.
+            #
+            #   ROE ≥ 10%   — Minimum return on shareholder capital. Below
+            #                 this, the company isn't generating enough
+            #                 return to qualify as a quality pick. Threshold
+            #                 calibrated against real picks: ITC (29%),
+            #                 KOVAI (19.7%), BSOFT (13.4%) all pass; the
+            #                 9.5%-ROE SONAMLTD case fails.
+            #
+            #   PEG ≤ 8.0   — Maximum price/earnings/growth ratio. Healthy
+            #                 PEG is < 1.5, reasonable is < 3, extremely
+            #                 high (>8) signals fundamental disconnect.
+            #                 Threshold deliberately permissive to catch
+            #                 outlier red flags (SONAMLTD 8.63, INDUSTOWER
+            #                 19.47) without rejecting borderline cases
+            #                 like BSOFT (PEG 6.36) which are legitimate.
+            #
+            # Both gates are permissive on missing data: stocks with
+            # ROE=None or PEG=None (typically small caps without ratios)
+            # PASS these gates rather than being rejected. The existing
+            # 11 gates (Altman / BS Health / Int Coverage) already handle
+            # those cases. Negative PEG (loss-making companies) also
+            # passes — the verdict / score gates already filter losers.
+            QUALITY_FLOOR_ROE_PCT = 10.0
+            QUALITY_FLOOR_PEG_MAX = 8.0
+            _roe_raw = self.df.get("roe", pd.Series(["—"]*len(self.df)))
+            _roe_num = pd.to_numeric(_roe_raw, errors="coerce")
+            # Pass if ROE ≥ 10% OR missing
+            _roe_gate = (_roe_num >= QUALITY_FLOOR_ROE_PCT) | _roe_num.isna()
+
+            _peg_raw = self.df.get("peg", pd.Series(["—"]*len(self.df)))
+            _peg_num = pd.to_numeric(_peg_raw, errors="coerce")
+            # Pass if PEG ≤ 8 OR missing OR ≤ 0 (loss-making, other gates handle)
+            _peg_gate = (
+                (_peg_num <= QUALITY_FLOOR_PEG_MAX) |
+                _peg_num.isna() |
+                (_peg_num <= 0)
+            )
+
             mask = (
                 (self.df["verdict"] == "BUY") &
                 (self.df["composite_score"] >= 70) &
@@ -2944,9 +2984,11 @@ class ExcelGeneratorV6:
                 (~_bs.str.contains("ALERT", na=False)) &
                 (_pledge <= 10) &
                 (self.df["spike_suppressed"] == False) &
-                _alt_gate &    # v10.11: not distressed
-                _eq_gate &     # v10.11: not accounting concern
-                _ic_gate       # v10.11: can service interest
+                _alt_gate &    # not distressed
+                _eq_gate &     # not accounting concern
+                _ic_gate &     # can service interest
+                _roe_gate &    # quality floor: ROE ≥ 10% (or missing)
+                _peg_gate      # quality floor: PEG ≤ 8 (or missing/≤0)
             )
             return self.df[mask].copy().reset_index(drop=True)
         except Exception: return pd.DataFrame()
