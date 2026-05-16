@@ -4,11 +4,19 @@ v14.0 — Gold-pick outcome tracker.
 
 Walks daily_prices forward from each OPEN recommendation date and records
 the first event that fires:
-    SL_HIT   — daily low ≤ stop_loss      (highest priority — wins ties)
+    SL_HIT   — daily low ≤ ORIGINAL stop_loss  (real loss; thesis failed)
+    TRAIL_SL — daily low ≤ TRAILING stop after a favourable run
+               (break-even / locked-profit exit; NOT a thesis failure —
+               tracked separately so it doesn't pollute SL-rate stats)
     T3_HIT   — daily high ≥ T3
     T2_HIT   — daily high ≥ T2 (and not yet T3)
     T1_HIT   — daily high ≥ T1 (and not yet T2)
     EXPIRED  — 90 calendar days passed with no event
+
+v16.5 trailing-stop recalibration: break-even activation raised from +5%
+peak gain to +10% (the +5% trigger was too aggressive — small pops that
+pulled back were force-closed flat). Tiers: peak ≥25%→lock+12%, ≥20%→
+lock+9%, ≥15%→lock+5%, ≥10%→break-even, <10%→no trailing (original SL only).
 
 Design rules (locked in v14_state.md):
     - First-event-wins: tracker stops at the first day a target/SL fires
@@ -156,13 +164,16 @@ def _walk_forward(rec: dict) -> dict:
     in_drawdown          = False  # are we currently underwater?
 
     # ─────────────────────────────────────────────────────────────────────
-    # v15.0: Trailing stop tracking
+    # Trailing stop tracking (v16.5 recalibrated tiers)
     # Peak price seen so far drives the trailing-SL ratchet:
-    #   peak_gain ≥ +5%  → trailing_sl = entry (break-even)
-    #   peak_gain ≥ +10% → trailing_sl = entry + 3%
-    #   peak_gain ≥ +15% → trailing_sl = entry + 7%
+    #   peak_gain ≥ +25% → trailing_sl = entry + 12%
+    #   peak_gain ≥ +20% → trailing_sl = entry + 9%
+    #   peak_gain ≥ +15% → trailing_sl = entry + 5%
+    #   peak_gain ≥ +10% → trailing_sl = entry (break-even)
+    #   peak_gain < +10% → NO trailing stop (original_sl still protects)
     # Effective SL = max(original_sl, trailing_sl_price) — only ratchets UP.
     # Once activated, trailing SL never moves down even if peak retraces.
+    # A trailing-stop exit returns outcome_type=TRAIL_SL (not SL_HIT).
     # ─────────────────────────────────────────────────────────────────────
     peak_price_seen  = cmp_rec
     trailing_sl_price = 0.0    # 0 = not activated
@@ -294,9 +305,28 @@ def _walk_forward(rec: dict) -> dict:
 
         # ─── Event check — SL beats target on same-day ties ───
         # SL hit: daily low touched/breached EFFECTIVE SL (trailing-aware)
+        #
+        # v16.5: distinguish two fundamentally different exit types:
+        #   • SL_HIT    — price broke the ORIGINAL stop loss (a real loss;
+        #                 the trade thesis failed). Counts against SL-rate.
+        #   • TRAIL_SL  — price pulled back into the TRAILING stop after a
+        #                 favourable run (break-even or locked-in-profit
+        #                 exit). This is NOT a thesis failure — it's the
+        #                 system protecting gains. Tracked separately so it
+        #                 doesn't pollute the SL-rate / hit-rate statistics.
+        #
+        # The discriminator: if effective_sl came from the trailing ratchet
+        # (trailing_sl_price active AND ≥ original_sl), it's a TRAIL_SL.
+        # Otherwise the original SL was breached → genuine SL_HIT.
         if lo > 0 and lo <= effective_sl:
+            _is_trailing_exit = (
+                trailing_sl_price > 0 and
+                trailing_sl_price >= original_sl and
+                effective_sl == trailing_sl_price
+            )
+            _exit_type = "TRAIL_SL" if _is_trailing_exit else "SL_HIT"
             return {
-                "outcome_type": "SL_HIT",
+                "outcome_type": _exit_type,
                 "outcome_date": d_str,
                 "outcome_price": effective_sl,
                 "days_to_outcome": days_in,
@@ -377,15 +407,36 @@ def _walk_forward(rec: dict) -> dict:
         # This guarantees no look-ahead bias — today's high cannot tighten
         # today's stop and then have today's low be checked against it.
         # The ratcheted trailing_sl_price will be used on the NEXT bar.
+        #
+        # v16.5 recalibration — break-even activation raised from +5% to +10%.
+        # Rationale: the old +5% break-even trigger was too aggressive. A stock
+        # that popped just 5% intraday then pulled back (extremely common
+        # volatility) would get stopped out flat — converting would-be winners
+        # into break-even scratches. Real example: KOVAI ran to +5.4% peak,
+        # the break-even trailing stop activated at entry price, then a normal
+        # pullback to +0.7% touched break-even and force-closed the position
+        # while it was still trending. The tiers below now require a more
+        # meaningful cushion before the trailing stop ratchets:
+        #
+        #   peak ≥ 25% → lock +12%   (was: ≥15 → +7%)
+        #   peak ≥ 20% → lock +9%
+        #   peak ≥ 15% → lock +5%
+        #   peak ≥ 10% → break-even  (was: ≥5 → break-even — TOO EARLY)
+        #   peak < 10% → no trailing stop (original SL still protects)
+        #
+        # This keeps trending positions alive longer while still locking in
+        # gains once a position has run far enough to justify protection.
         if hi > 0 and hi > peak_price_seen:
             peak_price_seen = hi
             peak_gain_pct = (peak_price_seen - cmp_rec) / cmp_rec * 100
             new_trailing = 0.0
-            if peak_gain_pct >= 15:
-                new_trailing = round(cmp_rec * 1.07, 2)   # lock in +7%
+            if peak_gain_pct >= 25:
+                new_trailing = round(cmp_rec * 1.12, 2)   # lock in +12%
+            elif peak_gain_pct >= 20:
+                new_trailing = round(cmp_rec * 1.09, 2)   # lock in +9%
+            elif peak_gain_pct >= 15:
+                new_trailing = round(cmp_rec * 1.05, 2)   # lock in +5%
             elif peak_gain_pct >= 10:
-                new_trailing = round(cmp_rec * 1.03, 2)   # lock in +3%
-            elif peak_gain_pct >= 5:
                 new_trailing = round(cmp_rec * 1.00, 2)   # break-even
             if new_trailing > trailing_sl_price:
                 trailing_sl_price = new_trailing

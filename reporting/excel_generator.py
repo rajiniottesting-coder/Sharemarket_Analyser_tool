@@ -1068,8 +1068,9 @@ GLOSSARY_DATA = [
      "First-appearance rule: a stock is logged ONCE on its first Gold appearance; re-appearances are skipped until the original recommendation closes "
      "(T1/T2/T3 hit, SL break, or 90-day expiry). This prevents the same stock from inflating sample size with correlated outcomes.","🎯 Performance"),
     ("PERFORMANCE","Closed",
-     "Picks where outcome is final — sum of T1_HIT + T2_HIT + T3_HIT + SL_HIT + EXPIRED. Hit rate / SL rate / expiry rate are computed against this denominator. "
-     "Closed rows are immutable — the tracker never re-evaluates them, so once a stock hits T1, subsequent T2 movement won't update the row.","🎯 Performance"),
+     "Picks where outcome is final — sum of T1_HIT + T2_HIT + T3_HIT + SL_HIT + TRAIL_SL + EXPIRED. Hit rate / SL rate / expiry rate are computed against this denominator. "
+     "Closed rows are immutable — the tracker never re-evaluates them, so once a stock hits T1, subsequent T2 movement won't update the row. "
+     "TRAIL_SL (trailing-stop exits) count as closed but are excluded from the SL-rate — they represent successful risk control, not stop-loss failures.","🎯 Performance"),
     ("PERFORMANCE","Open",
      "Picks still being monitored — within 90-day tracking window with no SL/T1/T2/T3 event yet. The tracker walks each open row's daily price history "
      "every run, refreshing current_price + max_runup + max_drawdown. Open rows graduate to EXPIRED automatically at day 90 if no event fires.","🎯 Performance"),
@@ -1078,9 +1079,9 @@ GLOSSARY_DATA = [
      "Heuristics: ≥60% = strong predictive value; 40-60% = useful but mixed; <40% = weak signal, review filter logic. "
      "Wait for ≥30 closed picks before drawing conclusions — sample size matters.","🎯 Performance"),
     ("PERFORMANCE","SL Rate",
-     "SL_HIT / CLOSED × 100. The fraction of closed picks that broke down through stop loss before any target hit. Lower is better. "
+     "SL_HIT / CLOSED × 100. The fraction of closed picks that broke down through the ORIGINAL stop loss before any target hit (a real loss — thesis failed). Lower is better. "
      "System is calibrated for ~6.5% risk per trade; SL rate of 25-35% is normal even for a healthy strategy. >50% suggests entries are too late "
-     "(chasing momentum) or SL is set too tight.","🎯 Performance"),
+     "(chasing momentum) or SL is set too tight. v16.5: TRAIL_SL (trailing-stop break-even / locked-profit exits) are EXCLUDED from this rate — they are not stop-loss failures.","🎯 Performance"),
     ("PERFORMANCE","T1 Hit / T2 Hit / T3 Hit",
      "Counts of closed picks bucketed by which target the price reached first. Note: a pick that reached T2 is NOT also counted in T1 — these are mutually exclusive buckets. "
      "T1 = first target (~2× the risk distance from entry); T2 = T1 × 1.05; T3 = CFV-anchored (often 25-30% above entry).","🎯 Performance"),
@@ -1137,7 +1138,7 @@ GLOSSARY_DATA = [
      "Levels are frozen at recommendation time — re-appearances do NOT update them, preserving measurement integrity. SL renders in red text (downside risk); T1/T2/T3 render in green (upside).","🎯 Performance"),
     # v14.5: CLOSED POSITIONS section
     ("PERFORMANCE","Closed Positions section",
-     "v14.5: chronological log of every closed pick (SL_HIT/T1_HIT/T2_HIT/T3_HIT/EXPIRED), sorted most-recent-first. 12 columns: Symbol, Rec Date, Time Horizon, Outcome (color-coded — green for targets, red for SL, amber for EXPIRED), Outcome Date, Days to Outcome, Entry CMP, Outcome Price, P&L %, Max Runup %, Max Drawdown %, Score. "
+     "Chronological log of every closed pick (SL_HIT/TRAIL_SL/T1_HIT/T2_HIT/T3_HIT/EXPIRED), sorted most-recent-first. 12 columns: Symbol, Rec Date, Time Horizon, Outcome (colour-coded — green for targets, red for SL_HIT, blue for TRAIL_SL, amber for EXPIRED), Outcome Date, Days to Outcome, Entry CMP, Outcome Price, P&L %, Max Runup %, Max Drawdown %, Score. "
      "Realised P&L is computed live from entry vs outcome_price (so it reflects what actually happened, not what was projected). Max Runup % is especially revealing for SL_HIT rows: a high value (e.g. +9%) means the stock rallied significantly BEFORE hitting SL — possible SL too tight. "
      "Max Drawdown % matters for T-HIT rows: shows how much pain you'd have suffered before winning, useful for sizing future positions. Section appears between Diagnostic Breakdowns and Open Positions in the sheet — natural reading flow from aggregates to detail to current state. "
      "Footer summarises counts per outcome bucket.","🎯 Performance"),
@@ -1146,10 +1147,11 @@ GLOSSARY_DATA = [
      "v15.0 replaces the pre-v14.6 fixed -7%/+12.5% rule with a multi-factor formula that derives SL/T1/T2/T3 from six inputs: (1) ATR-14 daily volatility, (2) cap-category fallback (LARGE/MID/SMALL/MICRO), (3) time horizon (SHORT TERM=2.5×ATR, POSITIONAL=3.5×, LONG TERM=5×), (4) sector tier (very-high/high/neutral/low/very-low, ±0.6 to ±0.35), (5) ATR-percentile regime (current 14-day ATR vs 252-day baseline: high regime widens SL 10%, low tightens 10%), (6) volume-confirmed support floor (support1 only used when vol_ratio ≥ 1.20). "
      "SL bounded [4.5%, 15.0%] (v15.1: raised from 12% to preserve multi-factor differentiation on Indian small/mid-caps with typical 3-5% ATR; previous 12% cap was firing for ~44% of stocks, collapsing their SL to a single value). Earnings within 5 days → SL widened 20% (infrastructure ready, data source pending). T1 = max(1.5 × SL_pct, 0.40 × CFV_upside) — guarantees R:R ≥ 1.5:1. T2 = max(2.5 × SL_pct, 0.70 × CFV_upside) ≥ T1 × 1.35. T3 = max(4.0 × SL_pct, 1.00 × CFV_upside) ≥ T2 × 1.35. "
      "Hard T3 caps prevent absurd long-horizon stretches: SHORT TERM 35%, POSITIONAL 80%, LONG TERM 200%. Grade: A- (smart heuristics, not walk-forward backtested).","🎯 Performance"),
-    ("PERFORMANCE","Trailing Stop logic (v15.0)",
-     "v15.0 outcome tracker now ratchets up the stop-loss as the position gains. Peak gain thresholds: ≥+5% → trailing SL moves to break-even (entry); ≥+10% → moves to entry+3% (locks small profit); ≥+15% → moves to entry+7% (locks bigger profit). "
+    ("PERFORMANCE","Trailing Stop logic",
+     "Outcome tracker ratchets up the stop-loss as the position gains. v16.5 peak-gain thresholds: ≥+10% → trailing SL moves to break-even (entry); ≥+15% → moves to entry+5%; ≥+20% → moves to entry+9%; ≥+25% → moves to entry+12%. Below +10% peak there is NO trailing stop — the original SL still protects. "
+     "(v16.5 raised break-even activation from +5% to +10%: the old +5% trigger force-closed positions that popped briefly then pulled back — e.g. KOVAI ran +5.4% then dipped and was falsely closed flat.) "
      "Effective SL = MAX(original_sl, trailing_sl_price) — once activated, trailing SL only moves UP, never down. Zero look-ahead bias: trailing-SL update happens at END of each bar after the day's event check, so today's high cannot tighten today's stop and immediately trip it on today's low. "
-     "Persisted in gold_outcomes: trailing_sl_pct (current trailing SL as %), trailing_sl_price (absolute), peak_price_seen (highest price observed). Original SL preserved in gold_recommendations.original_stop_loss for audit. SL_HIT outcomes now record the effective SL price (which may be above entry for trailing fires).","🎯 Performance"),
+     "Persisted in gold_outcomes: trailing_sl_pct, trailing_sl_price, peak_price_seen. Original SL preserved in gold_recommendations.original_stop_loss for audit. A trailing-stop exit is recorded as TRAIL_SL (NOT SL_HIT) — it is successful risk control, not a stop-loss failure, and is excluded from the SL-rate statistic.","🎯 Performance"),
     ("PERFORMANCE","Sector Tier / Regime / Volume confirmation columns",
      "v15.0 audit columns logged with each recommendation. regime_at_rec: 'high' (current 14-day ATR ≥ 1.20× 252-day baseline → SL widened 10%), 'low' (≤ 0.80× → SL tightened 10%), or 'neutral'. atr_at_rec: ATR-14 as % of CMP at log time (debug/audit value). "
      "Sector tier comes from a 5-tier static map: very-high (+0.6: Realty/Sugar/Aviation/Real Estate), high (+0.3: Metals/PSU Bank/Coal/Power/etc), neutral (0: default for sectors not in map), low (-0.2: Banking/IT-Services/Auto/Chemicals), very-low (-0.35: FMCG/Pharma/Healthcare/Utilities/etc). "
@@ -2227,7 +2229,12 @@ class ExcelGeneratorV6:
 
         # Compute headline metrics
         n_total = len(_df_all)
-        closed_mask = _df_all["outcome_type"].isin(["SL_HIT","T1_HIT","T2_HIT","T3_HIT","EXPIRED"])
+        # v16.5: TRAIL_SL is a closed outcome (position is done) but is NOT
+        # a stop-loss failure — it's a trailing-stop profit/break-even exit.
+        # It counts toward n_closed but is tracked separately from SL_HIT so
+        # the SL-rate statistic isn't polluted by successful risk management.
+        closed_mask = _df_all["outcome_type"].isin(
+            ["SL_HIT","TRAIL_SL","T1_HIT","T2_HIT","T3_HIT","EXPIRED"])
         n_closed = int(closed_mask.sum())
         n_open   = int((_df_all["outcome_type"] == "OPEN").sum())
 
@@ -2236,13 +2243,16 @@ class ExcelGeneratorV6:
             n_t2 = int((_df_all["outcome_type"] == "T2_HIT").sum())
             n_t3 = int((_df_all["outcome_type"] == "T3_HIT").sum())
             n_sl = int((_df_all["outcome_type"] == "SL_HIT").sum())
+            n_tr = int((_df_all["outcome_type"] == "TRAIL_SL").sum())
             n_ex = int((_df_all["outcome_type"] == "EXPIRED").sum())
             # T1+ hit rate = anything that reached at least T1 (T1, T2, or T3)
             hit_rate = (n_t1 + n_t2 + n_t3) / n_closed * 100
+            # SL rate = ONLY genuine original-SL breaches (thesis failures).
+            # TRAIL_SL exits are excluded — they're successful risk control.
             sl_rate  = n_sl / n_closed * 100
             ex_rate  = n_ex / n_closed * 100
         else:
-            n_t1 = n_t2 = n_t3 = n_sl = n_ex = 0
+            n_t1 = n_t2 = n_t3 = n_sl = n_tr = n_ex = 0
             hit_rate = sl_rate = ex_rate = 0.0
 
         # Insufficient-sample banner
@@ -2286,6 +2296,9 @@ class ExcelGeneratorV6:
         _metric(10, 3, "T3 HIT", n_t3, value_fill="6EE7B7",  label_fill="34D399", val_color="065F46")
         _metric(10, 4, "SL HIT", n_sl, value_fill="FECACA",  label_fill="FCA5A5", val_color="991B1B")
         _metric(10, 5, "EXPIRED",n_ex, value_fill="E5E7EB",  label_fill="D1D5DB", val_color="374151")
+        # v16.5: TRAIL_SL — trailing-stop exits (break-even / locked profit).
+        # Amber, not red — these are successful risk control, not failures.
+        _metric(10, 6, "TRAIL SL",n_tr, value_fill="FEF3C7",  label_fill="FDE68A", val_color="92400E")
 
         # ── Section 2: SPEED ──────────────────────────────────────────────
         ws.merge_cells(start_row=13,start_column=1,end_row=13,end_column=10)
@@ -2329,7 +2342,7 @@ class ExcelGeneratorV6:
             ws.cell(start_row, 1).fill = _f("FEF3C7")
             ws.row_dimensions[start_row].height = 18
             # column headers
-            for ci, h in enumerate(["Group","Total","T1+ Hits","SL Hits","Expired","Hit Rate"], 1):
+            for ci, h in enumerate(["Group","Total","T1+ Hits","SL Hits","Trail SL","Expired","Hit Rate"], 1):
                 cc = ws.cell(start_row + 1, ci, h)
                 cc.fill = _f("FED7AA"); cc.font = _ft(True, NAVY, 9); cc.alignment = _al()
             ws.row_dimensions[start_row + 1].height = 18
@@ -2341,6 +2354,7 @@ class ExcelGeneratorV6:
                 total=(group_col, "size"),
                 t1_plus=("outcome_type", lambda s: int(s.isin(["T1_HIT","T2_HIT","T3_HIT"]).sum())),
                 sl=("outcome_type", lambda s: int((s == "SL_HIT").sum())),
+                trail_sl=("outcome_type", lambda s: int((s == "TRAIL_SL").sum())),
                 expired=("outcome_type", lambda s: int((s == "EXPIRED").sum())),
             ).reset_index().sort_values("total", ascending=False)
             r = start_row + 2
@@ -2352,14 +2366,15 @@ class ExcelGeneratorV6:
                 ws.cell(r,1, str(gr[group_col])).fill = _f(bg)
                 ws.cell(r,1).font = _ft(False, NAVY, 9); ws.cell(r,1).alignment = _al("left")
                 for ci, val in [(2, tot), (3, int(gr["t1_plus"])),
-                                (4, int(gr["sl"])), (5, int(gr["expired"]))]:
+                                (4, int(gr["sl"])), (5, int(gr["trail_sl"])),
+                                (6, int(gr["expired"]))]:
                     cc = ws.cell(r, ci, val); cc.fill = _f(bg); cc.font = _ft(False, NAVY, 9)
                     cc.alignment = _al()
                 # Hit rate cell — colored by quality
                 if hit_pct >= 60:    rate_bg = "D1FAE5"; rate_color = "065F46"
                 elif hit_pct >= 40:  rate_bg = "FEF3C7"; rate_color = "92400E"
                 else:                rate_bg = "FEE2E2"; rate_color = "991B1B"
-                cc = ws.cell(r, 6, f"{hit_pct:.1f}%")
+                cc = ws.cell(r, 7, f"{hit_pct:.1f}%")
                 cc.fill = _f(rate_bg); cc.font = _ft(True, rate_color, 9); cc.alignment = _al()
                 r += 1
             return r + 1
@@ -2387,12 +2402,13 @@ class ExcelGeneratorV6:
         #
         # Sample-size guard: if zero closed rows in DB, render the empty-state
         # line and skip the table entirely (same pattern as OPEN POSITIONS).
+        # v16.5: TRAIL_SL included — it's a closed outcome (trailing-stop exit).
         _closed_df = _df_all[_df_all["outcome_type"].isin(
-            ["SL_HIT","T1_HIT","T2_HIT","T3_HIT","EXPIRED"])].copy()
+            ["SL_HIT","TRAIL_SL","T1_HIT","T2_HIT","T3_HIT","EXPIRED"])].copy()
         ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
         c = ws.cell(next_row,1,
             "📜  CLOSED POSITIONS  ·  Realised outcomes — historical track record  ·  "
-            "SL_HIT with POSITIVE P&L = trailing SL fire (locked profit)")
+            "TRAIL_SL = trailing-stop exit (break-even or locked profit, not a loss)")
         c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
         ws.row_dimensions[next_row].height = 22
         next_row += 1
@@ -2434,7 +2450,8 @@ class ExcelGeneratorV6:
                 "T1_HIT":  "D1FAE5",   # light green
                 "T2_HIT":  "A7F3D0",   # medium green
                 "T3_HIT":  "6EE7B7",   # darker green
-                "SL_HIT":  "FEE2E2",   # light red
+                "SL_HIT":  "FEE2E2",   # light red (genuine stop-loss = loss)
+                "TRAIL_SL":"DBEAFE",   # light blue (trailing exit = risk control, not a loss)
                 "EXPIRED": "FEF3C7",   # amber
             }
             _outcome_fg = {
@@ -2442,6 +2459,7 @@ class ExcelGeneratorV6:
                 "T2_HIT":  "065F46",
                 "T3_HIT":  "065F46",
                 "SL_HIT":  "991B1B",
+                "TRAIL_SL":"1E40AF",   # blue text — distinct from red SL_HIT
                 "EXPIRED": "92400E",
             }
 
@@ -2492,7 +2510,7 @@ class ExcelGeneratorV6:
             # End-of-table summary count by outcome bucket (one-liner)
             _summary_parts = []
             for _otype, _emoji in [("T1_HIT","🎯"),("T2_HIT","🎯🎯"),("T3_HIT","🎯🎯🎯"),
-                                    ("SL_HIT","🛑"),("EXPIRED","⏱")]:
+                                    ("SL_HIT","🛑"),("TRAIL_SL","🔵"),("EXPIRED","⏱")]:
                 _n = int((_closed_df["outcome_type"] == _otype).sum())
                 if _n > 0:
                     _summary_parts.append(f"{_emoji} {_otype}: {_n}")
