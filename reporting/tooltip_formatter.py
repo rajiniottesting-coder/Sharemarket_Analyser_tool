@@ -960,10 +960,13 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "in Gold; re-appearances on subsequent days are skipped UNTIL the\n"
                        "original recommendation closes (T1/T2/T3 hit, SL hit, or 90d expiry)."),
     "CLOSED": ("Picks where outcome is final",
-                "Sum of T1_HIT + T2_HIT + T3_HIT + SL_HIT + EXPIRED. These are\n"
-                "recommendations the tracker has finalised — no further updates\n"
-                "are made to closed rows. Hit/SL/Expiry % are computed against\n"
-                "this denominator, not Total Tracked."),
+                "Sum of T1_HIT + T2_HIT + T3_HIT + SL_HIT + TRAIL_SL +\n"
+                "EXPIRED. These are recommendations the tracker has finalised\n"
+                "— no further updates are made to closed rows. Hit/SL/Expiry\n"
+                "% are computed against this denominator, not Total Tracked.\n"
+                "TRAIL_SL (trailing-stop exits) count as closed but are NOT\n"
+                "counted in the SL-rate — they are successful risk control,\n"
+                "not stop-loss failures."),
     "OPEN": ("Picks still being monitored",
              "Recommendations currently within the 90-day tracking window with no\n"
              "T1/T2/T3 hit and no SL break yet. The tracker re-walks these every\n"
@@ -978,12 +981,15 @@ TIPS: Dict[str, Tuple[str, str]] = {
                         "  40–60%: useful but mixed\n"
                         "  <40% : weak — review filter logic\n"
                         "Wait for ≥30 closed picks before drawing conclusions."),
-    "SL RATE": ("% of closed picks hitting stop loss",
-                 "SL_HIT / CLOSED × 100. The fraction where price broke down through\n"
-                 "the stop loss before any target hit. Lower is better. The system\n"
-                 "is calibrated for ~6.5% risk per trade; an SL rate of 25-35% is\n"
-                 "normal even for a healthy strategy. >50% suggests entries are\n"
-                 "too late (chasing momentum) or SL too tight."),
+    "SL RATE": ("% of closed picks hitting ORIGINAL stop loss",
+                 "SL_HIT / CLOSED × 100. The fraction where price broke down\n"
+                 "through the ORIGINAL stop loss before any target hit (a real\n"
+                 "loss — the trade thesis failed). Lower is better. The system\n"
+                 "is calibrated for ~6.5% risk per trade; an SL rate of 25-35%\n"
+                 "is normal even for a healthy strategy. >50% suggests entries\n"
+                 "are too late (chasing momentum) or SL too tight.\n"
+                 "v16.5: TRAIL_SL (trailing-stop break-even/profit exits) are\n"
+                 "EXCLUDED from this rate — they are not thesis failures."),
     "AVG DAYS → T1": ("Mean days from recommendation to T1 hit",
                        "How quickly winners reached the first target. Lower = faster\n"
                        "win realization. Useful for setting realistic expectations:\n"
@@ -1096,13 +1102,17 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # ────────────────────────────────────────────────────────────────────
     "SL": ("Effective stop-loss (original or trailing, whichever is higher)",
             "Format: ₹price (distance%). Distance is from CURRENT price.\n"
-            "v15.0: This is the EFFECTIVE SL = MAX(original_sl, trailing_sl).\n"
-            "Trailing SL ratchets up as peak gain crosses thresholds:\n"
-            "  Peak gain ≥ +5%  → trailing SL = break-even (entry price)\n"
-            "  Peak gain ≥ +10% → trailing SL = entry + 3% (locks small profit)\n"
-            "  Peak gain ≥ +15% → trailing SL = entry + 7% (locks bigger profit)\n"
+            "This is the EFFECTIVE SL = MAX(original_sl, trailing_sl).\n"
+            "v16.5 trailing SL ratchets up as peak gain crosses thresholds:\n"
+            "  Peak gain ≥ +10% → trailing SL = break-even (entry price)\n"
+            "  Peak gain ≥ +15% → trailing SL = entry + 5% (locks profit)\n"
+            "  Peak gain ≥ +20% → trailing SL = entry + 9%\n"
+            "  Peak gain ≥ +25% → trailing SL = entry + 12%\n"
+            "  Peak gain < +10% → no trailing SL (original SL still protects)\n"
             "Once activated, trailing SL never moves down. Original SL preserved\n"
-            "in original_stop_loss column for audit. Red = downside risk."),
+            "in original_stop_loss column for audit. Red = downside risk.\n"
+            "v16.5: break-even raised from +5% to +10% — small pops that\n"
+            "pulled back were being force-closed flat (KOVAI-class)."),
     "T1": ("First profit target (1.5:1 R:R minimum by v15.0 formula)",
             "Format: ₹price (distance%). Distance from CURRENT price.\n"
             "v15.0: T1 = max(1.5 × SL_pct, 0.40 × CFV_upside) from CMP at\n"
@@ -1121,19 +1131,23 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # v14.5: CLOSED POSITIONS columns
     # ────────────────────────────────────────────────────────────────────
     "Outcome": ("How this position closed",
-                "One of: T1_HIT / T2_HIT / T3_HIT (profit targets), SL_HIT (stop\n"
-                "loss triggered), EXPIRED (no event fired within the horizon\n"
-                "window). Color-coded green/red/amber for at-a-glance scanning."),
+                "One of: T1_HIT / T2_HIT / T3_HIT (profit targets), SL_HIT\n"
+                "(original stop loss breached — a real loss), TRAIL_SL\n"
+                "(trailing stop hit after a favourable run — break-even or\n"
+                "locked profit, NOT a loss), EXPIRED (no event within the\n"
+                "horizon window). Colour-coded: green = targets, red =\n"
+                "SL_HIT, blue = TRAIL_SL, amber = EXPIRED."),
     "Outcome Date": ("Calendar date when the closing event fired",
                      "For T-HIT outcomes, this is the day the stock high crossed\n"
-                     "the target level. For SL_HIT, the day the stock low touched\n"
-                     "the stop loss. For EXPIRED, the date = recommendation_date\n"
-                     "+ expiry_days (hard cutoff at horizon boundary)."),
+                     "the target level. For SL_HIT / TRAIL_SL, the day the stock\n"
+                     "low touched the (original or trailing) stop. For EXPIRED,\n"
+                     "the date = recommendation_date + expiry_days."),
     "Days to Outcome": ("Calendar days between recommendation and closing event",
                         "Lower is faster. T1 wins often resolve in 10-30 days;\n"
                         "T2 in 25-50; T3 in 40-90. SL_HITs are usually fast (5-15\n"
                         "days) — meaningful info: if SL_HIT averages slower than\n"
-                        "T1_HIT, the stop is well-calibrated."),
+                        "T1_HIT, the stop is well-calibrated. TRAIL_SL exits\n"
+                        "vary — they follow a favourable run then a pullback."),
     "Entry CMP": ("Closing price the day this stock was first recommended (frozen)",
                   "Same value as 'CMP at Rec' (just a shorter column name used\n"
                   "on the CLOSED POSITIONS table).\n"
@@ -1143,7 +1157,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Outcome Price": ("Price at which the closing event fired (CLOSED rows only)",
                       "  • For T1_HIT / T2_HIT / T3_HIT: the relevant target level\n"
                       "    crossed (e.g. T1 ≈ +20% above entry).\n"
-                      "  • For SL_HIT: the stop-loss price touched (e.g. -7% below entry).\n"
+                      "  • For SL_HIT: the original stop-loss price touched (a loss).\n"
+                      "  • For TRAIL_SL: the trailing-stop price touched after a\n"
+                      "    favourable run (break-even or locked profit — P&L ≥ 0).\n"
                       "  • For EXPIRED: the daily close on the expiry date (no\n"
                       "    SL/T event fired within the horizon window).\n"
                       "Realised P&L % = (Outcome Price - CMP at Rec) / CMP at Rec × 100."),
@@ -1207,16 +1223,19 @@ TIPS: Dict[str, Tuple[str, str]] = {
           "Use this column as a quick scan for 'positions needing attention' —\n"
           "either review your conviction (still believe in T1?) or consider\n"
           "manual exit if you've decided to give up."),
-    "Trailing": ("Current trailing-SL state (v15.0)",
-                 "Shows the v15.0 trailing-stop level locked in so far:\n"
-                 "  '—' = trailing not yet activated (peak gain < +5%)\n"
-                 "  'BE locked' = peak gain ≥ +5%, SL ratcheted to break-even\n"
-                 "  '+3% locked' = peak gain ≥ +10%, SL ratcheted to entry+3%\n"
-                 "  '+7% locked' = peak gain ≥ +15%, SL ratcheted to entry+7%\n"
+    "Trailing": ("Current trailing-SL state",
+                 "Shows the trailing-stop level locked in so far (v16.5 tiers):\n"
+                 "  '—' = trailing not yet activated (peak gain < +10%)\n"
+                 "  'BE locked' = peak gain ≥ +10%, SL ratcheted to break-even\n"
+                 "  '+5% locked' = peak gain ≥ +15%, SL ratcheted to entry+5%\n"
+                 "  '+9% locked' = peak gain ≥ +20%, SL ratcheted to entry+9%\n"
+                 "  '+12% locked' = peak gain ≥ +25%, SL ratcheted to entry+12%\n"
                  "Effective SL = MAX(original_sl, trailing_sl). Trailing SL\n"
                  "never moves down once activated — only ratchets up. Logic\n"
                  "uses no-lookahead discipline: today's high cannot tighten\n"
-                 "today's stop and trip it on today's low."),
+                 "today's stop and trip it on today's low. A trailing-stop\n"
+                 "exit is recorded as TRAIL_SL (not SL_HIT) — it's risk\n"
+                 "control, not a thesis failure."),
     "Regime": ("Volatility regime classified at recommendation time (v15.0)",
                "v15.0 audit field. Compares current 14-day ATR to 252-day\n"
                "baseline ATR (your 1-year volatility average):\n"

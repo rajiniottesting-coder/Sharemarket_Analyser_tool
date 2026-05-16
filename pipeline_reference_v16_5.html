@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>NSE/BSE Stock Analyser — Pipeline Reference (v16.4)</title>
+<title>NSE/BSE Stock Analyser — Pipeline Reference (v16.5)</title>
 <style>
   :root {
     --bg-primary:#fff;--bg-secondary:#f8f7f3;--bg-tertiary:#f1efe8;
@@ -77,7 +77,7 @@
 <body>
 <div class="wrap">
 <h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
-<div class="meta">v16.4 · Daily pre-market intelligence pipeline · Single source of truth for end-to-end logic · Post-pipeline layers (outcome tracking from v14.0+, trailing stops + regime detection from v15.0, risk-parity sizing from v15.5, institutional risk metrics + DD-duration tracking + survivorship audit from v16.0, Gold-tier Quality Floor gate (ROE ≥ 10% · PEG ≤ 8) from v16.2, Excel column-width fixes from v16.3, Beneish threshold recalibration (-2.22 → -1.78, stricter Beneish 1999 "likely manipulator" cutoff) from v16.4) covered separately in CLAUDE.md</div>
+<div class="meta">v16.5 · Daily pre-market intelligence pipeline · Single source of truth for end-to-end logic · Post-pipeline layers (outcome tracking from v14.0+, trailing stops + regime detection from v15.0, risk-parity sizing from v15.5, institutional risk metrics + DD-duration tracking + survivorship audit from v16.0, Gold-tier Quality Floor gate (ROE ≥ 10% · PEG ≤ 8) from v16.2, Excel column-width fixes from v16.3, Beneish threshold recalibration (-2.22 → -1.78) from v16.4, trailing-stop recalibration (+5% → +10% break-even) + TRAIL_SL outcome label from v16.5) covered separately in CLAUDE.md</div>
 <div class="toc">
   <h3>Contents</h3>
   <ol>
@@ -879,8 +879,8 @@ Stage 3 reads <code>latest_analysis_results</code> table at startup via <code>ge
 </p>
 
 <div class="footer">
-NSE/BSE Stock Analyser · v16.4 · Pipeline reference document<br>
-This document covers the daily scoring pipeline only (Stage 1 eligibility → Composite Score → Verdict). For ongoing post-pipeline enhancements see CLAUDE.md and the per-release CHANGES.md files. Key post-v15.0 layers: <strong>v15.5</strong> institutional risk-parity sizing (1% risk budget per position, cap-category multipliers, 30% sector cap, MAX_ALLOCATION clamp); <strong>v15.7</strong> Performance-sheet alloc columns; <strong>v15.8 / v15.8.1</strong> ETF filter with AMC-parent carve-out (hotfix for EPS/mcap parsing); <strong>v15.9</strong> tooltip context-correctness for shared OPEN/CLOSED headers; <strong>v16.0</strong> institutional risk-adjusted metrics (Sharpe / Sortino / Calmar), Max DD Duration tracking, survivorship-bias audit; <strong>v16.2</strong> Gold-tier Quality Floor gate (ROE ≥ 10% and PEG ≤ 8) — Gold filter now has 13 must-pass criteria, up from 11; <strong>v16.3</strong> Excel column-width fixes across Performance / Gold / Full Dashboard sheets to eliminate header-text overlap; <strong>v16.4</strong> Beneish M threshold recalibration from -2.22 → -1.78 (Beneish 1999 "likely manipulator" cutoff, eliminates false-positive Gold exclusions on stocks like MAYURUNIQ / DRREDDY).
+NSE/BSE Stock Analyser · v16.5 · Pipeline reference document<br>
+This document covers the daily scoring pipeline only (Stage 1 eligibility → Composite Score → Verdict). For ongoing post-pipeline enhancements see CLAUDE.md and the per-release CHANGES.md files. Key post-v15.0 layers: <strong>v15.5</strong> institutional risk-parity sizing (1% risk budget per position, cap-category multipliers, 30% sector cap, MAX_ALLOCATION clamp); <strong>v15.7</strong> Performance-sheet alloc columns; <strong>v15.8 / v15.8.1</strong> ETF filter with AMC-parent carve-out (hotfix for EPS/mcap parsing); <strong>v15.9</strong> tooltip context-correctness for shared OPEN/CLOSED headers; <strong>v16.0</strong> institutional risk-adjusted metrics (Sharpe / Sortino / Calmar), Max DD Duration tracking, survivorship-bias audit; <strong>v16.2</strong> Gold-tier Quality Floor gate (ROE ≥ 10% and PEG ≤ 8) — Gold filter now has 13 must-pass criteria, up from 11; <strong>v16.3</strong> Excel column-width fixes across Performance / Gold / Full Dashboard sheets to eliminate header-text overlap; <strong>v16.4</strong> Beneish M threshold recalibration from -2.22 → -1.78 (Beneish 1999 "likely manipulator" cutoff, eliminates false-positive Gold exclusions on stocks like MAYURUNIQ / DRREDDY); <strong>v16.5</strong> trailing-stop recalibration — break-even activation raised +5% → +10% peak gain (eliminates KOVAI-class false break-even closes), plus new TRAIL_SL outcome type that separates trailing-stop risk-control exits from genuine SL_HIT losses so the SL-rate statistic is no longer polluted.
 </div>
 
 </div>

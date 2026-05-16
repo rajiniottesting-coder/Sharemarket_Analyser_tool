@@ -156,6 +156,31 @@ jobs:
               print("\n✅ Cleanup complete — pipeline will repopulate via v12.1 reconciler.")
           PYEOF
 
+      - name: 🔧 v16.5 one-time false-KOVAI cleanup (idempotent — safe to leave)
+        # ───────────────────────────────────────────────────────────────────
+        # Resets the false KOVAI SL_HIT row (created by the pre-v16.5 +5%
+        # break-even trailing-stop bug) back to OPEN, so the v16.5 tracker
+        # re-walks it correctly. Runs against the ARTIFACT-restored DB inside
+        # the workflow — this is the only place the live DB exists.
+        #
+        # IDEMPOTENT: only matches rows with the exact false signature
+        # (SL_HIT + outcome_price ≈ entry + P&L ≈ 0%). Once KOVAI is reset
+        # to OPEN it no longer matches, so subsequent runs are no-ops. A
+        # genuine SL_HIT (real loss) never matches and is left untouched.
+        # Safe to leave in permanently; remove after one successful run for
+        # tidiness if preferred.
+        run: |
+          if [ ! -f market_data.db ]; then
+            echo "No DB present — nothing to clean."
+            exit 0
+          fi
+          if [ ! -f v16_5_cleanup_false_kovai.py ]; then
+            echo "Cleanup script not present in repo — skipping (already removed post-fix)."
+            exit 0
+          fi
+          echo "Running v16.5 false-KOVAI cleanup (commit mode) on artifact-restored DB..."
+          python3 v16_5_cleanup_false_kovai.py --commit || echo "Cleanup completed (no matching rows = already clean)"
+
       - name: Execute Master Pipeline
         env:
           GEMINI_API_KEY:        ${{ secrets.GEMINI_API_KEY }}

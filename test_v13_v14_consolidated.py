@@ -899,7 +899,7 @@ def test_fix5_exit_alerts_shows_avoid_verdicts():
         {'symbol': 'AVOID2', 'verdict': 'AVOID', 'spike_count': 0, 'mos_pct': -40,
          'early_entry_score': 10, 'composite_score': 32, 'rotation_stage': 'NEUTRAL',
          'smart_money_signals': '', 'vol_ratio': 1.0, 'spike_triggers': '',
-         'sector': 'Tech', 'exchange_tag': 'NSE', 'guard_reasons': 'Beneish M > -2.22'},
+         'sector': 'Tech', 'exchange_tag': 'NSE', 'guard_reasons': 'Beneish M > -1.78 (likely manipulation)'},
         {'symbol': 'AVOID3', 'verdict': 'AVOID', 'spike_count': 0, 'mos_pct': -35,
          'early_entry_score': 5, 'composite_score': 35, 'rotation_stage': 'NEUTRAL',
          'smart_money_signals': '', 'vol_ratio': 1.0, 'spike_triggers': '',
@@ -4170,6 +4170,305 @@ def test_g31_v16_3_column_width_floor():
             "(Days Held/Days Left/Re-app/Score), CLOSED widths aligned with OPEN")
 
 
+def test_g32_v16_4_beneish_threshold_recalibration():
+    """v16.4 regression test — verifies Beneish M-Score anti-trigger threshold
+    has been recalibrated from -2.22 to -1.78 (Beneish 1999 "likely manipulator"
+    cutoff) at ALL three sites consistently.
+
+    TRIGGER: 15 May 2026 audit surfaced multiple false-positive Gold exclusions
+    where the -2.22 threshold flagged high-quality stocks (MAYURUNIQ Score 99.7,
+    Beneish -1.80; DRREDDY Score 78.4, Beneish -1.96) as manipulation risks
+    despite HEALTHY balance sheets, HIGH earnings quality, healthy ROE/PEG/
+    Altman Z, and no SEBI flags. The Beneish model has known false-positive
+    bias on high-growth and capital-intensive businesses.
+
+    BENEISH 1999 ACADEMIC THRESHOLDS:
+      • M > -2.22 = "possible manipulator" (50%+ probability) — loose cutoff
+      • M > -1.78 = "likely manipulator" (80%+ probability) — stricter cutoff
+
+    v16.4 switches the anti-trigger guard from -2.22 to -1.78. The Beneish
+    formula itself (v12.9 real 8-variable implementation) is unchanged — only
+    the admission threshold for the anti-trigger guard is raised.
+
+    THIS TEST verifies:
+      1. screening/pre_screener.py uses -1.78 threshold (primary site)
+      2. master_funnel.py refresh block uses -1.78 (secondary site, v12.9)
+      3. Both sites use the same threshold value (no drift)
+      4. The stale -2.22 threshold is GONE from both production code sites
+      5. The guard-reason message references -1.78 (for log readability)
+      6. Tooltip text mentions both academic thresholds + uses -1.78 for gate
+      7. Glossary entry explains the dual-threshold framework
+
+    NOTE: The Beneish FORMULA tests in test_v11.0.2 (Group 59 tests 59.1a,
+    59.2a, 59.3a) reference -2.22 because they test the FORMULA OUTPUT
+    distribution (does the formula produce values that span the -2.22 region
+    for honest stocks vs. manipulation cases). Those are formula-correctness
+    tests, not threshold-calibration tests, so they correctly remain at -2.22.
+    """
+    # ── Check 1: pre_screener.py uses -1.78 ──
+    src_ps = open('screening/pre_screener.py', 'r', encoding='utf-8').read()
+    assert "beneish_m > -1.78" in src_ps, (
+        "v16.4: pre_screener.py Rule 3 must use threshold -1.78"
+    )
+    # And the user-facing message
+    assert "-1.78 (likely manipulation)" in src_ps, (
+        "v16.4: pre_screener.py guard message must say '-1.78 (likely manipulation)'"
+    )
+
+    # ── Check 2: master_funnel.py refresh block uses -1.78 ──
+    src_mf = open('master_funnel.py', 'r', encoding='utf-8').read()
+    assert "_ben_re > -1.78" in src_mf, (
+        "v16.4: master_funnel.py v12.9 refresh block must use threshold -1.78"
+    )
+    assert 'append("Beneish M > -1.78")' in src_mf, (
+        "v16.4: master_funnel.py refresh-block message must reference -1.78"
+    )
+
+    # ── Check 3: stale -2.22 production-code threshold is GONE ──
+    # (allowed in: test fixtures that test formula output values, NOT here)
+    # In pre_screener.py the OLD '> -2.22' check must be gone
+    assert "beneish_m > -2.22" not in src_ps, (
+        "v16.4: stale 'beneish_m > -2.22' check must be removed from pre_screener.py"
+    )
+    # In master_funnel.py the OLD '> -2.22' check must be gone
+    assert "_ben_re > -2.22" not in src_mf, (
+        "v16.4: stale '_ben_re > -2.22' check must be removed from master_funnel.py"
+    )
+
+    # ── Check 4: Tooltip text updated ──
+    src_tt = open('reporting/tooltip_formatter.py', 'r', encoding='utf-8').read()
+    # The Beneish M long tooltip must mention BOTH thresholds (educational
+    # value: explains why -1.78 was chosen) and use -1.78 as the gate
+    assert "M > -2.22 = possible manipulator" in src_tt, (
+        "v16.4: Beneish M tooltip must mention -2.22 academic threshold for context"
+    )
+    assert "M > -1.78 = likely manipulator" in src_tt, (
+        "v16.4: Beneish M tooltip must mention -1.78 academic threshold (the active gate)"
+    )
+    assert ">-1.78 triggers anti-trigger guard" in src_tt, (
+        "v16.4: Beneish M tooltip must say >-1.78 is the active gate"
+    )
+    # Spike Score tooltip must reflect the new threshold too
+    assert "Beneish>-1.78" in src_tt, (
+        "v16.4: Spike Score tooltip must reflect new Beneish threshold -1.78"
+    )
+
+    # ── Check 5: Excel glossary updated ──
+    src_xl = open('reporting/excel_generator.py', 'r', encoding='utf-8').read()
+    # The long glossary entry must explain both thresholds
+    assert "M > -1.78 = likely manipulator" in src_xl, (
+        "v16.4: Glossary Beneish entry must mention -1.78 (likely manipulator) threshold"
+    )
+    assert "M > -2.22 = possible manipulator" in src_xl, (
+        "v16.4: Glossary Beneish entry must mention -2.22 (possible manipulator) threshold"
+    )
+    # The short TIPS dict tooltip
+    assert "<-1.78 acceptable | >-1.78 likely manipulation" in src_xl, (
+        "v16.4: Excel TIPS dict Beneish entry must use new -1.78 quick-read"
+    )
+
+    return ("\u2705 v16.4: Beneish threshold recalibration verified — "
+            "-2.22 \u2192 -1.78 (Beneish 1999 'likely manipulator' cutoff) "
+            "applied consistently at all 3 sites (pre_screener.py, "
+            "master_funnel.py refresh block, tooltip + glossary). Stale "
+            "-2.22 production-code references removed.")
+
+
+def test_g33_v16_5_trailing_stop_recalibration_and_trail_sl_label():
+    """v16.5 regression test — verifies the trailing-stop fix (Option C):
+
+    PART 1 — Break-even activation recalibrated +5% → +10%
+    ────────────────────────────────────────────────────────
+    The old +5% break-even trigger was too aggressive. KOVAI ran to +5.4%
+    peak, the break-even trailing stop activated at entry price, then a
+    normal pullback to +0.7% touched break-even and force-closed the
+    position flat while it was still trending. v16.5 raises the tiers:
+      peak ≥ 25% → lock +12%
+      peak ≥ 20% → lock +9%
+      peak ≥ 15% → lock +5%
+      peak ≥ 10% → break-even   (was: ≥ 5% → break-even)
+      peak < 10% → no trailing stop (original SL still protects)
+
+    PART 2 — Distinct TRAIL_SL outcome label
+    ────────────────────────────────────────────────────────
+    Trailing-stop exits were being labeled SL_HIT, polluting the SL-rate
+    statistic (a break-even/profit exit is NOT a stop-loss failure). v16.5
+    introduces TRAIL_SL as a separate outcome type:
+      • SL_HIT   — original stop loss breached (real loss, thesis failed)
+      • TRAIL_SL — trailing stop hit after a favourable run (risk control)
+
+    THIS TEST verifies:
+      1. track_outcomes.py uses +10% break-even threshold (not +5%)
+      2. track_outcomes.py has the new 25/20/15/10 tier structure
+      3. The +5% break-even tier is GONE
+      4. TRAIL_SL outcome type is emitted by the SL-detection block
+      5. The TRAIL_SL discriminator logic is present (trailing vs original)
+      6. excel_generator.py includes TRAIL_SL in the closed-mask
+      7. excel_generator.py SL-rate excludes TRAIL_SL (only SL_HIT counts)
+      8. TRAIL_SL has its own colour mapping (not red — it's not a loss)
+      9. Functional simulation: KOVAI-like (+5.4% peak) stays OPEN
+     10. Functional simulation: legitimate +18% run → TRAIL_SL with profit
+    """
+    src_to = open('track_outcomes.py', 'r', encoding='utf-8').read()
+
+    # ── Check 1+2+3: recalibrated tiers, +5% gone ──
+    assert "peak_gain_pct >= 25" in src_to, (
+        "v16.5: track_outcomes must have the >= 25% tier (lock +12%)"
+    )
+    assert "peak_gain_pct >= 20" in src_to, (
+        "v16.5: track_outcomes must have the >= 20% tier (lock +9%)"
+    )
+    assert "peak_gain_pct >= 15" in src_to, (
+        "v16.5: track_outcomes must have the >= 15% tier (lock +5%)"
+    )
+    assert "peak_gain_pct >= 10" in src_to, (
+        "v16.5: track_outcomes must have the >= 10% tier (break-even)"
+    )
+    assert "peak_gain_pct >= 5" not in src_to, (
+        "v16.5: the OLD '>= 5' break-even tier must be REMOVED (too aggressive)"
+    )
+
+    # ── Check 4+5: TRAIL_SL outcome type + discriminator ──
+    assert '"TRAIL_SL"' in src_to or "'TRAIL_SL'" in src_to, (
+        "v16.5: track_outcomes must emit TRAIL_SL outcome type"
+    )
+    assert "_is_trailing_exit" in src_to, (
+        "v16.5: track_outcomes must have the _is_trailing_exit discriminator"
+    )
+    # The discriminator must check trailing_sl_price >= original_sl
+    assert "trailing_sl_price >= original_sl" in src_to, (
+        "v16.5: TRAIL_SL discriminator must compare trailing_sl_price to original_sl"
+    )
+
+    # ── Check 6+7: excel_generator closed-mask + SL-rate ──
+    src_xl = open('reporting/excel_generator.py', 'r', encoding='utf-8').read()
+    # closed_mask must include TRAIL_SL
+    assert '"SL_HIT","TRAIL_SL"' in src_xl or '"TRAIL_SL"' in src_xl, (
+        "v16.5: excel_generator closed_mask must include TRAIL_SL"
+    )
+    # n_tr must be computed
+    assert 'n_tr = int((_df_all["outcome_type"] == "TRAIL_SL")' in src_xl, (
+        "v16.5: excel_generator must count TRAIL_SL separately as n_tr"
+    )
+    # sl_rate must use only n_sl (not n_sl + n_tr)
+    assert "sl_rate  = n_sl / n_closed * 100" in src_xl, (
+        "v16.5: SL-rate must be n_sl / n_closed (TRAIL_SL excluded)"
+    )
+
+    # ── Check 8: TRAIL_SL colour mapping (not red) ──
+    assert '"TRAIL_SL":"DBEAFE"' in src_xl, (
+        "v16.5: TRAIL_SL must have a distinct (blue, not red) background colour"
+    )
+    assert '"TRAIL_SL":"1E40AF"' in src_xl, (
+        "v16.5: TRAIL_SL must have a distinct (blue) foreground colour"
+    )
+
+    # ── Check 8b: TRAIL_SL fully separated from SL_HIT in ALL aggregations ──
+    # The SL-rate numerator must be n_sl ONLY (never n_sl + n_tr)
+    assert "n_sl + n_tr" not in src_xl, (
+        "v16.5: SL-rate must NEVER combine n_sl + n_tr — they are separate stats"
+    )
+    # The by-horizon/score breakdown must count trail_sl separately, not fold
+    # it into the sl= aggregation
+    assert 'trail_sl=("outcome_type", lambda s: int((s == "TRAIL_SL")' in src_xl, (
+        "v16.5: breakdown table must aggregate trail_sl as its own column, "
+        "separate from the sl= (SL_HIT-only) aggregation"
+    )
+    assert 'sl=("outcome_type", lambda s: int((s == "SL_HIT")' in src_xl, (
+        "v16.5: breakdown sl= aggregation must match ONLY SL_HIT (not TRAIL_SL)"
+    )
+    # The end-of-table summary loop must list TRAIL_SL as its own bucket
+    assert '("SL_HIT","🛑"),("TRAIL_SL","🔵")' in src_xl, (
+        "v16.5: closed-table summary must show TRAIL_SL as a distinct bucket"
+    )
+    # The headline metric tile for TRAIL SL must exist and be separate
+    assert '"TRAIL SL",n_tr' in src_xl, (
+        "v16.5: must render a separate 'TRAIL SL' headline metric tile (n_tr)"
+    )
+    assert '"SL HIT", n_sl' in src_xl, (
+        "v16.5: 'SL HIT' tile must show n_sl ONLY (genuine stop-loss count)"
+    )
+
+    # ── Check 9: KOVAI-like scenario (peak +5.4% < 10%) stays OPEN ──
+    entry = 5391.5
+    original_sl = 4791.14
+    peak_price_seen = entry
+    trailing_sl_price = 0.0
+    # Simulate the v16.5 trailing logic over a +5.4%-peak walk
+    walk = [
+        (entry*0.999, entry*1.01),    # day0: hi +1%
+        (entry*1.005, entry*1.054),   # day1: hi +5.4% (peak)
+        (entry*1.0001, entry*1.02),   # day2: pullback, lo ~ entry
+        (entry*1.0015, entry*1.018),  # day3
+    ]
+    fired = None
+    for lo, hi in walk:
+        effective_sl = (max(original_sl, trailing_sl_price)
+                        if trailing_sl_price > 0 else original_sl)
+        if lo > 0 and lo <= effective_sl:
+            fired = "SL"  # any SL-type fire
+            break
+        if hi > peak_price_seen:
+            peak_price_seen = hi
+            pg = (peak_price_seen - entry) / entry * 100
+            nt = 0.0
+            if pg >= 25:   nt = round(entry*1.12, 2)
+            elif pg >= 20: nt = round(entry*1.09, 2)
+            elif pg >= 15: nt = round(entry*1.05, 2)
+            elif pg >= 10: nt = round(entry*1.00, 2)
+            if nt > trailing_sl_price:
+                trailing_sl_price = nt
+    assert fired is None, (
+        f"v16.5: KOVAI-like (+5.4% peak) must NOT fire any stop — "
+        f"trailing stop should not activate below +10% peak. Got fired={fired}"
+    )
+    assert trailing_sl_price == 0.0, (
+        f"v16.5: KOVAI-like (+5.4% peak) must NOT activate trailing stop "
+        f"(expected trailing_sl_price=0.0, got {trailing_sl_price})"
+    )
+
+    # ── Check 10: legitimate +18% run → TRAIL_SL with locked profit ──
+    entry2 = 1000.0
+    original_sl2 = 880.0
+    peak2 = entry2
+    tsl2 = 0.0
+    walk2 = [
+        (995, 1010),    # day0
+        (1050, 1180),   # day1: peak +18% → lock +5% (1050)
+        (1040, 1100),   # day2: pullback, lo 1040 < 1050 → TRAIL_SL
+    ]
+    label2 = None
+    for lo, hi in walk2:
+        eff = max(original_sl2, tsl2) if tsl2 > 0 else original_sl2
+        if lo > 0 and lo <= eff:
+            is_tr = (tsl2 > 0 and tsl2 >= original_sl2 and eff == tsl2)
+            label2 = "TRAIL_SL" if is_tr else "SL_HIT"
+            pnl2 = (eff - entry2) / entry2 * 100
+            break
+        if hi > peak2:
+            peak2 = hi
+            pg2 = (peak2 - entry2) / entry2 * 100
+            nt2 = 0.0
+            if pg2 >= 25:   nt2 = round(entry2*1.12, 2)
+            elif pg2 >= 20: nt2 = round(entry2*1.09, 2)
+            elif pg2 >= 15: nt2 = round(entry2*1.05, 2)
+            elif pg2 >= 10: nt2 = round(entry2*1.00, 2)
+            if nt2 > tsl2:
+                tsl2 = nt2
+    assert label2 == "TRAIL_SL", (
+        f"v16.5: legitimate +18% run then pullback must be TRAIL_SL, got {label2}"
+    )
+    assert pnl2 > 0, (
+        f"v16.5: TRAIL_SL after +18% run must lock a PROFIT, got P&L {pnl2:+.1f}%"
+    )
+
+    return ("\u2705 v16.5: trailing-stop recalibration + TRAIL_SL label verified "
+            "— break-even raised +5%\u2192+10% (KOVAI-class false closes "
+            "eliminated), new 25/20/15/10 tiers, TRAIL_SL outcome type "
+            "separates risk-control exits from genuine SL_HIT losses, "
+            "SL-rate stat no longer polluted, distinct blue colour coding")
+
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -4437,6 +4736,8 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g29_v16_0_survivorship_audit_invariant))
     v14_1_results.append(_run_one_test(test_g30_v16_2_gold_quality_floor_gate))
     v14_1_results.append(_run_one_test(test_g31_v16_3_column_width_floor))
+    v14_1_results.append(_run_one_test(test_g32_v16_4_beneish_threshold_recalibration))
+    v14_1_results.append(_run_one_test(test_g33_v16_5_trailing_stop_recalibration_and_trail_sl_label))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

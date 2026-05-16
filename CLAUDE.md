@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v16.4 · May 2026
+## AI Context File · v16.5 · May 2026
 
 This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. **Read it first** before making any change.
 
@@ -3822,6 +3822,51 @@ v16.4 is a CALIBRATION fix that prevents quality picks from being false-positive
 
 **Caveat acknowledged**: Beneish at -1.78 is still a noisy signal for newly-listed / high-growth small-caps. Other gates (Altman Z, BS Health, ROE quality floor, PEG, Earnings Quality) provide independent forensic protection. Stocks with M > -1.78 still get flagged — this is genuine high-confidence manipulation-risk territory.
 
+### v16.5 — Trailing-stop recalibration + TRAIL_SL outcome label (Option C)
+
+User spotted KOVAI in CLOSED POSITIONS as SL_HIT with +0.0% P&L and Outcome Price = Entry Price after the v16.4 run, and suspected the v16.4 fix broke something.
+
+**Root-cause investigation (verified by direct file diffs)**: v16.4 did NOT cause this. `track_outcomes.py` and `database/data_bridge.py` were byte-identical between v16.3 and v16.4. The actual cause was the **v15.0 trailing-stop logic**, unchanged for many releases: break-even activation at just +5% peak gain. KOVAI ran to +5.4% peak → trailing stop ratcheted to break-even (= entry price) → normal pullback to +0.7% touched break-even → false SL_HIT at entry. The extra day of price data in the v16.4 run (not the Beneish change) is what triggered it — coincidental timing, not a regression.
+
+**Part 1 — break-even activation recalibrated +5% → +10%**
+Old tiers (≥15%→lock+7%, ≥10%→lock+3%, ≥5%→break-even) replaced with:
+- peak ≥ 25% → lock +12%
+- peak ≥ 20% → lock +9%
+- peak ≥ 15% → lock +5%
+- peak ≥ 10% → break-even (was ≥5% — TOO aggressive)
+- peak < 10% → no trailing stop (original SL still protects)
+
+**Part 2 — distinct TRAIL_SL outcome type**
+- `SL_HIT` = original stop breached (real loss, thesis failed)
+- `TRAIL_SL` = trailing stop hit after a favourable run (risk control, P&L ≥ 0)
+- Discriminator: `trailing_sl_price > 0 AND trailing_sl_price >= original_sl AND effective_sl == trailing_sl_price`
+
+**Stat-separation (the key user requirement)**: TRAIL_SL is fully separated from SL_HIT in EVERY aggregation:
+- SL-rate numerator = n_sl ONLY (TRAIL_SL excluded — verified by G33 assertion `"n_sl + n_tr" not in src`)
+- Separate headline tiles: "SL HIT" (n_sl) vs "TRAIL SL" (n_tr)
+- Separate breakdown-table columns: "SL Hits" vs "Trail SL"
+- Separate closed-summary buckets: 🛑 SL_HIT vs 🔵 TRAIL_SL
+- Distinct colour: SL_HIT red (#FEE2E2/#991B1B), TRAIL_SL blue (#DBEAFE/#1E40AF)
+- Both count toward CLOSED (position done) and both feed Sharpe/Sortino (real trades with real P&L)
+
+**Database cleanup**: the false KOVAI SL_HIT row is persisted in `gold_outcomes` and can't be fixed by code alone. Shipped `v16_5_cleanup_false_kovai.py` — a dry-run-by-default, idempotent script that resets ONLY rows matching the precise false-close signature (SL_HIT + outcome_price ≈ entry + P&L ≈ 0%) back to OPEN, so the v16.5 tracker re-walks KOVAI correctly. A genuine SL_HIT (real -11% loss) would NOT match the filter and is left untouched. Does not touch the immutable gold_recommendations audit trail.
+
+**Documentation swept everywhere**: track_outcomes.py docstring, tooltip_formatter.py (CLOSED / SL RATE / Outcome / Outcome Date / Days to Outcome / Outcome Price), excel_generator.py (Closed / SL Rate / Closed Positions section glossary entries), HTML pipeline reference renamed v16_4 → v16_5 (title + meta + footer), readme.md v16.5 row.
+
+**Functional validation**: KOVAI scenario (+5.4% peak) now stays OPEN; legitimate +18% run → TRAIL_SL with locked +5% profit.
+
+**New G33 regression test** — 10 invariants including 2 functional simulations and explicit stat-separation assertions. **85/85 tests** across 5/5 stability runs.
+
+### Test count evolution
+- v14.5: 66 → … → v16.0: 81 (G27+G28+G29) → v16.2: 82 (G30)
+- v16.3: 83 (G31) → v16.4: 84 (G32) → **v16.5: 85 (G33)**
+
+### Honest accounting
+This pre-existing v15.0 bug sat through every release including the v16.0 outcome-tracking work and was never caught until the user spotted the anomalous CLOSED entry. That is a multi-session miss on the assistant's part — NOT a v16.4 regression. The user's instinct to compare before/after Excel files was exactly the right diagnostic move.
+
+### Honest grade after v16.5: still A− today
+v16.5 fixes a real correctness bug in outcome tracking — it doesn't accelerate the empirical-validation timeline, but it makes the track record HONEST (no more false break-even closes mislabeled as stop-losses polluting the SL-rate). Grade trajectory unchanged: A− today, A in 60-90 days as genuine closed positions accumulate.
+
 ---
 
-*Last updated: May 15, 2026 · v16.4 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 16, 2026 · v16.5 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
