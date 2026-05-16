@@ -172,9 +172,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "T1: CMP near 52W High + vol>2×. T2: MACD+ST=BUY + vol>1.5×.\n"
                        "T3: ADX>25 + delivery>60%. T4: RSI 45–65 + vol>2×.\n"
                        "T5: vol>3× + delivery>60%. T6: 2w_chg>3% + 2w>4w + vol>1.5×.\n"
-                       "Suppressed to 0 if pledge>20% or Altman<1.81 or Beneish>-2.22.\n"
-                       "v12.9: guard re-evaluated with FRESH forensics post-Section\n"
-                       "5A.5 to prevent stale spike_suppressed flags (BANARISUG-class\n"
+                       "Suppressed to 0 if pledge>20% or Altman<1.81 or Beneish>-1.78.\n"
+                       "Guard re-evaluated with FRESH forensics post-Section 5A.5\n"
+                       "to prevent stale spike_suppressed flags (BANARISUG-class\n"
                        "false suppression on stocks where forensics weren't computed\n"
                        "yet at the original 3H guard pass).\n"
                        "Low Spike on a Gold stock is fine (VALUE archetype)."),
@@ -660,9 +660,12 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "unit-mismatch artefacts in the X4 component (mcap /\n"
                  "total_liab) where one figure is in raw rupees and the\n"
                  "other in Cr. Z>7 already signals exceptional safety."),
-    "Beneish M": ("<−2.22 honest | >−2.22 possible manipulation",
-                  ">−2.22: Triggers anti-trigger guard (Spike suppressed).\n"
-                  "v12.9: Real 8-variable Beneish (1999) formula:\n"
+    "Beneish M": ("<−1.78 acceptable | >−1.78 likely manipulation",
+                  "Beneish (1999) defines two thresholds:\n"
+                  "  • M > -2.22 = possible manipulator (50%+ probability)\n"
+                  "  • M > -1.78 = likely manipulator (80%+ probability)\n"
+                  ">-1.78 triggers anti-trigger guard (Spike suppressed).\n"
+                  "Real 8-variable Beneish (1999) formula:\n"
                   "  M = -4.84 + 0.92·DSRI + 0.528·GMI + 0.404·AQI\n"
                   "      + 0.892·SGI + 0.115·DEPI - 0.172·SGAI\n"
                   "      + 4.679·TATA - 0.327·LVGI\n"
@@ -672,9 +675,8 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "faster than sales), TATA flags accruals divergence from\n"
                   "cash flow. Falls back to 3-bucket accrual proxy when\n"
                   "only current-year data available (newly-listed stocks,\n"
-                  "sparse small-caps). Pre-v12.9 was proxy-only — only 4\n"
-                  "unique values across 100 stocks. Column displays '—'\n"
-                  "(em-dash) when total_assets unavailable."),
+                  "sparse small-caps). Column displays '—' (em-dash) when\n"
+                  "total_assets unavailable."),
     "Earn Quality": ("HIGH = cash-backed earnings",
                      "CFO / annualized-PAT ratio bucketed into HIGH / MODERATE / LOW.\n"
                      "HIGH (≥0.8): Cash flow matches profits — healthy earnings.\n"

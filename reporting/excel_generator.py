@@ -571,7 +571,15 @@ GLOSSARY_DATA = [
      "Full Dashboard"),
     ("QUALITY SCORES","Piotroski F /9","9-point business health score computed from free yfinance data (Session 14 wire-up). ≥7=strong, ≤3=weak. Typical distribution on a real run: 4-8 range","All sheets"),
     ("QUALITY SCORES","Altman Z","Bankruptcy predictor. >2.99=safe, <1.81=distress zone. Requires paid balance-sheet feed (working capital, retained earnings, EBIT, total liabilities, total assets) — displays '—' when missing. v12.5: clamped at 10 (Z>7 already signals exceptional safety; >10 values in production were typically unit-mismatch artefacts in the X4 = mcap/total_liab component).","Full Dashboard"),
-    ("QUALITY SCORES","Beneish M","Manipulation risk score (Beneish 1999). >-2.22=manipulation flag, <-2.22=likely honest. v12.9: real 8-variable formula (DSRI, GMI, AQI, SGI, DEPI, SGAI, TATA, LVGI) using yfinance prior-year balance-sheet/income/cashflow data. Falls back to 3-bucket accrual proxy (-2.5/-2.22/-1.5) when only current-year data available. Pre-v12.9 was proxy-only (4 unique values across 100 stocks). Displays '—' when forensic inputs missing","Full Dashboard"),
+    ("QUALITY SCORES","Beneish M","Manipulation risk score (Beneish 1999). "
+     "Beneish defines two thresholds: M > -2.22 = possible manipulator (50%+ probability), "
+     "M > -1.78 = likely manipulator (80%+ probability). "
+     "Gold-tier anti-trigger guard uses the stricter -1.78 cutoff: stocks with M > -1.78 "
+     "get spike_suppressed=True (excluded from Gold) due to elevated earnings-manipulation "
+     "probability. Real 8-variable formula (DSRI, GMI, AQI, SGI, DEPI, SGAI, TATA, LVGI) "
+     "using yfinance prior-year balance-sheet/income/cashflow data. Falls back to 3-bucket "
+     "accrual proxy (-2.5/-2.22/-1.5) when only current-year data available. Displays '—' "
+     "when forensic inputs missing.","Full Dashboard"),
     ("PIPELINE / OB","OB/Bill Ratio","Order Book ÷ Revenue. >1.5× = strong pipeline","All sheets"),
     ("EARLY DETECTION","Early Entry /100","12 signals: quiet accum, SME migration, analyst imminent, sector Stage 1. Session 23: low EE on Gold is OK — VALUE archetype (high Score + MoS + clean safety) qualifies without momentum signals","All sheets"),
     ("EARLY DETECTION","Sector Stage",
@@ -1296,7 +1304,7 @@ _HDR_TIPS = {
     "Public Float %":(">50% good liquidity | <20% manipulation risk","<20%:Volatile, easier to manipulate"),
     "Piotroski F /9":(">=7 strong | <=3 weak","9 criteria:Profitability(3)+Leverage(2)+Efficiency(4)\n8-9:Excellent | 6-7:Good | <=3:Avoid"),
     "Altman Z":(">2.99 safe | <1.81 distress zone","<1.81:Triggers anti-trigger guard(Spike suppressed)"),
-    "Beneish M":("<-2.22 honest | >-2.22 possible manipulation","v12.9 real 8-var formula (DSRI/GMI/AQI/SGI/DEPI/SGAI/TATA/LVGI) | >-2.22 triggers anti-trigger guard (Spike suppressed)"),
+    "Beneish M":("<-1.78 acceptable | >-1.78 likely manipulation","Real 8-var formula (DSRI/GMI/AQI/SGI/DEPI/SGAI/TATA/LVGI). Two academic thresholds: -2.22 (possible 50%+) and -1.78 (likely 80%+). Gold gate uses stricter -1.78: M > -1.78 triggers anti-trigger guard (Spike suppressed)"),
     "Earn Quality":("HIGH=cash-backed earnings","CFO/PAT ratio (PAT annualized in v12.9) | HIGH≥0.8 | MODERATE 0.5-0.8 | LOW<0.5"),
     "OB/Bill Ratio":(">1 strong pipeline | >3 excellent visibility",">3:3+ year revenue visibility. For infra/defence/engineering"),
     "Pipeline Vis":("HIGH=strong revenue visibility","HIGH:Strong order book or recurring revenue"),

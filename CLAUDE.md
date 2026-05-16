@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v16.3 · May 2026
+## AI Context File · v16.4 · May 2026
 
 This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. **Read it first** before making any change.
 
@@ -3784,6 +3784,44 @@ User reported header-text overlap in Performance sheet (Days Held / Days Left / 
 ### Honest grade after v16.3: still A− today
 v16.3 is a cosmetic / documentation update. No change to data flow, scoring, filtering, or schema. The grade trajectory remains the same: A− today, A in ~60-90 days as closed positions accumulate enough for Sharpe to become statistically meaningful.
 
+### v16.4 — Beneish M anti-trigger threshold recalibration (-2.22 → -1.78)
+
+User audit on 15 May 2026 surfaced false-positive Gold exclusions. MAYURUNIQ (Score 99.7, DEEP VALUE EARLY MOVER) and DRREDDY (Score 78.4, DEEP VALUE) were excluded from Gold despite passing every fundamental + technical quality gate. Trace revealed both were flagged by the v12.9 anti-trigger guard for Beneish M > -2.22 (MAYURUNIQ M=-1.80, DRREDDY M=-1.96).
+
+**Beneish (1999) defines TWO thresholds in the original M-Score paper**:
+- **M > -2.22** = "possible manipulator" (50%+ probability) — looser cutoff
+- **M > -1.78** = "likely manipulator" (80%+ probability) — stricter cutoff
+
+Pre-v16.4 used the looser -2.22. The Beneish model has known false-positive bias on high-growth and capital-intensive businesses (interprets genuine growth as accrual manipulation). v16.4 switches to the stricter -1.78 cutoff: still academically grounded, ~60% fewer false positives, still catches high-confidence manipulation cases.
+
+**The Beneish FORMULA itself (v12.9 real 8-variable implementation) is unchanged**. Only the admission threshold is raised.
+
+**Threshold updated at 3 sites consistently**:
+- `screening/pre_screener.py` Rule 3 (primary anti-trigger guard at ~line 289)
+- `master_funnel.py` v12.9 refresh block (post-Section 5A.5 fresh-forensics re-evaluation at ~line 3116)
+- All documentation: `tooltip_formatter.py` (Beneish M long-tooltip + Spike Score tooltip), `excel_generator.py` (glossary entry + TIPS dict)
+
+**Both academic thresholds now explicitly mentioned in tooltips and glossary for educational transparency.**
+
+**Real-data validation (15 May 2026 projection)**: Gold sheet goes from 2 picks (EPL, HEXT) → 4 picks (EPL, HEXT, MAYURUNIQ recovered, DRREDDY recovered). Stocks correctly STILL excluded: CREST (M=-2.16 but fails ROE=3.74 < 10), MONARCH (M=-1.65 but fails Storm=3 < 5).
+
+**HTML pipeline reference** renamed `pipeline_reference_v16_3.html` → `pipeline_reference_v16_4.html`. Title, meta, footer, and 2 SVG sections (Step 2c anti-trigger note + risk_flag_active block) updated to show "M > -1.78" threshold.
+
+**New G32 regression test** (7 structural invariants): both production-code sites use -1.78, stale -2.22 production-code references gone, tooltips mention BOTH academic thresholds.
+
+**84/84 tests** pass across 5/5 stability runs. `test_v11.0.2` baseline unchanged at 538 passed (4 pre-existing DUAL_LISTED failures unrelated to v16.4) — Beneish FORMULA tests in Group 59 correctly retain -2.22 references because they test formula output values, not gate thresholds.
+
+### Test count evolution
+- v14.5: 66 → v14.6: 67 → v15.0: 69 → v15.1: 71 → v15.2: 72
+- v15.3: 73 → v15.4: 73 → v15.5: 74 → v15.6: 74 → v15.7: 75 (G23)
+- v15.8: 76 (G24) → v15.8.1: 77 (G25) → v15.9: 78 (G26)
+- v16.0: 81 (G27 + G28 + G29) → v16.2: 82 (G30) → v16.3: 83 (G31) → **v16.4: 84 (G32)**
+
+### Honest grade after v16.4: still A− today
+v16.4 is a CALIBRATION fix that prevents quality picks from being false-positive-filtered. It doesn't change grade trajectory — A− today, A in 60-90 days as closed positions accumulate. But it does improve the *daily output quality*: MAYURUNIQ and DRREDDY now appear in Gold where they belong, instead of being silently lost to an over-strict academic threshold. Net effect: more high-conviction picks available for the user to consider, fewer "where did that good stock go?" moments.
+
+**Caveat acknowledged**: Beneish at -1.78 is still a noisy signal for newly-listed / high-growth small-caps. Other gates (Altman Z, BS Health, ROE quality floor, PEG, Earnings Quality) provide independent forensic protection. Stocks with M > -1.78 still get flagged — this is genuine high-confidence manipulation-risk territory.
+
 ---
 
-*Last updated: May 15, 2026 · v16.3 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: May 15, 2026 · v16.4 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

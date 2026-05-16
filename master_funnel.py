@@ -3113,9 +3113,12 @@ def run_master_pipeline():
                 if _alt_re != 0 and _alt_re < 1.81:
                     _refresh_suppress = True
                     _refresh_reasons.append("Altman Z < 1.81")
-                if _ben_re != 0 and _ben_re > -2.22:
+                # v16.4: threshold raised from -2.22 to -1.78 (stricter
+                # academic Beneish cutoff for "likely manipulation"). See
+                # screening/pre_screener.py rule 3 comment for full rationale.
+                if _ben_re != 0 and _ben_re > -1.78:
                     _refresh_suppress = True
-                    _refresh_reasons.append("Beneish M > -2.22")
+                    _refresh_reasons.append("Beneish M > -1.78")
                 # Update flag + reasons with the fresh evaluation
                 stock["spike_suppressed"] = _refresh_suppress
                 stock["risk_flag_active"] = _refresh_suppress

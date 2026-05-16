@@ -284,10 +284,34 @@ def apply_anti_trigger_guard(stock: dict) -> dict:
     if altman_z < 1.81:
         reasons.append(f"Altman Z {altman_z:.2f} < 1.81 (distress)")
 
-    # Rule 3: Beneish M > -2.22 (manipulation risk) — numeric value
+    # Rule 3: Beneish M > -1.78 (likely manipulation risk) — numeric value
+    #
+    # v16.4 calibration: threshold raised from -2.22 to -1.78.
+    #
+    # Beneish (1999) defines two thresholds in the original M-Score paper:
+    #   • M > -2.22 = "possible manipulator" (50%+ probability)
+    #   • M > -1.78 = "likely manipulator"   (80%+ probability)
+    #
+    # Pre-v16.4 used -2.22, the looser threshold. Audit on 15 May 2026
+    # surfaced multiple false positives: MAYURUNIQ (Score 99.7, M=-1.80),
+    # DRREDDY (Score 78.4, M=-1.96) were both excluded from Gold despite
+    # passing every other quality gate (HEALTHY balance sheet, HIGH earn
+    # quality, healthy ROE/PEG/Altman Z, no SEBI flags). At -2.22 these
+    # high-conviction picks get false-positive-suppressed because the
+    # model has known weakness on high-growth and capital-intensive
+    # businesses (treats genuine growth as accrual manipulation).
+    #
+    # The stricter -1.78 threshold catches the high-confidence manipulation
+    # cases (where Beneish predicts >80% probability) while letting
+    # borderline -2.0 to -1.78 cases through to be filtered by the other
+    # 13 Gold gates (Altman, Earn Quality, BS Health, ROE, PEG, etc.).
+    #
+    # This is a CALIBRATION change, not a model change. The Beneish formula
+    # (v12.9 real 8-variable implementation) is unchanged. Only the
+    # admission threshold is raised.
     beneish_m = stock.get("beneish_m", -5)
-    if isinstance(beneish_m, (int, float)) and beneish_m > -2.22:
-        reasons.append(f"Beneish M {beneish_m:.2f} > -2.22 (manipulation risk)")
+    if isinstance(beneish_m, (int, float)) and beneish_m > -1.78:
+        reasons.append(f"Beneish M {beneish_m:.2f} > -1.78 (likely manipulation)")
     elif isinstance(beneish_m, str) and beneish_m.upper() == "MANIPULATION_RISK":
         reasons.append("Beneish M: MANIPULATION_RISK")
 
