@@ -1,16 +1,25 @@
 name: Keep Workflows Active
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PURPOSE: Prevents GitHub's 60-day inactivity auto-disable from ever killing
+# PURPOSE: Prevents GitHub's 60-day inactivity auto-disable from killing
 #          the NSE_BSE_Daily_Pipeline schedule.
 #
-# HOW:  1. Runs TWICE a week (Wednesday + Sunday) — double redundancy.
-#          Even if one run fails, the other fires within 4 days, keeping
-#          the repo "active" and well inside the 60-day window.
-#       2. Makes a real git commit every run so GitHub sees activity.
-#       3. Uses the GitHub API to explicitly RE-ENABLE the market pipeline
-#          workflow if it somehow got disabled.
-#       4. Fails loudly — no silent error swallowing.
+# BEHAVIOUR (v2 — conditional):
+#   1. Runs TWICE a week (Wednesday + Sunday) to CHECK pipeline health.
+#   2. Queries the GitHub API for the last run of market_run.yml.
+#   3. If the pipeline ran successfully within the last 7 days → does NOTHING.
+#      The pipeline is healthy; no intervention needed.
+#   4. If the pipeline has been SILENT for 7+ consecutive days (missed runs,
+#      disabled, or stuck) → then and only then:
+#      a. Pushes a keep-alive commit to prevent inactivity-disable.
+#      b. Re-enables market_run.yml if GitHub disabled it.
+#      c. Fails loudly so you know something is wrong with the main pipeline.
+#
+# WHY TWICE A WEEK:
+#   The check needs to run more frequently than the 7-day threshold so it can
+#   catch a failure before the 60-day inactivity window becomes a risk.
+#   Wed + Sun means the worst-case gap between checks is 4 days — well inside
+#   the 7-day detection window.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -28,35 +37,83 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check if NSE_BSE_Daily_Pipeline ran in the last 7 days
+        id: check_pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+        run: |
+          echo "Querying last run of market_run.yml..."
+
+          # Get the most recent completed run of market_run.yml
+          LAST_RUN=$(gh api \
+            "repos/${REPO}/actions/workflows/market_run.yml/runs?per_page=1&status=completed" \
+            --jq '.workflow_runs[0].created_at' 2>/dev/null || echo "")
+
+          if [ -z "$LAST_RUN" ] || [ "$LAST_RUN" = "null" ]; then
+            echo "⚠️  No completed runs found for market_run.yml"
+            echo "pipeline_healthy=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Last completed run: $LAST_RUN"
+
+          # Calculate how many seconds ago that was
+          LAST_RUN_EPOCH=$(date -d "$LAST_RUN" +%s 2>/dev/null || \
+                           python3 -c "from datetime import datetime; \
+                           print(int(datetime.fromisoformat('${LAST_RUN}'.replace('Z','+00:00')).timestamp()))")
+          NOW_EPOCH=$(date +%s)
+          SECONDS_SINCE=$(( NOW_EPOCH - LAST_RUN_EPOCH ))
+          DAYS_SINCE=$(( SECONDS_SINCE / 86400 ))
+
+          echo "Days since last run: $DAYS_SINCE"
+
+          if [ "$DAYS_SINCE" -lt 7 ]; then
+            echo "✅ Pipeline ran $DAYS_SINCE day(s) ago — healthy. No action needed."
+            echo "pipeline_healthy=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️  Pipeline has been SILENT for $DAYS_SINCE day(s) — threshold is 7 days."
+            echo "pipeline_healthy=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip remaining steps if pipeline is healthy
+        if: steps.check_pipeline.outputs.pipeline_healthy == 'true'
+        run: |
+          echo "Pipeline is healthy — nothing to do. Exiting cleanly."
+          echo "(This is the expected outcome on most runs.)"
+
+      # ── Only runs if pipeline has been silent for 7+ days ──────────────────
+
       - name: Checkout repository
+        if: steps.check_pipeline.outputs.pipeline_healthy == 'false'
         uses: actions/checkout@v4
         with:
-          # Use the default GITHUB_TOKEN — has push access to the repo
           token: ${{ github.token }}
 
-      - name: Commit keep-alive timestamp
+      - name: Push keep-alive commit (pipeline was silent for 7+ days)
+        if: steps.check_pipeline.outputs.pipeline_healthy == 'false'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           TIMESTAMP="$(date -u '+%Y-%m-%d %H:%M UTC')"
-          echo "Last keep-alive: $TIMESTAMP" > .github/last_active.txt
+          echo "Last keep-alive: $TIMESTAMP (triggered — pipeline silent 7+ days)" > .github/last_active.txt
 
           git add .github/last_active.txt
           git diff --staged --quiet && echo "No changes to commit" && exit 0
 
-          git commit -m "chore: keep-alive ping [$TIMESTAMP]"
+          git commit -m "chore: keep-alive ping [$TIMESTAMP] — pipeline silent 7+ days"
           git push
-          echo "✅ Keep-alive commit pushed successfully"
+          echo "✅ Keep-alive commit pushed"
 
       - name: Re-enable NSE_BSE_Daily_Pipeline if disabled
+        if: steps.check_pipeline.outputs.pipeline_healthy == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO:     ${{ github.repository }}
         run: |
           WORKFLOW="market_run.yml"
 
-          # Get current workflow state via GitHub API
           STATE=$(gh api \
             "repos/${REPO}/actions/workflows/${WORKFLOW}" \
             --jq '.state' 2>/dev/null || echo "unknown")
@@ -68,22 +125,21 @@ jobs:
             gh api \
               --method PUT \
               "repos/${REPO}/actions/workflows/${WORKFLOW}/enable"
-            echo "✅ market_run.yml re-enabled successfully"
+            echo "✅ market_run.yml re-enabled"
           else
-            echo "✅ market_run.yml is active (state: $STATE) — no action needed"
+            echo "Pipeline state is '$STATE' — already enabled, no re-enable needed."
+            echo "The silence may be due to failed runs or a data issue — check the Actions tab."
           fi
 
-      - name: Verify pipeline is scheduled correctly
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO:     ${{ github.repository }}
+      - name: Alert — pipeline has been silent for 7+ days
+        if: steps.check_pipeline.outputs.pipeline_healthy == 'false'
         run: |
-          STATE=$(gh api \
-            "repos/${REPO}/actions/workflows/market_run.yml" \
-            --jq '.state' 2>/dev/null || echo "unknown")
-
-          if [ "$STATE" != "active" ]; then
-            echo "❌ ALERT: market_run.yml state is '$STATE' after re-enable attempt"
-            exit 1
-          fi
-          echo "✅ Confirmed: market_run.yml is ACTIVE and will run on schedule"
+          echo "════════════════════════════════════════════════════════════"
+          echo "  ⚠️  ALERT: NSE_BSE_Daily_Pipeline has not run for 7+ days"
+          echo "  Check the Actions tab to investigate why."
+          echo "  Possible causes:"
+          echo "    - GitHub disabled the workflow due to inactivity"
+          echo "    - All recent runs are failing (check run logs)"
+          echo "    - A branch protection or YAML error is blocking runs"
+          echo "════════════════════════════════════════════════════════════"
+          exit 1   # Fail this workflow so you get a notification email from GitHub
