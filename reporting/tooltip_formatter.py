@@ -893,7 +893,12 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Alert Type": ("Type of signal that fired",
                    "🔔 SPIKE FIRED: momentum trigger(s) lit up today.\n"
                    "⭐ EARLY MOVER DETECTED: early-entry score ≥ 70.\n"
-                   "⬇ SCORE DEGRADED: composite dropped ≥ 3 vs yesterday."),
+                   "⬇ SCORE DEGRADED: composite dropped ≥ 3 pts vs the\n"
+                   "   previous run — a genuine deterioration.\n"
+                   "⚠ LOW SCORE: composite < 30 but NOT a fresh drop —\n"
+                   "   the stock is chronically weak rather than newly\n"
+                   "   deteriorating. v17.2 split these two cases; before\n"
+                   "   that, both were mislabelled SCORE DEGRADED."),
     "Trigger Detail": ("Full details of the alert",
                        "Shows all signals fired and current score context."),
     "Prev Score": ("Yesterday's composite score",

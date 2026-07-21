@@ -4877,14 +4877,38 @@ def test_g35_v17_1_performance_sheet_no_clipped_labels():
         f"use _set_min_width — found {src.count('_set_min_width(ci, w)')} call site(s)"
     )
 
-    # 2. the old clobbering pattern must be gone from the Performance section
-    _perf_start = src.find('def _build_performance')
-    if _perf_start == -1:
-        _perf_start = src.find('Performance sheet — DB read failed')
-    _perf_block = src[_perf_start:_perf_start + 40000] if _perf_start > 0 else ''
-    assert 'ws.column_dimensions[get_column_letter(ci)].width = w' not in _perf_block, (
-        "v17.1: unconditional width overwrite still present in the Performance "
-        "sheet — it will clip labels belonging to other sections"
+    # 2. NO unconditional width write may survive anywhere in the Performance
+    #    method. The first v17.1 attempt only checked for the literal
+    #    ".width = w" and therefore MISSED a site that wrote ".width = 14" /
+    #    ".width = 9" in the RISK-ADJUSTED RETURNS block — the clipping
+    #    persisted in production. This regex catches every assignment
+    #    whatever the right-hand side, scoped precisely to _performance_sheet
+    #    so other sheets' (legitimate) width calls aren't false-flagged.
+    import re as _re
+    _lines = src.split('\n')
+    _start = _end = None
+    for _i, _ln in enumerate(_lines):
+        if _ln.startswith('    def _performance_sheet'):
+            _start = _i
+        elif _start is not None and _ln.startswith('    def '):
+            _end = _i
+            break
+    assert _start is not None, "v17.1: _performance_sheet method not found"
+    _perf_block = '\n'.join(_lines[_start:_end or len(_lines)])
+
+    # Allowed: the base-width initialisation loop (key is the literal `col`)
+    # and the _set_min_width helper body itself (key is `_L`).
+    _violations = []
+    for _m in _re.finditer(
+            r'ws\.column_dimensions\[([^\]]+)\]\.width\s*=\s*([^\n]+)', _perf_block):
+        _key, _rhs = _m.group(1).strip(), _m.group(2).strip()
+        if _key in ('col', '_L'):
+            continue
+        _violations.append(f"[{_key}].width = {_rhs}")
+    assert not _violations, (
+        "v17.1: unconditional column-width write(s) still present in "
+        f"_performance_sheet — these clobber other sections' labels: "
+        f"{_violations}. Use _set_min_width(ci, w) instead."
     )
 
     # 3. base widths cover the longest known label per column
@@ -4918,6 +4942,116 @@ def test_g35_v17_1_performance_sheet_no_clipped_labels():
     return ("\u2705 v17.1: Performance-sheet widths verified — _set_min_width "
             "widen-only helper in use at both section sites, no unconditional "
             "overwrite remains, base widths cover all 23 previously-clipped labels")
+
+
+def test_g36_v17_2_alert_log_score_degraded_semantics():
+    """v17.2 regression test — SCORE DEGRADED must mean "score DROPPED".
+
+    THE BUG (20 Jul 2026 dashboard, REGENCERAM):
+        Alert Type = "SCORE DEGRADED", Prev = 14, New = 14, Delta = 0
+    The trigger was `if comp < 30`, i.e. it fired on "score is LOW" rather
+    than "score DROPPED". A stock that had always sat at 14/100 was reported
+    as a fresh deterioration. Self-contradictory (a degradation with zero
+    delta) and actively misleading when triaging positions.
+
+    The tooltip in tooltip_formatter.py had ALWAYS documented the intended
+    contract - "composite dropped >= 3 vs yesterday" - so the code, not the
+    documentation, had drifted. v17.2 restores that contract and adds a
+    separate "LOW SCORE" label for weak-but-stable stocks.
+
+    Post-fix semantics:
+        SCORE DEGRADED - composite fell >= 3 pts vs previous run
+        LOW SCORE      - composite < 30 with no material drop
+
+    IMPORTANT: the OUTER trigger set (spk>=1 or early>=70 or comp<30) is
+    deliberately unchanged, so total alert VOLUME is identical - only the
+    classification is corrected.
+
+    Verifies: threshold constant, both labels present, priority ordering,
+    distinct colour mapping, tooltip documents both, and four functional
+    reclassification cases end-to-end.
+    """
+    src = open('reporting/excel_generator.py', 'r', encoding='utf-8').read()
+    tip = open('reporting/tooltip_formatter.py', 'r', encoding='utf-8').read()
+
+    # -- structural --
+    assert '_DEGRADE_DROP_PTS = 3.0' in src, (
+        "v17.2: excel_generator must define _DEGRADE_DROP_PTS = 3.0 "
+        "(matches the long-documented tooltip contract)")
+    assert '_real_drop' in src, \
+        "v17.2: must compute a _real_drop flag from (comp - prev)"
+    assert 'LOW SCORE' in src, \
+        "v17.2: must add a separate LOW SCORE alert label"
+    # the old mislabel path must be gone: comp<30 must no longer produce DEGRADED
+    _bad = 'if comp < 30:\n                    at  = "\u2b07 SCORE DEGRADED"'
+    assert _bad not in src, (
+        "v17.2: `comp < 30` must NOT map to SCORE DEGRADED - that was the bug")
+    # colour map must distinguish the two
+    assert '"\u26a0 LOW SCORE":"FEF3C7"' in src, (
+        "v17.2: LOW SCORE needs its own (amber) colour so a genuine "
+        "degradation stays visually distinct from chronic weakness")
+    # tooltip documents both
+    assert 'LOW SCORE' in tip, \
+        "v17.2: tooltip must document the new LOW SCORE alert type"
+
+    # -- functional: four reclassification cases --
+    import tempfile, os, glob, sqlite3, openpyxl
+    from reporting.excel_generator import ExcelGeneratorV6
+    from database.data_bridge import initialize_v7_tables
+
+    def _mk(sym, comp, spk, early, verd):
+        return {"symbol": sym, "company_name": sym, "sector": "Healthcare",
+                "verdict": verd, "composite_score": comp, "mos_pct": 10.0,
+                "storm_score": 5, "rsi": 50.0, "bs_status": "HEALTHY",
+                "pledge_pct": 0.0, "spike_suppressed": False, "altman_z": 4.0,
+                "earnings_quality": "HIGH", "int_coverage": 5.0, "roe": 20.0,
+                "peg": 1.2, "close": 100.0, "3d_roc": 1.0, "4w_chg": 5.0,
+                "upside": 10.0, "early_entry_score": early,
+                "spike_count": spk, "cfv": 110.0, "horizon": "POSITIONAL"}
+
+    _cwd = os.getcwd()
+    _tmp = tempfile.mkdtemp()
+    try:
+        os.chdir(_tmp)
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        stocks = [_mk("REGENCERAM", 14, 0, 18, "AVOID"),
+                  _mk("REALDROP",   55, 1, 40, "WATCHLIST"),
+                  _mk("SMALLDIP",   60, 1, 40, "WATCHLIST"),
+                  _mk("EARLYONE",   71, 0, 73, "BUY")]
+        prev = {"REGENCERAM": 14.0, "REALDROP": 62.0,
+                "SMALLDIP": 62.0, "EARLYONE": 71.0}
+        gen = ExcelGeneratorV6(stocks, "20260720", prev_scores=prev,
+                               market_stats={"market_regime": "BULLISH"})
+        gen.generate_excel_reports()
+        _wb = openpyxl.load_workbook(sorted(glob.glob('*.xlsx'))[0], data_only=True)
+        _al = _wb['\U0001f514 Alert Log']
+        got = {}
+        for _r in range(3, _al.max_row + 1):
+            _s = _al.cell(_r, 3).value
+            if _s:
+                got[str(_s)] = str(_al.cell(_r, 4).value or '')
+    finally:
+        os.chdir(_cwd)
+
+    assert 'LOW SCORE' in got.get('REGENCERAM', ''), (
+        f"v17.2: chronically-low stock with zero delta must be LOW SCORE, "
+        f"got '{got.get('REGENCERAM')}'")
+    assert 'DEGRADED' not in got.get('REGENCERAM', ''), (
+        "v17.2: a stock that never dropped must NOT be labelled DEGRADED "
+        "- this was the exact REGENCERAM bug")
+    assert 'SCORE DEGRADED' in got.get('REALDROP', ''), (
+        f"v17.2: a real -7pt drop must be SCORE DEGRADED, "
+        f"got '{got.get('REALDROP')}'")
+    assert 'DEGRADED' not in got.get('SMALLDIP', ''), (
+        f"v17.2: a -2pt dip is below the 3pt threshold and must NOT be "
+        f"DEGRADED, got '{got.get('SMALLDIP')}'")
+    assert 'EARLY MOVER' in got.get('EARLYONE', ''), (
+        f"v17.2: EARLY MOVER behaviour must be unchanged, "
+        f"got '{got.get('EARLYONE')}'")
+
+    return ("\u2705 v17.2: Alert Log semantics verified - SCORE DEGRADED now "
+            "requires a real >=3pt drop, LOW SCORE covers weak-but-stable "
+            "stocks, alert volume unchanged, colours and tooltip aligned")
 
 
 def test_g11_tracker_invoked_from_master_funnel():
@@ -5191,6 +5325,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g33_v16_5_trailing_stop_recalibration_and_trail_sl_label))
     v14_1_results.append(_run_one_test(test_g34_v17_0_performance_fixes))
     v14_1_results.append(_run_one_test(test_g35_v17_1_performance_sheet_no_clipped_labels))
+    v14_1_results.append(_run_one_test(test_g36_v17_2_alert_log_score_degraded_semantics))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

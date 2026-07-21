@@ -2057,7 +2057,10 @@ class ExcelGeneratorV6:
         ws.freeze_panes="A3"
         ACOLS={"⭐ EARLY MOVER DETECTED":"FAC775","🔔 SPIKE FIRED":"D1FAE5",
                "💰 SMART MONEY ENTRY":"D1FAE5","📈 SECTOR STAGE CHANGE":"FAC775",
-               "⬇ SCORE DEGRADED":"FEE2E2","🛑 EXIT ALERT":"FEE2E2"}
+               "⬇ SCORE DEGRADED":"FEE2E2","🛑 EXIT ALERT":"FEE2E2",
+               # v17.2: weak-but-stable stocks — amber (caution), not red
+               # (alarm), so a genuine score drop stays visually distinct.
+               "⚠ LOW SCORE":"FEF3C7"}
         ri=3
         for stk in self.df.to_dict("records"):
             sym  = stk.get("symbol","")
@@ -2080,9 +2083,37 @@ class ExcelGeneratorV6:
                     delta_disp= "—"
 
                 # ── Alert Type ─────────────────────────────────────────────
-                if comp < 30:
+                # v17.2 SEMANTIC FIX:
+                # Pre-v17.2 the "⬇ SCORE DEGRADED" label fired on `comp < 30`
+                # — i.e. on "score is LOW", not on "score DROPPED". A stock
+                # that had always sat at 14/100 was reported as DEGRADED with
+                # Prev=14, New=14, Δ=0, which is self-contradictory and made
+                # a chronically weak stock look like a fresh deterioration.
+                # (Real example: REGENCERAM, 20 Jul 2026 dashboard.)
+                #
+                # The tooltip in tooltip_formatter.py has always documented
+                # the INTENDED behaviour — "composite dropped ≥ 3 vs
+                # yesterday" — so the code, not the contract, was wrong.
+                # v17.2 restores the documented meaning and adds a separate
+                # "⚠ LOW SCORE" label for weak-but-stable stocks.
+                #
+                #   ⬇ SCORE DEGRADED — composite fell ≥ 3 pts vs last run
+                #   ⚠ LOW SCORE      — composite < 30 with no material drop
+                #
+                # Note: the OUTER trigger set is deliberately unchanged
+                # (spk>=1 or early>=70 or comp<30), so alert VOLUME is
+                # identical — only the label and detail text are corrected.
+                _DEGRADE_DROP_PTS = 3.0     # matches the documented tooltip
+                _real_drop = (prev is not None and prev > 0
+                              and (comp - prev) <= -_DEGRADE_DROP_PTS)
+
+                if _real_drop:
                     at  = "⬇ SCORE DEGRADED"
-                    det = f"Score {comp:.0f}/100 below threshold — review position"
+                    det = (f"Score fell {prev:.0f} → {comp:.0f} "
+                           f"({comp - prev:+.0f} pts) — review position")
+                elif comp < 30:
+                    at  = "⚠ LOW SCORE"
+                    det = f"Score {comp:.0f}/100 below threshold — weak, not a fresh drop"
                 elif spk >= 1:
                     at  = "🔔 SPIKE FIRED"
                     det = f"Spike {spk}/6 | Score: {comp:.0f} | Early: {early:.0f}/100"
@@ -2093,7 +2124,11 @@ class ExcelGeneratorV6:
                 # ── Action Required — logic based on verdict/score/MoS/Δ ──
                 # Session 24: handle new OVERVALUED verdict (score qualifies
                 # for BUY but MoS gate blocks — "great stock, expensive").
-                if comp < 30:
+                # v17.2: a genuine degradation is the most actionable signal,
+                # so it takes priority over the static low-score case.
+                if _real_drop:
+                    act = "REVIEW FOR EXIT — SCORE FALLING"
+                elif comp < 30:
                     act = "REVIEW FOR EXIT"
                 elif verd == "BUY" and mos > 10 and comp >= 65:
                     act = "CONSIDER ENTRY"
@@ -2632,8 +2667,12 @@ class ExcelGeneratorV6:
                 lc.fill = _f("EEF2FF"); lc.font = _ft(True,"4338CA",9); lc.alignment = _al("left")
                 vc = ws.cell(next_row, ci+1, val)
                 vc.fill = _f("F5F3FF"); vc.font = _ft(False,"1F2937",10); vc.alignment = _al()
-                ws.column_dimensions[get_column_letter(ci)].width = 14
-                ws.column_dimensions[get_column_letter(ci+1)].width = 9
+                # v17.1.1: widen-only. This was the THIRD unconditional width
+                # site on this sheet (missed in the first v17.1 pass) — it
+                # clobbered the base widths with 14/9 on alternating columns,
+                # which is why the MISSED-RUNUP labels stayed clipped.
+                _set_min_width(ci,   14)
+                _set_min_width(ci+1,  9)
             ws.row_dimensions[next_row].height = 22
             next_row += 1
 
