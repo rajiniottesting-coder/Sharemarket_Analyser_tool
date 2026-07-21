@@ -4,6 +4,14 @@ on:
   schedule:
     - cron: '0 23 * * 1-5'   # 23:00 UTC = 04:30 IST next day (Tue–Sat IST)
   workflow_dispatch:
+    inputs:
+      reset_performance:
+        description: >-
+          DANGER - type RESET-PERFORMANCE to wipe gold_recommendations,
+          gold_outcomes and gold_continuation. IRREVERSIBLE. Leave blank
+          for a normal run.
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -180,6 +188,35 @@ jobs:
           fi
           echo "Running v16.5 false-KOVAI cleanup (commit mode) on artifact-restored DB..."
           python3 v16_5_cleanup_false_kovai.py --commit || echo "Cleanup completed (no matching rows = already clean)"
+
+      - name: v17.3 ONE-SHOT performance reset (manual dispatch only)
+        # ---------------------------------------------------------------
+        # Wipes gold_recommendations / gold_outcomes / gold_continuation so
+        # performance measurement restarts under current logic (v17.1
+        # horizon-key fix, v17.0 SL + trailing recalibration, v17.0 entry
+        # gates, v17.3 continuation). The 31 closed positions were measured
+        # under three incompatible rule sets, so their aggregate hit rate
+        # was not a meaningful number.
+        #
+        # CANNOT FIRE ON THE CRON. `schedule` supplies no inputs, so
+        # github.event.inputs.reset_performance is empty on every scheduled
+        # run and this step is skipped. It executes only when a human
+        # dispatches the workflow manually AND types the exact phrase.
+        #
+        # Runs BEFORE the pipeline so the same run repopulates from zero.
+        # IRREVERSIBLE: market_data.db exists only as a 30-day artifact.
+        # ---------------------------------------------------------------
+        if: github.event.inputs.reset_performance == 'RESET-PERFORMANCE'
+        run: |
+          if [ ! -f market_data.db ]; then
+            echo "::error::No DB restored from artifact - refusing to reset."
+            exit 1
+          fi
+          echo "Dry run first - audit trail of what is about to be deleted:"
+          python3 reset_performance_tracking.py
+          echo ""
+          echo "Executing reset..."
+          python3 reset_performance_tracking.py --commit --confirm RESET-PERFORMANCE
 
       - name: Execute Master Pipeline
         env:
