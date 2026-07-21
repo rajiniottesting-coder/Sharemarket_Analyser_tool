@@ -1,0 +1,238 @@
+name: NSE_BSE_Daily_Pipeline
+
+on:
+  schedule:
+    - cron: '0 23 * * 1-5'   # 23:00 UTC = 04:30 IST next day (Tue–Sat IST)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  run-analyser:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore market_data.db from artifact
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: market-data-db
+          path: .
+          if_no_artifact_found: ignore
+
+      - name: Show DB state before pipeline
+        run: |
+          if [ -f market_data.db ]; then
+            SIZE=$(du -sh market_data.db | cut -f1)
+            echo "Restored market_data.db - size: $SIZE"
+          else
+            echo "No existing DB found - pipeline will create fresh DB"
+          fi
+
+      - name: Auto-backfill if DB is fresh
+        run: |
+          ROWS=$(python3 -c "import sqlite3,os; c=sqlite3.connect('market_data.db') if os.path.exists('market_data.db') else None; print(c.execute('SELECT COUNT(*) FROM daily_prices').fetchone()[0] if c else 0)" 2>/dev/null || echo 0)
+          echo "daily_prices rows: $ROWS"
+          if [ "$ROWS" -lt "50000" ]; then
+            echo "Fresh DB - running 400-day backfill to build history (v12.6.1+)..."
+            # v12.6.1: bumped 365 → 400 to give R2/S2 rolling-252 window headroom.
+            # Matches DAYS_TO_BACKFILL default in backfill_history.py:55.
+            python3 backfill_history.py 400 || echo "Backfill completed (some dates may have failed - normal on cloud runners)"
+          else
+            echo "Sufficient history ($ROWS rows) - skipping backfill"
+          fi
+
+      - name: 🔍 v12.1 self-healing diagnostic + cleanup (idempotent — safe to leave permanently)
+        run: |
+          if [ ! -f market_data.db ]; then
+            echo "No DB present — nothing to diagnose or clean."
+            exit 0
+          fi
+          python3 << 'PYEOF'
+          import sqlite3
+          conn = sqlite3.connect("market_data.db")
+          cur  = conn.cursor()
+
+          print("=" * 60)
+          print("v12.1 DIAGNOSTIC — runtime allowlist state")
+          print("=" * 60)
+
+          # 1. dual_listed_runtime contents
+          n_runtime = 0
+          bad_indices = []
+          try:
+              cur.execute("SELECT COUNT(*) FROM dual_listed_runtime")
+              n_runtime = cur.fetchone()[0]
+              print(f"dual_listed_runtime rows: {n_runtime:,}")
+              if n_runtime > 0 and n_runtime <= 50:
+                  cur.execute("SELECT symbol, first_seen_date FROM dual_listed_runtime ORDER BY symbol LIMIT 50")
+                  print(f"  Sample entries:")
+                  for sym, fs in cur.fetchall():
+                      print(f"    {sym:<20}  first_seen={fs}")
+              # Check for the known-bad index/ETF tickers
+              cur.execute("""SELECT symbol FROM dual_listed_runtime
+                             WHERE symbol IN ('IT','PSUBANK','BANKNIFTY1','MON100','HDFCNIFBAN','KMEW','RBA',
+                                              'NIFTYBEES','BANKBEES','FINNIFTY','MIDCPNIFTY','PHARMANIFTY')""")
+              bad_indices = [r[0] for r in cur.fetchall()]
+          except Exception as e:
+              print(f"dual_listed_runtime: {e}")
+
+          # 2. pipeline_migrations state
+          try:
+              cur.execute("SELECT migration_id, applied_at, rows_affected FROM pipeline_migrations")
+              rows = cur.fetchall()
+              print(f"\npipeline_migrations entries: {len(rows)}")
+              for mid, at, ra in rows:
+                  print(f"  {mid}  applied={at}  rows_affected={ra}")
+          except Exception:
+              print(f"\npipeline_migrations: table doesn't exist (will be created by master_funnel.py)")
+
+          # 3. backup table state
+          try:
+              cur.execute("SELECT COUNT(*) FROM dual_listed_runtime_backup_v12_0_1")
+              n_b = cur.fetchone()[0]
+              print(f"dual_listed_runtime_backup_v12_0_1 rows: {n_b:,}")
+          except Exception:
+              print(f"dual_listed_runtime_backup_v12_0_1: doesn't exist")
+
+          # 4. POLLUTION CHECK — only clean if we detect known-bad signals.
+          #    Healthy state: 0-700 rows, no index/ETF tickers → SKIP cleanup.
+          #    Polluted state: >700 rows OR any index/ETF tickers → CLEAN.
+          POLLUTED = (n_runtime > 700) or (len(bad_indices) > 0)
+
+          print("\n" + "=" * 60)
+          if not POLLUTED:
+              print(f"✅ Runtime allowlist is HEALTHY — no cleanup needed.")
+              print(f"   ({n_runtime} rows, no index/ETF contamination)")
+              print("=" * 60)
+              conn.close()
+          else:
+              reasons = []
+              if n_runtime > 700:
+                  reasons.append(f"{n_runtime:,} rows (threshold=700)")
+              if bad_indices:
+                  reasons.append(f"index/ETF tickers present: {bad_indices}")
+              print(f"⚠️  POLLUTION DETECTED — {' + '.join(reasons)}")
+              print(f"CLEANUP — resetting runtime allowlist for fresh v12.1 repopulation")
+              print("=" * 60)
+
+              cur.execute("DELETE FROM dual_listed_runtime")
+              print(f"  dual_listed_runtime: {cur.rowcount:,} rows deleted")
+
+              try:
+                  cur.execute("DELETE FROM dual_listed_runtime_backup_v12_0_1")
+                  print(f"  dual_listed_runtime_backup_v12_0_1: {cur.rowcount:,} rows deleted")
+              except Exception:
+                  print(f"  dual_listed_runtime_backup_v12_0_1: skipped (does not exist)")
+
+              try:
+                  cur.execute("DELETE FROM pipeline_migrations WHERE migration_id = 'v12_0_1_runtime_allowlist_purge'")
+                  print(f"  pipeline_migrations marker: {cur.rowcount} entry deleted")
+              except Exception:
+                  pass
+
+              conn.commit()
+
+              cur.execute("SELECT COUNT(*) FROM dual_listed_runtime")
+              print(f"\nFinal dual_listed_runtime: {cur.fetchone()[0]} rows  (should be 0)")
+              conn.close()
+              print("\n✅ Cleanup complete — pipeline will repopulate via v12.1 reconciler.")
+          PYEOF
+
+      - name: 🔧 v16.5 one-time false-KOVAI cleanup (idempotent — safe to leave)
+        # ───────────────────────────────────────────────────────────────────
+        # Resets the false KOVAI SL_HIT row (created by the pre-v16.5 +5%
+        # break-even trailing-stop bug) back to OPEN, so the v16.5 tracker
+        # re-walks it correctly. Runs against the ARTIFACT-restored DB inside
+        # the workflow — this is the only place the live DB exists.
+        #
+        # IDEMPOTENT: only matches rows with the exact false signature
+        # (SL_HIT + outcome_price ≈ entry + P&L ≈ 0%). Once KOVAI is reset
+        # to OPEN it no longer matches, so subsequent runs are no-ops. A
+        # genuine SL_HIT (real loss) never matches and is left untouched.
+        # Safe to leave in permanently; remove after one successful run for
+        # tidiness if preferred.
+        run: |
+          if [ ! -f market_data.db ]; then
+            echo "No DB present — nothing to clean."
+            exit 0
+          fi
+          if [ ! -f v16_5_cleanup_false_kovai.py ]; then
+            echo "Cleanup script not present in repo — skipping (already removed post-fix)."
+            exit 0
+          fi
+          echo "Running v16.5 false-KOVAI cleanup (commit mode) on artifact-restored DB..."
+          python3 v16_5_cleanup_false_kovai.py --commit || echo "Cleanup completed (no matching rows = already clean)"
+
+      - name: Execute Master Pipeline
+        env:
+          GEMINI_API_KEY:        ${{ secrets.GEMINI_API_KEY }}
+          SENDER_EMAIL:          ${{ secrets.SENDER_EMAIL }}
+          SENDER_APP_PASSWORD:   ${{ secrets.SENDER_APP_PASSWORD }}
+          USER_EMAIL_ID:         ${{ secrets.USER_EMAIL_ID }}
+          TWILIO_ACCOUNT_SID:    ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN:     ${{ secrets.TWILIO_AUTH_TOKEN }}
+        run: python master_funnel.py || true
+
+      # Delete old artifact via GitHub REST API — no external action needed.
+      # Uses the built-in GITHUB_TOKEN (actions: write permission already set above).
+      # Lists all artifacts named 'market-data-db' and deletes each one before upload.
+      # This keeps storage at ~443 MB (1 copy only) instead of accumulating every run.
+      - name: Delete previous DB artifact to free storage quota
+        run: |
+          echo "Listing existing artifacts named 'market-data-db'..."
+          ARTIFACTS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=market-data-db&per_page=100")
+          IDS=$(echo "$ARTIFACTS" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          ids = [str(a['id']) for a in data.get('artifacts', [])]
+          print('\n'.join(ids))
+          ")
+          if [ -z "$IDS" ]; then
+            echo "No existing artifacts found — skipping delete (first run)"
+          else
+            for ID in $IDS; do
+              echo "Deleting artifact ID: $ID"
+              curl -s -X DELETE -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ID"
+            done
+            echo "✅ Old artifacts deleted"
+          fi
+
+      - name: Save market_data.db as artifact
+        if: hashFiles('market_data.db') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-data-db
+          path: market_data.db
+          retention-days: 30
+          overwrite: true
+
+      - name: Show DB state after pipeline
+        if: always()
+        run: |
+          if [ -f market_data.db ]; then
+            SIZE=$(du -sh market_data.db | cut -f1)
+            echo "DB size: $SIZE"
+            python3 -c "import sqlite3; c=sqlite3.connect('market_data.db'); r=c.execute('SELECT COUNT(*),MIN(date),MAX(date) FROM daily_prices').fetchone(); print(f'Rows: {r[0]:,} | Range: {r[1]} to {r[2]}'); c.close()" 2>/dev/null || echo "DB stats not available yet"
+          else
+            echo "No market_data.db present after pipeline run"
+          fi
