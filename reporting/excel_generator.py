@@ -2492,7 +2492,19 @@ class ExcelGeneratorV6:
         closed_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",15),
                        ("Outcome",12),("Outcome Date",13),("Days to Outcome",14),
                        ("Entry CMP",12),("Outcome Price",13),("P&L %",10),
-                       ("Max Runup %",13),("Max Drawdown %",15),("Score",10)]
+                       ("Max Runup %",13),("Max Drawdown %",15),("Score",10),
+                       # v17.4: the three grouping dimensions used by the
+                       # DIAGNOSTIC BREAKDOWNS above. Previously you could see
+                       # that (say) "Score 70-79" outperformed "80-89", but not
+                       # WHICH positions sat in each bucket. Surfacing the group
+                       # keys per row makes every breakdown number auditable and
+                       # lets the table be filtered/pivoted directly in Excel.
+                       # Time Horizon and Score already exist above and are NOT
+                       # repeated. Score Band is the bucketed form of Score —
+                       # kept because Excel cannot pivot on a raw float, and it
+                       # uses the identical _bucket_score() the breakdown uses,
+                       # so the two can never disagree.
+                       ("Score Band",13),("Archetype",20),("Sector",22)]
         for ci,(h,w) in enumerate(closed_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
@@ -2562,6 +2574,13 @@ class ExcelGeneratorV6:
                     f"{float(row_c.get('max_runup_pct',0) or 0):+.1f}%",
                     f"{float(row_c.get('max_drawdown_pct',0) or 0):+.1f}%",
                     round(float(row_c.get("composite_score",0) or 0), 1),
+                    # v17.4: grouping keys. _score_band was already computed on
+                    # _closed via _bucket_score() before the breakdown tables
+                    # rendered, so this reuses the exact same value — the row
+                    # and the breakdown can never disagree.
+                    str(row_c.get("_score_band", "—") or "—"),
+                    str(row_c.get("quick_pick_label", "—") or "—"),
+                    str(row_c.get("sector", "—") or "—"),
                 ]
                 for ci, v in enumerate(vals, 1):
                     cc = ws.cell(next_row, ci, v); cc.fill = _f(bg)
@@ -2738,7 +2757,14 @@ class ExcelGeneratorV6:
                      ("Score",10),("⚠",6),
                      ("Trailing",14),("Regime",11),
                      # v15.7: risk-parity sizing surfaced on Performance sheet
-                     ("Suggested Alloc %",17),("Sizing Rationale",52)]
+                     ("Suggested Alloc %",17),("Sizing Rationale",52),
+                     # v17.4: grouping keys matching the DIAGNOSTIC BREAKDOWNS.
+                     # Placed LAST so the existing 20-column layout and every
+                     # column index referenced elsewhere in this method
+                     # (Outcome=4, Trailing=17, Regime=18, etc.) is unchanged.
+                     # Time Horizon (col 3) and Score (col 15) already exist and
+                     # are NOT repeated here.
+                     ("Score Band",13),("Archetype",20),("Sector",22)]
         for ci,(h,w) in enumerate(open_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
@@ -2837,6 +2863,13 @@ class ExcelGeneratorV6:
                     _regime_label,          # v15.0 col 18
                     _alloc_str,             # v15.7 col 19
                     _rationale_str,         # v15.7 col 20
+                    # v17.4 cols 21-23: grouping keys. _score_band was computed
+                    # on _df_all via _bucket_score() before the breakdown tables
+                    # rendered, and _open_df is a slice of _df_all, so this is
+                    # the identical value the BY COMPOSITE SCORE BAND table uses.
+                    str(row_o.get("_score_band", "—") or "—"),
+                    str(row_o.get("quick_pick_label", "—") or "—"),
+                    str(row_o.get("sector", "—") or "—"),
                 ]
                 for ci, v in enumerate(vals, 1):
                     cc = ws.cell(next_row, ci, v); cc.fill = _f(bg)

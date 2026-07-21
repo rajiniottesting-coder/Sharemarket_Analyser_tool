@@ -1318,6 +1318,22 @@ TIPS: Dict[str, Tuple[str, str]] = {
                           "reversals, which is exactly what you want.\n"
                           "Low count alongside a high T2 Reach Rate = targets\n"
                           "are too tight and should be widened."),
+
+    # ── v17.4 grouping keys on CLOSED / OPEN POSITIONS ──────────────────────
+    "Score Band": ("Composite-score bucket this pick falls in",
+                   "The same bucket used by the BY COMPOSITE SCORE BAND\n"
+                   "breakdown above, from the identical _bucket_score()\n"
+                   "helper — the row and the breakdown can never disagree.\n"
+                   "Surfaced per row so you can see WHICH positions sit in\n"
+                   "each band, and filter or pivot on it directly in Excel\n"
+                   "(a raw score float cannot be pivoted usefully).\n"
+                   "Historically the 70-79 band outperformed 80-89, which\n"
+                   "suggests composite score measures QUALITY, not TIMING."),
+    "Archetype": ("Quick Pick label assigned at recommendation time",
+                  "The same grouping used by the BY QUICK PICK ARCHETYPE\n"
+                  "breakdown. Frozen at log time, so re-classification of\n"
+                  "the stock later never rewrites the audit trail.\n"
+                  "Shows '—' for picks logged without a label."),
 }
 
 
@@ -1443,7 +1459,9 @@ GROUP_TIPS: Dict[str, Tuple[str, str]] = {
 _ICON_FAMILIES = {
     "🎯": {"Verdict", "Quick Pick", "Score /100", "Early Entry /100", "Spike Score /6", "Spike /6",
            "Storm Score /10", "Storm /10", "Action Required",
-           "Gold-Tier Filter"},
+           "Gold-Tier Filter",
+           # v17.4: grouping keys on CLOSED / OPEN POSITIONS
+           "Score Band", "Archetype"},
     "💰": {"CFV (₹)", "FV Low (₹)", "FV High (₹)", "MoS %", "MoS Label",
            "P/E TTM", "P/E", "Earn Yield %",
            "P/CF", "PEG Ratio", "PEG", "P/B", "P/S", "EV/EBITDA",
