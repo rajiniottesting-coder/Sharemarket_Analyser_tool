@@ -5054,6 +5054,201 @@ def test_g36_v17_2_alert_log_score_degraded_semantics():
             "stocks, alert volume unchanged, colours and tooltip aligned")
 
 
+
+def test_g37_v17_3_continuation_tracking_isolation_and_expiry():
+    """v17.3 regression test - CONTINUATION TRACKING (Option C, expiry-anchored).
+
+    WHY THE FEATURE EXISTS
+    The outcome tracker is first-event-wins: get_open_recommendations()
+    filters WHERE outcome_type = 'OPEN', so once T1_HIT is written the
+    position leaves the pool and is never walked again. All three targets
+    are tested on the SAME bar in descending priority (T3 -> T2 -> T1), so
+    T2_HIT can only fire on a single-bar leap from below T1 to above T2 -
+    a median 13.9 percentage-point jump. Hence 0 T2_HIT and 0 T3_HIT across
+    31 closed positions: mechanics, not missing data.
+
+    gold_continuation is a SHADOW WALK from t1_hit_date+1 to the position's
+    OWN expiry_date, recording what happened after the exit.
+
+    WHAT THIS TEST GUARDS (all four are bidirectional - each was verified to
+    FAIL with the guarded behaviour reversed, then PASS once restored):
+
+      1. ISOLATION - no write of any kind against gold_outcomes appears in
+         continuation code. Continuation must never be able to alter a
+         recorded outcome, a hit rate, or a P&L figure.
+      2. EXPIRY BOUNDARY - a T2 cross one day AFTER expiry must NOT count.
+         This is the whole point of expiry-anchoring over a flat 30 days.
+      3. DETECTION - a T2 cross BEFORE expiry must be recorded, with the
+         correct days-after-T1 offset.
+      4. RENDER SAFETY - with the table absent the Performance sheet must
+         render exactly as it did in v17.2, no exception, no partial section.
+    """
+    import os, re, sqlite3, tempfile, shutil
+    from datetime import date, timedelta
+
+    trk = open('track_outcomes.py', 'r', encoding='utf-8').read()
+    bridge = open('database/data_bridge.py', 'r', encoding='utf-8').read()
+    xls = open('reporting/excel_generator.py', 'r', encoding='utf-8').read()
+    tip = open('reporting/tooltip_formatter.py', 'r', encoding='utf-8').read()
+
+    # -- structural --
+    assert 'gold_continuation' in bridge, \
+        "v17.3: data_bridge must define the gold_continuation table"
+    assert 'def _walk_continuation' in trk, \
+        "v17.3: track_outcomes must define _walk_continuation"
+    assert 'def _seed_continuation' in trk, \
+        "v17.3: track_outcomes must define _seed_continuation"
+    assert 'run_continuation_tracking' in trk, \
+        "v17.3: continuation must be invoked from track_outcomes.main()"
+
+    # -- GUARD 1: isolation. No INSERT/UPDATE/DELETE targeting gold_outcomes
+    # anywhere in the continuation section of data_bridge, nor in the tracker.
+    _cont_start = bridge.find('SECTION - v17.3 CONTINUATION TRACKING')
+    if _cont_start < 0:
+        _cont_start = bridge.find('v17.3 CONTINUATION TRACKING')
+    assert _cont_start > 0, \
+        "v17.3: continuation section marker missing from data_bridge"
+    _cont_src = bridge[_cont_start:]
+    for _verb in ('INSERT INTO gold_outcomes', 'UPDATE gold_outcomes',
+                  'DELETE FROM gold_outcomes'):
+        assert _verb not in _cont_src, (
+            f"v17.3 ISOLATION VIOLATION: continuation code contains "
+            f"'{_verb}'. gold_outcomes is READ-ONLY to continuation - "
+            f"otherwise a diagnostic could silently rewrite hit rate or P&L.")
+        assert _verb not in trk, (
+            f"v17.3 ISOLATION VIOLATION: track_outcomes continuation path "
+            f"contains '{_verb}'.")
+
+    # -- tooltips must exist for the new columns --
+    for _k in ('T2 Reached', 'Peak vs T1', 'Broke Old SL', 'Runway',
+               'Continuation Status'):
+        assert f'"{_k}"' in tip, \
+            f"v17.3: tooltip_formatter.TIPS must document '{_k}'"
+
+    # -- width discipline (the v17.1/v17.1.1 lesson) --
+    _sec = xls[xls.find('CONTINUATION AUDIT'):]
+    _sec = _sec[:_sec.find('SURVIVORSHIP AUDIT')] if 'SURVIVORSHIP AUDIT' in _sec else _sec
+    assert '_set_min_width' in _sec, \
+        "v17.3: continuation section must size columns via _set_min_width"
+    assert not re.search(r'column_dimensions\[[^\]]+\]\.width\s*=', _sec), (
+        "v17.3: continuation section must NOT assign column widths directly - "
+        "it shares columns A-I with five other sections and an unconditional "
+        "write would clip their labels (the v17.1.1 bug).")
+
+    # -- functional: GUARDS 2, 3, 4 --
+    _cwd = os.getcwd()
+    _tmp = tempfile.mkdtemp()
+    try:
+        os.chdir(_tmp)
+        from database.data_bridge import initialize_v7_tables
+        conn = sqlite3.connect("market_data.db")
+        initialize_v7_tables(conn)
+        TODAY = date.today()
+        def _d(n): return (TODAY - timedelta(days=n)).strftime("%Y-%m-%d")
+        c = conn.cursor()
+        # Both positions: T1 hit 60d ago at 110, T2 = 125, expiry = T1 + 30d.
+        # INSIDE  crosses T2 on T1+10  -> must be detected
+        # OUTSIDE crosses T2 on T1+31  -> one day past expiry, must NOT count
+        for _sym in ("INSIDE", "OUTSIDE"):
+            c.execute("""INSERT INTO gold_recommendations
+                (recommendation_date,symbol,cmp_at_recommendation,stop_loss,
+                 t1,t2,t3,expiry_date,expiry_days,time_horizon)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (_d(90), _sym, 100.0, 92.0, 110.0, 125.0, 140.0, _d(30), 60,
+                 "POSITIONAL"))
+            c.execute("""INSERT INTO gold_outcomes
+                (recommendation_date,symbol,outcome_type,outcome_date,
+                 outcome_price,days_to_outcome)
+                VALUES (?,?,?,?,?,?)""",
+                (_d(90), _sym, "T1_HIT", _d(60), 110.0, 30))
+        for _k in range(1, 61):
+            _dt = (TODAY - timedelta(days=60 - _k)).strftime("%Y-%m-%d")
+            for _sym, _spike in (("INSIDE", 10), ("OUTSIDE", 31)):
+                if _k == _spike:
+                    _row = (118, 130, 117, 129)
+                else:
+                    _row = (112, 114, 111, 113)
+                c.execute("""INSERT OR REPLACE INTO daily_prices
+                    (symbol,exchange,date,open,high,low,close)
+                    VALUES (?,?,?,?,?,?,?)""", (_sym, "NSE", _dt) + _row)
+        conn.commit(); conn.close()
+
+        import track_outcomes as _T
+        # HARNESS NOTE (pre-existing leak, not a v17.3 defect):
+        # several earlier tests in this file assign track_outcomes.DB_PATH to
+        # their own temp database and never restore it. _load_price_history
+        # honours that module global, while the data_bridge helpers hardcode
+        # "market_data.db" - so without this reset, seeding would succeed
+        # against our DB while the price walk silently read someone else's,
+        # finding zero bars. Pin it to the local DB and restore on exit.
+        _saved_db_path = _T.DB_PATH
+        _T.DB_PATH = "market_data.db"
+        _seeded = _T._seed_continuation()
+        assert _seeded == 2, \
+            f"v17.3: seeding must backfill both T1 hits, got {_seeded}"
+        for _row in _T.get_continuation_tracking():
+            _T.upsert_continuation(_T._walk_continuation(_row))
+
+        conn = sqlite3.connect("market_data.db")
+        _got = {r[0]: r[1:] for r in conn.execute(
+            "SELECT symbol,t2_reached,t2_days_after_t1,peak_pct_after_t1 "
+            "FROM gold_continuation")}
+        # GUARD 3: detection inside the window
+        assert _got["INSIDE"][0] == 1, (
+            "v17.3 DETECTION FAILURE: a T2 cross 10 days after T1 and well "
+            "inside the expiry window was not recorded.")
+        assert _got["INSIDE"][1] == 10, (
+            f"v17.3: t2_days_after_t1 must be 10, got {_got['INSIDE'][1]}")
+        # GUARD 2: expiry boundary respected
+        assert _got["OUTSIDE"][0] == 0, (
+            "v17.3 EXPIRY-BOUNDARY VIOLATION: a T2 cross one day AFTER the "
+            "position's expiry was counted as reached. Expiry-anchoring is "
+            "the core of Option C - each position gets exactly the runway "
+            "its own recommendation promised, and not one bar more.")
+        assert _got["OUTSIDE"][2] < 5.0, (
+            f"v17.3: OUTSIDE peak must exclude the post-expiry spike "
+            f"(expected ~3.6%), got {_got['OUTSIDE'][2]}%")
+
+        # GUARD 1 again, functionally: gold_outcomes must be byte-identical
+        _oc = list(conn.execute(
+            "SELECT symbol,outcome_type,outcome_price,current_pnl_pct "
+            "FROM gold_outcomes ORDER BY symbol"))
+        assert _oc == [("INSIDE", "T1_HIT", 110.0, 0.0),
+                       ("OUTSIDE", "T1_HIT", 110.0, 0.0)], (
+            f"v17.3 ISOLATION VIOLATION: gold_outcomes was mutated by the "
+            f"continuation walk. Got {_oc}")
+        conn.close()
+
+        # GUARD 4: render safety with the table absent
+        from openpyxl import Workbook
+        from reporting.excel_generator import ExcelGeneratorV6
+        conn = sqlite3.connect("market_data.db")
+        conn.execute("DROP TABLE gold_continuation"); conn.commit(); conn.close()
+        _g = ExcelGeneratorV6(data=[], date_str="20260721")
+        _wb = Workbook(); _wb.remove(_wb.active)
+        _g._performance_sheet(_wb)          # must not raise
+        _ws = _wb["\U0001f3af Performance"]
+        _txt = " ".join(str(_ws.cell(r, 1).value or "")
+                        for r in range(1, _ws.max_row + 1))
+        assert "CONTINUATION AUDIT" not in _txt, (
+            "v17.3 RENDER-SAFETY VIOLATION: the continuation section was "
+            "written even though gold_continuation does not exist. With no "
+            "table the sheet must render exactly as it did in v17.2.")
+    finally:
+        os.chdir(_cwd)
+        try:
+            import track_outcomes as _T2
+            _T2.DB_PATH = _saved_db_path
+        except (NameError, ImportError):
+            pass
+        shutil.rmtree(_tmp, ignore_errors=True)
+
+    return ("\u2705 v17.3: continuation tracking verified - gold_outcomes "
+            "read-only, expiry boundary respected (post-expiry T2 cross "
+            "correctly ignored), in-window T2 detected at +10d, and the "
+            "Performance sheet degrades cleanly when the table is absent")
+
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -5326,6 +5521,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g34_v17_0_performance_fixes))
     v14_1_results.append(_run_one_test(test_g35_v17_1_performance_sheet_no_clipped_labels))
     v14_1_results.append(_run_one_test(test_g36_v17_2_alert_log_score_degraded_semantics))
+    v14_1_results.append(_run_one_test(test_g37_v17_3_continuation_tracking_isolation_and_expiry))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

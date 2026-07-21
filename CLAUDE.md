@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v16.5 · May 2026
+## AI Context File · v17.3 · July 2026
 
 This file gives Claude (or any AI assistant) complete project context to understand, debug, or extend this codebase without needing additional explanation. **Read it first** before making any change.
 
@@ -99,6 +99,9 @@ Tables are created by two files working together:
 | `run_stats` | One row per pipeline run (gate result, counts, timings) | Append |
 | `watchlist` | Personal watchlist overrides | User-defined |
 | `market_holidays` | NSE holiday calendar (auto-fetched per year, cached) | API + cache |
+| `gold_recommendations` | Append-only log of every Gold-sheet pick + trade levels + expiry | Append |
+| `gold_outcomes` | One row per recommendation; walked forward by `track_outcomes.py`. **Immutable to continuation code** | 1:1 with above |
+| `gold_continuation` | **v17.3** — post-T1 shadow walk (T2/T3 reach, peak, trough, SL break) to each position's own expiry | 1 row per T1_HIT |
 
 **Key DB functions in `database/data_bridge.py`:**
 
@@ -111,6 +114,8 @@ Tables are created by two files working together:
 - `get_today_consolidated_data()` — feeds `command_parser`
 - `get_historical_quarter_data(symbols)` — QoQ baseline lookup (v10.3: reads from `shareholding`)
 - `get_nifty_52w_high_from_db()`, `get_latest_fii_net_cash()`, `get_nifty_200_sma()`
+- `get_nifty_20d_sma()` — v17.0 market-regime gate (DB first, yfinance `^NSEI` fallback)
+- **v17.3 continuation (write to `gold_continuation` ONLY):** `get_t1_hits_needing_continuation()`, `get_continuation_tracking()`, `upsert_continuation(row)`, `get_continuation_stats()`
 
 ---
 
@@ -636,6 +641,30 @@ AVOID_SKIP_AI            = True      # v10.13 FIX #1 — AVOID verdict → place
 ---
 
 ## 15. VERSION HISTORY
+
+### v17.3 — Continuation tracking (Option C, expiry-anchored) · July 2026
+
+**The problem.** T2 and T3 were structurally unreachable, not merely rare. `get_open_recommendations()` filters `WHERE outcome_type = 'OPEN'`, so the tracker is first-event-wins: the moment `T1_HIT` is written the position leaves the pool and is never walked again. All three targets are tested on the SAME bar in descending priority (T3 → T2 → T1), so `T2_HIT` can only fire if a stock leaps from below T1 to above T2 inside ONE trading day — a measured median of **13.9 percentage points**. Hence 0 T2_HIT and 0 T3_HIT across 31 closed positions: exactly what the mechanics predict. The T2/T3 tiles were permanent zeros.
+
+**The fix.** A new `gold_continuation` table records a SHADOW WALK from `t1_hit_date + 1` to the position's **own** `expiry_date`. Expiry-anchored, not a flat 30 days: BLISSGVS hit T1 on day 5 of 90 and keeps its full 85-day runway, while WABAG hit T1 on day 24 of 30 and gets 6. A fixed window would truncate the first and fabricate 24 days for the second. Total previously-unmeasured runway across the 13 T1 hits: **533 days**, median 37, range 6–85.
+
+**Design notes.**
+- Seeding runs BEFORE the walk and LEFT JOINs `gold_outcomes` against `gold_continuation`, so the 13 existing T1 hits auto-backfill on first run — no manual migration, which matters because `market_data.db` is a 641 MB Actions artifact that can never be committed or hand-edited.
+- Column mapping: `gold_outcomes` has no `t1_hit_*` columns. For a `T1_HIT` row, `outcome_date` → `t1_hit_date` and `outcome_price` → `t1_hit_price`.
+- `expiry_date` defaults to `''` (empty string, not NULL) on legacy rows. Fallback chain: `expiry_date` → `recommendation_date + expiry_days` → skip and log. Never guess.
+- Reuses `_load_price_history()`, whose `WHERE date > start_date` is strictly greater — passing `t1_hit_date` yields "start the day after T1" for free, with the `exchange='NSE'` filter already applied.
+- **An SL break does NOT stop the walk.** A stock can dip below the old stop-loss and still rally to T2 before expiry; stopping early would hide that. `broke_original_sl = 1` and `t2_reached = 1` can both be true on one row.
+- `broke_original_sl` is recorded deliberately. You lost nothing — you exited at T1 — but it is the one stat that separates "T1 was a good exit" from "T1 was lucky timing on a stock about to reverse hard."
+
+**Safety invariants (enforced by G37, all verified bidirectional).** `gold_outcomes` is READ-ONLY to continuation code — no INSERT/UPDATE/DELETE anywhere in the section. Hit rate, SL rate and P&L are unchanged. A missing or empty table makes the Performance sheet render exactly as v17.2. Every continuation failure is swallowed; the tracker's return code cannot change.
+
+**Reporting.** New Performance-sheet section "CONTINUATION AUDIT — what happened after T1?" between MISSED RUNUP and SURVIVORSHIP AUDIT: four tiles (T2 reach rate, T3 reach rate, avg peak after T1, broke-SL count) plus a per-symbol table capped at 30 rows, newest first. Tiles compute on the FULL sample so the cap never skews the headline rates. Rows that broke the old SL get a red wash. All nine column headers carry tooltips. Column sizing goes through `_set_min_width()` only — the v17.1.1 lesson.
+
+**Also in this release.** `track_outcomes.py:550` omitted `TRAIL_SL` from the console "Closed this run" total, under-reporting any run that closed positions via trailing stop. Display-only — the DB and Excel were always correct — introduced when TRAIL_SL was split from SL_HIT in v16.5.
+
+**Files:** `database/data_bridge.py` · `track_outcomes.py` · `reporting/excel_generator.py` · `reporting/tooltip_formatter.py` · `test_v13_v14_consolidated.py` (G37) · `CLAUDE.md` · `readme.md`
+
+---
 
 ### v10.0 (baseline — April 2026)
 
@@ -3867,6 +3896,11 @@ This pre-existing v15.0 bug sat through every release including the v16.0 outcom
 ### Honest grade after v16.5: still A− today
 v16.5 fixes a real correctness bug in outcome tracking — it doesn't accelerate the empirical-validation timeline, but it makes the track record HONEST (no more false break-even closes mislabeled as stop-losses polluting the SL-rate). Grade trajectory unchanged: A− today, A in 60-90 days as genuine closed positions accumulate.
 
+### Honest grade after v17.3: A- today
+v17.3 does not improve returns and should not be read as if it does. What it changes is that a previously INVISIBLE question became measurable. The T2 and T3 tiles were structurally incapable of ever showing a non-zero value, so for 31 closed positions the dashboard reported "0 T2 hits" when the honest statement was "T2 was never tested" - the tracker is first-event-wins and closed every position at T1 before T2 could be evaluated. Continuation tracking replaces a misleading zero with a real measurement. Whether T1 is placed well is now an empirical question rather than an assumption. But the answer needs roughly 30 completed continuation rows before it means anything, and there are 13 today. Grade trajectory unchanged: A- today, A once genuine closed positions accumulate.
+
+**Documentation debt acknowledged.** v17.0, v17.1, v17.1.1 and v17.2 all shipped to production without entries in this file or in `readme.md` - both sat at v16.5 while four releases went live. v17.3 is documented here, but the gap is real and should be backfilled: the market-regime gate, the 3d-ROC momentum gate, the sector-cycle gate, the horizon-key fix (which had silently defaulted every stock to POSITIONAL since v14.6, leaving all horizon-specific SL/T1/T3 logic inert), the three unconditional column-width sites, and the Alert Log SCORE DEGRADED semantics are all undocumented here.
+
 ---
 
-*Last updated: May 16, 2026 · v16.5 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: July 21, 2026 · v17.3 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

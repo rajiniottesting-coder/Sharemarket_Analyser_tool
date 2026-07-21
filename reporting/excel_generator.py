@@ -2915,7 +2915,151 @@ class ExcelGeneratorV6:
             ws.row_dimensions[next_row].height = 30
             next_row += 1
 
-        # ── v16.0 Section 6: SURVIVORSHIP AUDIT (Item 5) ──────────────────
+        # ── v17.3 Section 6: CONTINUATION AUDIT ───────────────────────────
+        # "What happened AFTER T1?"
+        #
+        # WHY: the outcome tracker is first-event-wins. Once T1_HIT is
+        # recorded the position leaves the OPEN pool and is never walked
+        # again, and all three targets are tested on the SAME bar in
+        # descending priority (T3 → T2 → T1). So T2_HIT can only fire on a
+        # single-bar leap from below T1 to above T2 — a median 13.9
+        # percentage-point jump. The T2 HIT / T3 HIT tiles above are
+        # therefore permanent zeros by construction, not for lack of data.
+        #
+        # This section reads gold_continuation, a SHADOW WALK that runs from
+        # the day after T1 to the position's OWN expiry date. It is purely
+        # observational: the position was really sold at T1, so nothing here
+        # is realised P&L and nothing here alters hit rate or SL rate.
+        #
+        # GRACEFUL DEGRADATION: if the table is missing or empty (first run
+        # before the tracker seeds it, or continuation deliberately removed)
+        # we return before writing a single cell, and this sheet renders
+        # exactly as it did in v17.2.
+        try:
+            from database.data_bridge import get_continuation_stats
+            _cont_df = get_continuation_stats()
+        except Exception as _ce:
+            _cont_df = pd.DataFrame()
+            print(f"   ⚠️  Continuation audit — DB read failed: {_ce}")
+
+        if not _cont_df.empty:
+            next_row += 1   # spacer
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+            c = ws.cell(next_row,1,
+                "🔭  CONTINUATION AUDIT  ·  What happened after T1?  ·  "
+                "Expiry-anchored · observational only — does not affect hit rate or P&L")
+            c.fill = _f("0C447C"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
+            ws.row_dimensions[next_row].height = 22
+            next_row += 1
+
+            _n_cont   = len(_cont_df)
+            _n_t2     = int(_cont_df["t2_reached"].fillna(0).astype(int).sum())
+            _n_t3     = int(_cont_df["t3_reached"].fillna(0).astype(int).sum())
+            _n_slbrk  = int(_cont_df["broke_original_sl"].fillna(0).astype(int).sum())
+            _avg_peak = float(_cont_df["peak_pct_after_t1"].fillna(0).astype(float).mean())
+            _t2_rate  = (_n_t2 / _n_cont * 100) if _n_cont else 0.0
+            _t3_rate  = (_n_t3 / _n_cont * 100) if _n_cont else 0.0
+
+            # 4 summary tiles. Labels match tooltip_formatter.TIPS keys so
+            # the header tooltips below resolve.
+            _metric(next_row, 1, "T2 REACH RATE", f"{_t2_rate:.1f}%",
+                    value_fill="E6F1FB", label_fill="B5D4F4", val_color="0C447C")
+            _metric(next_row, 2, "T3 REACH RATE", f"{_t3_rate:.1f}%",
+                    value_fill="E6F1FB", label_fill="B5D4F4", val_color="0C447C")
+            _metric(next_row, 3, "AVG PEAK AFTER T1", f"{_avg_peak:+.1f}%",
+                    value_fill="E1F5EE", label_fill="9FE1CB", val_color="0F6E56")
+            _metric(next_row, 4, "BROKE SL AFTER T1", f"{_n_slbrk}",
+                    value_fill="FCEBEB", label_fill="F7C1C1", val_color="A32D2D")
+            # Sub-caption under the tiles giving the raw counts.
+            ws.cell(next_row+2, 1, f"{_n_t2} of {_n_cont}").font = _ft(False,"64748B",8,True)
+            ws.cell(next_row+2, 2, f"{_n_t3} of {_n_cont}").font = _ft(False,"64748B",8,True)
+            ws.cell(next_row+2, 3, "above T1 exit price").font = _ft(False,"64748B",8,True)
+            ws.cell(next_row+2, 4, "reversed hard").font = _ft(False,"64748B",8,True)
+            next_row += 4
+
+            # ── Per-symbol table ──────────────────────────────────────────
+            # Capped at 30 rows, newest T1 hit first. The tiles above are
+            # computed on the FULL sample, so capping the table never skews
+            # the headline rates — it only keeps the sheet from growing
+            # unbounded as the T1-hit count climbs past a year of running.
+            _CONT_ROW_CAP = 30
+            cont_cols = [("Symbol",16),("T1 Hit Date",14),("Runway",11),
+                         ("T2 Reached",13),("T3 Reached",13),
+                         ("Peak vs T1",13),("Trough vs T1",14),
+                         ("Broke Old SL",14),("Continuation Status",19)]
+            for ci,(h,w) in enumerate(cont_cols, 1):
+                cc = ws.cell(next_row, ci, h)
+                cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
+                # v17.1 lesson: widen-only. This section shares columns A–I
+                # with five others; an unconditional .width = here would
+                # clip "Communication Services" in the sector breakdown and
+                # "EXPIRED w/ ≥10% RUNUP" in the missed-runup tiles.
+                _set_min_width(ci, w)
+            ws.row_dimensions[next_row].height = 20
+            self._apply_col_tips(ws, next_row, [h for h, _ in cont_cols])
+            next_row += 1
+
+            _cont_show = _cont_df.head(_CONT_ROW_CAP)
+            for _, cr in _cont_show.iterrows():
+                _broke = int(cr.get("broke_original_sl", 0) or 0)
+                # Rows that reversed through the original SL get a red wash —
+                # they're the "T1 was lucky timing" cases and should be
+                # visually separable at a glance.
+                _rf = "FCEBEB" if _broke else None
+                _tc = "501313" if _broke else "1F2937"
+
+                _t2r = int(cr.get("t2_reached", 0) or 0)
+                _t3r = int(cr.get("t3_reached", 0) or 0)
+                _t2_txt = f"Y +{int(cr.get('t2_days_after_t1',0) or 0)}d" if _t2r else "N"
+                _t3_txt = f"Y +{int(cr.get('t3_days_after_t1',0) or 0)}d" if _t3r else "N"
+                _trough_txt = f"{float(cr.get('trough_pct_after_t1',0) or 0):+.1f}%"
+                if _broke:
+                    _trough_txt += " SL"
+
+                vals = [
+                    str(cr.get("symbol","")),
+                    str(cr.get("t1_hit_date","")),
+                    f"{int(cr.get('days_remaining_at_t1',0) or 0)}d",
+                    _t2_txt,
+                    _t3_txt,
+                    f"{float(cr.get('peak_pct_after_t1',0) or 0):+.1f}%",
+                    _trough_txt,
+                    "YES" if _broke else "—",
+                    str(cr.get("status","")),
+                ]
+                for ci, v in enumerate(vals, 1):
+                    cc = ws.cell(next_row, ci, v)
+                    cc.font = _ft(False, _tc, 9)
+                    cc.alignment = _al()
+                    if _rf:
+                        cc.fill = _f(_rf)
+                    # Green the reached-target cells so hits pop out.
+                    if ci == 4 and _t2r and not _broke:
+                        cc.font = _ft(True, "0F6E56", 9)
+                    if ci == 5 and _t3r and not _broke:
+                        cc.font = _ft(True, "0F6E56", 9)
+                next_row += 1
+
+            if _n_cont > _CONT_ROW_CAP:
+                ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+                c = ws.cell(next_row,1,
+                    f"  Showing {_CONT_ROW_CAP} most recent of {_n_cont} tracked "
+                    f"continuations. The rates above use all {_n_cont}.")
+                c.fill = _f(LG); c.font = _ft(False,"6B7280",9,True); c.alignment = _al("left")
+                next_row += 1
+
+            # Interpretive note — mirrors the missed-runup reading guide.
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+            c = ws.cell(next_row, 1,
+                "  Reading guide: high T2 REACH RATE means T1 is exiting too early — widen targets. "
+                "High BROKE SL AFTER T1 means T1 is catching genuine tops, which is what you want. "
+                "Short-runway rows (small Runway) reaching no target is expected, not a failure — "
+                "there was no time left. All figures are hypothetical: the position was really sold at T1.")
+            c.fill = _f(LG); c.font = _ft(False, "475569", 9, True); c.alignment = _al("left", "center", True)
+            ws.row_dimensions[next_row].height = 30
+            next_row += 1
+
+        # ── v16.0 Section 7: SURVIVORSHIP AUDIT (Item 5) ──────────────────
         # Renders a one-line institutional audit confirming that all OPEN
         # gold positions are still present in today's universe (i.e., have
         # not been silently delisted, suspended, or symbol-changed). This

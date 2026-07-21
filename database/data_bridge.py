@@ -312,6 +312,69 @@ def initialize_v7_tables(conn):
             c.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]}")
         except sqlite3.OperationalError:
             pass  # column already exists — fine
+
+    # ────────────────────────────────────────────────────────────────────
+    # v17.3 — CONTINUATION TRACKING (Option C, expiry-anchored)
+    #
+    # WHY THIS TABLE EXISTS
+    # The outcome tracker is first-event-wins: get_open_recommendations()
+    # filters WHERE outcome_type = 'OPEN', so the moment T1_HIT is recorded
+    # the position closes and is never walked again. All three targets are
+    # checked on the SAME bar in descending priority (T3 → T2 → T1), so
+    # T2_HIT can only fire if a stock leaps from below T1 to above T2 inside
+    # ONE trading day (measured median jump required: 13.9 percentage
+    # points). Result: 0 T2_HIT and 0 T3_HIT across 31 closed positions —
+    # exactly what the mechanics predict, not a data problem.
+    #
+    # gold_continuation is a SHADOW WALK that answers "what happened AFTER
+    # T1?" It is purely observational:
+    #   · gold_outcomes is READ-ONLY to all continuation code
+    #   · hit rate, SL rate, P&L and every existing statistic are unchanged
+    #   · dropping this table degrades the Performance sheet gracefully
+    #
+    # EXPIRY-ANCHORED, not fixed-30-days. Each position is walked until its
+    # OWN original expiry_date, so BLISSGVS (T1 on day 5 of 90) gets its
+    # full 85-day runway while WABAG (T1 on day 24 of 30) gets 6 — the
+    # runway its own recommendation actually promised. A flat 30-day window
+    # would truncate the first and fabricate 24 days for the second.
+    #
+    # PK (symbol, recommendation_date) matches gold_outcomes so the two
+    # join cleanly without a surrogate key.
+    # ────────────────────────────────────────────────────────────────────
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS gold_continuation (
+            symbol                  TEXT,
+            recommendation_date     TEXT,
+            t1_hit_date             TEXT DEFAULT '',
+            t1_hit_price            REAL DEFAULT 0,
+            expiry_date             TEXT DEFAULT '',
+            days_remaining_at_t1    INTEGER DEFAULT 0,
+            t2_target               REAL DEFAULT 0,
+            t3_target               REAL DEFAULT 0,
+            original_sl             REAL DEFAULT 0,
+            t2_reached              INTEGER DEFAULT 0,
+            t2_reached_date         TEXT DEFAULT '',
+            t2_days_after_t1        INTEGER DEFAULT 0,
+            t3_reached              INTEGER DEFAULT 0,
+            t3_reached_date         TEXT DEFAULT '',
+            t3_days_after_t1        INTEGER DEFAULT 0,
+            peak_price_after_t1     REAL DEFAULT 0,
+            peak_pct_after_t1       REAL DEFAULT 0,
+            trough_price_after_t1   REAL DEFAULT 0,
+            trough_pct_after_t1     REAL DEFAULT 0,
+            broke_original_sl       INTEGER DEFAULT 0,
+            final_price_at_expiry   REAL DEFAULT 0,
+            final_pct_vs_t1         REAL DEFAULT 0,
+            status                  TEXT DEFAULT 'TRACKING',
+            last_checked_date       TEXT DEFAULT '',
+            PRIMARY KEY (symbol, recommendation_date)
+        )
+    """)
+    # Index for the per-run "which rows still need walking" scan.
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_gold_continuation_tracking
+        ON gold_continuation (status) WHERE status = 'TRACKING'
+    """)
     conn.commit()
 
 
@@ -1794,3 +1857,184 @@ def horizon_to_expiry_days(time_horizon: str) -> int:
         return 270
     # POSITIONAL or unknown → 90 (conservative default matches v14.0 behavior)
     return 90
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION — v17.3 CONTINUATION TRACKING (Option C, expiry-anchored)
+#
+# SAFETY CONTRACT — read before editing any function below.
+#   1. gold_outcomes is READ-ONLY here. No INSERT / UPDATE / DELETE against
+#      it appears anywhere in this section, and regression test G37 asserts
+#      that statically. Continuation is observational; it must never be able
+#      to alter a recorded outcome, a hit rate, or a P&L number.
+#   2. Every function swallows its own exceptions and returns an empty
+#      result. A continuation failure must degrade to "no continuation data"
+#      — never abort the tracker or the daily pipeline.
+#   3. All writes go to gold_continuation only.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def get_t1_hits_needing_continuation() -> list:
+    """v17.3: T1_HIT rows in gold_outcomes with no gold_continuation row yet.
+
+    This is the seeding query. On first run after deploy it returns every
+    historical T1 hit (13 as of 20 Jul 2026), which auto-backfills the table
+    with no manual migration step — important because market_data.db is a
+    641 MB GitHub Actions artifact, not a local file we can hand-edit.
+
+    COLUMN MAPPING — gold_outcomes has no t1_hit_* columns. For a row whose
+    outcome_type is 'T1_HIT', the hit is recorded as:
+        outcome_date  → t1_hit_date
+        outcome_price → t1_hit_price
+    Those aliases are applied here so callers never have to remember it.
+
+    expiry_date defaults to '' (empty string, NOT NULL) on legacy rows, so
+    the caller must handle the empty case — see _seed_continuation(), which
+    falls back to recommendation_date + expiry_days.
+    """
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            df = pd.read_sql_query("""
+                SELECT
+                    o.symbol,
+                    o.recommendation_date,
+                    o.outcome_date  AS t1_hit_date,
+                    o.outcome_price AS t1_hit_price,
+                    r.t2            AS t2_target,
+                    r.t3            AS t3_target,
+                    r.stop_loss     AS original_sl,
+                    COALESCE(r.expiry_date, '') AS expiry_date,
+                    COALESCE(r.expiry_days, 90) AS expiry_days
+                FROM gold_outcomes o
+                INNER JOIN gold_recommendations r
+                  ON o.symbol = r.symbol
+                  AND o.recommendation_date = r.recommendation_date
+                LEFT JOIN gold_continuation c
+                  ON o.symbol = c.symbol
+                  AND o.recommendation_date = c.recommendation_date
+                WHERE o.outcome_type = 'T1_HIT'
+                  AND c.symbol IS NULL
+                ORDER BY o.outcome_date ASC
+            """, conn)
+            return df.to_dict("records")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  get_t1_hits_needing_continuation: {e}")
+        return []
+
+
+def get_continuation_tracking() -> list:
+    """v17.3: continuation rows still being walked (status = 'TRACKING').
+
+    Rows flip to 'COMPLETE' once the walk passes their expiry_date; those
+    are never re-walked, so this list shrinks as positions mature.
+    """
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            df = pd.read_sql_query("""
+                SELECT * FROM gold_continuation
+                WHERE status = 'TRACKING'
+                ORDER BY t1_hit_date ASC
+            """, conn)
+            return df.to_dict("records")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  get_continuation_tracking: {e}")
+        return []
+
+
+def upsert_continuation(row: dict) -> bool:
+    """v17.3: insert-or-update one gold_continuation row.
+
+    Keyed on (symbol, recommendation_date). Used both for seeding a fresh
+    row and for persisting each walk result. Writes ONLY to
+    gold_continuation.
+    """
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            conn.execute("""
+                INSERT INTO gold_continuation (
+                    symbol, recommendation_date, t1_hit_date, t1_hit_price,
+                    expiry_date, days_remaining_at_t1, t2_target, t3_target,
+                    original_sl, t2_reached, t2_reached_date, t2_days_after_t1,
+                    t3_reached, t3_reached_date, t3_days_after_t1,
+                    peak_price_after_t1, peak_pct_after_t1,
+                    trough_price_after_t1, trough_pct_after_t1,
+                    broke_original_sl, final_price_at_expiry, final_pct_vs_t1,
+                    status, last_checked_date
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(symbol, recommendation_date) DO UPDATE SET
+                    t1_hit_date           = excluded.t1_hit_date,
+                    t1_hit_price          = excluded.t1_hit_price,
+                    expiry_date           = excluded.expiry_date,
+                    days_remaining_at_t1  = excluded.days_remaining_at_t1,
+                    t2_target             = excluded.t2_target,
+                    t3_target             = excluded.t3_target,
+                    original_sl           = excluded.original_sl,
+                    t2_reached            = excluded.t2_reached,
+                    t2_reached_date       = excluded.t2_reached_date,
+                    t2_days_after_t1      = excluded.t2_days_after_t1,
+                    t3_reached            = excluded.t3_reached,
+                    t3_reached_date       = excluded.t3_reached_date,
+                    t3_days_after_t1      = excluded.t3_days_after_t1,
+                    peak_price_after_t1   = excluded.peak_price_after_t1,
+                    peak_pct_after_t1     = excluded.peak_pct_after_t1,
+                    trough_price_after_t1 = excluded.trough_price_after_t1,
+                    trough_pct_after_t1   = excluded.trough_pct_after_t1,
+                    broke_original_sl     = excluded.broke_original_sl,
+                    final_price_at_expiry = excluded.final_price_at_expiry,
+                    final_pct_vs_t1       = excluded.final_pct_vs_t1,
+                    status                = excluded.status,
+                    last_checked_date     = excluded.last_checked_date
+            """, (
+                row.get("symbol", ""), row.get("recommendation_date", ""),
+                row.get("t1_hit_date", ""), float(row.get("t1_hit_price", 0) or 0),
+                row.get("expiry_date", ""), int(row.get("days_remaining_at_t1", 0) or 0),
+                float(row.get("t2_target", 0) or 0), float(row.get("t3_target", 0) or 0),
+                float(row.get("original_sl", 0) or 0),
+                int(row.get("t2_reached", 0) or 0), row.get("t2_reached_date", ""),
+                int(row.get("t2_days_after_t1", 0) or 0),
+                int(row.get("t3_reached", 0) or 0), row.get("t3_reached_date", ""),
+                int(row.get("t3_days_after_t1", 0) or 0),
+                float(row.get("peak_price_after_t1", 0) or 0),
+                float(row.get("peak_pct_after_t1", 0) or 0),
+                float(row.get("trough_price_after_t1", 0) or 0),
+                float(row.get("trough_pct_after_t1", 0) or 0),
+                int(row.get("broke_original_sl", 0) or 0),
+                float(row.get("final_price_at_expiry", 0) or 0),
+                float(row.get("final_pct_vs_t1", 0) or 0),
+                row.get("status", "TRACKING"), row.get("last_checked_date", ""),
+            ))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  upsert_continuation({row.get('symbol','?')}): {e}")
+        return False
+
+
+def get_continuation_stats() -> pd.DataFrame:
+    """v17.3: every gold_continuation row, newest T1 hit first.
+
+    Consumed by the Excel Performance sheet's CONTINUATION AUDIT section.
+    Returns an EMPTY DataFrame if the table doesn't exist yet (first run
+    before the tracker has seeded anything) — the Performance sheet checks
+    .empty and skips the whole section, rendering exactly as it did before
+    v17.3.
+    """
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            return pd.read_sql_query("""
+                SELECT * FROM gold_continuation
+                ORDER BY t1_hit_date DESC
+            """, conn)
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  get_continuation_stats: {e}")
+        return pd.DataFrame()

@@ -46,6 +46,10 @@ if _ROOT not in sys.path:
 from database.data_bridge import (
     get_open_recommendations,
     update_outcome,
+    # v17.3 — continuation tracking (observational; never writes gold_outcomes)
+    get_t1_hits_needing_continuation,
+    get_continuation_tracking,
+    upsert_continuation,
 )
 
 # ─── Config ───────────────────────────────────────────────────────────
@@ -472,6 +476,226 @@ def _walk_forward(rec: dict) -> dict:
     }
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# v17.3 — CONTINUATION TRACKING (Option C, expiry-anchored)
+#
+# The problem: this tracker is first-event-wins. Once T1_HIT is written the
+# position leaves the OPEN pool and is never walked again, so T2/T3 are
+# structurally unreachable (a stock would have to leap from below T1 to
+# above T2 within one bar — median 13.9pp). The T2/T3 tiles are permanent
+# zeros and always will be.
+#
+# The fix, without touching any of the above: a SHADOW WALK that starts the
+# day after T1 and runs to the position's ORIGINAL expiry date, recording
+# what the stock did next. It answers "was T1 a good exit, or lucky timing?"
+#
+# INVARIANTS (regression test G37 enforces these):
+#   · gold_outcomes is READ-ONLY — no write of any kind from this block
+#   · existing hit rate / SL rate / P&L are byte-identical before and after
+#   · every failure is swallowed; the tracker's exit code never changes
+# ═════════════════════════════════════════════════════════════════════════
+
+def _seed_continuation() -> int:
+    """Create gold_continuation rows for T1 hits that don't have one yet.
+
+    Runs BEFORE the walk. On first deploy this backfills every historical
+    T1 hit in one pass — no manual migration, which matters because
+    market_data.db is a 641 MB GitHub Actions artifact.
+
+    Returns the number of rows seeded.
+
+    expiry_date resolution, in order:
+        1. r.expiry_date if non-empty
+        2. recommendation_date + expiry_days (defaults 90)
+        3. skip the row and log — never guess
+    """
+    seeded = 0
+    for rec in get_t1_hits_needing_continuation():
+        sym      = rec.get("symbol", "")
+        rec_date = rec.get("recommendation_date", "")
+        t1_date  = str(rec.get("t1_hit_date", "") or "")
+        if not t1_date:
+            print(f"   ⚠️  continuation seed skipped {sym}: no T1 hit date")
+            continue
+
+        expiry_date = str(rec.get("expiry_date", "") or "")
+        if not expiry_date:
+            try:
+                _rd = datetime.strptime(rec_date, "%Y-%m-%d").date()
+                _ed = int(rec.get("expiry_days") or DEFAULT_EXPIRY_DAYS)
+                expiry_date = (_rd + timedelta(days=_ed)).strftime("%Y-%m-%d")
+            except (ValueError, TypeError):
+                print(f"   ⚠️  continuation seed skipped {sym}: unresolvable expiry")
+                continue
+
+        try:
+            _t1d = datetime.strptime(t1_date, "%Y-%m-%d").date()
+            _exd = datetime.strptime(expiry_date, "%Y-%m-%d").date()
+            days_remaining = max(0, (_exd - _t1d).days)
+        except (ValueError, TypeError):
+            print(f"   ⚠️  continuation seed skipped {sym}: bad date format")
+            continue
+
+        t1_price = float(rec.get("t1_hit_price", 0) or 0)
+        ok = upsert_continuation({
+            "symbol": sym,
+            "recommendation_date": rec_date,
+            "t1_hit_date": t1_date,
+            "t1_hit_price": t1_price,
+            "expiry_date": expiry_date,
+            "days_remaining_at_t1": days_remaining,
+            "t2_target": float(rec.get("t2_target", 0) or 0),
+            "t3_target": float(rec.get("t3_target", 0) or 0),
+            "original_sl": float(rec.get("original_sl", 0) or 0),
+            # Baseline the peak/trough at the T1 price so a position that
+            # never trades again still reports 0.0% rather than −100%.
+            "peak_price_after_t1":   t1_price,
+            "trough_price_after_t1": t1_price,
+            "status": "TRACKING",
+            "last_checked_date": "",
+        })
+        if ok:
+            seeded += 1
+    return seeded
+
+
+def _walk_continuation(row: dict) -> dict:
+    """Shadow-walk one position from t1_hit_date+1 to min(expiry_date, today).
+
+    Reuses _load_price_history(), whose WHERE clause is `date > start_date`
+    — strictly greater — so passing t1_hit_date gives us "start the day
+    after T1" for free, with the exchange='NSE' filter already applied.
+
+    Per bar:
+        high ≥ t3  → record t3 reach (date + days after T1), once only
+        high ≥ t2  → record t2 reach, once only
+        high > peak / low < trough → update running extremes
+        low  ≤ original_sl → broke_original_sl = 1
+
+    The walk does NOT stop on an SL break. A stock can dip below the old SL
+    and still rally to T2 before expiry; stopping early would hide that.
+    Both flags can legitimately be 1 on the same row.
+
+    status flips to 'COMPLETE' once today is past expiry_date, at which
+    point final_price_at_expiry / final_pct_vs_t1 are frozen.
+    """
+    out = dict(row)
+    sym      = row.get("symbol", "")
+    t1_date  = str(row.get("t1_hit_date", "") or "")
+    t1_price = float(row.get("t1_hit_price", 0) or 0)
+    t2       = float(row.get("t2_target", 0) or 0)
+    t3       = float(row.get("t3_target", 0) or 0)
+    sl       = float(row.get("original_sl", 0) or 0)
+    expiry   = str(row.get("expiry_date", "") or "")
+    today    = datetime.now().date()
+
+    if not t1_date or t1_price <= 0 or not expiry:
+        out["status"] = "COMPLETE"
+        out["last_checked_date"] = today.strftime("%Y-%m-%d")
+        return out
+
+    try:
+        t1_d     = datetime.strptime(t1_date, "%Y-%m-%d").date()
+        expiry_d = datetime.strptime(expiry, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        out["status"] = "COMPLETE"
+        out["last_checked_date"] = today.strftime("%Y-%m-%d")
+        return out
+
+    # Carry prior state forward — a reach recorded on an earlier run is
+    # never un-recorded, even if this run's price window is empty.
+    t2_reached = int(row.get("t2_reached", 0) or 0)
+    t3_reached = int(row.get("t3_reached", 0) or 0)
+    t2_date    = str(row.get("t2_reached_date", "") or "")
+    t3_date    = str(row.get("t3_reached_date", "") or "")
+    t2_days    = int(row.get("t2_days_after_t1", 0) or 0)
+    t3_days    = int(row.get("t3_days_after_t1", 0) or 0)
+    broke_sl   = int(row.get("broke_original_sl", 0) or 0)
+    peak       = float(row.get("peak_price_after_t1", 0) or 0) or t1_price
+    trough     = float(row.get("trough_price_after_t1", 0) or 0) or t1_price
+    last_close = t1_price
+
+    prices = _load_price_history(sym, t1_date)
+    for _, bar in prices.iterrows():
+        bdate = str(bar["date"])[:10]
+        try:
+            bd = datetime.strptime(bdate, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        # HARD expiry boundary — bars past the position's own expiry are
+        # not part of the runway its recommendation promised.
+        if bd > expiry_d:
+            break
+
+        hi = float(bar["high"] or 0)
+        lo = float(bar["low"] or 0)
+        cl = float(bar["close"] or 0)
+        days_after = (bd - t1_d).days
+
+        if t3 > 0 and hi >= t3 and not t3_reached:
+            t3_reached, t3_date, t3_days = 1, bdate, days_after
+        if t2 > 0 and hi >= t2 and not t2_reached:
+            t2_reached, t2_date, t2_days = 1, bdate, days_after
+        if hi > peak:
+            peak = hi
+        if lo > 0 and lo < trough:
+            trough = lo
+        if sl > 0 and lo > 0 and lo <= sl:
+            broke_sl = 1
+        if cl > 0:
+            last_close = cl
+
+    out["t2_reached"]            = t2_reached
+    out["t2_reached_date"]       = t2_date
+    out["t2_days_after_t1"]      = t2_days
+    out["t3_reached"]            = t3_reached
+    out["t3_reached_date"]       = t3_date
+    out["t3_days_after_t1"]      = t3_days
+    out["peak_price_after_t1"]   = round(peak, 2)
+    out["peak_pct_after_t1"]     = round((peak - t1_price) / t1_price * 100, 2)
+    out["trough_price_after_t1"] = round(trough, 2)
+    out["trough_pct_after_t1"]   = round((trough - t1_price) / t1_price * 100, 2)
+    out["broke_original_sl"]     = broke_sl
+    out["last_checked_date"]     = today.strftime("%Y-%m-%d")
+
+    if today > expiry_d:
+        out["status"]                = "COMPLETE"
+        out["final_price_at_expiry"] = round(last_close, 2)
+        out["final_pct_vs_t1"]       = round((last_close - t1_price) / t1_price * 100, 2)
+    else:
+        out["status"]                = "TRACKING"
+        out["final_price_at_expiry"] = 0.0
+        out["final_pct_vs_t1"]       = 0.0
+    return out
+
+
+def run_continuation_tracking() -> dict:
+    """v17.3: seed then walk. Called at the END of main().
+
+    Wrapped so that any failure here can never abort the outcome tracker —
+    the daily pipeline's hit-rate numbers matter more than this diagnostic.
+    Returns a small summary dict for the console line.
+    """
+    summary = {"seeded": 0, "walked": 0, "complete": 0, "t2": 0, "t3": 0, "sl_break": 0}
+    try:
+        summary["seeded"] = _seed_continuation()
+        for row in get_continuation_tracking():
+            res = _walk_continuation(row)
+            if upsert_continuation(res):
+                summary["walked"] += 1
+                if res.get("status") == "COMPLETE":
+                    summary["complete"] += 1
+                if int(res.get("t2_reached", 0) or 0):
+                    summary["t2"] += 1
+                if int(res.get("t3_reached", 0) or 0):
+                    summary["t3"] += 1
+                if int(res.get("broke_original_sl", 0) or 0):
+                    summary["sl_break"] += 1
+    except Exception as e:
+        print(f"   ⚠️  continuation tracking failed (non-fatal): {e}")
+    return summary
+
+
 def main():
     """Walk every OPEN recommendation forward and update outcomes."""
     print("=" * 70)
@@ -480,6 +704,12 @@ def main():
     opens = get_open_recommendations()
     if not opens:
         print("No open recommendations to track.")
+        # v17.3: closed positions can still have live continuation runways
+        # (a T1 hit on day 5 of 90 has 85 days left to walk), so the shadow
+        # walk must run even when the OPEN pool is empty.
+        _c = run_continuation_tracking()
+        if _c["seeded"] or _c["walked"]:
+            print(f"Continuation: seeded {_c['seeded']}  ·  walked {_c['walked']}")
         return 0
 
     counts = {"SL_HIT": 0, "T1_HIT": 0, "T2_HIT": 0, "T3_HIT": 0,
@@ -547,13 +777,31 @@ def main():
     print()
     print("=" * 70)
     print("Summary: " + "  ".join(f"{k}={v}" for k, v in counts.items() if v > 0))
-    closed = counts["SL_HIT"] + counts["T1_HIT"] + counts["T2_HIT"] + counts["T3_HIT"] + counts["EXPIRED"]
+    # v17.3 FIX: TRAIL_SL was omitted from this sum, so a run that closed
+    # positions via trailing stop under-reported "Closed this run" on the
+    # console. The DB and the Excel were always correct — this was a
+    # display-only defect introduced when TRAIL_SL was split out of SL_HIT
+    # in v16.5. counts.get() is used because TRAIL_SL is not pre-seeded in
+    # the counts dict initialiser.
+    closed = (counts["SL_HIT"] + counts.get("TRAIL_SL", 0) + counts["T1_HIT"]
+              + counts["T2_HIT"] + counts["T3_HIT"] + counts["EXPIRED"])
     print(f"Closed this run: {closed}  ·  Still open: {counts['OPEN']}", end="")
     if approaching_expiry > 0:
         print(f"  ·  ⚠ {approaching_expiry} approaching expiry (≤14d)")
     else:
         print()
     print("=" * 70)
+
+    # ── v17.3: continuation shadow walk ───────────────────────────────────
+    # Runs LAST, after every outcome is committed. Observational only —
+    # gold_outcomes is not touched, and a failure here cannot change the
+    # tracker's return code.
+    _c = run_continuation_tracking()
+    if _c["seeded"] or _c["walked"]:
+        print(f"CONTINUATION AUDIT — seeded {_c['seeded']}  ·  walked {_c['walked']}  ·  "
+              f"complete {_c['complete']}  ·  T2 reached {_c['t2']}  ·  "
+              f"T3 reached {_c['t3']}  ·  broke old SL {_c['sl_break']}")
+        print("=" * 70)
     return 0
 
 

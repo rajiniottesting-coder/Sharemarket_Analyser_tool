@@ -1249,6 +1249,75 @@ TIPS: Dict[str, Tuple[str, str]] = {
                "  NEUTRAL = within the band → no adjustment\n"
                "Useful for post-hoc analysis: did HIGH-regime picks suffer\n"
                "worse outcomes? Frozen at log time, so the audit stays clean."),
+
+    # ── v17.3 CONTINUATION AUDIT (Performance sheet) ────────────────────────
+    # These cover the "what happened after T1?" section. The framing that
+    # matters: continuation is OBSERVATIONAL. The position was already sold
+    # at T1 — none of these numbers are realised profit or loss. They exist
+    # to answer whether T1 is set in the right place.
+    "T1 Hit Date": ("Day the position closed at T1",
+                    "The bar on which daily high first reached T1.\n"
+                    "Continuation tracking starts the NEXT trading day.\n"
+                    "This is a real, booked exit — everything after it is\n"
+                    "hypothetical and does not affect P&L or hit rate."),
+    "Runway": ("Days from T1 hit to original expiry",
+               "expiry_date − t1_hit_date, in calendar days.\n"
+               "Expiry-anchored: each position gets exactly the window its\n"
+               "own recommendation promised. A T1 on day 5 of 90 leaves an\n"
+               "85-day runway; a T1 on day 24 of 30 leaves 6.\n"
+               "Short runway + no T2 is NOT evidence T1 was too tight —\n"
+               "there simply wasn't time left to run."),
+    "T2 Reached": ("Did price reach T2 after the T1 exit?",
+                   "Y = daily high touched T2 before expiry, with the number\n"
+                   "of days after T1 that it took. N = never got there.\n"
+                   "This is the number the T2 HIT tile could never show:\n"
+                   "the tracker is first-event-wins, so a closed position is\n"
+                   "never walked again and T2_HIT can only fire on a single-bar\n"
+                   "leap from below T1 to above T2 (median 13.9pp)."),
+    "T3 Reached": ("Did price reach T3 after the T1 exit?",
+                   "Same mechanic as T2 Reached, measured against T3.\n"
+                   "Expect this to stay low — T3 is the stretch target and\n"
+                   "most positions expire before approaching it."),
+    "Peak vs T1": ("Best price after T1, as % above the T1 exit",
+                   "How far the stock ran once you were already out.\n"
+                   "Consistently high (>15%) means T1 is exiting too early\n"
+                   "and targets should widen. Near zero means T1 is landing\n"
+                   "close to the actual top — a well-placed exit."),
+    "Trough vs T1": ("Worst price after T1, as % below the T1 exit",
+                     "The drawdown you avoided by exiting at T1.\n"
+                     "Deep troughs are a POSITIVE signal about T1 placement:\n"
+                     "they show the exit caught a genuine top."),
+    "Broke Old SL": ("Did price fall through the original stop-loss after T1?",
+                     "1 = at some point before expiry the stock traded at or\n"
+                     "below the stop-loss set at recommendation time.\n"
+                     "You lost nothing — you were already out at T1. This is\n"
+                     "the stat that separates 'T1 was a good exit' from\n"
+                     "'T1 was lucky timing on a stock about to reverse'.\n"
+                     "Can be 1 alongside T2 Reached = Y: a stock may dip\n"
+                     "below the old SL and still rally to T2 before expiry."),
+    "Continuation Status": ("TRACKING = runway still open · COMPLETE = past expiry",
+                            "TRACKING: today is on or before expiry_date, so\n"
+                            "the row is re-walked every run and its numbers\n"
+                            "can still change.\n"
+                            "COMPLETE: expiry has passed. Peak, trough and\n"
+                            "final price are frozen and will not move again."),
+    "T2 Reach Rate": ("% of T1 exits that later reached T2",
+                      "Measured over the full continuation sample, not just\n"
+                      "completed rows. The headline diagnostic: a high rate\n"
+                      "means T1 is systematically leaving profit on the table."),
+    "T3 Reach Rate": ("% of T1 exits that later reached T3",
+                      "Companion to T2 Reach Rate against the stretch target.\n"
+                      "Low single digits is normal and not a problem."),
+    "Avg Peak After T1": ("Mean best-price gain above T1 across all rows",
+                          "The single number that says whether T1 is placed\n"
+                          "well. Floor is the measured +3.2pp average intra-bar\n"
+                          "overshoot — the walk starts the day AFTER T1, so it\n"
+                          "can only find more upside than that, never less."),
+    "Broke SL After T1": ("Count of positions that reversed through the old SL",
+                          "High count = T1 exits are catching tops before real\n"
+                          "reversals, which is exactly what you want.\n"
+                          "Low count alongside a high T2 Reach Rate = targets\n"
+                          "are too tight and should be widened."),
 }
 
 
@@ -1407,7 +1476,14 @@ _ICON_FAMILIES = {
            "Support 1 (₹)", "Support 2 (₹)", "Resist 1 (₹)", "Resist 2 (₹)",
            "Risk Level",
            # v15.5: institutional risk-parity sizing
-           "Suggested Alloc %", "Sizing Rationale"},
+           "Suggested Alloc %", "Sizing Rationale",
+           # v17.3: continuation audit — all of these describe behaviour
+           # relative to the trade levels (T1/T2/T3/SL), so they belong in
+           # the trade-levels family rather than the generic 💡 fallback.
+           "T1 Hit Date", "Runway", "T2 Reached", "T3 Reached",
+           "Peak vs T1", "Trough vs T1", "Broke Old SL",
+           "Continuation Status", "T2 Reach Rate", "T3 Reach Rate",
+           "Avg Peak After T1", "Broke SL After T1"},
     "🏷": {"Symbol", "Company Name", "Company", "Sector", "Exchange",
            "Cap Category", "Date", "Time (IST)", "Alert Type", "Trigger Detail",
            "Prev Score", "New Score", "Score Δ", "BSE Code",
