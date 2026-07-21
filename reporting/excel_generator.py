@@ -2200,10 +2200,40 @@ class ExcelGeneratorV6:
             _df_all = pd.DataFrame()
             print(f"   ⚠️  Performance sheet — DB read failed: {_pe}")
 
-        # Column widths
-        for col, w in [("A",26),("B",16),("C",16),("D",16),("E",16),("F",16),
-                       ("G",16),("H",16),("I",16),("J",16)]:
+        # ── Column widths (v17.1) ─────────────────────────────────────────
+        # The Performance sheet stacks SIX sections vertically that all share
+        # the same physical columns (A, B, C ...):
+        #   1. Headline metric tiles      5. OPEN POSITIONS table
+        #   2. Breakdown tables           6. MISSED-RUNUP diagnostic
+        #   3. CLOSED POSITIONS table
+        #   4. RISK-ADJUSTED metrics
+        # Pre-v17.1 each section called column_dimensions[...].width = w and
+        # the LAST writer won, so labels in the earlier sections were clipped
+        # by whatever narrower width a later section happened to set
+        # (23 clipped labels measured on the 20 Jul 2026 dashboard, e.g.
+        #  "EXPIRED w/ ≥10% RUNUP" in a 15-wide column, "Days to Outcome ⓘ"
+        #  in a 10-wide column, "Communication Services" in a 14-wide column).
+        #
+        # Fix: every width assignment on this sheet now WIDENS ONLY — see
+        # _set_min_width() below. These base values are sized for the widest
+        # label that lands in each column across all six sections, including
+        # the 2-char " ⓘ" tooltip suffix.
+        for col, w in [("A",26),("B",18),("C",22),("D",16),("E",16),("F",18),
+                       ("G",16),("H",17),("I",13),("J",16),("K",20),("L",20),
+                       ("M",20),("N",20),("O",18),("P",16)]:
             ws.column_dimensions[col].width = w
+
+        def _set_min_width(_ci, _w):
+            """Widen column _ci to at least _w — never shrink it.
+
+            Guarantees no section can clip a label written by another section
+            that shares the same column. Accepts a 1-based column index.
+            """
+            _L = get_column_letter(_ci)
+            _cur = ws.column_dimensions[_L].width or 0
+            if _w > _cur:
+                ws.column_dimensions[_L].width = _w
+        self._perf_set_min_width = _set_min_width
 
         # ── Title row ─────────────────────────────────────────────────────
         ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=10)
@@ -2431,9 +2461,10 @@ class ExcelGeneratorV6:
         for ci,(h,w) in enumerate(closed_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
-            # Note: column widths above 12 may be left untouched — OPEN POSITIONS
-            # in the next section will re-set them with its own widths anyway.
-            ws.column_dimensions[get_column_letter(ci)].width = w
+            # v17.1: widen-only — never shrink a column another section needs.
+            # (Pre-v17.1 this unconditionally overwrote widths, clipping the
+            #  headline-tile and diagnostic labels that share these columns.)
+            _set_min_width(ci, w)
         ws.row_dimensions[next_row].height = 20
         # v15.5: tooltips on CLOSED POSITIONS header row
         self._apply_col_tips(ws, next_row, [h for h, _ in closed_cols])
@@ -2672,7 +2703,7 @@ class ExcelGeneratorV6:
         for ci,(h,w) in enumerate(open_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
-            ws.column_dimensions[get_column_letter(ci)].width = w
+            _set_min_width(ci, w)   # v17.1: widen-only
         ws.row_dimensions[next_row].height = 20
         # v15.5: wire tooltips onto OPEN POSITIONS header cells so users can
         # hover and see what each of the 18 columns means. All 18 column names

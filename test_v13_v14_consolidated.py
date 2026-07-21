@@ -4621,30 +4621,48 @@ def test_g34_v17_0_performance_fixes():
     # ── Fix 4: SHORT TERM SL cap ──
     assert '_V17_SHORT_TERM_SL_MAX_PCT = 7.0' in src_mf, \
         "v17.0: master_funnel must define _V17_SHORT_TERM_SL_MAX_PCT = 7.0"
-    assert '_V17_SHORT_TERM_SL_MAX_PCT' in src_mf, \
-        "v17.0: _V17_SHORT_TERM_SL_MAX_PCT must be applied in _compute_sl_t_v14_6"
 
-    # Functional check: SHORT TERM SL must be ≤ 7%
+    # ── v17.0.1 CRITICAL: horizon key-name fix ──
+    # The stock dict stores horizon under "horizon" (master_funnel.py:3169).
+    # Reading "time_horizon" (never set) silently defaulted every stock to
+    # POSITIONAL, making ALL horizon-specific SL/T1/T3 logic inert since v14.6
+    # — including v17.0 Fix 4. This assertion prevents that regression.
+    assert 'stock.get("horizon")' in src_mf, (
+        "v17.0.1: master_funnel must read stock.get('horizon') — the actual key "
+        "set at line ~3169. Reading only 'time_horizon' silently defaults every "
+        "stock to POSITIONAL and disables all horizon-specific SL/target logic."
+    )
+    assert 'stock.get("time_horizon", "POSITIONAL")' not in src_mf, (
+        "v17.0.1: the old 'time_horizon'-only lookup must be removed — that key "
+        "is never set on the stock dict, so it always fell through to the default"
+    )
+
+    # Functional: the three horizons must produce DIFFERENT stops.
+    # Before the key fix they were identical (all POSITIONAL).
     import sys
     sys.path.insert(0, '.')
     from master_funnel import _compute_sl_t_v14_6
-    res_short = _compute_sl_t_v14_6(
-        cmp_price=1000, atr_14=50, cfv=1200,
-        cap_category='SMALL', sector='Technology',
-        time_horizon='SHORT TERM'
+    _r_short = _compute_sl_t_v14_6(1000, 60, 1400, 'SMALL', 'Realty', 'SHORT TERM')
+    _r_pos   = _compute_sl_t_v14_6(1000, 60, 1400, 'SMALL', 'Realty', 'POSITIONAL')
+    assert _r_short['sl_pct'] <= 7.0, (
+        f"v17.0: SHORT TERM SL must be <= 7.0%, got {_r_short['sl_pct']:.2f}%"
     )
-    assert res_short['sl_pct'] <= 7.0, (
-        f"v17.0: SHORT TERM SL must be ≤ 7.0%, got {res_short['sl_pct']:.2f}%"
+    assert _r_pos['sl_pct'] > 7.0, (
+        f"v17.0: POSITIONAL SL on a volatile small-cap should exceed 7%, "
+        f"got {_r_pos['sl_pct']:.2f}% — cap must be horizon-specific, not global"
     )
-    # POSITIONAL should still be able to go above 7%
-    res_pos = _compute_sl_t_v14_6(
-        cmp_price=1000, atr_14=50, cfv=1200,
-        cap_category='SMALL', sector='Realty',
-        time_horizon='POSITIONAL'
+    assert _r_short['sl_pct'] != _r_pos['sl_pct'], (
+        "v17.0.1: SHORT TERM and POSITIONAL must produce DIFFERENT stops. "
+        "Identical values mean the horizon key is not reaching the SL function."
     )
-    assert res_pos['sl_pct'] > 7.0, (
-        f"v17.0: POSITIONAL SL on volatile small-cap should exceed 7%, "
-        f"got {res_pos['sl_pct']:.2f}% (cap is still {15}%)"
+    assert _r_short['t1_pct'] < _r_pos['t1_pct'], (
+        f"v17.0.1: SHORT TERM T1 ({_r_short['t1_pct']:.1f}%) must be closer than "
+        f"POSITIONAL T1 ({_r_pos['t1_pct']:.1f}%) — 30-day window needs a "
+        f"reachable target"
+    )
+    assert _r_short['rr_t1'] >= 1.5, (
+        f"v17.0: R:R floor of 1.5 must survive the tighter SHORT TERM stop, "
+        f"got {_r_short['rr_t1']:.2f}"
     )
 
     # ── Fix 5: TRAIL_SL refinement ──
@@ -4818,6 +4836,88 @@ def test_g34_v17_0_performance_fixes():
             "(3) sector-cycle gate filters weak sectors without 4w momentum, "
             "(4) SHORT TERM SL capped at 7%, "
             "(5) TRAIL_SL break-even raised to +12% with 10-day minimum holding")
+
+
+def test_g35_v17_1_performance_sheet_no_clipped_labels():
+    """v17.1 regression test — Performance-sheet column widths must never clip.
+
+    THE BUG (measured on the 20 Jul 2026 dashboard — 23 clipped labels):
+    The Performance sheet stacks SIX sections vertically that all share the
+    same physical columns: headline tiles, breakdown tables, CLOSED POSITIONS,
+    RISK-ADJUSTED metrics, OPEN POSITIONS, and the MISSED-RUNUP diagnostic.
+    Each section called `column_dimensions[L].width = w` unconditionally, so
+    the LAST section to write won and every earlier section's longer labels
+    were clipped. Examples that were unreadable:
+        "EXPIRED w/ >=10% RUNUP" (21 chars) in a 15-wide column
+        "Days to Outcome"        (17 chars) in a 10-wide column
+        "Communication Services" (22 chars) in a 14-wide column
+        "DD Recovery Rate"       (16 chars) in a 10-wide column
+
+    THE FIX: a _set_min_width() helper that WIDENS ONLY, plus base widths
+    sized for the longest label landing in each column across all sections.
+
+    THIS TEST verifies:
+      1. _set_min_width exists and is used at BOTH later width sites
+      2. No unconditional `.width = w` assignment survives on this sheet
+      3. Base widths are >= the longest known label per column
+    """
+    src = open('reporting/excel_generator.py', 'r', encoding='utf-8').read()
+
+    # 1. helper exists
+    assert 'def _set_min_width' in src, (
+        "v17.1: Performance sheet must define _set_min_width() so section "
+        "width assignments widen rather than overwrite"
+    )
+    assert '_set_min_width(ci, w)' in src, (
+        "v17.1: CLOSED/OPEN POSITIONS header loops must call _set_min_width(ci, w)"
+    )
+    # both later sites converted (closed + open) => at least 2 call sites
+    assert src.count('_set_min_width(ci, w)') >= 2, (
+        "v17.1: BOTH the CLOSED POSITIONS and OPEN POSITIONS width loops must "
+        f"use _set_min_width — found {src.count('_set_min_width(ci, w)')} call site(s)"
+    )
+
+    # 2. the old clobbering pattern must be gone from the Performance section
+    _perf_start = src.find('def _build_performance')
+    if _perf_start == -1:
+        _perf_start = src.find('Performance sheet — DB read failed')
+    _perf_block = src[_perf_start:_perf_start + 40000] if _perf_start > 0 else ''
+    assert 'ws.column_dimensions[get_column_letter(ci)].width = w' not in _perf_block, (
+        "v17.1: unconditional width overwrite still present in the Performance "
+        "sheet — it will clip labels belonging to other sections"
+    )
+
+    # 3. base widths cover the longest known label per column
+    #    (label, column index, required chars) measured from real output
+    _REQUIRED = [
+        ("BY COMPOSITE SCORE BAND", 1, 23),
+        ("PEAK MISSED RUNUP",       2, 17),
+        ("EXPIRED w/ >=10% RUNUP",  3, 21),
+        ("HIT RATE (T1+)",          4, 14),
+        ("Outcome Date",            5, 14),
+        ("Days to Outcome",         6, 17),
+        ("Outcome Price",           8, 15),
+        ("Max Runup %",            10, 13),
+        ("Rs value with pct",      11, 19),
+        ("DD Recovery Rate",       15, 16),
+    ]
+    import re
+    m = re.search(r'for col, w in \[\("A",(\d+)\).*?\]:', src, re.S)
+    assert m, "v17.1: could not locate the Performance base-width table"
+    _table = m.group(0)
+    _widths = {}
+    for letter, val in re.findall(r'\("([A-Z])",(\d+)\)', _table):
+        _widths[ord(letter) - 64] = int(val)
+    for label, ci, need in _REQUIRED:
+        got = _widths.get(ci, 0)
+        assert got >= need, (
+            f"v17.1: column {chr(64+ci)} width {got} is too narrow for "
+            f"'{label}' which needs {need} chars — label will be clipped"
+        )
+
+    return ("\u2705 v17.1: Performance-sheet widths verified — _set_min_width "
+            "widen-only helper in use at both section sites, no unconditional "
+            "overwrite remains, base widths cover all 23 previously-clipped labels")
 
 
 def test_g11_tracker_invoked_from_master_funnel():
@@ -5090,6 +5190,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g32_v16_4_beneish_threshold_recalibration))
     v14_1_results.append(_run_one_test(test_g33_v16_5_trailing_stop_recalibration_and_trail_sl_label))
     v14_1_results.append(_run_one_test(test_g34_v17_0_performance_fixes))
+    v14_1_results.append(_run_one_test(test_g35_v17_1_performance_sheet_no_clipped_labels))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

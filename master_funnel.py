@@ -3364,7 +3364,24 @@ def run_master_pipeline():
                 _atr_14    = _sf(stock.get("atr_14", 0), 0)
                 _cap_cat   = str(stock.get("cap_category", "MID") or "MID").upper()
                 _sector    = str(stock.get("sector", "") or "")
-                _horizon   = str(stock.get("time_horizon", "POSITIONAL") or "POSITIONAL")
+                # v17.0.1 CRITICAL KEY-NAME FIX:
+                # The stock dict stores the horizon under the key "horizon"
+                # (set at master_funnel.py:3169 → stock["horizon"] = "SHORT TERM").
+                # This line previously read "time_horizon", a key that is NEVER
+                # set on the stock dict at this point, so it silently fell back
+                # to the "POSITIONAL" default for EVERY stock.
+                #
+                # Consequence of the old bug (present since v14.6):
+                #   • _V14_6_HORIZON_SL_MULT always used 3.5 (POSITIONAL),
+                #     never 2.5 for SHORT TERM → short-term stops far too wide
+                #   • _V14_6_HORIZON_T1_CAP_BASE always used 20.0, never 10.0
+                #     → short-term T1 targets unreachable in a 30-day window
+                #   • v17.0 Fix 4 (7% SHORT TERM SL cap) never fired
+                # Read "horizon" first, keep "time_horizon" as a fallback so
+                # any caller that does supply the longer key still works.
+                _horizon   = str(stock.get("horizon")
+                                 or stock.get("time_horizon")
+                                 or "POSITIONAL")
                 _support1  = _sf(stock.get("support_1", 0), 0) or None
                 # v14.7: baseline ATR % for regime detection
                 _baseline  = _sf(stock.get("atr_baseline_60d", 0), 0)
