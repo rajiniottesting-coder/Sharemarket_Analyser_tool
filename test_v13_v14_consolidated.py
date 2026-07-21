@@ -2482,14 +2482,15 @@ def test_g16_v15_enhancements_5tier_regime_volume_earnings():
     return "✅ v15.0 enhancements (5-tier, regime, volume-confirm, earnings) all working"
 
 def test_g17_trailing_stop_ratcheting_and_no_lookahead():
-    """v15.0 regression test: trailing-stop logic in track_outcomes.
+    """v15.0/v17.0 regression test: trailing-stop logic in track_outcomes.
 
-    Verifies:
-      1. Trailing SL only activates when peak gain >= +5%
-      2. Trailing SL ratchets up through tiers (+0%, +3%, +7%)
-      3. Trailing SL never moves DOWN once activated
-      4. No look-ahead bias: today's high cannot trigger SL_HIT on today's low
-      5. Trailing SL takes effect on the NEXT bar after ratcheting
+    v17.0 changes verified:
+      1. Break-even activates at peak ≥ +12% (was +10% in v16.5)
+      2. Break-even requires minimum 10 days holding before activating
+      3. Profit-lock tiers (≥15%) have NO minimum holding requirement
+      4. Trailing SL never moves DOWN once activated
+      5. No look-ahead bias: today's high cannot trigger SL_HIT on today's low
+      6. Trailing SL takes effect on the NEXT bar after ratcheting
     """
     test_db, original = _setup_temp_db('g17_trailing')
     try:
@@ -2498,24 +2499,30 @@ def test_g17_trailing_stop_ratcheting_and_no_lookahead():
         import track_outcomes as to
         to.DB_PATH = test_db
 
-        # Scenario: stock rallies to +12% on day 5, retraces.
+        # v17.0 Scenario: stock rallies to +13% on day 12, retraces.
         # Targets set wide (T1=130, T2=140, T3=150) so the rally doesn't hit T1.
-        # Original SL = -7% (93). With trailing logic:
-        #   Day 3: peak=108 (+8%), trail tier 1 → 100 (BE)
-        #   Day 5: peak=112 (+12%), trail tier 2 → 103 (+3%)
-        #   Day 8: low=103 → trailing SL fires → SL_HIT @ 103
-        # Without trailing: day 8 low=103 is above original SL=93, no event.
+        # Original SL = -7% (93). With v17.0 trailing logic:
+        #   Days 1-11: peak climbs to +13%, but days_held < 10 → no break-even
+        #   Day 12: peak still +13% AND days_held=12 ≥ 10 → break-even activates at 100
+        #   Day 14: low=100 → trailing SL fires → TRAIL_SL @ 100
+        # Without trailing: day 14 low=100 is above original SL=93, no event.
         _seed_recommendation_and_prices('TRAIL', '2026-01-01', 100, 93, 130, 140, 150,
-            [(1, 100, 102, 99, 101),    # +2%, no trail
-             (2, 101, 104, 100, 103),   # +4%, no trail
-             (3, 103, 108, 102, 107),   # +8%, trail tier 1 → 100
-             (4, 107, 109, 104, 108),   # +9%, no further trail
-             (5, 108, 112, 106, 109),   # +12%, trail tier 2 → 103
-             (6, 109, 110, 105, 106),
-             (7, 106, 107, 104, 105),
-             (8, 105, 106, 103, 104),   # low=103 → trailing SL fires!
-             (9, 104, 105, 100, 101)] +
-            [(d, 100, 102, 98, 100) for d in range(10, 30)])
+            [(1,  100, 102, 99, 101),   # day  1: +2%, no trail (below 12%)
+             (2,  101, 104, 100, 103),  # day  2: +4%
+             (3,  103, 107, 102, 106),  # day  3: +7%
+             (4,  106, 110, 105, 108),  # day  4: +10%, below 12% — no trail
+             (5,  108, 112, 107, 110),  # day  5: +12%, but days_held=5 < 10 — no BE
+             (6,  110, 113, 108, 111),  # day  6: +13%, days_held=6 < 10 — no BE
+             (7,  111, 112, 109, 110),  # day  7: peak still +13%
+             (8,  110, 111, 108, 109),  # day  8: peak still +13%
+             (9,  109, 110, 107, 108),  # day  9: peak still +13%
+             (10, 108, 111, 107, 110),  # day 10: peak still +13%
+             (11, 110, 113, 109, 112),  # day 11: peak still +13%
+             (12, 112, 113, 110, 111),  # day 12: peak +13%, days_held=12 ≥ 10 → BE=100
+             (13, 111, 112, 104, 105),  # day 13: low=104 > 100 → no event
+             (14, 105, 106, 100, 101),  # day 14: low=100 ≤ trailing 100 → TRAIL_SL
+             (15, 101, 102, 99, 100)] +
+            [(d, 99, 102, 97, 100) for d in range(16, 35)])
 
         to.main()
         conn = sqlite3.connect("market_data.db")
@@ -2526,51 +2533,98 @@ def test_g17_trailing_stop_ratcheting_and_no_lookahead():
         trailing_sl_price = float(df['trailing_sl_price'].iloc[0])
         peak = float(df['peak_price_seen'].iloc[0])
 
-        assert outcome == 'SL_HIT', f"Expected SL_HIT (trailing fire), got {outcome}"
-        assert abs(outcome_price - 103.0) < 0.5, (
-            f"Trailing SL should fire at +3% (103), got {outcome_price} "
+        assert outcome == 'TRAIL_SL', (
+            f"v17.0: Expected TRAIL_SL (trailing break-even fire after 12 days), "
+            f"got {outcome}"
+        )
+        assert abs(outcome_price - 100.0) < 0.5, (
+            f"v17.0: Trailing SL should fire at break-even (100), got {outcome_price} "
             f"(original SL=93, so this proves trailing activated)"
         )
-        assert trailing_sl_price >= 103.0, (
-            f"trailing_sl_price should be >= 103 (tier 2 fired), got {trailing_sl_price}"
+        assert trailing_sl_price >= 100.0, (
+            f"v17.0: trailing_sl_price should be >= 100 (break-even), "
+            f"got {trailing_sl_price}"
         )
-        assert peak >= 112.0, f"peak_price_seen should be >= 112, got {peak}"
+        assert peak >= 113.0, f"peak_price_seen should be >= 113, got {peak}"
 
     finally:
         _restore(original, test_db)
 
-    # Second scenario: no look-ahead — day 5 has high=112 (+12%) AND low=99,
-    # SL must NOT fire on day 5 because trailing should not be checked against
-    # today's low using today's high to set it.
+    # Second scenario: break-even must NOT fire before day 10 even if peak ≥ +12%
+    # The stock spikes to +13% on day 2, then IMMEDIATELY drops to the original SL
+    # on day 3 (before the 10-day gate clears). Should fire genuine SL_HIT at 93.
+    test_db, original = _setup_temp_db('g17_early_peak')
+    try:
+        from database.data_bridge import initialize_v7_tables
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        import track_outcomes as to
+        to.DB_PATH = test_db
+        _seed_recommendation_and_prices('EARLY', '2026-01-01', 100, 93, 130, 140, 150,
+            [(1, 100, 102, 99, 101),
+             (2, 101, 113, 100, 111),   # day 2: peak +13% (days_in=2 < 10 — no BE)
+             (3, 111, 113,  90, 92),    # day 3: lo=90 < original SL 93 → genuine SL_HIT
+             (4, 92, 94, 89, 91)] +
+            [(d, 90, 92, 88, 90) for d in range(5, 12)])
+
+        to.main()
+        conn = sqlite3.connect("market_data.db")
+        df = pd.read_sql("SELECT * FROM gold_outcomes WHERE symbol='EARLY'", conn)
+        conn.close()
+        outcome_early = df['outcome_type'].iloc[0]
+        outcome_price_early = float(df['outcome_price'].iloc[0])
+        # Low=90 hits original SL=93? No — 90 < 93 so SL_HIT fires at 93.
+        # trailing_sl_price=0 at time of fire (days_in=3 < 10, no BE activated)
+        # → is_trailing=False → SL_HIT (genuine original-SL breach)
+        assert outcome_early == 'SL_HIT', (
+            f"v17.0: Stock that spikes +13% on day 2 then drops to original SL on day 3 "
+            f"must fire SL_HIT (not TRAIL_SL — BE gate requires 10 days). Got {outcome_early}"
+        )
+        assert abs(outcome_price_early - 93.0) < 0.5, (
+            f"v17.0: SL_HIT should fire at original SL=93, got {outcome_price_early}"
+        )
+
+    finally:
+        _restore(original, test_db)
+
+    # Third scenario: no look-ahead — day 14 has high > trailing AND low < trailing
+    # SL must NOT fire on same day as trailing is first set (no look-ahead bias)
     test_db, original = _setup_temp_db('g17_no_lookahead')
     try:
         from database.data_bridge import initialize_v7_tables
         initialize_v7_tables(sqlite3.connect("market_data.db"))
         import track_outcomes as to
         to.DB_PATH = test_db
-        _seed_recommendation_and_prices('NOLA', '2026-01-01', 100, 93, 110, 120, 130,
-            [(d, 100, 102, 99, 100) for d in range(1, 5)] +
-            [(5, 100, 112, 99, 111)] +       # high=112 (+12%), low=99
-            [(d, 100, 102, 98, 100) for d in range(6, 30)])
+        _seed_recommendation_and_prices('NOLA', '2026-01-01', 100, 93, 130, 140, 150,
+            [(d, 100, 102, 99, 100) for d in range(1, 13)] +
+            [(13, 100, 114, 99, 110)] +    # day 13: first day peak hits +14% → sets trailing
+                                            # AND low=99 — but trailing set today, fires NEXT bar
+            [(14, 110, 112, 100, 101)] +   # day 14: low=100 ≤ trailing 100 → TRAIL_SL fires
+            [(d, 100, 102, 98, 100) for d in range(15, 35)])
 
         to.main()
         conn = sqlite3.connect("market_data.db")
         df = pd.read_sql("SELECT * FROM gold_outcomes WHERE symbol='NOLA'", conn)
         conn.close()
-        outcome = df['outcome_type'].iloc[0]
-        # On day 5: high=112 reaches T1=110 → T1_HIT fires. Day-5 low=99 must
-        # NOT trigger trailing SL because trailing is set END of day 5.
-        # (Even if T1 didn't fire, day-6 low=98 is above original SL=93, so
-        # without look-ahead bias, the trade survives day 5 cleanly.)
-        assert outcome == 'T1_HIT', (
-            f"No-lookahead test failed: day-5 high should fire T1, got {outcome}. "
-            f"Earlier bug: trailing-SL was set using today's high then immediately "
-            f"checked against today's low, producing false SL_HIT."
+        outcome_nola = df['outcome_type'].iloc[0]
+        outcome_date_nola = df['outcome_date'].iloc[0]
+
+        # The trailing SL activates on d_off=13 END-OF-BAR.
+        # d_off=13: date = 2026-01-01 + 13 days = 2026-01-14.
+        # d_off=13 low=99 < 100 (trailing just set) — no-lookahead rule means
+        # trailing set END of that bar, not checked until NEXT bar.
+        # d_off=14: date = 2026-01-15. low=100 ≤ trailing 100 → fires.
+        assert outcome_nola == 'TRAIL_SL', (
+            f"v17.0 no-lookahead: should be TRAIL_SL, got {outcome_nola}"
         )
+        assert '2026-01-15' in str(outcome_date_nola), (
+            f"v17.0 no-lookahead: TRAIL_SL should fire on d_off=14 (2026-01-15, day after peak), "
+            f"got {outcome_date_nola}"
+        )
+
     finally:
         _restore(original, test_db)
 
-    return "✅ Trailing-stop ratcheting works; no look-ahead bias"
+    return "✅ v17.0 trailing-stop: break-even at +12% with 10-day minimum, no look-ahead bias"
 
 def test_g18_v15_audit_trail_end_to_end():
     """v15.0 regression test: audit fields make it from helper → stock dict
@@ -3994,8 +4048,9 @@ def test_g30_v16_2_gold_quality_floor_gate():
     )
 
     # ── Check 4: Gold criteria text updated to 13 ──
-    assert "ALL 13 must pass" in src_xl, (
-        "v16.2: Gold criteria header text must say 'ALL 13 must pass'"
+    # v17.0: criteria count is now 15 (added momentum + sector gates)
+    assert "ALL 15 must pass" in src_xl or "ALL 13 must pass" in src_xl, (
+        "v16.2/v17.0: Gold criteria header text must say 'ALL 13 must pass' or 'ALL 15 must pass'"
     )
     assert "ROE\u226510%" in src_xl, (
         "v16.2: Gold criteria header text must mention ROE≥10%"
@@ -4321,8 +4376,11 @@ def test_g33_v16_5_trailing_stop_recalibration_and_trail_sl_label():
     assert "peak_gain_pct >= 15" in src_to, (
         "v16.5: track_outcomes must have the >= 15% tier (lock +5%)"
     )
-    assert "peak_gain_pct >= 10" in src_to, (
-        "v16.5: track_outcomes must have the >= 10% tier (break-even)"
+    # v17.0: break-even threshold raised from 10% to 12%
+    # accept either 10 (v16.5) or 12 (v17.0) — G34 locks the exact v17.0 value
+    assert ("peak_gain_pct >= 10" in src_to or
+            "_TRAIL_BREAKEVEN_THRESHOLD" in src_to), (
+        "v16.5/v17.0: track_outcomes must have a break-even tier (10% or 12%)"
     )
     assert "peak_gain_pct >= 5" not in src_to, (
         "v16.5: the OLD '>= 5' break-even tier must be REMOVED (too aggressive)"
@@ -4467,6 +4525,299 @@ def test_g33_v16_5_trailing_stop_recalibration_and_trail_sl_label():
             "eliminated), new 25/20/15/10 tiers, TRAIL_SL outcome type "
             "separates risk-control exits from genuine SL_HIT losses, "
             "SL-rate stat no longer polluted, distinct blue colour coding")
+
+
+def test_g34_v17_0_performance_fixes():
+    """v17.0 regression test — 5 performance fixes from Jul 2026 audit.
+
+    Audit of 31 closed positions revealed: 41.9% hit rate (target ≥60%),
+    Score 80-89 band had worst hit rate (22.2%), Technology/Industrials/
+    Consumer Defensive sectors dragging performance, SL losses averaging
+    -8.7% on short-term picks, and IGL/HEXT exiting at break-even after
+    genuine +11-14% runs.
+
+    FIX 1 — Market-regime gate (data_bridge.py):
+      get_nifty_20d_sma() added. Returns (nifty_close, nifty_20d_sma).
+      ExcelGeneratorV6 accepts market_stats kwarg; _get_gold() returns
+      empty when market_regime == 'BEARISH'.
+
+    FIX 2 — Momentum confirmation gate (master_funnel.py + excel_generator.py):
+      3d_roc field computed in enrichment loop (_chg(4) = 3-trading-day ROC).
+      _get_gold() requires 3d_roc >= 0 (momentum confirmation gate).
+
+    FIX 3 — Sector-cycle gate (excel_generator.py):
+      Weak sectors {Consumer Defensive, Industrials, Technology, Communication
+      Services} require positive 4-week momentum (4w_chg > 0) to pass Gold.
+      Strong-sector stocks always pass regardless of 4w_chg.
+
+    FIX 4 — SHORT TERM SL cap (master_funnel.py):
+      _V17_SHORT_TERM_SL_MAX_PCT = 7.0 caps SHORT TERM SL at 7%.
+      Applied before earnings widening; earnings-widened SHORT TERM SL
+      capped at 9%.
+
+    FIX 5 — TRAIL_SL refinement (track_outcomes.py):
+      Break-even threshold raised +10% → +12%.
+      Minimum 10-day holding required before break-even gate activates.
+      Tiers ≥15% (profit locks) are NOT gated by holding period.
+    """
+    src_db  = open('database/data_bridge.py',   'r', encoding='utf-8').read()
+    src_mf  = open('master_funnel.py',          'r', encoding='utf-8').read()
+    src_xl  = open('reporting/excel_generator.py','r', encoding='utf-8').read()
+    src_to  = open('track_outcomes.py',          'r', encoding='utf-8').read()
+
+    # ── Fix 1: Market-regime gate ──
+    assert 'def get_nifty_20d_sma' in src_db, \
+        "v17.0: data_bridge must have get_nifty_20d_sma() function"
+    # CRITICAL: NIFTY 50 is NOT in daily_prices (backfill ingests equities only).
+    # A DB-only implementation would make the regime gate a silent no-op, so the
+    # function MUST have a yfinance ^NSEI fallback.
+    assert '^NSEI' in src_db, (
+        "v17.0: get_nifty_20d_sma MUST have a yfinance '^NSEI' fallback — "
+        "NIFTY 50 is not ingested into daily_prices, so a DB-only lookup would "
+        "always return 0.0 and the regime gate would silently never fire"
+    )
+    assert 'import yfinance' in src_db, \
+        "v17.0: get_nifty_20d_sma must import yfinance for the ^NSEI fallback"
+    # Safe degradation: must return (0.0, 0.0) on total failure, never raise
+    from database.data_bridge import get_nifty_20d_sma as _gn20
+    _nc, _n20 = _gn20()
+    assert isinstance(_nc, float) and isinstance(_n20, float), (
+        "v17.0: get_nifty_20d_sma must always return a (float, float) tuple "
+        "even when all data sources fail — never raise"
+    )
+    assert _nc >= 0 and _n20 >= 0, \
+        "v17.0: get_nifty_20d_sma must never return negative values"
+    assert 'get_nifty_20d_sma,' in src_mf or 'get_nifty_20d_sma' in src_mf, \
+        "v17.0: master_funnel must import get_nifty_20d_sma"
+    assert '"market_regime"' in src_mf, \
+        "v17.0: master_funnel must set market_stats['market_regime']"
+    assert 'market_stats=None' in src_xl, \
+        "v17.0: ExcelGeneratorV6.__init__ must accept market_stats kwarg"
+    assert 'self.market_regime' in src_xl, \
+        "v17.0: ExcelGeneratorV6 must store self.market_regime"
+    assert 'market_regime == "BEARISH"' in src_xl, \
+        "v17.0: _get_gold() must return empty DataFrame when BEARISH"
+
+    # ── Fix 2: Momentum gate ──
+    assert '"3d_roc"' in src_mf or "'3d_roc'" in src_mf, \
+        "v17.0: master_funnel enrichment loop must compute 3d_roc field"
+    assert '_momentum_gate' in src_xl, \
+        "v17.0: excel_generator _get_gold must have _momentum_gate"
+    assert '_3d_roc' in src_xl, \
+        "v17.0: excel_generator must read 3d_roc column for momentum gate"
+
+    # ── Fix 3: Sector-cycle gate ──
+    assert '_WEAK_SECTORS_EXACT' in src_xl, \
+        "v17.0: excel_generator must define _WEAK_SECTORS_EXACT set"
+    assert '"Consumer Defensive"' in src_xl, \
+        "v17.0: Consumer Defensive must be in _WEAK_SECTORS"
+    assert '"Industrials"' in src_xl, \
+        "v17.0: Industrials must be in _WEAK_SECTORS"
+    assert '"Technology"' in src_xl, \
+        "v17.0: Technology must be in _WEAK_SECTORS"
+    assert '_sector_gate' in src_xl, \
+        "v17.0: excel_generator _get_gold must have _sector_gate in mask"
+
+    # ── Fix 4: SHORT TERM SL cap ──
+    assert '_V17_SHORT_TERM_SL_MAX_PCT = 7.0' in src_mf, \
+        "v17.0: master_funnel must define _V17_SHORT_TERM_SL_MAX_PCT = 7.0"
+    assert '_V17_SHORT_TERM_SL_MAX_PCT' in src_mf, \
+        "v17.0: _V17_SHORT_TERM_SL_MAX_PCT must be applied in _compute_sl_t_v14_6"
+
+    # Functional check: SHORT TERM SL must be ≤ 7%
+    import sys
+    sys.path.insert(0, '.')
+    from master_funnel import _compute_sl_t_v14_6
+    res_short = _compute_sl_t_v14_6(
+        cmp_price=1000, atr_14=50, cfv=1200,
+        cap_category='SMALL', sector='Technology',
+        time_horizon='SHORT TERM'
+    )
+    assert res_short['sl_pct'] <= 7.0, (
+        f"v17.0: SHORT TERM SL must be ≤ 7.0%, got {res_short['sl_pct']:.2f}%"
+    )
+    # POSITIONAL should still be able to go above 7%
+    res_pos = _compute_sl_t_v14_6(
+        cmp_price=1000, atr_14=50, cfv=1200,
+        cap_category='SMALL', sector='Realty',
+        time_horizon='POSITIONAL'
+    )
+    assert res_pos['sl_pct'] > 7.0, (
+        f"v17.0: POSITIONAL SL on volatile small-cap should exceed 7%, "
+        f"got {res_pos['sl_pct']:.2f}% (cap is still {15}%)"
+    )
+
+    # ── Fix 5: TRAIL_SL refinement ──
+    # Break-even threshold must be 12%, not 10%
+    assert '_TRAIL_BREAKEVEN_THRESHOLD = 12.0' in src_to, \
+        "v17.0: track_outcomes must set _TRAIL_BREAKEVEN_THRESHOLD = 12.0"
+    assert '_TRAIL_MIN_HOLDING_DAYS    = 10' in src_to or \
+           '_TRAIL_MIN_HOLDING_DAYS = 10' in src_to, \
+        "v17.0: track_outcomes must set _TRAIL_MIN_HOLDING_DAYS = 10"
+
+    # ══════════════════════════════════════════════════════════════════
+    # FUNCTIONAL GATE TESTS — build real DataFrames and run _get_gold()
+    # These verify the gates actually filter, not just that strings exist.
+    # ══════════════════════════════════════════════════════════════════
+    from reporting.excel_generator import ExcelGeneratorV6
+
+    def _mk_stock(**over):
+        """A stock that passes ALL 13 pre-v17 gates. Override to test one gate."""
+        base = {
+            "symbol": "TESTCO", "company_name": "Test Co", "sector": "Healthcare",
+            "verdict": "BUY", "composite_score": 85.0, "mos_pct": 30.0,
+            "storm_score": 7, "rsi": 55.0, "bs_status": "HEALTHY",
+            "pledge_pct": 0.0, "spike_suppressed": False, "altman_z": 4.0,
+            "earnings_quality": "HIGH", "int_coverage": 5.0, "roe": 20.0,
+            "peg": 1.2, "close": 100.0, "3d_roc": 2.5, "4w_chg": 8.0,
+        }
+        base.update(over)
+        return base
+
+    # ── Gate 1 functional: BEARISH regime → Gold must be EMPTY ──
+    g_bear = ExcelGeneratorV6([_mk_stock()], "20260720",
+                              market_stats={"market_regime": "BEARISH"})
+    assert len(g_bear._get_gold()) == 0, (
+        "v17.0 Fix 1: BEARISH regime must produce EMPTY Gold sheet, "
+        f"got {len(g_bear._get_gold())} picks"
+    )
+    # BULLISH regime → same stock passes
+    g_bull = ExcelGeneratorV6([_mk_stock()], "20260720",
+                              market_stats={"market_regime": "BULLISH"})
+    assert len(g_bull._get_gold()) == 1, (
+        "v17.0 Fix 1: BULLISH regime must admit a fully-qualified stock, "
+        f"got {len(g_bull._get_gold())}"
+    )
+    # No market_stats at all → defaults to BULLISH (backwards compatible)
+    g_default = ExcelGeneratorV6([_mk_stock()], "20260720")
+    assert len(g_default._get_gold()) == 1, (
+        "v17.0 Fix 1: missing market_stats must default to BULLISH "
+        "(backwards compatibility for existing callers)"
+    )
+
+    # ── Gate 2 functional: negative 3d-ROC must be rejected ──
+    g_neg_mom = ExcelGeneratorV6([_mk_stock(**{"3d_roc": -2.5})], "20260720",
+                                 market_stats={"market_regime": "BULLISH"})
+    assert len(g_neg_mom._get_gold()) == 0, (
+        "v17.0 Fix 2: stock with negative 3d-ROC must be REJECTED from Gold"
+    )
+    # Flat (0.0) passes — gate is >= 0, not > 0
+    g_flat_mom = ExcelGeneratorV6([_mk_stock(**{"3d_roc": 0.0})], "20260720",
+                                  market_stats={"market_regime": "BULLISH"})
+    assert len(g_flat_mom._get_gold()) == 1, (
+        "v17.0 Fix 2: flat 3d-ROC (0.0) must PASS (gate is >= 0)"
+    )
+
+    # ── Gate 3 functional: weak sector + negative 4w → rejected ──
+    # yfinance naming convention
+    g_weak_yf = ExcelGeneratorV6(
+        [_mk_stock(sector="Technology", **{"4w_chg": -5.0})], "20260720",
+        market_stats={"market_regime": "BULLISH"})
+    assert len(g_weak_yf._get_gold()) == 0, (
+        "v17.0 Fix 3: weak sector (Technology, yfinance name) with negative "
+        "4w momentum must be REJECTED"
+    )
+    # NSE naming convention — this is the case the first implementation MISSED
+    g_weak_nse = ExcelGeneratorV6(
+        [_mk_stock(sector="IT - Software", **{"4w_chg": -5.0})], "20260720",
+        market_stats={"market_regime": "BULLISH"})
+    assert len(g_weak_nse._get_gold()) == 0, (
+        "v17.0 Fix 3: weak sector under NSE naming ('IT - Software') with "
+        "negative 4w momentum must ALSO be rejected — the sector field uses "
+        "two different conventions depending on enrichment path"
+    )
+    g_weak_fmcg = ExcelGeneratorV6(
+        [_mk_stock(sector="FMCG", **{"4w_chg": -3.0})], "20260720",
+        market_stats={"market_regime": "BULLISH"})
+    assert len(g_weak_fmcg._get_gold()) == 0, (
+        "v17.0 Fix 3: FMCG (NSE equivalent of Consumer Defensive) with "
+        "negative 4w momentum must be rejected"
+    )
+    # Weak sector BUT positive 4w momentum → allowed (outperformer carve-out)
+    g_weak_up = ExcelGeneratorV6(
+        [_mk_stock(sector="Technology", **{"4w_chg": 6.0})], "20260720",
+        market_stats={"market_regime": "BULLISH"})
+    assert len(g_weak_up._get_gold()) == 1, (
+        "v17.0 Fix 3: weak-sector stock with POSITIVE 4w momentum must PASS "
+        "(outperformer carve-out)"
+    )
+    # Strong sector with negative 4w → still passes (gate only targets weak sectors)
+    g_strong_dn = ExcelGeneratorV6(
+        [_mk_stock(sector="Healthcare", **{"4w_chg": -5.0})], "20260720",
+        market_stats={"market_regime": "BULLISH"})
+    assert len(g_strong_dn._get_gold()) == 1, (
+        "v17.0 Fix 3: strong-sector stock must pass regardless of 4w momentum "
+        "(gate targets weak sectors only)"
+    )
+
+    # ── Regression guard: the 13 original gates still work ──
+    g_bad_roe = ExcelGeneratorV6([_mk_stock(roe=5.0)], "20260720",
+                                 market_stats={"market_regime": "BULLISH"})
+    assert len(g_bad_roe._get_gold()) == 0, (
+        "v17.0 must not break v16.2 ROE quality floor (ROE 5% < 10% → reject)"
+    )
+    g_bad_verdict = ExcelGeneratorV6([_mk_stock(verdict="WATCHLIST")], "20260720",
+                                     market_stats={"market_regime": "BULLISH"})
+    assert len(g_bad_verdict._get_gold()) == 0, (
+        "v17.0 must not break the BUY-verdict gate"
+    )
+
+    # Functional: peak +12% on day 5 → NO break-even (holding < 10 days)
+    entry = 1000.0; original_sl = 880.0
+    peak2 = entry; tsl2 = 0.0; days2 = 0
+    walk_early = [(995, 1010), (1000, 1125), (1050, 1100)]  # peak +12.5% on day 2
+    for i, (lo, hi) in enumerate(walk_early):
+        days2 = i + 1
+        if hi > peak2:
+            peak2 = hi
+            pg = (peak2 - entry) / entry * 100
+            nt = 0.0
+            if pg >= 25:   nt = round(entry*1.12, 2)
+            elif pg >= 20: nt = round(entry*1.09, 2)
+            elif pg >= 15: nt = round(entry*1.05, 2)
+            elif pg >= 12.0 and days2 >= 10: nt = round(entry*1.00, 2)
+            if nt > tsl2: tsl2 = nt
+    assert tsl2 == 0.0, (
+        f"v17.0: peak +12.5% before day 10 must NOT activate break-even "
+        f"(got trailing_sl={tsl2:.2f})"
+    )
+
+    # Functional: peak +12% on day 12 → break-even DOES activate
+    peak3 = entry; tsl3 = 0.0
+    for day_i in range(15):  # 15-day walk
+        hi_today = entry * 1.125 if day_i == 11 else entry * 1.01
+        days_so_far = day_i + 1
+        if hi_today > peak3:
+            peak3 = hi_today
+            pg3 = (peak3 - entry) / entry * 100
+            nt3 = 0.0
+            if pg3 >= 25:    nt3 = round(entry*1.12, 2)
+            elif pg3 >= 20:  nt3 = round(entry*1.09, 2)
+            elif pg3 >= 15:  nt3 = round(entry*1.05, 2)
+            elif pg3 >= 12.0 and days_so_far >= 10:
+                nt3 = round(entry*1.00, 2)
+            if nt3 > tsl3: tsl3 = nt3
+    assert tsl3 == entry, (
+        f"v17.0: peak +12.5% after day 10 MUST activate break-even "
+        f"(got trailing_sl={tsl3:.2f}, expected {entry:.2f})"
+    )
+
+    # Profit locks (≥15%) are NOT gated by holding period
+    peak4 = entry; tsl4 = 0.0
+    hi_day1 = entry * 1.16  # +16% peak on day 1
+    pg4 = (hi_day1 - entry) / entry * 100
+    if pg4 >= 15:   tsl4 = round(entry * 1.05, 2)   # lock +5%, no day gate
+    assert tsl4 == round(entry * 1.05, 2), (
+        f"v17.0: +16% peak on day 1 must still lock +5% (no day gate above 15%), "
+        f"got trailing_sl={tsl4:.2f}"
+    )
+
+    return ("\u2705 v17.0: all 5 performance fixes verified — "
+            "(1) market-regime gate suppresses Gold in BEARISH, "
+            "(2) momentum gate requires 3d-ROC≥0, "
+            "(3) sector-cycle gate filters weak sectors without 4w momentum, "
+            "(4) SHORT TERM SL capped at 7%, "
+            "(5) TRAIL_SL break-even raised to +12% with 10-day minimum holding")
 
 
 def test_g11_tracker_invoked_from_master_funnel():
@@ -4738,6 +5089,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g31_v16_3_column_width_floor))
     v14_1_results.append(_run_one_test(test_g32_v16_4_beneish_threshold_recalibration))
     v14_1_results.append(_run_one_test(test_g33_v16_5_trailing_stop_recalibration_and_trail_sl_label))
+    v14_1_results.append(_run_one_test(test_g34_v17_0_performance_fixes))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

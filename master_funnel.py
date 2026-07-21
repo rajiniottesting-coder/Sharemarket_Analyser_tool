@@ -33,6 +33,7 @@ from database.data_bridge import (
     get_historical_quarter_data,
     get_symbol_history, get_nifty_52w_high_from_db, get_nifty_close_from_db,
     get_today_consolidated_data, get_latest_fii_net_cash, get_nifty_200_sma,
+    get_nifty_20d_sma,
     initialize_v7_tables,
 )
 
@@ -399,6 +400,12 @@ _V14_6_HORIZON_SL_MULT  = {'SHORT TERM': 2.5, 'POSITIONAL': 3.5, 'LONG TERM': 5.
 _V14_6_HORIZON_T1_CAP_BASE = {'SHORT TERM': 10.0, 'POSITIONAL': 20.0, 'LONG TERM': 35.0}
 _V14_6_HORIZON_T3_HARD_CAP = {'SHORT TERM': 35.0, 'POSITIONAL': 80.0, 'LONG TERM': 200.0}
 _V14_6_SL_MIN_PCT = 4.5    # never tighter (avoid whipsaw)
+# v17.0 Fix 4: separate SL cap for SHORT TERM picks.
+# Performance audit (31 closed positions, Jul 2026): SHORT TERM SL hits
+# averaged -8.7% loss. Positional picks need wider SL (longer horizon,
+# more room to breathe). Short-term picks (30-day window) should be cut
+# faster — using 7% max prevents the -15% BSOFT-class losses on short bets.
+_V17_SHORT_TERM_SL_MAX_PCT = 7.0   # SHORT TERM never wider than -7%
 # v15.1: SL_MAX raised from 12.0% to 15.0% to preserve multi-factor differentiation.
 # Investigation in v15.0 production output (12 May 2026, 100 stocks): 44/100 stocks
 # hit the 12% cap and showed IDENTICAL -12% SL, defeating the per-stock formula.
@@ -502,12 +509,22 @@ def _compute_sl_t_v14_6(cmp_price, atr_14, cfv, cap_category, sector,
 
     sl_pct = max(_V14_6_SL_MIN_PCT, min(_V14_6_SL_MAX_PCT, raw_sl_pct))
 
+    # v17.0 Fix 4: Tighter SL cap for SHORT TERM picks.
+    # Short-term trades run only 30 days — less time for a thesis to play out,
+    # so we accept less heat. Cap at 7% to prevent large losses on quick bets.
+    # Applied BEFORE earnings widening so the cap still holds in earnings season.
+    if (time_horizon or "").upper() == "SHORT TERM":
+        sl_pct = min(_V17_SHORT_TERM_SL_MAX_PCT, sl_pct)
+
     # v15.0: Earnings-near widening — if quarterly results are within 5 calendar
     # days, widen SL by 20% to account for elevated pre/post-earnings volatility.
     # Stocks routinely move 5-15% on earnings day; standard SL would whipsaw out.
+    # For SHORT TERM picks, cap earnings-widened SL at 9% (7% × 1.2 + small buffer).
     earnings_widened = False
     if days_to_earnings is not None and 0 <= days_to_earnings <= 5:
-        sl_pct = min(_V14_6_SL_MAX_PCT, sl_pct * 1.20)
+        _earnings_cap = 9.0 if (time_horizon or "").upper() == "SHORT TERM" \
+                        else _V14_6_SL_MAX_PCT
+        sl_pct = min(_earnings_cap, sl_pct * 1.20)
         earnings_widened = True
 
     stop_loss = round(cmp_price * (1 - sl_pct / 100), 2)
@@ -1544,8 +1561,11 @@ def run_master_pipeline():
                 stock["4w_chg"] = _chg(21)
                 stock["6w_chg"] = _chg(31)
                 stock["8w_chg"] = _chg(41)
+                # v17.0 Fix 2: 3-day ROC for momentum confirmation gate
+                # _chg(4) = close[-1] vs close[-4] = 3 trading-day return
+                stock["3d_roc"] = _chg(4)
             else:
-                for k in ["2w_chg", "4w_chg", "6w_chg", "8w_chg"]:
+                for k in ["2w_chg", "4w_chg", "6w_chg", "8w_chg", "3d_roc"]:
                     stock[k] = 0
 
             # Beta — read from weekly_momentum.beta_90d (computed by backfill)
@@ -3566,6 +3586,20 @@ def run_master_pipeline():
             "nifty_200d":    get_nifty_200_sma(),
             "vix":           0,    # v13.x: was 12.0 placeholder; now honest "—" in report
         }
+        # v17.0: market-regime gate — Nifty50 vs 20-day SMA
+        # Falls through to BULLISH when Nifty data is unavailable (returns 0.0)
+        # so new installations without Nifty price history are not silently broken.
+        _nifty_close, _nifty_20d_sma = get_nifty_20d_sma()
+        market_stats["nifty_close"]   = _nifty_close or market_stats.get("nifty_close", 0)
+        market_stats["nifty_20d_sma"] = _nifty_20d_sma
+        _market_regime = (
+            "BULLISH"
+            if (_nifty_20d_sma <= 0 or _nifty_close >= _nifty_20d_sma)
+            else "BEARISH"
+        )
+        market_stats["market_regime"] = _market_regime
+        print(f"   📊 Market regime: {_market_regime} "
+              f"(Nifty {_nifty_close:.0f} vs 20d-SMA {_nifty_20d_sma:.0f})")
 
         # Section 10: Excel Dashboard
         if not final_100_list:
@@ -3672,7 +3706,8 @@ def run_master_pipeline():
         excel_gen = ExcelGeneratorV6(final_100_list, date_str,
                                      run_time=_run_time_ist,
                                      prev_scores=_prev_scores,
-                                     gap_days=_missed_trading_days)
+                                     gap_days=_missed_trading_days,
+                                     market_stats=market_stats)
 
         # ─────────────────────────────────────────────────────────────────────
         # v14.0/v14.1 — OUTCOME TRACKING: Log Gold-sheet picks BEFORE Excel build

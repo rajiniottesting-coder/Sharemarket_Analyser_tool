@@ -1590,17 +1590,21 @@ class ExcelGeneratorV6:
         "mos_pct":0.0,"upside":0.0,"verdict":"WATCHLIST","spike_suppressed":False,
         "symbol":"","close":0.0,"company_name":"","sector":"General",
         "exchange_tag":"NSE","Analysis_Summary_Block_H":"—",
-        "2w_chg":0,"4w_chg":0,"6w_chg":0,"8w_chg":0,"cfv":0.0,
+        "2w_chg":0,"4w_chg":0,"6w_chg":0,"8w_chg":0,"cfv":0.0,"3d_roc":0.0,
         "entry_range":"—","stop_loss":"—","t1":0,"t2":0,"t3":0,
         "horizon":"POSITIONAL","risk_level":"MEDIUM","mos_label":"—",
         "smart_money_signals":"","rotation_stage":"NEUTRAL","vol_ratio":1.0,
         "bs_status":"HEALTHY","bs_flags":"—",
     }
 
-    def __init__(self,data,date_str,run_time=None,prev_scores=None,gap_days=0):
+    def __init__(self,data,date_str,run_time=None,prev_scores=None,gap_days=0,
+                 market_stats=None):
         self.df=pd.DataFrame(data) if data else pd.DataFrame()
         self.date_str=date_str
         self.gap_days=int(gap_days or 0)  # trading days missed since last run
+        # v17.0: market-regime gate — market_stats carries market_regime + nifty_20d_sma
+        self.market_stats = market_stats or {}
+        self.market_regime = self.market_stats.get("market_regime", "BULLISH")
         try: self.dlbl=datetime.strptime(date_str,"%Y%m%d").strftime("%-d %b %Y")
         except: self.dlbl=date_str
         # Actual pipeline run time in IST — used in Alert Log and Delivery Preview
@@ -1863,7 +1867,8 @@ class ExcelGeneratorV6:
         ws.merge_cells(start_row=2,start_column=1,end_row=2,end_column=N)
         # v10.11: criteria text expanded from 8 → 11 conditions to match the
         # _get_gold() filter. New gates: Altman Z≥1.8 | EQ≠LOW | IntCov≥1.5×.
-        c2=ws.cell(2,1,f"Gold-Tier Criteria (ALL 13 must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed · Altman Z≥1.8 · EQ≠LOW · Int Coverage≥1.5× · ROE≥10% · PEG≤8  ·  {gc} stocks qualify")
+        regime_note = "" if self.market_regime != "BEARISH" else " · ⚠ BEARISH REGIME — Gold suppressed today"
+        c2=ws.cell(2,1,f"Gold-Tier Criteria (ALL 15 must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed · Altman Z≥1.8 · EQ≠LOW · Int Coverage≥1.5× · ROE≥10% · PEG≤8 · 3d-ROC≥0 · Sector-cycle OK  ·  {gc} stocks qualify{regime_note}")
         c2.fill=_f("FEF3C7"); c2.font=_ft(False,"92400E",8,True); c2.alignment=_al("left","center")
         ws.row_dimensions[2].height=14
         # R3 summary strip
@@ -2930,6 +2935,15 @@ class ExcelGeneratorV6:
     def _get_gold(self):
         if self.df.empty: return pd.DataFrame()
         try:
+            # ── v17.0 Fix 1: Market-regime gate ─────────────────────────────
+            # If Nifty50 is below its 20-day SMA (BEARISH regime), suppress ALL
+            # Gold picks for the day. Empty Gold on a BEARISH day is correct
+            # institutional discipline — don't buy into a falling market.
+            # Gate passes (returns empty) only when data is available AND bearish.
+            # Falls through to BULLISH when Nifty data unavailable (safe default).
+            if self.market_regime == "BEARISH":
+                return pd.DataFrame()
+
             # Strict Gold-tier filter — all 13 conditions must be true:
             #
             #  1. Verdict = BUY                 — system-confident, not WATCHLIST
@@ -2945,6 +2959,8 @@ class ExcelGeneratorV6:
             # 11. Int Coverage >= 1.5 OR "—"    — can service interest
             # 12. ROE >= 10% OR "—"             — quality floor on return on capital
             # 13. PEG <= 8 OR "—" OR negative   — quality floor on valuation/growth
+            # 14. 3-day ROC >= 0               — v17.0 Fix 2: momentum confirmation
+            # 15. Sector-cycle gate             — v17.0 Fix 3: bearish sectors suppressed
             #
             # Fields populated as "—" (missing data) PASS each respective gate so
             # small caps without forensic / fundamental ratios aren't unfairly
@@ -3015,6 +3031,64 @@ class ExcelGeneratorV6:
                 (_peg_num <= 0)
             )
 
+            # ── v17.0 Fix 2: Momentum confirmation gate ─────────────────────
+            # Require 3-day price momentum (ROC) > 0 — positive price direction
+            # over the last 3 trading days. Prevents picking fundamentally strong
+            # stocks that are actively declining (right company, wrong moment).
+            # Missing/zero data passes (new stocks without history not penalised).
+            _3d_roc = pd.to_numeric(
+                self.df.get("3d_roc", pd.Series([0.0]*len(self.df))),
+                errors="coerce"
+            ).fillna(0.0)
+            _momentum_gate = _3d_roc >= 0  # strictly: ≥ 0 allows flat, > 0 requires up
+
+            # ── v17.0 Fix 3: Sector-cycle gate ──────────────────────────────
+            # Suppress stocks from structurally underperforming sectors unless
+            # the individual stock is outperforming (positive 4-week momentum).
+            #
+            # Sectors that showed ≤33% hit rate in the Jul 2026 audit of 31
+            # closed positions: Consumer Defensive (0%), Industrials (20%),
+            # Technology (33%), Communication Services (0%).
+            #
+            # DUAL-CONVENTION HANDLING (important):
+            # The `sector` field can arrive in EITHER of two naming schemes
+            # depending on which enrichment path populated symbol_master:
+            #   • yfinance path  → broad GICS names: "Technology", "Industrials"
+            #   • NSE API path   → industry names:  "IT - Software", "FMCG"
+            # (backfill_history.py writes info["sector"] on one path and
+            #  info["industry"] on the other — see lines ~1524 and ~1752.)
+            # Matching only one scheme would let half the universe bypass this
+            # gate silently. We therefore match on BOTH exact names and
+            # case-insensitive substrings covering the NSE equivalents.
+            _WEAK_SECTORS_EXACT = {
+                # yfinance broad GICS sector names
+                "Consumer Defensive", "Industrials", "Technology",
+                "Communication Services",
+            }
+            # NSE / industry-style substrings that map to the same weak groups
+            _WEAK_SECTOR_PATTERNS = (
+                "IT - ", "IT-", "INFORMATION TECH", "SOFTWARE", "COMPUTER",
+                "FMCG", "CONSUMER GOODS", "PERSONAL PRODUCT", "TOBACCO",
+                "CAPITAL GOODS", "ENGINEERING", "INDUSTRIAL", "CONSTRUCTION",
+                "TELECOM", "MEDIA", "ENTERTAINMENT",
+            )
+            _sector_col = self.df.get("sector",
+                                      pd.Series(["General"]*len(self.df))).astype(str)
+            _sector_up  = _sector_col.str.upper()
+            _is_weak = (
+                _sector_col.isin(_WEAK_SECTORS_EXACT) |
+                _sector_up.apply(
+                    lambda s: any(p in s for p in _WEAK_SECTOR_PATTERNS)
+                )
+            )
+            _4w_roc = pd.to_numeric(
+                self.df.get("4w_chg", pd.Series([0.0]*len(self.df))),
+                errors="coerce"
+            ).fillna(0.0)
+            # Pass if: NOT in a weak sector, OR the stock's own 4w momentum is
+            # positive (a weak-sector stock outperforming its peers is allowed).
+            _sector_gate = (~_is_weak) | (_4w_roc > 0)
+
             mask = (
                 (self.df["verdict"] == "BUY") &
                 (self.df["composite_score"] >= 70) &
@@ -3024,11 +3098,13 @@ class ExcelGeneratorV6:
                 (~_bs.str.contains("ALERT", na=False)) &
                 (_pledge <= 10) &
                 (self.df["spike_suppressed"] == False) &
-                _alt_gate &    # not distressed
-                _eq_gate &     # not accounting concern
-                _ic_gate &     # can service interest
-                _roe_gate &    # quality floor: ROE ≥ 10% (or missing)
-                _peg_gate      # quality floor: PEG ≤ 8 (or missing/≤0)
+                _alt_gate &       # not distressed
+                _eq_gate &        # not accounting concern
+                _ic_gate &        # can service interest
+                _roe_gate &       # quality floor: ROE ≥ 10% (or missing)
+                _peg_gate &       # quality floor: PEG ≤ 8 (or missing/≤0)
+                _momentum_gate &  # v17.0: 3-day price momentum ≥ 0
+                _sector_gate      # v17.0: sector-cycle filter
             )
             return self.df[mask].copy().reset_index(drop=True)
         except Exception: return pd.DataFrame()

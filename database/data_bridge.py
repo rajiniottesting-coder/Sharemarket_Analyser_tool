@@ -1037,6 +1037,60 @@ def get_nifty_200_sma() -> float:
         conn.close()
 
 
+def get_nifty_20d_sma() -> tuple:
+    """Nifty 50 latest close + 20-day SMA for the v17.0 market-regime gate.
+
+    Returns (nifty_close, nifty_20d_sma) as floats.
+    Returns (0.0, 0.0) when Nifty data cannot be obtained — the caller
+    treats 0.0 as "data missing → regime gate passes (BULLISH)" so the
+    pipeline degrades safely rather than suppressing Gold every day.
+
+    DATA SOURCE NOTE (important):
+    NIFTY 50 is NOT ingested into the daily_prices table by the current
+    backfill (see backfill_history.py — it ingests individual equities
+    only). A DB-only implementation of this function would therefore
+    always return (0.0, 0.0) and the regime gate would be a silent no-op.
+
+    Strategy, in order:
+      1. Try daily_prices (works if NIFTY 50 is ever added to ingestion)
+      2. Fall back to yfinance ticker '^NSEI' (the Nifty 50 index)
+      3. Give up → (0.0, 0.0) → gate passes, pipeline unaffected
+
+    yfinance is already a hard dependency of this project, so step 2 adds
+    no new requirement. The call is wrapped so a network failure or API
+    change can never break the daily run.
+    """
+    # ── Attempt 1: daily_prices (future-proof if NIFTY 50 gets ingested) ──
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            df = pd.read_sql_query(
+                "SELECT close FROM daily_prices "
+                "WHERE symbol='NIFTY 50' ORDER BY date DESC LIMIT 20", conn)
+            if not df.empty and len(df) >= 15:
+                return float(df["close"].iloc[0]), float(df["close"].mean())
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+    # ── Attempt 2: yfinance ^NSEI (the actual production path today) ──
+    try:
+        import yfinance as yf
+        hist = yf.Ticker("^NSEI").history(period="2mo", interval="1d")
+        if hist is not None and not hist.empty and len(hist) >= 15:
+            closes = hist["Close"].dropna()
+            if len(closes) >= 15:
+                nifty_close = float(closes.iloc[-1])
+                nifty_20d   = float(closes.tail(20).mean())
+                return nifty_close, nifty_20d
+    except Exception:
+        pass
+
+    # ── Attempt 3: no data → gate passes (safe default) ──
+    return 0.0, 0.0
+
+
 def get_20d_avg_vol(symbol: str) -> float:
     """20-day average volume for a symbol — used by priority_ranker.
 

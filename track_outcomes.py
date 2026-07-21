@@ -13,10 +13,11 @@ the first event that fires:
     T1_HIT   — daily high ≥ T1 (and not yet T2)
     EXPIRED  — 90 calendar days passed with no event
 
-v16.5 trailing-stop recalibration: break-even activation raised from +5%
-peak gain to +10% (the +5% trigger was too aggressive — small pops that
-pulled back were force-closed flat). Tiers: peak ≥25%→lock+12%, ≥20%→
-lock+9%, ≥15%→lock+5%, ≥10%→break-even, <10%→no trailing (original SL only).
+v17.0 trailing-stop recalibration: break-even threshold raised +10%→+12%
+AND minimum 10-day holding gate before break-even activates (prevents
+IGL/HEXT-class early exits on genuinely trending stocks). Tiers:
+peak ≥25%→lock+12%, ≥20%→lock+9%, ≥15%→lock+5%,
+peak ≥12% AND days_held≥10→break-even, else→no trailing (original SL only).
 
 Design rules (locked in v14_state.md):
     - First-event-wins: tracker stops at the first day a target/SL fires
@@ -408,36 +409,44 @@ def _walk_forward(rec: dict) -> dict:
         # today's stop and then have today's low be checked against it.
         # The ratcheted trailing_sl_price will be used on the NEXT bar.
         #
-        # v16.5 recalibration — break-even activation raised from +5% to +10%.
-        # Rationale: the old +5% break-even trigger was too aggressive. A stock
-        # that popped just 5% intraday then pulled back (extremely common
-        # volatility) would get stopped out flat — converting would-be winners
-        # into break-even scratches. Real example: KOVAI ran to +5.4% peak,
-        # the break-even trailing stop activated at entry price, then a normal
-        # pullback to +0.7% touched break-even and force-closed the position
-        # while it was still trending. The tiers below now require a more
-        # meaningful cushion before the trailing stop ratchets:
+        # v17.0 Fix 5 — TRAIL_SL refinement:
+        #   (a) Break-even activation raised from +10% → +12%
+        #   (b) Minimum 10-day holding before break-even can fire
         #
-        #   peak ≥ 25% → lock +12%   (was: ≥15 → +7%)
-        #   peak ≥ 20% → lock +9%
-        #   peak ≥ 15% → lock +5%
-        #   peak ≥ 10% → break-even  (was: ≥5 → break-even — TOO EARLY)
-        #   peak < 10% → no trailing stop (original SL still protects)
+        # IMPORTANT: trailing is re-evaluated EVERY bar using the running peak,
+        # not just on new-peak days. This handles the case where a stock peaked
+        # at +13% on day 6, but the 10-day gate only clears on day 10 — the
+        # break-even protection should activate on day 10 even though no new
+        # high was set that day. Profit-lock tiers (≥15%) have no day gate.
         #
-        # This keeps trending positions alive longer while still locking in
-        # gains once a position has run far enough to justify protection.
+        # Tier structure:
+        #   peak ≥ 25% → lock +12%    (no day gate — large gain worth protecting)
+        #   peak ≥ 20% → lock +9%     (no day gate)
+        #   peak ≥ 15% → lock +5%     (no day gate)
+        #   peak ≥ 12% AND days_in ≥ 10 → break-even  (day gate applies)
+        #   peak < 12% OR days_in < 10  → no trailing stop
+        _TRAIL_BREAKEVEN_THRESHOLD = 12.0   # v17.0: was 10%
+        _TRAIL_MIN_HOLDING_DAYS    = 10     # v17.0: min holding before break-even
+
+        # Step 1: Update peak (only when a new high is made)
         if hi > 0 and hi > peak_price_seen:
             peak_price_seen = hi
+
+        # Step 2: Re-evaluate trailing on EVERY bar using current peak
+        # (not just on new-peak bars — enables day-crossing for the BE gate)
+        if peak_price_seen > cmp_rec:
             peak_gain_pct = (peak_price_seen - cmp_rec) / cmp_rec * 100
             new_trailing = 0.0
             if peak_gain_pct >= 25:
-                new_trailing = round(cmp_rec * 1.12, 2)   # lock in +12%
+                new_trailing = round(cmp_rec * 1.12, 2)   # lock in +12%, no day gate
             elif peak_gain_pct >= 20:
-                new_trailing = round(cmp_rec * 1.09, 2)   # lock in +9%
+                new_trailing = round(cmp_rec * 1.09, 2)   # lock in +9%, no day gate
             elif peak_gain_pct >= 15:
-                new_trailing = round(cmp_rec * 1.05, 2)   # lock in +5%
-            elif peak_gain_pct >= 10:
-                new_trailing = round(cmp_rec * 1.00, 2)   # break-even
+                new_trailing = round(cmp_rec * 1.05, 2)   # lock in +5%, no day gate
+            elif (peak_gain_pct >= _TRAIL_BREAKEVEN_THRESHOLD
+                  and days_in >= _TRAIL_MIN_HOLDING_DAYS):
+                new_trailing = round(cmp_rec * 1.00, 2)   # break-even (day-gated)
+            # Trailing SL only ratchets UP — never moves down
             if new_trailing > trailing_sl_price:
                 trailing_sl_price = new_trailing
                 trailing_sl_pct   = round((new_trailing - cmp_rec) / cmp_rec * 100, 2)
