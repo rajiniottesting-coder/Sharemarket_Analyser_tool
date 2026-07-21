@@ -32,3 +32,6 @@ bse_live_*/
 # Daily generated report files (emailed — no need in repo)
 Daily_Analysis_Report_*.txt
 
+
+ngrok Installer.exe
+*.exe
