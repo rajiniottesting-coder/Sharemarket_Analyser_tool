@@ -1959,6 +1959,98 @@ class ExcelGeneratorV6:
                     bottom=Side(style="thin",color="E2E8F0")
                 )
 
+        # ── v17.5: BEARISH-REGIME RESILIENCE WATCHLIST (reference log) ─────
+        # Stocks that outperformed a FALLING Nifty — surfaced so they are not
+        # lost during a bearish stretch. REFERENCE ONLY: nothing here is a
+        # tracked position, and a listed stock enters Gold only by passing all
+        # 15 gates on its own on a future run. Reads gold_resilience_watch,
+        # which the funnel refreshes each run. Graceful: an empty/absent table
+        # renders nothing and the Gold sheet looks exactly as before v17.5.
+        try:
+            from database.data_bridge import get_resilience_watch_all
+            _rw = get_resilience_watch_all()
+        except Exception as _rwe:
+            _rw = pd.DataFrame()
+            print(f"   ⚠️  Resilience watchlist — DB read failed: {_rwe}")
+
+        # Streak floor: a one-day pop is seeded but not surfaced. Import from
+        # master_funnel so the display cutoff and the seeding logic agree.
+        try:
+            from master_funnel import _RW_STREAK_MIN as _RW_MIN
+        except Exception:
+            _RW_MIN = 2
+
+        if not _rw.empty:
+            _rw = _rw[_rw["streak_hits"].fillna(0).astype(int) >= _RW_MIN]
+
+        if not _rw.empty:
+            # Find the current bottom of the Gold data so we append below it.
+            _rw_row = ws.max_row + 2
+            _bearish = (self.market_regime == "BEARISH")
+
+            ws.merge_cells(start_row=_rw_row,start_column=1,end_row=_rw_row,end_column=N)
+            _hdr = ("🔶  BEARISH-REGIME STANDOUTS  ·  watchlist only, not logged  ·  "
+                    "stocks bucking the downtrend"
+                    if _bearish else
+                    "🔶  RECENT RESILIENCE (last 30 days)  ·  reference only — "
+                    "not queued, not logged")
+            c = ws.cell(_rw_row,1,_hdr)
+            c.fill=_f("633806"); c.font=_ft(True,"FAEEDA",10); c.alignment=_al("left","center")
+            ws.row_dimensions[_rw_row].height=20
+            _rw_row += 1
+
+            _rw_cols = [("Symbol",14),("Sector",20),("Score",9),
+                        ("Stock 3d%",11),("Nifty 3d%",11),("Rel Strength",13),
+                        ("Vol×",8),("Streak",12),("First Added",13),("Last Seen",13)]
+            for ci,(h,w) in enumerate(_rw_cols,1):
+                cc = ws.cell(_rw_row, ci, h)
+                cc.fill=_f("854F0B"); cc.font=_ft(True,"FAEEDA",9); cc.alignment=_al()
+                _cur = ws.column_dimensions[get_column_letter(ci)].width or 0
+                if w > _cur:
+                    ws.column_dimensions[get_column_letter(ci)].width = w
+            self._apply_col_tips(ws, _rw_row, [h for h,_ in _rw_cols])
+            ws.row_dimensions[_rw_row].height=18
+            _rw_row += 1
+
+            for _, wr in _rw.iterrows():
+                _greyed = not _bearish     # bullish day = reference strip, muted
+                _base_bg = "F1EFE8" if _greyed else ("FFFFFF" if _rw_row%2 else "FAEEDA")
+                _txt = "5F5E5A" if _greyed else "412402"
+                _rel = float(wr.get("last_rel_strength",0) or 0)
+                _hits = int(wr.get("streak_hits",0) or 0)
+                _win  = int(wr.get("streak_window",0) or 0) or _hits
+                _bar = "▰"*min(_hits,5) + "▱"*max(0,min(_win,5)-_hits)
+                vals = [
+                    str(wr.get("symbol","")),
+                    str(wr.get("sector","") or "—"),
+                    round(float(wr.get("composite_score",0) or 0)),
+                    f"{float(wr.get('last_stock_3d',0) or 0):+.1f}%",
+                    f"{float(wr.get('last_nifty_3d',0) or 0):+.1f}%",
+                    f"{_rel:+.1f}pp",
+                    f"{float(wr.get('last_vol_ratio',0) or 0):.1f}×",
+                    f"{_hits} of {_win} {_bar}",
+                    str(wr.get("first_added","") or "—"),
+                    str(wr.get("last_qualified","") or "—"),
+                ]
+                for ci, v in enumerate(vals, 1):
+                    cc = ws.cell(_rw_row, ci, v)
+                    cc.fill=_f(_base_bg); cc.font=_ft(False,_txt,9); cc.alignment=_al()
+                    # Rel Strength (col 6) green when genuinely outperforming.
+                    if ci == 6 and _rel > 0 and not _greyed:
+                        cc.font=_ft(True,"0F6E56",9)
+                ws.row_dimensions[_rw_row].height=16
+                _rw_row += 1
+
+            # Reading guide.
+            ws.merge_cells(start_row=_rw_row,start_column=1,end_row=_rw_row,end_column=N)
+            c = ws.cell(_rw_row,1,
+                "  Rel Strength = Stock 3d% − Nifty 3d%. Positive = outperforming a falling market. "
+                "Streak = qualifying bearish days in the last 5 seen — persistence is the signal, one day is noise. "
+                "Reference only: nothing here is logged or queued. A listed stock enters Gold only by passing all 15 "
+                "gates on its own. Each row auto-expires 30 days after its last qualifying day.")
+            c.fill=_f("FAEEDA"); c.font=_ft(False,"412402",9,True); c.alignment=_al("left","center",True)
+            ws.row_dimensions[_rw_row].height=30
+
     def _trade_summary(self,wb):
         ws=wb.create_sheet("📊 Trade Summary"); ws.sheet_properties.tabColor="059669"
         gdf=self._get_gold()

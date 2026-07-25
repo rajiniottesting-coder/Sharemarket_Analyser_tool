@@ -1334,6 +1334,34 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "breakdown. Frozen at log time, so re-classification of\n"
                   "the stock later never rewrites the audit trail.\n"
                   "Shows '—' for picks logged without a label."),
+
+    # ── v17.5 BEARISH-REGIME RESILIENCE WATCHLIST (Gold sheet) ──────────────
+    # Reference log only. None of these are tracked positions.
+    "Stock 3d%": ("Stock's trailing 3-trading-day % return",
+                  "Same 3d_roc the Gold momentum gate uses. Compared against\n"
+                  "the Nifty's 3-day return to measure relative strength."),
+    "Nifty 3d%": ("Nifty 50's trailing 3-trading-day % return",
+                  "The market benchmark this stock is measured against.\n"
+                  "Negative here + positive Stock 3d% = bucking the trend."),
+    "Rel Strength": ("Stock 3d% minus Nifty 3d% — the core signal",
+                     "How far the stock is outperforming a falling market.\n"
+                     "+4.0pp means it rose 2.4% while the Nifty fell 1.6%.\n"
+                     "A high composite score alone can't show this — a stock\n"
+                     "can score 90 and still be bleeding with the market.\n"
+                     "Only positive-rel-strength stocks appear here."),
+    "Streak": ("Qualifying bearish days in the last 5 seen",
+               "How many of the recent bearish days the stock beat the\n"
+               "Nifty. Persistence is the signal — 5 of 5 is real\n"
+               "accumulation, 2 of 5 is a one-off pop.\n"
+               "Resets nothing: it just counts. When the regime flips,\n"
+               "the high-streak names are your priority-watch queue."),
+    "First Added": ("First day this stock ever entered the watchlist",
+                    "Audit anchor — never changes across re-qualifications.\n"
+                    "Answers 'when did this name start holding up?'"),
+    "Last Seen": ("Most recent bearish day it re-qualified",
+                  "Resets the 30-day retention clock. The row auto-expires\n"
+                  "30 days after this date if it never qualifies again.\n"
+                  "Freshness signal: how current is this resilience?"),
 }
 
 

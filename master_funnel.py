@@ -52,6 +52,91 @@ from ai.ai_analyst import get_ai_analysis
 from reporting.report_formatter import ReportFormatter
 
 
+def _refresh_resilience_watch(stocks, market_regime, today_iso):
+    """v17.5: refresh the bearish-regime resilience watchlist. Reference log.
+
+    Called once per run, right after the market regime is determined.
+
+    RULES (see gold_resilience_watch table comment in data_bridge.py):
+      · Only acts on BEARISH days. On bullish days it does nothing but prune
+        expired rows — the existing records simply age via their 30-day clock.
+      · A stock QUALIFIES if its trailing 3-day return beats the Nifty's
+        (rel_strength = stock_3d - nifty_3d > 0) AND it clears the streak
+        floor. Qualifying resets its 30-day clock (last_qualified = today).
+      · streak = qualifying bearish days within the last _RW_STREAK_WINDOW
+        bearish days seen. A one-day pop (streak < _RW_STREAK_MIN) is NOT
+        surfaced, but it still seeds a record so a genuine streak can build.
+      · Writes ONLY to gold_resilience_watch. Never touches gold_recommendations
+        or gold_outcomes — this is a watchlist, not a position.
+    """
+    from database.data_bridge import (
+        get_nifty_3d_return, get_resilience_watch_record,
+        upsert_resilience_watch, prune_resilience_watch,
+    )
+    import datetime as _dt
+
+    # Rolling 30-day retention self-cleans every run, bearish or not.
+    _pruned = prune_resilience_watch(today_iso)
+
+    if market_regime != "BEARISH":
+        if _pruned:
+            print(f"   🔶 Resilience watch: pruned {_pruned} expired (bullish day)")
+        return
+
+    _nifty_3d = get_nifty_3d_return()
+    try:
+        _exp = (_dt.datetime.strptime(today_iso, "%Y-%m-%d").date()
+                + _dt.timedelta(days=_RW_RETENTION_DAYS)).strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        _exp = today_iso
+
+    _added = _updated = 0
+    for st in (stocks or []):
+        try:
+            _stock_3d = float(st.get("3d_roc", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        _rel = round(_stock_3d - _nifty_3d, 2)
+        if _rel <= 0:
+            continue                        # not outperforming — skip
+
+        _sym = str(st.get("symbol", "") or "").strip()
+        if not _sym:
+            continue
+
+        _prior = get_resilience_watch_record(_sym)
+        _seen = int(_prior.get("bearish_days_seen", 0) or 0) + 1
+        _hits = int(_prior.get("streak_hits", 0) or 0) + 1
+        _window = min(_seen, _RW_STREAK_WINDOW)
+        # Cap streak_hits at the window so it reads as "N of WINDOW".
+        _hits = min(_hits, _RW_STREAK_WINDOW)
+
+        upsert_resilience_watch({
+            "symbol": _sym,
+            "company_name": str(st.get("company_name", "") or ""),
+            "sector": str(st.get("sector", "") or ""),
+            "composite_score": float(st.get("composite_score", 0) or 0),
+            "first_added": _prior.get("first_added") or today_iso,
+            "last_qualified": today_iso,
+            "expiry_date": _exp,
+            "last_stock_3d": _stock_3d,
+            "last_nifty_3d": _nifty_3d,
+            "last_rel_strength": _rel,
+            "last_vol_ratio": float(st.get("vol_ratio", 0) or 0),
+            "streak_hits": _hits,
+            "streak_window": _window,
+            "bearish_days_seen": _seen,
+            "last_checked_date": today_iso,
+        })
+        if _prior:
+            _updated += 1
+        else:
+            _added += 1
+
+    print(f"   🔶 Resilience watch: +{_added} new · {_updated} refreshed · "
+          f"{_pruned} pruned · Nifty 3d {_nifty_3d:+.1f}%")
+
+
 def cleanup_temp_files():
     """Section 12: Pre-pipeline physical file cleanup."""
     patterns = ["*.zip", "*.csv", "*.DAT"]
@@ -406,6 +491,11 @@ _V14_6_SL_MIN_PCT = 4.5    # never tighter (avoid whipsaw)
 # more room to breathe). Short-term picks (30-day window) should be cut
 # faster — using 7% max prevents the -15% BSOFT-class losses on short bets.
 _V17_SHORT_TERM_SL_MAX_PCT = 7.0   # SHORT TERM never wider than -7%
+
+# ── v17.5 resilience watchlist tuning ──────────────────────────────────────
+_RW_RETENTION_DAYS = 30    # rolling window from last_qualified before age-out
+_RW_STREAK_WINDOW  = 5     # streak measured over last N bearish days seen
+_RW_STREAK_MIN     = 2     # surfaced in Excel only when streak_hits >= this
 # v15.1: SL_MAX raised from 12.0% to 15.0% to preserve multi-factor differentiation.
 # Investigation in v15.0 production output (12 May 2026, 100 stocks): 44/100 stocks
 # hit the 12% cap and showed IDENTICAL -12% SL, defeating the per-stock formula.
@@ -3617,6 +3707,19 @@ def run_master_pipeline():
         market_stats["market_regime"] = _market_regime
         print(f"   📊 Market regime: {_market_regime} "
               f"(Nifty {_nifty_close:.0f} vs 20d-SMA {_nifty_20d_sma:.0f})")
+
+        # ── v17.5: BEARISH-REGIME RESILIENCE WATCHLIST refresh ───────────────
+        # Reference log ONLY. On a bearish day, record stocks whose trailing
+        # 3-day return BEAT the Nifty's (rel strength > 0) — they are bucking
+        # a falling market. Nothing here is ever logged as a Gold pick; a
+        # listed stock enters Gold only by independently passing all 15 gates
+        # on a future run. Writes to gold_resilience_watch only. Wrapped so a
+        # failure here can never abort the pipeline.
+        try:
+            _rw_iso = target_date.strftime("%Y-%m-%d")
+            _refresh_resilience_watch(final_100_list, _market_regime, _rw_iso)
+        except Exception as _rwe:
+            print(f"   ⚠️  Resilience watchlist refresh failed (non-fatal): {_rwe}")
 
         # Section 10: Excel Dashboard
         if not final_100_list:

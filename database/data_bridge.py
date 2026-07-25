@@ -377,6 +377,57 @@ def initialize_v7_tables(conn):
     """)
     conn.commit()
 
+    # ────────────────────────────────────────────────────────────────────
+    # v17.5 — BEARISH-REGIME RESILIENCE WATCHLIST (reference log only)
+    #
+    # WHY THIS TABLE EXISTS
+    # On bearish days the v17.0 regime gate suppresses ALL Gold picks — the
+    # correct behaviour, since the system's own data shows composite score
+    # measures QUALITY not TIMING, and good stocks bought into weakness stop
+    # out. But some stocks genuinely BUCK a falling market, and losing sight
+    # of them for weeks means catching them late when the regime turns.
+    #
+    # This table is a REFERENCE LOG. It records which stocks outperformed a
+    # falling Nifty, so they stay in view. It is NOT a queue and NOT a
+    # shortcut:
+    #   · nothing here is ever auto-added to gold_recommendations
+    #   · a listed stock enters Gold ONLY by independently passing all 15
+    #     gates on a future run, exactly like any other stock
+    #   · it writes to gold_resilience_watch ONLY — never to
+    #     gold_recommendations or gold_outcomes
+    # Regression test G38 enforces that isolation statically and functionally.
+    #
+    # RETENTION — rolling 30 days from LAST qualification, not first sighting.
+    # A stock that keeps outperforming through a long selloff keeps its slot;
+    # one that stops standing out ages out 30 days after its last good day.
+    #   first_added      — first day it ever qualified. Never changes. Audit
+    #                      anchor: "when did this name start holding up?"
+    #   last_qualified   — most recent bearish day it outperformed. Resets the
+    #                      30-day clock. Freshness signal.
+    #   expiry_date      — last_qualified + 30 calendar days.
+    # PK (symbol) — one rolling record per stock, not one per day.
+    # ────────────────────────────────────────────────────────────────────
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS gold_resilience_watch (
+            symbol              TEXT PRIMARY KEY,
+            company_name        TEXT DEFAULT '',
+            sector              TEXT DEFAULT '',
+            composite_score     REAL DEFAULT 0,
+            first_added         TEXT DEFAULT '',
+            last_qualified      TEXT DEFAULT '',
+            expiry_date         TEXT DEFAULT '',
+            last_stock_3d       REAL DEFAULT 0,
+            last_nifty_3d       REAL DEFAULT 0,
+            last_rel_strength   REAL DEFAULT 0,
+            last_vol_ratio      REAL DEFAULT 0,
+            streak_hits         INTEGER DEFAULT 0,
+            streak_window       INTEGER DEFAULT 0,
+            bearish_days_seen   INTEGER DEFAULT 0,
+            last_checked_date   TEXT DEFAULT ''
+        )
+    """)
+    conn.commit()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 2 — COLUMN MAPPING
@@ -2037,4 +2088,166 @@ def get_continuation_stats() -> pd.DataFrame:
             conn.close()
     except Exception as e:
         print(f"   ⚠️  get_continuation_stats: {e}")
+        return pd.DataFrame()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION — v17.5 BEARISH-REGIME RESILIENCE WATCHLIST (reference log)
+#
+# SAFETY CONTRACT
+#   1. gold_recommendations and gold_outcomes are NEVER written here. This is
+#      a reference log; nothing in it is a tracked position. G38 asserts it.
+#   2. All writes go to gold_resilience_watch only.
+#   3. Every function swallows its own exceptions and returns an empty result.
+#      A watchlist failure must never abort the daily pipeline.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def get_nifty_3d_return() -> float:
+    """v17.5: Nifty 50 trailing 3-trading-day % return.
+
+    Mirrors the per-stock 3d_roc (_chg(4) in master_funnel = close now vs
+    close 3 trading days back). Same DB-first, yfinance-'^NSEI'-fallback
+    strategy as get_nifty_20d_sma(), so it needs no new dependency and
+    degrades to 0.0 (neutral) if Nifty data is unavailable.
+    """
+    # ── Attempt 1: daily_prices (if NIFTY 50 ever gets ingested) ──
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            df = pd.read_sql_query(
+                "SELECT close FROM daily_prices "
+                "WHERE symbol='NIFTY 50' ORDER BY date DESC LIMIT 4", conn)
+            if len(df) >= 4:
+                now = float(df["close"].iloc[0]); prior = float(df["close"].iloc[3])
+                if prior > 0:
+                    return round((now - prior) / prior * 100, 2)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    # ── Attempt 2: yfinance ^NSEI (production path) ──
+    try:
+        import yfinance as yf
+        hist = yf.Ticker("^NSEI").history(period="1mo", interval="1d")
+        closes = hist["Close"].dropna() if hist is not None else []
+        if len(closes) >= 4:
+            now = float(closes.iloc[-1]); prior = float(closes.iloc[-4])
+            if prior > 0:
+                return round((now - prior) / prior * 100, 2)
+    except Exception:
+        pass
+    return 0.0
+
+
+def upsert_resilience_watch(row: dict) -> bool:
+    """v17.5: insert-or-update one resilience-watch record, keyed on symbol.
+
+    On a NEW symbol, first_added and last_qualified are both today.
+    On an EXISTING symbol re-qualifying, ONLY last_qualified / expiry / the
+    'last_*' snapshot / streak advance — first_added is preserved via
+    COALESCE so the audit anchor never moves.
+    """
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            conn.execute("""
+                INSERT INTO gold_resilience_watch (
+                    symbol, company_name, sector, composite_score,
+                    first_added, last_qualified, expiry_date,
+                    last_stock_3d, last_nifty_3d, last_rel_strength,
+                    last_vol_ratio, streak_hits, streak_window,
+                    bearish_days_seen, last_checked_date
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    company_name      = excluded.company_name,
+                    sector            = excluded.sector,
+                    composite_score   = excluded.composite_score,
+                    -- first_added is DELIBERATELY not updated: it must stay the
+                    -- original sighting date across every re-qualification.
+                    last_qualified    = excluded.last_qualified,
+                    expiry_date       = excluded.expiry_date,
+                    last_stock_3d     = excluded.last_stock_3d,
+                    last_nifty_3d     = excluded.last_nifty_3d,
+                    last_rel_strength = excluded.last_rel_strength,
+                    last_vol_ratio    = excluded.last_vol_ratio,
+                    streak_hits       = excluded.streak_hits,
+                    streak_window     = excluded.streak_window,
+                    bearish_days_seen = excluded.bearish_days_seen,
+                    last_checked_date = excluded.last_checked_date
+            """, (
+                row.get("symbol",""), row.get("company_name",""),
+                row.get("sector",""), float(row.get("composite_score",0) or 0),
+                row.get("first_added",""), row.get("last_qualified",""),
+                row.get("expiry_date",""),
+                float(row.get("last_stock_3d",0) or 0),
+                float(row.get("last_nifty_3d",0) or 0),
+                float(row.get("last_rel_strength",0) or 0),
+                float(row.get("last_vol_ratio",0) or 0),
+                int(row.get("streak_hits",0) or 0),
+                int(row.get("streak_window",0) or 0),
+                int(row.get("bearish_days_seen",0) or 0),
+                row.get("last_checked_date",""),
+            ))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  upsert_resilience_watch({row.get('symbol','?')}): {e}")
+        return False
+
+
+def get_resilience_watch_record(symbol: str) -> dict:
+    """v17.5: existing watch record for one symbol, or {} if none."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            df = pd.read_sql_query(
+                "SELECT * FROM gold_resilience_watch WHERE symbol=?",
+                conn, params=(symbol,))
+            return df.to_dict("records")[0] if not df.empty else {}
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+
+
+def prune_resilience_watch(today_iso: str) -> int:
+    """v17.5: drop rows whose 30-day window (from last_qualified) has passed.
+
+    Returns the number pruned. Runs each time the watchlist is refreshed so
+    the log self-cleans without any manual step.
+    """
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            cur = conn.execute(
+                "DELETE FROM gold_resilience_watch "
+                "WHERE expiry_date != '' AND expiry_date < ?", (today_iso,))
+            conn.commit()
+            return cur.rowcount or 0
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  prune_resilience_watch: {e}")
+        return 0
+
+
+def get_resilience_watch_all() -> pd.DataFrame:
+    """v17.5: every live watch record, strongest current streak first.
+
+    Consumed by the Excel Gold sheet. Returns an EMPTY DataFrame if the
+    table is absent or empty, so the Gold sheet's watchlist section skips
+    rendering and the sheet looks exactly as it did pre-v17.5.
+    """
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            return pd.read_sql_query(
+                "SELECT * FROM gold_resilience_watch "
+                "ORDER BY streak_hits DESC, last_rel_strength DESC", conn)
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  get_resilience_watch_all: {e}")
         return pd.DataFrame()

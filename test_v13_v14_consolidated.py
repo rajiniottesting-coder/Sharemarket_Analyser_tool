@@ -3260,8 +3260,8 @@ def test_g23_v15_7_minor_cleanups():
     )
     # Count tuples in open_cols — should be 20
     tuple_count = len(re.findall(r'\("[^"]+"\s*,\s*\d+\)', open_cols_text))
-    assert tuple_count == 20, (
-        f"v15.7: Performance open_cols should have 20 tuples, got {tuple_count}"
+    assert tuple_count == 23, (
+        f"v17.4: Performance open_cols should have 23 tuples, got {tuple_count}"
     )
 
     # ----- Cleanup 3b: schema has the new columns -----
@@ -4174,7 +4174,7 @@ def test_g31_v16_3_column_width_floor():
     # ── Check 3: Performance OPEN POSITIONS narrow columns widened ──
     # Find the open_cols literal in source — it's inside _performance method
     open_cols_match = _re.search(
-        r'open_cols\s*=\s*\[\s*\("Symbol",\s*(\d+)\).*?\("Sizing Rationale",\s*\d+\)\s*\]',
+        r'open_cols\s*=\s*\[\s*\("Symbol",\s*(\d+)\).*?\("Sector",\s*\d+\)\s*\]',
         src_xl, _re.DOTALL,
     )
     assert open_cols_match, "Couldn't find open_cols literal in source"
@@ -4203,7 +4203,7 @@ def test_g31_v16_3_column_width_floor():
 
     # ── Check 4: Performance CLOSED POSITIONS aligned with OPEN ──
     closed_cols_match = _re.search(
-        r'closed_cols\s*=\s*\[\s*\("Symbol",\s*(\d+)\).*?\("Score",\s*\d+\)\s*\]',
+        r'closed_cols\s*=\s*\[\s*\("Symbol",\s*(\d+)\).*?\("Sector",\s*\d+\)\s*\]',
         src_xl, _re.DOTALL,
     )
     assert closed_cols_match, "Couldn't find closed_cols literal in source"
@@ -5249,6 +5249,168 @@ def test_g37_v17_3_continuation_tracking_isolation_and_expiry():
             "Performance sheet degrades cleanly when the table is absent")
 
 
+
+def test_g38_v17_5_resilience_watchlist_isolation_and_retention():
+    """v17.5 regression test - BEARISH-REGIME RESILIENCE WATCHLIST (reference log).
+
+    WHAT IT IS
+    On bearish days the v17.0 regime gate suppresses all Gold picks. This
+    watchlist records stocks whose 3-day return BEAT the Nifty's - bucking a
+    falling market - so they stay in view. It is a REFERENCE LOG: nothing in
+    it is ever auto-added to Gold or the tracker. A listed stock enters Gold
+    only by independently passing all 15 gates on a future run.
+
+    GUARDS (all bidirectional - verified to FAIL when the guarded behaviour
+    is reversed, then PASS when restored):
+
+      1. ISOLATION - the watchlist section of data_bridge contains no write
+         against gold_recommendations or gold_outcomes. A reference log must
+         never be able to create a tracked position.
+      2. RETENTION - a row's expiry is last_qualified + 30 days, and
+         prune_resilience_watch drops rows past expiry. Rolling window.
+      3. FIRST-ADDED PRESERVED - re-qualifying updates last_qualified but
+         NEVER first_added (the audit anchor).
+      4. RENDER SAFETY - with the table empty, the Gold sheet renders with no
+         standouts section, exactly as pre-v17.5.
+    """
+    import os, re, sqlite3, tempfile, shutil
+    from datetime import date, timedelta
+
+    bridge = open('database/data_bridge.py', 'r', encoding='utf-8').read()
+    funnel = open('master_funnel.py', 'r', encoding='utf-8').read()
+    xls = open('reporting/excel_generator.py', 'r', encoding='utf-8').read()
+    tip = open('reporting/tooltip_formatter.py', 'r', encoding='utf-8').read()
+
+    # -- structural --
+    assert 'gold_resilience_watch' in bridge, \
+        "v17.5: data_bridge must define the gold_resilience_watch table"
+    assert 'def upsert_resilience_watch' in bridge, "v17.5: upsert missing"
+    assert 'def prune_resilience_watch' in bridge, "v17.5: prune missing"
+    assert 'def get_nifty_3d_return' in bridge, "v17.5: Nifty 3d helper missing"
+    assert 'def _refresh_resilience_watch' in funnel, \
+        "v17.5: master_funnel must define the refresh helper"
+    assert 'BEARISH-REGIME STANDOUTS' in xls or 'RECENT RESILIENCE' in xls, \
+        "v17.5: excel_generator must render the watchlist section"
+
+    # -- GUARD 1: isolation. The v17.5 section of data_bridge must not write
+    # gold_recommendations or gold_outcomes.
+    _start = bridge.find('SECTION - v17.5 BEARISH-REGIME RESILIENCE')
+    if _start < 0:
+        _start = bridge.find('v17.5 BEARISH-REGIME RESILIENCE WATCHLIST')
+    assert _start > 0, "v17.5: watchlist section marker missing from data_bridge"
+    _sec = bridge[_start:]
+    for _verb in ('INSERT INTO gold_recommendations', 'UPDATE gold_recommendations',
+                  'DELETE FROM gold_recommendations', 'INSERT INTO gold_outcomes',
+                  'UPDATE gold_outcomes', 'DELETE FROM gold_outcomes'):
+        assert _verb not in _sec, (
+            f"v17.5 ISOLATION VIOLATION: watchlist code contains '{_verb}'. "
+            f"The reference log must never touch tracked-position tables.")
+    # The refresh helper in master_funnel must likewise not WRITE them. Check
+    # for SQL write verbs, not mere mentions - the docstring legitimately names
+    # the tables to state it never writes them.
+    _fstart = funnel.find('def _refresh_resilience_watch')
+    _fend = funnel.find('\ndef ', _fstart + 10)
+    _fsec = funnel[_fstart:_fend]
+    for _verb in ('INSERT INTO gold_recommendations', 'UPDATE gold_recommendations',
+                  'DELETE FROM gold_recommendations', 'INSERT INTO gold_outcomes',
+                  'UPDATE gold_outcomes', 'DELETE FROM gold_outcomes'):
+        assert _verb not in _fsec, (
+            f"v17.5 ISOLATION VIOLATION: _refresh_resilience_watch contains "
+            f"'{_verb}'.")
+
+    # -- tooltips --
+    for _k in ('Rel Strength', 'Streak', 'First Added', 'Last Seen'):
+        assert f'"{_k}"' in tip, f"v17.5: tooltip_formatter must document '{_k}'"
+
+    # -- functional: GUARDS 2, 3 --
+    _cwd = os.getcwd(); _tmp = tempfile.mkdtemp()
+    try:
+        os.chdir(_tmp)
+        from database.data_bridge import (
+            initialize_v7_tables, upsert_resilience_watch,
+            prune_resilience_watch, get_resilience_watch_all,
+            get_resilience_watch_record)
+        conn = sqlite3.connect("market_data.db")
+        initialize_v7_tables(conn); conn.close()
+        TODAY = date.today()
+        def _d(n): return (TODAY + timedelta(days=n)).strftime("%Y-%m-%d")
+
+        # Seed a stock first added 5 days ago, expiring 25 days from now.
+        upsert_resilience_watch({
+            "symbol": "RESIL", "sector": "Consumer Defensive",
+            "composite_score": 84, "first_added": _d(-5),
+            "last_qualified": _d(-5), "expiry_date": _d(25),
+            "last_rel_strength": 3.9, "streak_hits": 1,
+            "streak_window": 1, "bearish_days_seen": 1})
+
+        # GUARD 3: re-qualify today. first_added must NOT move - and critically
+        # this test passes a DIFFERENT first_added on the re-qualify to prove
+        # the ON CONFLICT clause IGNORES the incoming value rather than trusting
+        # the caller to preserve it. (Caller code does preserve it, but the DB
+        # layer must be the backstop; passing today here exercises exactly that.)
+        upsert_resilience_watch({
+            "symbol": "RESIL", "sector": "Consumer Defensive",
+            "composite_score": 84,
+            "first_added": _d(0),                # deliberately WRONG - must be ignored
+            "last_qualified": _d(0), "expiry_date": _d(30),
+            "last_rel_strength": 4.2, "streak_hits": 2,
+            "streak_window": 2, "bearish_days_seen": 2})
+        _after = get_resilience_watch_record("RESIL")
+        assert _after["first_added"] == _d(-5), (
+            f"v17.5 FIRST-ADDED VIOLATION: re-qualifying moved first_added to "
+            f"{_after['first_added']} (should stay {_d(-5)}). The audit anchor "
+            f"must never change.")
+        assert _after["last_qualified"] == _d(0), \
+            "v17.5: last_qualified must advance on re-qualification"
+        assert int(_after["streak_hits"]) == 2, \
+            "v17.5: streak must advance on re-qualification"
+
+        # GUARD 2: retention. Add an already-expired row, prune, confirm gone,
+        # confirm the live row survives.
+        upsert_resilience_watch({
+            "symbol": "STALE", "sector": "Technology",
+            "composite_score": 70, "first_added": _d(-40),
+            "last_qualified": _d(-35), "expiry_date": _d(-5),
+            "last_rel_strength": 1.0, "streak_hits": 1,
+            "streak_window": 1, "bearish_days_seen": 1})
+        _pruned = prune_resilience_watch(_d(0))
+        _live = set(get_resilience_watch_all()["symbol"].tolist())
+        assert "STALE" not in _live, (
+            "v17.5 RETENTION VIOLATION: a row past its 30-day expiry was not "
+            "pruned. Rows must age out 30 days after last_qualified.")
+        assert "RESIL" in _live, (
+            "v17.5 RETENTION VIOLATION: prune removed a row whose window is "
+            "still open. Only expired rows may be dropped.")
+
+        # GUARD 4: render safety with an EMPTY table.
+        conn = sqlite3.connect("market_data.db")
+        conn.execute("DELETE FROM gold_resilience_watch"); conn.commit(); conn.close()
+        from openpyxl import Workbook
+        from reporting.excel_generator import ExcelGeneratorV6
+        _g = ExcelGeneratorV6(
+            [{"symbol": "X", "company_name": "X", "sector": "IT",
+              "verdict": "WATCHLIST", "composite_score": 50, "mos_pct": 5,
+              "storm_score": 3, "rsi": 50, "close": 100}],
+            "20260725", market_stats={"market_regime": "BEARISH"})
+        _wb = Workbook(); _wb.remove(_wb.active)
+        _g._gold_sheet(_wb)      # must not raise
+        _ws = _wb["\u2b50 Gold \u2013 Early Movers"]
+        _txt = " ".join(str(_ws.cell(r, 1).value or "")
+                        for r in range(1, _ws.max_row + 1))
+        assert "STANDOUTS" not in _txt and "RECENT RESILIENCE" not in _txt, (
+            "v17.5 RENDER-SAFETY VIOLATION: the standouts section rendered even "
+            "though gold_resilience_watch is empty. With no rows the Gold sheet "
+            "must look exactly as it did pre-v17.5.")
+    finally:
+        os.chdir(_cwd)
+        shutil.rmtree(_tmp, ignore_errors=True)
+
+    return ("\u2705 v17.5: resilience watchlist verified - reference log only "
+            "(gold_recommendations / gold_outcomes never written), 30-day "
+            "rolling retention prunes expired rows, first_added preserved across "
+            "re-qualification, and the Gold sheet degrades cleanly when empty")
+
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -5522,6 +5684,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g35_v17_1_performance_sheet_no_clipped_labels))
     v14_1_results.append(_run_one_test(test_g36_v17_2_alert_log_score_degraded_semantics))
     v14_1_results.append(_run_one_test(test_g37_v17_3_continuation_tracking_isolation_and_expiry))
+    v14_1_results.append(_run_one_test(test_g38_v17_5_resilience_watchlist_isolation_and_retention))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
