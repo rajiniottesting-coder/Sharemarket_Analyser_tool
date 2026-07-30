@@ -1979,9 +1979,24 @@ class ExcelGeneratorV6:
             from master_funnel import _RW_STREAK_MIN as _RW_MIN
         except Exception:
             _RW_MIN = 2
+        # v17.5.2: absolute-return floor applied at RENDER time, not just at
+        # seeding. The seeding gate in _refresh_resilience_watch only blocks NEW
+        # qualifications; it cannot remove a row that was admitted earlier (pre-
+        # v17.5.1) or one that qualified strong and later faded. Filtering the
+        # DISPLAY on last_stock_3d makes the 5% floor authoritative over what is
+        # shown and self-corrects stale sub-threshold rows immediately, rather
+        # than letting them linger for their 30-day retention. Import the same
+        # constant so display and seeding never diverge.
+        try:
+            from master_funnel import _RW_MIN_ABS_RETURN as _RW_ABS
+        except Exception:
+            _RW_ABS = 5.0
 
         if not _rw.empty:
             _rw = _rw[_rw["streak_hits"].fillna(0).astype(int) >= _RW_MIN]
+
+        if not _rw.empty:
+            _rw = _rw[_rw["last_stock_3d"].fillna(0).astype(float) >= _RW_ABS]
 
         if not _rw.empty:
             # Find the current bottom of the Gold data so we append below it.
