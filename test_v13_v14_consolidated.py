@@ -4830,6 +4830,26 @@ def test_g34_v17_0_performance_fixes():
         f"got trailing_sl={tsl4:.2f}"
     )
 
+    # ── v17.5.1: regime gate must use a TOLERANCE BAND, not a knife-edge ──
+    # The original gate flagged BEARISH the instant close dipped below the
+    # 20-day SMA, suppressing Gold through the early days of a recovery (seen
+    # 29-Jul-2026: Nifty +1.10%, close above its EMAs, yet Gold suppressed).
+    # The fix treats spot within _REGIME_TOLERANCE_PCT below the SMA as
+    # NEUTRAL. Guard both the constant and that the old exact-compare is gone.
+    assert '_REGIME_TOLERANCE_PCT' in src_mf, (
+        "v17.5.1: master_funnel must define _REGIME_TOLERANCE_PCT — the regime "
+        "gate must use a tolerance band, not a bare close>=sma knife-edge.")
+    assert '_nifty_close >= _nifty_20d_sma' not in src_mf, (
+        "v17.5.1: the old knife-edge regime compare (close >= sma) must be "
+        "replaced by the tolerance-band gap test. Its presence means the "
+        "recovering-market suppression bug has been reintroduced.")
+    # v17.5.1: resilience watchlist must apply an absolute-return floor so
+    # 'less bad than the market' names don't clutter the list.
+    assert '_RW_MIN_ABS_RETURN' in src_mf, (
+        "v17.5.1: master_funnel must define _RW_MIN_ABS_RETURN — the watchlist "
+        "must require the stock's own 3d return to clear a floor, not admit on "
+        "relative strength alone.")
+
     return ("\u2705 v17.0: all 5 performance fixes verified — "
             "(1) market-regime gate suppresses Gold in BEARISH, "
             "(2) momentum gate requires 3d-ROC≥0, "

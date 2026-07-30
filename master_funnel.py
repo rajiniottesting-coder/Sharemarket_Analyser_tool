@@ -99,6 +99,11 @@ def _refresh_resilience_watch(stocks, market_regime, today_iso):
         _rel = round(_stock_3d - _nifty_3d, 2)
         if _rel <= 0:
             continue                        # not outperforming — skip
+        # v17.5.1: require a genuinely strong move, not merely "less bad than
+        # the market". A stock down 0.2% while the Nifty fell 1.5% has positive
+        # rel-strength but is still falling — not what this watchlist is for.
+        if _stock_3d < _RW_MIN_ABS_RETURN:
+            continue
 
         _sym = str(st.get("symbol", "") or "").strip()
         if not _sym:
@@ -492,10 +497,21 @@ _V14_6_SL_MIN_PCT = 4.5    # never tighter (avoid whipsaw)
 # faster — using 7% max prevents the -15% BSOFT-class losses on short bets.
 _V17_SHORT_TERM_SL_MAX_PCT = 7.0   # SHORT TERM never wider than -7%
 
+# ── v17.5.1 regime gate tolerance ──────────────────────────────────────────
+# Spot may sit up to this % BELOW the 20-day SMA and still count as NEUTRAL
+# (Gold allowed). Only a deeper gap = genuine downtrend = BEARISH = suppressed.
+# 2.0% brackets normal chop and early-recovery lag without opening the gate in
+# a real selloff (where spot runs 4-8%+ under a falling average).
+_REGIME_TOLERANCE_PCT = 2.0
+
 # ── v17.5 resilience watchlist tuning ──────────────────────────────────────
 _RW_RETENTION_DAYS = 30    # rolling window from last_qualified before age-out
 _RW_STREAK_WINDOW  = 5     # streak measured over last N bearish days seen
 _RW_STREAK_MIN     = 2     # surfaced in Excel only when streak_hits >= this
+_RW_MIN_ABS_RETURN = 5.0   # v17.5.1: stock's own 3d return must be >= this %.
+                           # Rel-strength alone let "less bad than the market"
+                           # names (e.g. -0.2% vs Nifty -1.5%) onto the list;
+                           # this floor keeps it to genuine strong movers.
 # v15.1: SL_MAX raised from 12.0% to 15.0% to preserve multi-factor differentiation.
 # Investigation in v15.0 production output (12 May 2026, 100 stocks): 44/100 stocks
 # hit the 12% cap and showed IDENTICAL -12% SL, defeating the per-stock formula.
@@ -3699,14 +3715,34 @@ def run_master_pipeline():
         _nifty_close, _nifty_20d_sma = get_nifty_20d_sma()
         market_stats["nifty_close"]   = _nifty_close or market_stats.get("nifty_close", 0)
         market_stats["nifty_20d_sma"] = _nifty_20d_sma
-        _market_regime = (
-            "BULLISH"
-            if (_nifty_20d_sma <= 0 or _nifty_close >= _nifty_20d_sma)
-            else "BEARISH"
-        )
+        # ── v17.5.1: TOLERANCE-BAND regime gate ──────────────────────────────
+        # The original gate was a hard knife-edge: BEARISH whenever close was
+        # even a hair below the 20-day SMA. A 20-day SMA is a SLOW signal, so
+        # during the first days of a recovery — when spot is rising but the
+        # average is still dragged up by the prior selloff — the gate flagged
+        # BEARISH and suppressed Gold on days the market actually closed UP.
+        # (Observed 29-Jul-2026: Nifty +1.10%, 4th straight gain, close ABOVE
+        # its EMAs, yet Gold was suppressed.)
+        #
+        # The fix: only suppress when spot is MEANINGFULLY below trend, i.e.
+        # more than _REGIME_TOLERANCE_PCT under the SMA. Within that band the
+        # market is treated as NEUTRAL (Gold allowed) rather than bearish, so a
+        # recovering or sideways tape no longer starves the pipeline. A genuine
+        # downtrend — spot well under a falling average — still suppresses.
+        #
+        # SMA<=0 still means "data unavailable" → BULLISH (safe pass), so a bad
+        # yfinance fetch degrades to "allow", never to a silent blanket block.
+        if _nifty_20d_sma <= 0:
+            _market_regime = "BULLISH"          # data missing → do not suppress
+        else:
+            _gap_pct = (_nifty_close - _nifty_20d_sma) / _nifty_20d_sma * 100.0
+            _market_regime = "BEARISH" if _gap_pct < -_REGIME_TOLERANCE_PCT else "BULLISH"
+            market_stats["nifty_gap_pct"] = round(_gap_pct, 2)
         market_stats["market_regime"] = _market_regime
         print(f"   📊 Market regime: {_market_regime} "
-              f"(Nifty {_nifty_close:.0f} vs 20d-SMA {_nifty_20d_sma:.0f})")
+              f"(Nifty {_nifty_close:.0f} vs 20d-SMA {_nifty_20d_sma:.0f}, "
+              f"gap {market_stats.get('nifty_gap_pct', 0):+.2f}%, "
+              f"tolerance -{_REGIME_TOLERANCE_PCT:.1f}%)")
 
         # ── v17.5: BEARISH-REGIME RESILIENCE WATCHLIST refresh ───────────────
         # Reference log ONLY. On a bearish day, record stocks whose trailing
