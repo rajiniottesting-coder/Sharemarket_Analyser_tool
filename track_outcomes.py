@@ -50,6 +50,8 @@ from database.data_bridge import (
     get_t1_hits_needing_continuation,
     get_continuation_tracking,
     upsert_continuation,
+    # v17.7 — shadow trailing stop (observational; writes only shadow_* cols)
+    update_shadow_outcome,
 )
 
 # ─── Config ───────────────────────────────────────────────────────────
@@ -90,6 +92,160 @@ def _load_price_history(symbol: str, start_date: str) -> pd.DataFrame:
         print(f"   ⚠️  _load_price_history({symbol}): {e}")
         return pd.DataFrame()
 
+
+# =============================================================================
+# v17.7 - SHADOW REGIME-AWARE TRAILING STOP (OBSERVATIONAL ONLY)
+#
+# ISOLATION CONTRACT: _compute_shadow_stop is a PURE, READ-ONLY function. It
+# never writes gold_outcomes / gold_recommendations and never mutates live-walk
+# state. It only READS price history and returns shadow_* values, which the
+# caller persists via update_shadow_outcome() (shadow_* columns only). The live
+# exit classification is byte-identical whether this runs or not. G39 asserts it.
+#
+# MECHANISM (no fitted numbers): ATR via Wilder true-range; regime = current-ATR
+# vs its own trailing baseline using the same 1.20/0.80 thresholds and +/-10%
+# adjustment as the entry SL engine; Chandelier stop = peak_high - (N x ATR x
+# regime_adj), N horizon-matched; ratchet UP only; no look-ahead (today low is
+# tested against the stop as of the PRIOR bar, updated only after the check).
+# =============================================================================
+_SHADOW_N_BY_HORIZON = {"SHORT TERM": 2.5, "POSITIONAL": 3.0, "LONG TERM": 3.5}
+_SHADOW_N_DEFAULT   = 3.0
+_SHADOW_REGIME_HIGH = 1.20   # current ATR > 1.20x baseline -> high vol
+_SHADOW_REGIME_LOW  = 0.80   # current ATR < 0.80x baseline -> low vol
+_SHADOW_ADJ_HIGH    = 1.10   # high regime -> widen trail 10%
+_SHADOW_ADJ_LOW     = 0.90   # low regime  -> tighten trail 10%
+_SHADOW_ATR_PERIOD  = 14
+_SHADOW_BASELINE    = 60
+
+
+def _wilder_atr(highs, lows, closes, period=_SHADOW_ATR_PERIOD):
+    """Wilder ATR series aligned to the input bars. atr[i] is None until there
+    are `period` true-range values available. Read-only, no side effects."""
+    n = len(closes)
+    atr = [None] * n
+    if n == 0:
+        return atr
+    trs = []
+    prev_close = closes[0]
+    for i in range(n):
+        hi = highs[i]; lo = lows[i]; cl = closes[i]
+        if i == 0:
+            tr = (hi - lo) if (hi > 0 and lo > 0) else 0.0
+        else:
+            tr = max(hi - lo, abs(hi - prev_close), abs(lo - prev_close)) if (hi > 0 and lo > 0) else 0.0
+        trs.append(tr)
+        prev_close = cl
+        if i + 1 == period:
+            atr[i] = sum(trs[:period]) / period          # seed = simple mean of first `period` TRs
+        elif i + 1 > period:
+            atr[i] = (atr[i - 1] * (period - 1) + tr) / period   # Wilder smoothing
+    return atr
+
+
+def _compute_shadow_stop(rec: dict) -> dict:
+    """v17.7: regime-aware Chandelier shadow stop for one position. READ-ONLY.
+
+    Returns a dict of shadow_* fields for update_shadow_outcome(), or {} on any
+    problem. NEVER writes anything, NEVER touches live logic. See contract above.
+    """
+    try:
+        sym      = rec["symbol"]
+        rec_date = rec["recommendation_date"]
+        cmp_rec  = float(rec.get("cmp_at_recommendation", 0) or 0)
+        horizon  = str(rec.get("time_horizon", "") or "")
+        expiry_days = int(rec.get("expiry_days") or DEFAULT_EXPIRY_DAYS)
+        if expiry_days <= 0:
+            expiry_days = DEFAULT_EXPIRY_DAYS
+        if cmp_rec <= 0:
+            return {}
+
+        prices = _load_price_history(sym, rec_date)
+        if prices is None or prices.empty:
+            return {}
+
+        rec_d = datetime.strptime(rec_date, "%Y-%m-%d").date()
+        highs, lows, closes, dates = [], [], [], []
+        for _, row in prices.iterrows():
+            try:
+                hi = float(row.get("high", 0) or 0)
+                lo = float(row.get("low", 0) or 0)
+                cl = float(row.get("close", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if cl <= 0:
+                continue
+            d_str = str(row["date"])[:10]
+            try:
+                d_obj = datetime.strptime(d_str, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if (d_obj - rec_d).days > expiry_days:
+                break
+            highs.append(hi); lows.append(lo); closes.append(cl); dates.append(d_str)
+
+        if not closes:
+            return {}
+
+        atr_series = _wilder_atr(highs, lows, closes)
+        N = _SHADOW_N_BY_HORIZON.get(horizon.upper(), _SHADOW_N_DEFAULT)
+
+        peak = cmp_rec
+        shadow_stop = 0.0          # 0 = not yet armed
+        shadow_regime = "normal"
+
+        for i in range(len(closes)):
+            hi = highs[i]; lo = lows[i]
+
+            # SL CHECK FIRST against the stop ratcheted at the PRIOR bar
+            # (no look-ahead), only once armed above 0.
+            if shadow_stop > 0 and lo > 0 and lo <= shadow_stop:
+                return {
+                    "shadow_peak_price": round(peak, 2),
+                    "shadow_stop_price": round(shadow_stop, 2),
+                    "shadow_regime":     shadow_regime,
+                    "shadow_status":     "TRAIL_SL",
+                    "shadow_exit_price": round(shadow_stop, 2),
+                    "shadow_exit_date":  dates[i],
+                    "shadow_pnl_pct":    round((shadow_stop - cmp_rec) / cmp_rec * 100, 2),
+                }
+
+            # ratchet the peak with today
+            if hi > peak:
+                peak = hi
+
+            atr_now = atr_series[i]
+            if atr_now is None or atr_now <= 0:
+                continue           # not enough bars for ATR yet
+
+            # regime = current ATR vs its own trailing baseline
+            base_lo = max(0, i - _SHADOW_BASELINE + 1)
+            base_vals = [a for a in atr_series[base_lo:i + 1] if a is not None and a > 0]
+            baseline = (sum(base_vals) / len(base_vals)) if base_vals else atr_now
+            ratio = (atr_now / baseline) if baseline > 0 else 1.0
+            if ratio >= _SHADOW_REGIME_HIGH:
+                regime_adj = _SHADOW_ADJ_HIGH;  shadow_regime = "high"
+            elif ratio <= _SHADOW_REGIME_LOW:
+                regime_adj = _SHADOW_ADJ_LOW;   shadow_regime = "low"
+            else:
+                regime_adj = 1.0;               shadow_regime = "normal"
+
+            candidate = peak - (N * atr_now * regime_adj)
+            if candidate > shadow_stop:        # ratchet UP only
+                shadow_stop = candidate
+
+        # No shadow exit — still open. Report live watch state.
+        return {
+            "shadow_peak_price": round(peak, 2),
+            "shadow_stop_price": round(shadow_stop, 2) if shadow_stop > 0 else 0.0,
+            "shadow_regime":     shadow_regime,
+            "shadow_status":     "OPEN",
+            "shadow_exit_price": 0.0,
+            "shadow_exit_date":  "",
+            "shadow_pnl_pct":    0.0,
+        }
+    except Exception as _e:
+        print(f"   ⚠️  _compute_shadow_stop({rec.get('symbol','?')}): {_e}")
+        return {}
 
 def _walk_forward(rec: dict) -> dict:
     """Walk forward through daily_prices for one OPEN recommendation.
@@ -744,6 +900,25 @@ def main():
                 dd_duration_days=r.get("dd_duration_days", 0) or 0,
                 dd_recovered=r.get("dd_recovered", 1) or 0,
             )
+            # v17.7: SHADOW regime-aware trailing stop — OBSERVATIONAL ONLY.
+            # Computed AFTER the live update above, writes ONLY shadow_* columns
+            # via update_shadow_outcome(). Fully wrapped: any shadow failure is
+            # non-fatal and can never affect the live tracker result.
+            try:
+                _sh = _compute_shadow_stop(rec)
+                if _sh:
+                    update_shadow_outcome(
+                        symbol=sym, recommendation_date=rec_date,
+                        shadow_peak_price=_sh.get("shadow_peak_price", 0),
+                        shadow_stop_price=_sh.get("shadow_stop_price", 0),
+                        shadow_regime=_sh.get("shadow_regime", ""),
+                        shadow_status=_sh.get("shadow_status", "OPEN"),
+                        shadow_exit_price=_sh.get("shadow_exit_price", 0),
+                        shadow_exit_date=_sh.get("shadow_exit_date", ""),
+                        shadow_pnl_pct=_sh.get("shadow_pnl_pct", 0),
+                    )
+            except Exception as _she:
+                print(f"   ⚠️  shadow skipped for {sym} (non-fatal): {_she}")
             counts[r["outcome_type"]] = counts.get(r["outcome_type"], 0) + 1
             tag = r["outcome_type"]
             if r["outcome_type"] != "OPEN":

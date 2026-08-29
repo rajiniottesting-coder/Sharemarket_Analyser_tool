@@ -273,6 +273,27 @@ def initialize_v7_tables(conn):
         ("gold_outcomes",        "trailing_sl_price REAL DEFAULT 0"),
         ("gold_outcomes",        "peak_price_seen REAL DEFAULT 0"),
         # ────────────────────────────────────────────────────────────────
+        # v17.7 — SHADOW regime-aware trailing stop (OBSERVATIONAL ONLY)
+        # These columns record what a regime-aware ratcheting (Chandelier)
+        # stop WOULD have done, computed in parallel with the live walk. They
+        # NEVER influence the real outcome_type / P&L — live exit logic is
+        # untouched. Purpose: gather side-by-side evidence (real vs shadow)
+        # so a better exit rule can be promoted with proof, not on a hunch.
+        #   shadow_peak_price  REAL — highest price since entry (ratchet anchor)
+        #   shadow_stop_price  REAL — today's regime-adjusted trailing floor
+        #   shadow_regime      TEXT — this stock's vol regime today (high/normal/low)
+        #   shadow_status      TEXT — OPEN or the shadow outcome (TRAIL_SL/…)
+        #   shadow_exit_price  REAL — price the shadow stop would have fired at
+        #   shadow_exit_date   TEXT — when it would have fired
+        #   shadow_pnl_pct     REAL — P&L the shadow stop would have locked in
+        ("gold_outcomes",        "shadow_peak_price REAL DEFAULT 0"),
+        ("gold_outcomes",        "shadow_stop_price REAL DEFAULT 0"),
+        ("gold_outcomes",        "shadow_regime TEXT DEFAULT ''"),
+        ("gold_outcomes",        "shadow_status TEXT DEFAULT 'OPEN'"),
+        ("gold_outcomes",        "shadow_exit_price REAL DEFAULT 0"),
+        ("gold_outcomes",        "shadow_exit_date TEXT DEFAULT ''"),
+        ("gold_outcomes",        "shadow_pnl_pct REAL DEFAULT 0"),
+        # ────────────────────────────────────────────────────────────────
         # v15.7 — Institutional risk-parity sizing surface on Performance
         # ────────────────────────────────────────────────────────────────
         # gold_recommendations gets:
@@ -1798,6 +1819,83 @@ def update_outcome(symbol: str, recommendation_date: str,
     except Exception as e:
         print(f"   ⚠️  update_outcome({symbol}): {e}")
         return False
+
+
+def update_shadow_outcome(symbol: str, recommendation_date: str,
+                          shadow_peak_price: float = 0,
+                          shadow_stop_price: float = 0,
+                          shadow_regime: str = "",
+                          shadow_status: str = "OPEN",
+                          shadow_exit_price: float = 0,
+                          shadow_exit_date: str = "",
+                          shadow_pnl_pct: float = 0) -> bool:
+    """v17.7: persist ONLY the shadow_* columns for one position.
+
+    ISOLATION: this UPDATE lists shadow_* columns exclusively. It cannot
+    touch outcome_type, current_pnl_pct, or any live field — so the shadow
+    trailing stop can never alter a real outcome. Called right after
+    update_outcome() in the tracker loop. Failures are swallowed.
+    """
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            c = conn.cursor()
+            c.execute("""
+                UPDATE gold_outcomes
+                SET shadow_peak_price = ?,
+                    shadow_stop_price = ?,
+                    shadow_regime     = ?,
+                    shadow_status     = ?,
+                    shadow_exit_price = ?,
+                    shadow_exit_date  = ?,
+                    shadow_pnl_pct    = ?
+                WHERE symbol = ?
+                  AND recommendation_date = ?
+            """, (
+                shadow_peak_price, shadow_stop_price, shadow_regime,
+                shadow_status, shadow_exit_price, shadow_exit_date,
+                shadow_pnl_pct, symbol, recommendation_date,
+            ))
+            conn.commit()
+            return c.rowcount > 0
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  update_shadow_outcome({symbol}): {e}")
+        return False
+
+
+def get_shadow_comparison() -> pd.DataFrame:
+    """v17.7: real-vs-shadow exit comparison for the Performance sheet.
+
+    Joins each pick's live outcome against its shadow_* columns. Returns
+    closed positions first (where a real vs shadow comparison exists), then
+    open ones (where only the live shadow-stop watch matters). READ-ONLY.
+    Empty DataFrame if the shadow columns don't exist yet, so the section
+    degrades gracefully and the sheet renders as it did pre-v17.7.
+    """
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            return pd.read_sql_query("""
+                SELECT r.symbol, r.time_horizon,
+                       o.outcome_type, o.current_pnl_pct,
+                       o.shadow_status, o.shadow_pnl_pct,
+                       o.shadow_stop_price, o.shadow_peak_price,
+                       o.shadow_regime, o.current_price
+                FROM gold_recommendations r
+                INNER JOIN gold_outcomes o
+                  ON r.symbol = o.symbol
+                  AND r.recommendation_date = o.recommendation_date
+                ORDER BY
+                  CASE WHEN o.outcome_type != 'OPEN' THEN 0 ELSE 1 END,
+                  r.recommendation_date ASC
+            """, conn)
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  get_shadow_comparison: {e}")
+        return pd.DataFrame()
 
 
 def get_outcome_stats() -> dict:

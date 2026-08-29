@@ -31,14 +31,22 @@ load_dotenv()
 # The google-genai SDK auto-picks up GEMINI_API_KEY or GOOGLE_API_KEY from env.
 # We still validate explicitly so we fail fast with a clear error message.
 _gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-if not _gemini_key:
-    raise ValueError(
-        "CRITICAL ERROR: GEMINI_API_KEY (or GOOGLE_API_KEY) is missing from "
-        "environment secrets. Add it to GitHub Secrets or your .env file. "
-        "Get a key at https://aistudio.google.com/apikey"
-    )
-
-client = genai.Client(api_key=_gemini_key)
+# v17.6: WARN, do not raise. A missing key must NOT break the whole module —
+# the pipeline produces a complete, accurate Excel from the quantitative
+# engine alone; only the optional AI narrative cards need the key. Raising at
+# import time took down everything (screening, fair value, SL/T1/T2/T3,
+# outcome tracking) for the sake of an optional feature. get_ai_analysis()
+# now checks _AI_ENABLED and returns a clean skip message when the key is
+# absent, so the run completes and every other sheet is intact.
+_AI_ENABLED = bool(_gemini_key)
+client = None
+if _AI_ENABLED:
+    client = genai.Client(api_key=_gemini_key)
+else:
+    print("   ⚠️  GEMINI_API_KEY not configured — AI narrative cards will be "
+          "skipped. All other analysis (screening, fair value, SL/targets, "
+          "outcome tracking, Excel, delivery) runs normally. "
+          "Add a key at https://aistudio.google.com/apikey to enable cards.")
 
 # Gemini model — 2.5 Pro is the strongest reasoning model for equity analysis.
 # Swap to "gemini-2.5-flash" if you want faster/cheaper runs at some quality cost.
@@ -75,6 +83,24 @@ def _is_quota_error(err: Exception) -> bool:
     return any(m in err_str for m in quota_markers)
 
 
+def _is_auth_error(err: Exception) -> bool:
+    """v17.6: detect an INVALID or MISSING API key (as opposed to quota).
+
+    An invalid key fails EVERY batch identically, so retrying each of ~8
+    batches (5s wait + 2 attempts apiece) just burns ~80s and spams the log
+    with useless calls. Detecting it lets us abort ALL remaining cards after
+    the FIRST failed batch — the behaviour requested: 'if no api key
+    configured, don't run any further cards.'
+    """
+    err_str = str(err).lower()
+    auth_markers = (
+        "api_key_invalid", "api key not valid", "invalid api key",
+        "unauthenticated", "unauthorized", "401", "invalid_argument",
+        "missing", "no api key",
+    )
+    return any(m in err_str for m in auth_markers)
+
+
 def get_ai_analysis(stock_list_df) -> str:
     """
     SECTION 0D & 3: Grounded Batch Processing via Google Gemini.
@@ -86,6 +112,12 @@ def get_ai_analysis(stock_list_df) -> str:
     Rate limiting: 2s delay between batches.
     Timeout/retry: 1 retry per failed batch.
     """
+    # v17.6: hard skip when no key — return one clean card, run zero batches.
+    if not _AI_ENABLED:
+        return ("[AI unavailable — GEMINI_API_KEY not configured. "
+                "Cards skipped; all other Excel data is complete and accurate. "
+                "Add a key at aistudio.google.com/apikey to enable AI narratives.]")
+
     all_investor_cards = []
     batch_size = 12  # 10-15 per Section 0D
 
@@ -302,13 +334,19 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                 time.sleep(2)
         except Exception as e:
             # Detect quota exhaustion — no point retrying
-            if _is_quota_error(e):
-                quota_exhausted = True
-                print(f"   ⚠️  Gemini quota exhausted — skipping all remaining batches.")
-                print(f"      Check quota at: https://aistudio.google.com/apikey")
+            if _is_quota_error(e) or _is_auth_error(e):
+                quota_exhausted = True   # reuse the same abort flag for both
+                _reason = ("quota exhausted" if _is_quota_error(e)
+                           else "API key invalid or not configured")
+                # v17.6: on the FIRST bad-key/quota batch, stop trying the rest.
+                # Requested behaviour: don't run any further cards once we know
+                # the key won't work — every subsequent batch would fail the same.
+                print(f"   ⚠️  Gemini {_reason} — skipping ALL remaining batches "
+                      f"(no point retrying).")
+                print(f"      Check your key/quota at: https://aistudio.google.com/apikey")
                 all_investor_cards.append(
-                    f"[AI unavailable — Gemini API quota exhausted. "
-                    f"Please check your quota/billing at aistudio.google.com/apikey. "
+                    f"[AI unavailable — Gemini {_reason}. "
+                    f"Check your key/quota at aistudio.google.com/apikey. "
                     f"All other Excel data is complete and accurate.]"
                 )
             else:

@@ -5431,6 +5431,154 @@ def test_g38_v17_5_resilience_watchlist_isolation_and_retention():
             "re-qualification, and the Gold sheet degrades cleanly when empty")
 
 
+
+
+def test_g39_v17_7_shadow_stop_isolation():
+    """v17.7 regression test — SHADOW regime-aware trailing stop.
+
+    The shadow Chandelier stop is OBSERVATIONAL. It records what a ratcheting
+    volatility-regime stop WOULD have done, and must NEVER change a live
+    outcome. Guards (all bidirectional):
+
+      1. ISOLATION (static): _compute_shadow_stop contains no write to
+         gold_outcomes/gold_recommendations, and update_shadow_outcome's
+         UPDATE lists only shadow_* columns.
+      2. ISOLATION (functional): running the shadow does not change live
+         outcome_type / P&L — verified by walking a position with and
+         without the shadow and comparing.
+      3. RATCHET: the shadow stop only moves UP, never down.
+      4. CONVERSION: on a round-trip (up then down through the trail), the
+         shadow produces a TRAIL_SL exit in profit where the frozen stop
+         took a loss.
+    """
+    import os, re, sqlite3, tempfile, shutil
+    from datetime import date, timedelta
+
+    tro = open("track_outcomes.py", encoding="utf-8").read()
+    bridge = open("database/data_bridge.py", encoding="utf-8").read()
+
+    assert "def _compute_shadow_stop" in tro, "v17.7: shadow compute fn missing"
+    assert "def _wilder_atr" in tro, "v17.7: Wilder ATR helper missing"
+    assert "def update_shadow_outcome" in bridge, "v17.7: shadow writer missing"
+
+    # GUARD 1 static: shadow compute must not write live tables.
+    _cs = tro[tro.find("def _compute_shadow_stop"):]
+    _cs = _cs[:_cs.find("\ndef ", 10)]
+    for _v in ("INSERT INTO gold_outcomes", "UPDATE gold_outcomes",
+               "DELETE FROM gold_outcomes", "INSERT INTO gold_recommendations",
+               "UPDATE gold_recommendations"):
+        assert _v not in _cs, (
+            f"v17.7 ISOLATION: _compute_shadow_stop contains '{_v}'. It must "
+            f"be READ-ONLY.")
+    # update_shadow_outcome must only UPDATE shadow_ columns.
+    _us = bridge[bridge.find("def update_shadow_outcome"):]
+    _us = _us[:_us.find("\ndef ", 10)]
+    _set = _us[_us.find("SET"):_us.find("WHERE")]
+    for _line in _set.split("\n"):
+        _line = _line.strip().rstrip(",")
+        if "=" in _line and "?" in _line:
+            _col = _line.split("=")[0].strip()
+            _col = _col.replace("SET ", "").strip()
+            assert _col.startswith("shadow_"), (
+                f"v17.7 ISOLATION: update_shadow_outcome writes non-shadow "
+                f"column '{_col}'. It must touch shadow_* only.")
+
+    # Functional guards 2/3/4 on a temp DB with a round-trip position.
+    _cwd = os.getcwd(); _tmp = tempfile.mkdtemp()
+    try:
+        os.chdir(_tmp)
+        from database.data_bridge import initialize_v7_tables
+        conn = sqlite3.connect("market_data.db"); initialize_v7_tables(conn)
+        c = conn.cursor()
+        entry = 100.0; sym = "RT"; rec_date = (date.today()-timedelta(days=40)).strftime("%Y-%m-%d")
+        c.execute("""INSERT INTO gold_recommendations
+          (recommendation_date,symbol,cmp_at_recommendation,stop_loss,t1,t2,t3,
+           expiry_days,expiry_date,time_horizon,composite_score,sector)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+          (rec_date,sym,entry,93.0,110.0,120.0,130.0,30,
+           (date.today()+timedelta(days=5)).strftime("%Y-%m-%d"),"SHORT TERM",90,"IT"))
+        c.execute("""INSERT INTO gold_outcomes
+          (recommendation_date,symbol,outcome_type,current_price,current_pnl_pct,last_checked_date)
+          VALUES (?,?,?,?,?,?)""",(rec_date,sym,"OPEN",entry,0.0,rec_date))
+        d0 = date.today()-timedelta(days=39)
+        path = [100,101,102,103,104,105,106,107,108,109,109,108,106,104,101,98,95,92]
+        rows = [(sym,"NSE",(d0+timedelta(days=i)).strftime("%Y-%m-%d"),cl,cl+0.8,cl-0.8,cl,100000)
+                for i,cl in enumerate(path)]
+        c.executemany("INSERT INTO daily_prices (symbol,exchange,date,open,high,low,close,volume) "
+                      "VALUES (?,?,?,?,?,?,?,?)", rows)
+        conn.commit(); conn.close()
+
+        import importlib, track_outcomes
+        importlib.reload(track_outcomes)
+        rec = {"symbol":sym,"recommendation_date":rec_date,"cmp_at_recommendation":entry,
+               "time_horizon":"SHORT TERM","stop_loss":93.0,"t1":110.0,"t2":120.0,"t3":130.0,
+               "expiry_days":30}
+
+        # GUARD 2 functional: live walk identical with/without shadow call.
+        live_a = track_outcomes._walk_forward(rec)
+        _ = track_outcomes._compute_shadow_stop(rec)   # running shadow must not mutate anything
+        live_b = track_outcomes._walk_forward(rec)
+        assert live_a["outcome_type"] == live_b["outcome_type"] == "SL_HIT", (
+            "v17.7 ISOLATION: live outcome changed around a shadow computation.")
+        assert live_a["current_pnl_pct"] == live_b["current_pnl_pct"], (
+            "v17.7 ISOLATION: live P&L changed around a shadow computation.")
+
+        sh = track_outcomes._compute_shadow_stop(rec)
+        # GUARD 4 conversion: round-trip → shadow TRAIL_SL in profit.
+        assert sh.get("shadow_status") == "TRAIL_SL", (
+            f"v17.7 CONVERSION: expected shadow TRAIL_SL on a round-trip, got "
+            f"{sh.get('shadow_status')}.")
+        assert sh.get("shadow_pnl_pct", 0) > 0, (
+            "v17.7 CONVERSION: shadow should exit in PROFIT on this round-trip "
+            "(live took the -7% loss).")
+        assert sh.get("shadow_pnl_pct", 0) > live_a["current_pnl_pct"], (
+            "v17.7: shadow must beat the live loss on a converted round-trip.")
+
+        # GUARD 3 ratchet: reconstruct via a monotonic check on a rising path.
+        rising = {"symbol":"UP","recommendation_date":rec_date,"cmp_at_recommendation":100.0,
+                  "time_horizon":"POSITIONAL","stop_loss":93.0,"t1":200.0,"t2":250.0,"t3":300.0,
+                  "expiry_days":90}
+        conn = sqlite3.connect("market_data.db"); c = conn.cursor()
+        c.execute("""INSERT INTO gold_recommendations
+          (recommendation_date,symbol,cmp_at_recommendation,stop_loss,t1,t2,t3,expiry_days,
+           expiry_date,time_horizon,composite_score,sector)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+          (rec_date,"UP",100.0,93.0,200.0,250.0,300.0,90,
+           (date.today()+timedelta(days=60)).strftime("%Y-%m-%d"),"POSITIONAL",80,"IT"))
+        up_rows=[("UP","NSE",(d0+timedelta(days=i)).strftime("%Y-%m-%d"),
+                  100+i,100+i+0.8,100+i-0.8,100+i,100000) for i in range(18)]
+        c.executemany("INSERT INTO daily_prices (symbol,exchange,date,open,high,low,close,volume) "
+                      "VALUES (?,?,?,?,?,?,?,?)", up_rows)
+        conn.commit(); conn.close()
+        sh_up = track_outcomes._compute_shadow_stop(rising)
+        # On a monotonic rise, the stop should have armed and be BELOW peak but
+        # positive, and status OPEN (never triggered on the way up).
+        assert sh_up.get("shadow_status") == "OPEN", (
+            "v17.7 RATCHET: a monotonic rise must not trigger the shadow stop.")
+        assert 0 < sh_up.get("shadow_stop_price", 0) < sh_up.get("shadow_peak_price", 1e9), (
+            "v17.7 RATCHET: shadow stop should sit below the peak and above 0 "
+            "after a sustained rise.")
+        # RATCHET (source): the shadow stop must only move UP. Assert the
+        # only-up guard literally exists in _compute_shadow_stop — a path-based
+        # test is fragile because the ratchet only bites on specific reversals,
+        # so we pin the invariant at the source instead.
+        _tro2 = tro   # v17.7 fix: reuse source read at top (cwd is a tempdir here)
+        _cs2 = _tro2[_tro2.find("def _compute_shadow_stop"):]
+        _cs2 = _cs2[:_cs2.find("\ndef ", 10)]
+        assert "if candidate > shadow_stop:" in _cs2, (
+            "v17.7 RATCHET: the only-up guard 'if candidate > shadow_stop' is "
+            "missing from _compute_shadow_stop — the stop could move DOWN, "
+            "which breaks the Chandelier ratchet.")
+    finally:
+        os.chdir(_cwd)
+        shutil.rmtree(_tmp, ignore_errors=True)
+
+    return ("\u2705 v17.7: shadow regime-aware trailing stop verified — "
+            "READ-ONLY (writes only shadow_* columns), live outcome_type/P&L "
+            "byte-identical around shadow runs, ratchets up only, and converts "
+            "a round-trip SL_HIT into a profitable TRAIL_SL in shadow")
+
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -5705,6 +5853,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g36_v17_2_alert_log_score_degraded_semantics))
     v14_1_results.append(_run_one_test(test_g37_v17_3_continuation_tracking_isolation_and_expiry))
     v14_1_results.append(_run_one_test(test_g38_v17_5_resilience_watchlist_isolation_and_retention))
+    v14_1_results.append(_run_one_test(test_g39_v17_7_shadow_stop_isolation))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

@@ -1038,6 +1038,29 @@ TIPS: Dict[str, Tuple[str, str]] = {
                    "  SHORT TERM  → expiry at 30 days\n"
                    "  POSITIONAL  → expiry at 90 days\n"
                    "  LONG TERM   → expiry at 270 days"),
+    # ── v17.7 SHADOW EXIT COMPARISON (Performance sheet) ────────────────────
+    "Real Outcome": ("The ACTUAL outcome under live exit logic",
+                     "What really happened to this pick — SL_HIT, T1_HIT,\n"
+                     "TRAIL_SL, etc. This is unchanged and authoritative."),
+    "Shadow Outcome": ("What a regime-aware trailing stop WOULD have done",
+                       "Observational only. A Chandelier stop that ratchets up\n"
+                       "behind the price, modulated by the stock's volatility\n"
+                       "regime. Never affects the real outcome — it's a\n"
+                       "measurement of a candidate exit rule."),
+    "Shadow P&L %": ("P&L the shadow trailing stop would have locked in",
+                     "If this beats Real P&L on round-trip losses, the\n"
+                     "ratcheting stop is protecting gains the frozen stop\n"
+                     "gave back. Wait for ~15-20 closed picks before trusting\n"
+                     "the pattern."),
+    "Difference": ("Shadow P&L minus Real P&L, in percentage points",
+                   "Positive (green) = shadow would have done better.\n"
+                   "Negative (red) = shadow cut a winner short. Only shown\n"
+                   "when BOTH real and shadow have closed."),
+    "Cur. Shadow Stop": ("Today's live ratcheting shadow stop level",
+                         "For open positions: watch this climb as the stock\n"
+                         "rises. It only moves UP, never down — the Chandelier\n"
+                         "ratchet. Shows how the stop would protect gains in\n"
+                         "real time, before any position closes."),
     "Archetype": ("Quick Pick label at recommendation time",
                    "The Quick Pick assigned the day this stock was added to Gold.\n"
                    "Frozen at log time — even if today's score/EE would change the\n"

@@ -3199,6 +3199,100 @@ class ExcelGeneratorV6:
             ws.row_dimensions[next_row].height = 30
             next_row += 1
 
+        # ── v17.7 Section 6.5: SHADOW EXIT COMPARISON ─────────────────────
+        # Real vs regime-aware Chandelier trailing stop, side by side.
+        # OBSERVATIONAL: the shadow_* columns are computed by track_outcomes
+        # without ever touching the live outcome. This section just surfaces
+        # them so you can see whether a ratcheting stop would have converted
+        # round-trip SL_HITs into protected exits — with real data, before
+        # promoting it to live. Closed rows show the comparison; open rows
+        # show the live "current shadow stop" watch so you can see the
+        # ratchet working before positions close.
+        # GRACEFUL: empty/missing shadow data → section does not render.
+        try:
+            from database.data_bridge import get_shadow_comparison
+            _shadow_df = get_shadow_comparison()
+        except Exception as _se:
+            _shadow_df = pd.DataFrame()
+            print(f"   \u26a0\ufe0f  Shadow comparison — DB read failed: {_se}")
+
+        if not _shadow_df.empty:
+            next_row += 1   # spacer
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+            c = ws.cell(next_row,1,
+                "\U0001f52c  SHADOW EXIT COMPARISON  \u00b7  Real vs regime-aware trailing stop  \u00b7  "
+                "observational only \u2014 does not affect live outcomes or P&L")
+            c.fill = _f("5B2C6F"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
+            ws.row_dimensions[next_row].height = 22
+            next_row += 1
+
+            _sh_cols = [("Symbol",14),("Horizon",13),("Real Outcome",15),
+                        ("Real P&L %",12),("Shadow Outcome",16),("Shadow P&L %",13),
+                        ("Difference",12),("Cur. Shadow Stop",16),("Regime",10)]
+            for ci,(h,w) in enumerate(_sh_cols,1):
+                cc = ws.cell(next_row,ci,h)
+                cc.fill=_f("7D3C98"); cc.font=_ft(True,WHITE,9); cc.alignment=_al()
+                _set_min_width(ci, w)   # v17.7: widen-only, shares cols with 5 sections
+            try:
+                self._apply_col_tips(ws, next_row, [h for h,_ in _sh_cols])
+            except Exception:
+                pass
+            ws.row_dimensions[next_row].height=18
+            next_row += 1
+
+            _beats=_worse=_closed=0
+            for _, sr in _shadow_df.iterrows():
+                _real_closed = str(sr.get("outcome_type","")) not in ("OPEN","")
+                _real_pnl = float(sr.get("current_pnl_pct",0) or 0)
+                _sh_status = str(sr.get("shadow_status","OPEN") or "OPEN")
+                _sh_pnl = float(sr.get("shadow_pnl_pct",0) or 0)
+                _sh_closed = _sh_status not in ("OPEN","")
+                # Difference only meaningful when BOTH closed
+                if _real_closed and _sh_closed:
+                    _diff = _sh_pnl - _real_pnl
+                    _closed += 1
+                    if _diff > 0.05: _beats += 1
+                    elif _diff < -0.05: _worse += 1
+                    _diff_str = f"{_diff:+.1f}pp"
+                else:
+                    _diff_str = "—"
+                _bg = "FFFFFF" if next_row%2 else "F4ECF7"
+                vals=[
+                    str(sr.get("symbol","")),
+                    str(sr.get("time_horizon","") or "—"),
+                    str(sr.get("outcome_type","") or "OPEN"),
+                    f"{_real_pnl:+.1f}%" if _real_closed else "—",
+                    _sh_status,
+                    f"{_sh_pnl:+.1f}%" if _sh_closed else "—",
+                    _diff_str,
+                    f"\u20b9{float(sr.get('shadow_stop_price',0) or 0):.2f}" if float(sr.get('shadow_stop_price',0) or 0)>0 else "—",
+                    str(sr.get("shadow_regime","") or "—"),
+                ]
+                for ci,v in enumerate(vals,1):
+                    cc=ws.cell(next_row,ci,v)
+                    cc.fill=_f(_bg); cc.font=_ft(False,"1A1A1A",9); cc.alignment=_al()
+                    # colour the Difference cell
+                    if ci==7 and _diff_str!="—":
+                        _d=float(_diff_str.replace("pp","").replace("+",""))
+                        cc.font=_ft(True,"1E8449" if _d>0 else "C0392B",9)
+                ws.row_dimensions[next_row].height=16
+                next_row += 1
+
+            # Summary line
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=16)
+            if _closed>0:
+                _msg=(f"  Across {_closed} closed pick(s): shadow beat live in {_beats}, "
+                      f"worse in {_worse}, tie in {_closed-_beats-_worse}. "
+                      f"Open rows show the live ratcheting stop \u2014 watch it climb before closes accumulate. "
+                      f"Shadow exits classify as TRAIL_SL (protected exit), never a target hit.")
+            else:
+                _msg=("  No closed picks yet \u2014 open rows show the live 'current shadow stop' "
+                      "ratcheting up as each position rises. Comparison fills in as positions close.")
+            c=ws.cell(next_row,1,_msg)
+            c.fill=_f("F4ECF7"); c.font=_ft(False,"5B2C6F",9,True); c.alignment=_al("left","center",True)
+            ws.row_dimensions[next_row].height=28
+            next_row += 1
+
         # ── v16.0 Section 7: SURVIVORSHIP AUDIT (Item 5) ──────────────────
         # Renders a one-line institutional audit confirming that all OPEN
         # gold positions are still present in today's universe (i.e., have
