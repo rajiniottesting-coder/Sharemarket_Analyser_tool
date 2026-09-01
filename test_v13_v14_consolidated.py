@@ -2356,8 +2356,10 @@ def test_g15_sl_t_v14_6_multi_factor_formula():
     ]
     for s in test_scenarios:
         r = _compute_sl_t_v14_6(*s)
-        assert r['rr_t1'] >= 1.5, (
-            f"R:R below 1.5 for scenario {s}: got {r['rr_t1']} "
+        # v17.8.1: target is pure regime multiplier x SL; min R:R floor is
+        # now 1.3 (calm), not 1.5. Fair-value/horizon-cap no longer apply.
+        assert r['rr_t1'] >= 1.3 - 1e-6, (
+            f"R:R below 1.3 for scenario {s}: got {r['rr_t1']} "
             f"(SL={r['sl_pct']}%, T1={r['t1_pct']}%)"
         )
 
@@ -2386,12 +2388,12 @@ def test_g15_sl_t_v14_6_multi_factor_formula():
     # Test 7: Missing ATR triggers cap-based fallback
     r_no_atr = _compute_sl_t_v14_6(100, None, 130, 'SMALL', 'Industrials', 'POSITIONAL')
     assert r_no_atr['sl_pct'] > 0, "Missing ATR should still produce a valid SL"
-    assert r_no_atr['rr_t1'] >= 1.5
+    assert r_no_atr['rr_t1'] >= 1.3
 
     # Test 8: CFV ≤ CMP — formula should still produce valid output
     r_no_cfv = _compute_sl_t_v14_6(100, 2.5, 0, 'MID', 'Industrials', 'POSITIONAL')
     assert r_no_cfv['t1'] > 100, "T1 must be above CMP even without CFV"
-    assert r_no_cfv['rr_t1'] >= 1.5
+    assert r_no_cfv['rr_t1'] >= 1.3
 
     r_neg_cfv = _compute_sl_t_v14_6(100, 2.5, 80, 'MID', 'Industrials', 'POSITIONAL')
     assert r_neg_cfv['t1'] > 100, "T1 must be above CMP even if CFV < CMP"
@@ -2417,7 +2419,7 @@ def test_g15_sl_t_v14_6_multi_factor_formula():
     ]
     for pos in real_positions:
         r = _compute_sl_t_v14_6(*pos)
-        assert r['rr_t1'] >= 1.5, f"Real pos failed R:R: {pos} → {r}"
+        assert r['rr_t1'] >= 1.3, f"Real pos failed R:R: {pos} → {r}"
 
     return "✅ v14.6 multi-factor SL/T formula passes all 10 sub-tests"
 
@@ -3260,8 +3262,8 @@ def test_g23_v15_7_minor_cleanups():
     )
     # Count tuples in open_cols — should be 20
     tuple_count = len(re.findall(r'\("[^"]+"\s*,\s*\d+\)', open_cols_text))
-    assert tuple_count == 23, (
-        f"v17.4: Performance open_cols should have 23 tuples, got {tuple_count}"
+    assert tuple_count == 21, (
+        f"v17.8: Performance open_cols should have 21 tuples (T2/T3 removed), got {tuple_count}"
     )
 
     # ----- Cleanup 3b: schema has the new columns -----
@@ -4660,7 +4662,7 @@ def test_g34_v17_0_performance_fixes():
         f"POSITIONAL T1 ({_r_pos['t1_pct']:.1f}%) — 30-day window needs a "
         f"reachable target"
     )
-    assert _r_short['rr_t1'] >= 1.5, (
+    assert _r_short['rr_t1'] >= 1.3, (
         f"v17.0: R:R floor of 1.5 must survive the tighter SHORT TERM stop, "
         f"got {_r_short['rr_t1']:.2f}"
     )

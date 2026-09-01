@@ -527,7 +527,27 @@ _RW_MIN_ABS_RETURN = 5.0   # v17.5.1: stock's own 3d return must be >= this %.
 # Verified production target: 70%+ of stocks should now show SL in the
 # 6-13% range (real differentiation) instead of 44% all stacked at -12%.
 _V14_6_SL_MAX_PCT = 15.0   # never wider (caps risk per trade)
-_V14_6_RR_MIN_T1  = 1.5    # T1 must clear 1.5:1
+# ── v17.8: REGIME-AWARE TARGET R:R MULTIPLIER (LIVE) ─────────────────────────
+# T1's risk/reward floor. Previously a flat 1.5×. Now varies with the stock's
+# OWN volatility regime (the same current-14 vs baseline-60 ATR regime the SL
+# engine already computes as regime_label):
+#   calm/low regime   → tighter 1.3×  (low vol → a modest target is realistic)
+#   normal regime     → 1.5×          (unchanged baseline)
+#   high/volatile     → wider 1.8×    (high vol → give the target room to breathe)
+# NOTE (per owner decision, v17.8): these three values (1.3/1.5/1.8) are
+# STARTING estimates, not yet validated against closed-trade outcomes. Once
+# ~20-30 picks have closed, review hit-rate by regime band and tune these.
+# _V14_6_RR_MIN_T1 is retained as the 'normal' value so all existing references
+# and tests that use it continue to resolve to the baseline 1.5×.
+_V14_6_RR_MIN_T1  = 1.5    # normal-regime R:R floor (baseline; see map below)
+_V14_6_TARGET_RR_BY_REGIME = {
+    "low":     1.3,   # calm  — tighter, realistic target
+    "neutral": 1.5,   # baseline (regime_label defaults to 'neutral')
+    "normal":  1.5,   # alias, in case future code emits 'normal'
+    "high":    1.8,   # volatile — wider target
+}
+_V14_6_TARGET_RR_DEFAULT = 1.5   # fallback if regime_label is unrecognised
+_V14_6_TARGET_SANITY_CEILING_PCT = 50.0   # v17.8.1: guard vs broken-ATR only
 
 # v14.7: Regime detection thresholds (ratio of current ATR to baseline ATR)
 _V14_7_REGIME_HIGH_THRESHOLD = 1.20  # current > 1.20× baseline → high-vol regime
@@ -639,54 +659,35 @@ def _compute_sl_t_v14_6(cmp_price, atr_14, cfv, cap_category, sector,
     upside_pct = ((cfv - cmp_price) / cmp_price * 100) \
                  if (cfv and cfv > cmp_price) else 0
 
-    # ── Targets: max(R:R-floor, CFV-anchored) ──
-    t1_min_rr = _V14_6_RR_MIN_T1 * sl_pct
-    t2_min_rr = 2.5 * sl_pct
-    t3_min_rr = 4.0 * sl_pct
-    t1_cfv = upside_pct * 0.40
-    t2_cfv = upside_pct * 0.70
-    t3_cfv = upside_pct * 1.00
+    # ── Targets: PURE REGIME × SL (v17.8.1) ──────────────────────────────
+    # OWNER DECISION (v17.8.1): the target is now purely regime_multiplier × SL.
+    # Fair-value (CFV) anchoring and the horizon cap were REMOVED — the owner
+    # found fair-value unreliable and wants a target that is a clean multiple of
+    # the (already regime-adjusted) stop. Running as LIVE for a 30-day trial;
+    # if hit-rate / net P&L do not improve, revert to the max(floor, CFV) logic.
+    #
+    #   regime_multiplier: 1.3 calm / 1.5 normal / 1.8 volatile (tune after ~30 closes)
+    #   Target = multiplier × SL, then a single 50% SANITY CEILING to guard against
+    #   broken-ATR inputs producing an absurd target (NOT the old +10%/+20% cap).
+    #   SL logic is completely unchanged. T2/T3 are dormant (hidden from the sheet)
+    #   and kept only as spacing multiples so the schema/columns stay intact.
+    _target_rr = _V14_6_TARGET_RR_BY_REGIME.get(regime_label, _V14_6_TARGET_RR_DEFAULT)
+    t1_pct = _target_rr * sl_pct
 
-    t1_pct = max(t1_min_rr, t1_cfv)
-    t2_pct = max(t2_min_rr, t2_cfv)
-    t3_pct = max(t3_min_rr, t3_cfv)
+    # Single high sanity ceiling — catches computational absurdities only.
+    if t1_pct > _V14_6_TARGET_SANITY_CEILING_PCT:
+        t1_pct = _V14_6_TARGET_SANITY_CEILING_PCT
 
-    # ── T1 horizon cap (but never violate 1.5:1 R:R floor) ──
-    t1_cap_base = _V14_6_HORIZON_T1_CAP_BASE.get(time_horizon, 20.0)
-    t1_cap_effective = max(t1_cap_base, t1_min_rr)
-    if t1_pct > t1_cap_effective:
-        scale = t1_cap_effective / t1_pct
-        t1_pct = t1_cap_effective
-        t2_pct *= scale
-        t3_pct *= scale
-
-    # ── Spacing: T2 ≥ T1×1.35, T3 ≥ T2×1.35 ──
-    t2_pct = max(t2_pct, t1_pct * 1.35)
-    t3_pct = max(t3_pct, t2_pct * 1.35)
-
-    # ── T3 hard cap with spacing-preserving collapse ──
-    # If T3 hit the hard horizon cap, scale T1 and T2 down proportionally
-    # to maintain the 1.35× spacing relationship. R:R floor is still
-    # respected because we already enforced t1_pct ≥ t1_min_rr earlier,
-    # and shrinking proportionally keeps that ratio intact.
-    t3_hard = _V14_6_HORIZON_T3_HARD_CAP.get(time_horizon, 80.0)
-    if t3_pct > t3_hard:
-        # Compute the implied compression scale from the cap
-        scale = t3_hard / t3_pct
-        t3_pct = t3_hard
-        t2_pct = t2_pct * scale
-        t1_pct = t1_pct * scale
-        # If shrinking pushed T1 below the R:R floor, restore it and let
-        # T2/T3 spacing relax instead (R:R discipline > spacing rule).
-        if t1_pct < t1_min_rr:
-            t1_pct = t1_min_rr
-        # Re-enforce spacing after scaling (T2 ≥ T1×1.35, T3 ≥ T2×1.35
-        # where possible; T3 stays capped).
-        t2_pct = max(t2_pct, t1_pct * 1.35)
-        if t2_pct > t3_pct:
-            # T2 collided with T3 cap → place T2 midway between T1 and T3
-            t2_pct = (t1_pct + t3_pct) / 2
-
+    # T2/T3 are hidden from the Performance sheet (v17.8) but retained in the
+    # DB/tracker. Derive them as simple spacing multiples of the live T1 so the
+    # dormant columns hold sane, ordered values. Also ceiling-clamped.
+    t2_pct = min(t1_pct * 1.35, _V14_6_TARGET_SANITY_CEILING_PCT)
+    t3_pct = min(t2_pct * 1.35, _V14_6_TARGET_SANITY_CEILING_PCT)
+    # Guarantee strict ordering even if the ceiling flattened them.
+    if t2_pct <= t1_pct:
+        t2_pct = t1_pct + 0.01
+    if t3_pct <= t2_pct:
+        t3_pct = t2_pct + 0.01
     t1 = round(cmp_price * (1 + t1_pct / 100), 2)
     t2 = round(cmp_price * (1 + t2_pct / 100), 2)
     t3 = round(cmp_price * (1 + t3_pct / 100), 2)

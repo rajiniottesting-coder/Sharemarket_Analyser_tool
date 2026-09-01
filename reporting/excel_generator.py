@@ -2860,7 +2860,11 @@ class ExcelGeneratorV6:
         open_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",15),("Days Held",12),
                      ("Days Left",12),("Re-app",10),("CMP at Rec",12),("Current Price",13),
                      ("P&L %",10),("Max Runup %",13),
-                     ("SL",18),("T1",18),("T2",18),("T3",18),
+                     ("SL",18),("Target",18),
+                     # v17.8: single Target (= T1). T2/T3 retained in DB &
+                     # tracker but hidden from the sheet (unused in practice).
+                     # Schema/tracker intact (reversible); view + hit-rate
+                     # metric now use one target level.
                      ("Score",10),("⚠",6),
                      ("Trailing",14),("Regime",11),
                      # v15.7: risk-parity sizing surfaced on Performance sheet
@@ -2963,7 +2967,7 @@ class ExcelGeneratorV6:
                     round(_cur_price, 2),
                     f"{float(row_o.get('current_pnl_pct',0) or 0):+.1f}%",
                     f"{float(row_o.get('max_runup_pct',0) or 0):+.1f}%",
-                    _sl_str, _t1_str, _t2_str, _t3_str,
+                    _sl_str, _t1_str,
                     round(float(row_o.get("composite_score",0) or 0), 1),
                     "⚠" if _is_approaching else "",
                     _trail_label,           # v15.0 col 17
@@ -2986,27 +2990,23 @@ class ExcelGeneratorV6:
                 if pnl > 0:    ws.cell(next_row, 9).font = _ft(True, "065F46", 9)
                 elif pnl < 0:  ws.cell(next_row, 9).font = _ft(True, "991B1B", 9)
                 # v14.4: color SL column (11) red — always represents downside risk.
-                # Color target columns (12/13/14) green — always represents upside.
-                # Subtle text color, not bold (avoids visual overwhelm with so many cols).
+                # v17.8: single-Target layout — SL=11, Target=12 (T2/T3 removed,
+                # every following column shifted left by 2). SL red, Target green.
                 if _sl_v > 0:
                     ws.cell(next_row, 11).font = _ft(False, "991B1B", 9)
                 if _t1_v > 0:
                     ws.cell(next_row, 12).font = _ft(False, "065F46", 9)
-                if _t2_v > 0:
-                    ws.cell(next_row, 13).font = _ft(False, "065F46", 9)
-                if _t3_v > 0:
-                    ws.cell(next_row, 14).font = _ft(False, "065F46", 9)
-                # Bold the warning emoji (column 16 in v14.4, was 12 in v14.1)
+                # Bold the warning emoji — now column 14 (was 16 before T2/T3 removal).
                 if _is_approaching:
-                    ws.cell(next_row, 16).font = _ft(True, "92400E", 11)
-                # v15.0: color Trailing column (17) green when locked, Regime
+                    ws.cell(next_row, 14).font = _ft(True, "92400E", 11)
+                # v15.0: color Trailing column (15) green when locked, Regime
                 # column (18) red for HIGH, green for LOW, default for NEUTRAL.
                 if _trailing_price > 0:
-                    ws.cell(next_row, 17).font = _ft(True, "065F46", 9)
+                    ws.cell(next_row, 15).font = _ft(True, "065F46", 9)
                 if _regime == "high":
-                    ws.cell(next_row, 18).font = _ft(True, "991B1B", 9)
+                    ws.cell(next_row, 16).font = _ft(True, "991B1B", 9)
                 elif _regime == "low":
-                    ws.cell(next_row, 18).font = _ft(True, "065F46", 9)
+                    ws.cell(next_row, 16).font = _ft(True, "065F46", 9)
                 next_row += 1
             # End-of-table summary line if any approaching expiry
             if _approaching_count > 0:
