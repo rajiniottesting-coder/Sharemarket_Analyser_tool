@@ -803,15 +803,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "bounded [4.5%, 15%], floored at volume-confirmed support1.\n"
                        "Earnings within 5 days → widened 20%. Trailing SL ratchets up at\n"
                        "+5%/+10%/+15% peak gain (BE/+3%/+7%). Never risk >2–3% of portfolio."),
-    "Target 1 (₹)": ("First profit target — book 30–50% here",
+    "Target (₹)": ("First profit target — book 30–50% here",
                      "v15.0: T1 = max(1.5 × SL_pct, 0.40 × CFV_upside).\n"
                      "Guarantees R:R ≥ 1.5:1. Book partial profit here."),
-    "Target 2 (₹)": ("Second profit target — hold remainder after T1",
-                     "v15.0: T2 = max(2.5 × SL_pct, 0.70 × CFV_upside), with T2 ≥ T1 × 1.35.\n"
-                     "Tighten trailing SL after T1 hit."),
-    "Target 3 (₹)": ("Final stretch target — anchored to fair value",
-                     "v15.0: T3 = max(4.0 × SL_pct, 1.00 × CFV_upside), with T3 ≥ T2 × 1.35.\n"
-                     "Hard caps: SHORT 35%, POSITIONAL 80%, LONG 200%."),
     "Time Horizon": ("How long the system claims to hold this pick",
                      "Time-horizon classification at recommendation time, set by the\n"
                      "pipeline based on verdict + spike + supertrend + MACD signals:\n"
@@ -995,19 +989,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "are too late (chasing momentum) or SL too tight.\n"
                  "v16.5: TRAIL_SL (trailing-stop break-even/profit exits) are\n"
                  "EXCLUDED from this rate — they are not thesis failures."),
+    "AVG DAYS → TARGET": ("Mean days from recommendation to Target hit",
+                          "v17.8.1 single-Target speed metric."),
     "AVG DAYS → T1": ("Mean days from recommendation to T1 hit",
                        "How quickly winners reached the first target. Lower = faster\n"
                        "win realization. Useful for setting realistic expectations:\n"
                        "if AVG=20, plan to hold positions ~3 weeks; if AVG=60,\n"
                        "expect 2 months of patience. Median may differ from mean\n"
                        "for skewed distributions — currently we report mean only."),
-    "AVG DAYS → T2": ("Mean days from recommendation to T2 hit",
-                       "Same as AVG DAYS → T1 but for the second target. T2 ≈ T1 × 1.05\n"
-                       "by design, so this should be slightly larger than T1."),
-    "AVG DAYS → T3": ("Mean days from recommendation to T3 hit",
-                       "Same as AVG DAYS → T1 but for the third (CFV-anchored) target.\n"
-                       "Often considerably larger because T3 is set to fair value\n"
-                       "which can take a full re-rating cycle to reach."),
     "AVG DAYS → SL": ("Mean days from recommendation to SL break",
                        "How long, on average, losing trades take to hit stop. Short\n"
                        "AVG (e.g., <10 days) suggests entries on weak setups; longer\n"
@@ -1128,6 +1117,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # (not entry), so it updates dynamically as the tracker refreshes price.
     # v15.0 update: SL is now the EFFECTIVE SL — MAX(original_sl, trailing_sl).
     # ────────────────────────────────────────────────────────────────────
+    "Target": ("Single price target (v17.8.1) = regime × SL",
+               "1.3× SL in a calm regime, 1.5× normal, 1.8× volatile.\n"
+               "Fair-value and the old +10% cap were removed. T2/T3 hidden."),
     "SL": ("Effective stop-loss (original or trailing, whichever is higher)",
             "Format: ₹price (distance%). Distance is from CURRENT price.\n"
             "This is the EFFECTIVE SL = MAX(original_sl, trailing_sl).\n"
@@ -1146,15 +1138,6 @@ TIPS: Dict[str, Tuple[str, str]] = {
             "v15.0: T1 = max(1.5 × SL_pct, 0.40 × CFV_upside) from CMP at\n"
             "recommendation time. Guaranteed R:R ≥ 1.5:1. Most Gold picks aim\n"
             "to hit at minimum T1 within their horizon window. Book partial here."),
-    "T2": ("Second profit target — multi-factor derived",
-            "Format: ₹price (distance%). Distance from CURRENT price.\n"
-            "v15.0: T2 = max(2.5 × SL_pct, 0.70 × CFV_upside), spaced at\n"
-            "least 1.35× above T1. Reaching T2 means overdelivery vs realistic case."),
-    "T3": ("Stretch profit target — anchored to fair value",
-            "Format: ₹price (distance%). Distance from CURRENT price.\n"
-            "v15.0: T3 = max(4.0 × SL_pct, 1.00 × CFV_upside), spaced at\n"
-            "least 1.35× above T2. Hard caps: SHORT 35%, POSITIONAL 80%, LONG 200%.\n"
-            "T3_HIT outcomes are rare but mark the system's strongest wins."),
     # ────────────────────────────────────────────────────────────────────
     # v14.5: CLOSED POSITIONS columns
     # ────────────────────────────────────────────────────────────────────
@@ -1540,8 +1523,8 @@ _ICON_FAMILIES = {
            "ROE %", "ROCE %", "ROA %", "Early Signals", "Sector Stage",
            "OB/Bill Ratio", "Pipeline Vis", "L1 Wins 90D", "L1 Est (₹Cr)",
            "New Mkt Entry", "Capex / Rev %", "Key Catalyst"},
-    "🎚": {"Entry Range (₹)", "Stop Loss (₹)", "Target 1 (₹)", "Target 2 (₹)",
-           "Target 3 (₹)", "Time Horizon", "R:R Ratio",
+    "🎚": {"Entry Range (₹)", "Stop Loss (₹)", "Target (₹)",
+           "Time Horizon", "R:R Ratio",
            "Support 1 (₹)", "Support 2 (₹)", "Resist 1 (₹)", "Resist 2 (₹)",
            "Risk Level",
            # v15.5: institutional risk-parity sizing
