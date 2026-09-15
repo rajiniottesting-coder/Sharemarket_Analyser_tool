@@ -220,7 +220,11 @@ jobs:
 
       - name: Execute Master Pipeline
         env:
-          GEMINI_API_KEY:        ${{ secrets.GEMINI_API_KEY }}
+          # v17.9: news/catalyst sentiment via company OpenAI-compatible LLM (Sonnet)
+          OPENAI_API_KEY:        ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE:       ${{ secrets.OPENAI_API_BASE }}
+          LLM_MODEL:             ${{ secrets.LLM_MODEL }}
+          NEWS_SENTIMENT_SHADOW: ${{ vars.NEWS_SENTIMENT_SHADOW }}
           SENDER_EMAIL:          ${{ secrets.SENDER_EMAIL }}
           SENDER_APP_PASSWORD:   ${{ secrets.SENDER_APP_PASSWORD }}
           USER_EMAIL_ID:         ${{ secrets.USER_EMAIL_ID }}

@@ -2,18 +2,29 @@
 ai_analyst.py
 SECTION 0D & 7 — AI Batch Analysis Engine (v7 FINAL)
 
-Switched from Anthropic Claude to Google Gemini (google-genai SDK).
-Master prompt v7 goes into the system_instruction parameter.
-Batch data goes into the `contents` parameter.
+v17.10: Switched from Google Gemini to the company's OpenAI-compatible LLM
+endpoint (Sonnet), sharing the SAME three credentials as the v17.9 news
+sentiment engine — one LLM, one key, one endpoint for the whole project.
+Master prompt v7 goes into the system message; batch data into the user
+message. All batching, card formatting, and the v17.6 fail-safe /
+abort-on-first-auth-failure logic are unchanged.
+
+v17.10 scope: investor cards are generated ONLY for Gold picks plus
+currently-held (OPEN) positions — not all 100 dashboard stocks. See
+master_funnel Section 7/8 for the subset selection.
 """
 
 import os
+import re
 import time
-from google import genai
-from google.genai import types
-from google.genai import errors as genai_errors
+import json
 from dotenv import load_dotenv
 from analysis.fundamental_engine import FundamentalEngine
+
+try:
+    import requests
+except ImportError:  # pragma: no cover
+    requests = None
 
 
 def _sf(val, default=0.0):
@@ -27,30 +38,49 @@ def _sf(val, default=0.0):
 
 load_dotenv()
 
-# ── Gemini API key resolution ─────────────────────────────────────────────────
-# The google-genai SDK auto-picks up GEMINI_API_KEY or GOOGLE_API_KEY from env.
-# We still validate explicitly so we fail fast with a clear error message.
-_gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-# v17.6: WARN, do not raise. A missing key must NOT break the whole module —
-# the pipeline produces a complete, accurate Excel from the quantitative
-# engine alone; only the optional AI narrative cards need the key. Raising at
-# import time took down everything (screening, fair value, SL/T1/T2/T3,
-# outcome tracking) for the sake of an optional feature. get_ai_analysis()
-# now checks _AI_ENABLED and returns a clean skip message when the key is
-# absent, so the run completes and every other sheet is intact.
-_AI_ENABLED = bool(_gemini_key)
-client = None
-if _AI_ENABLED:
-    client = genai.Client(api_key=_gemini_key)
-else:
-    print("   ⚠️  GEMINI_API_KEY not configured — AI narrative cards will be "
-          "skipped. All other analysis (screening, fair value, SL/targets, "
-          "outcome tracking, Excel, delivery) runs normally. "
-          "Add a key at https://aistudio.google.com/apikey to enable cards.")
+# ── LLM credentials (OpenAI-compatible; shared with analysis/news_sentiment) ─
+# v17.6 semantics preserved: WARN, do not raise. A missing key must NOT break
+# the module — only the optional narrative cards need it. get_ai_analysis()
+# checks _AI_ENABLED and returns a clean skip message when absent.
+_API_KEY  = os.getenv("OPENAI_API_KEY", "").strip()
+_API_BASE = os.getenv("OPENAI_API_BASE", "").strip().rstrip("/")
+LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
+_AI_ENABLED = bool(_API_KEY and _API_BASE and LLM_MODEL) and requests is not None
+client = None   # kept for backward-compat with any external reference
+if not _AI_ENABLED:
+    print("   ⚠️  LLM not configured (OPENAI_API_KEY / OPENAI_API_BASE / LLM_MODEL) "
+          "— AI narrative cards will be skipped. All other analysis (screening, "
+          "fair value, SL/targets, outcome tracking, Excel, delivery) runs normally.")
 
-# Gemini model — 2.5 Pro is the strongest reasoning model for equity analysis.
-# Swap to "gemini-2.5-flash" if you want faster/cheaper runs at some quality cost.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+_LLM_TIMEOUT_S = 90
+
+
+def _llm_complete(system_prompt: str, user_message: str,
+                  max_tokens: int = 4096, temperature: float = 0.7) -> str:
+    """Single OpenAI-compatible /chat/completions call. Returns the text, or
+    raises on HTTP/transport error so the caller's existing abort logic can
+    classify it (auth vs quota vs transient)."""
+    payload = {
+        "model": LLM_MODEL,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_message},
+        ],
+    }
+    r = requests.post(
+        f"{_API_BASE}/chat/completions",
+        headers={"Authorization": f"Bearer {_API_KEY}",
+                 "Content-Type": "application/json"},
+        json=payload, timeout=_LLM_TIMEOUT_S,
+    )
+    if r.status_code != 200:
+        # Surface status in the message so _is_auth_error/_is_quota_error match.
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+    data = r.json()
+    return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+
 
 MASTER_PROMPT_PATH = "master_prompt/NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt"
 
@@ -70,7 +100,7 @@ def _load_master_prompt() -> str:
 
 
 def _is_quota_error(err: Exception) -> bool:
-    """Detect Gemini quota/billing exhaustion — no point retrying these."""
+    """Detect LLM quota/billing exhaustion — no point retrying these."""
     err_str = str(err).lower()
     quota_markers = (
         "resource_exhausted",
@@ -103,7 +133,7 @@ def _is_auth_error(err: Exception) -> bool:
 
 def get_ai_analysis(stock_list_df) -> str:
     """
-    SECTION 0D & 3: Grounded Batch Processing via Google Gemini.
+    SECTION 0D & 3: Grounded Batch Processing via the company LLM (Sonnet).
 
     Pre-calculates Graham Number, PEG Ratio, and CFV using FundamentalEngine
     so the AI uses our computed values rather than estimating them.
@@ -114,9 +144,9 @@ def get_ai_analysis(stock_list_df) -> str:
     """
     # v17.6: hard skip when no key — return one clean card, run zero batches.
     if not _AI_ENABLED:
-        return ("[AI unavailable — GEMINI_API_KEY not configured. "
+        return ("[AI unavailable — LLM not configured. "
                 "Cards skipped; all other Excel data is complete and accurate. "
-                "Add a key at aistudio.google.com/apikey to enable AI narratives.]")
+                "Set OPENAI_API_KEY / OPENAI_API_BASE / LLM_MODEL to enable AI narratives.]")
 
     all_investor_cards = []
     batch_size = 12  # 10-15 per Section 0D
@@ -272,13 +302,7 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
         "   narrative; instead acknowledge that data gaps blocked a confident BUY call."
     )
 
-    # Gemini generation config — master prompt goes into system_instruction.
-    # max_output_tokens is the Gemini equivalent of Anthropic's max_tokens.
-    gen_config = types.GenerateContentConfig(
-        system_instruction=master_prompt,
-        max_output_tokens=4096,
-        temperature=0.7,
-    )
+    # v17.10: master_prompt is passed as the system message to _llm_complete().
 
     quota_exhausted = False   # flag to abort all batches on quota error
 
@@ -287,13 +311,13 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
         if quota_exhausted:
             # v12.6 (#14): standardised "[AI <verb> — <reason>]" format.
             all_investor_cards.append(
-                f"[AI skipped — Gemini API quota exhausted (batch {idx + 1}). "
+                f"[AI skipped — LLM quota exhausted (batch {idx + 1}). "
                 f"Check quota/billing at https://aistudio.google.com/apikey]"
             )
             continue
 
         print(f"🤖 Processing batch {idx + 1}/{total_batches} "
-              f"({len(batch)} stocks) via {GEMINI_MODEL}...")
+              f"({len(batch)} stocks) via {LLM_MODEL}...")
 
         # Build rich per-stock cards instead of raw DataFrame dump
         cards = []
@@ -309,23 +333,12 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
 
         # Try once; NO retry on quota errors (pointless — quota won't refill mid-run)
         try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=user_message,
-                config=gen_config,
-            )
-            card_text = response.text or ""
+            card_text = _llm_complete(master_prompt, user_message)
             if not card_text.strip():
-                # Gemini occasionally returns empty text if output was blocked by
-                # safety filters or the finish reason is MAX_TOKENS with no parts.
-                finish = getattr(
-                    getattr(response, "candidates", [None])[0], "finish_reason", "UNKNOWN"
-                ) if getattr(response, "candidates", None) else "UNKNOWN"
                 # v12.6 (#14): standardised "[AI <verb> — <reason>]" format.
                 card_text = (
-                    f"[AI unavailable — Gemini returned empty response for batch "
-                    f"{idx + 1} (finish_reason={finish}). The batch may have been "
-                    f"blocked by safety filters or truncated.]"
+                    f"[AI unavailable — LLM returned empty response for batch "
+                    f"{idx + 1}. The batch may have been truncated or filtered.]"
                 )
             all_investor_cards.append(card_text)
             print(f"   ✅ Batch {idx + 1} complete.")
@@ -341,12 +354,12 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                 # v17.6: on the FIRST bad-key/quota batch, stop trying the rest.
                 # Requested behaviour: don't run any further cards once we know
                 # the key won't work — every subsequent batch would fail the same.
-                print(f"   ⚠️  Gemini {_reason} — skipping ALL remaining batches "
+                print(f"   ⚠️  LLM {_reason} — skipping ALL remaining batches "
                       f"(no point retrying).")
-                print(f"      Check your key/quota at: https://aistudio.google.com/apikey")
+                print(f"      Check OPENAI_API_KEY / OPENAI_API_BASE / LLM_MODEL and your gateway quota.")
                 all_investor_cards.append(
-                    f"[AI unavailable — Gemini {_reason}. "
-                    f"Check your key/quota at aistudio.google.com/apikey. "
+                    f"[AI unavailable — LLM {_reason}. "
+                    f"Check OPENAI_API_KEY / OPENAI_API_BASE / LLM_MODEL. "
                     f"All other Excel data is complete and accurate.]"
                 )
             else:
@@ -354,12 +367,7 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                 print(f"   ⚠️  Batch {idx + 1} attempt 1 failed: {e}. Retrying in 5s...")
                 time.sleep(5)
                 try:
-                    response = client.models.generate_content(
-                        model=GEMINI_MODEL,
-                        contents=user_message,
-                        config=gen_config,
-                    )
-                    card_text = response.text or ""
+                    card_text = _llm_complete(master_prompt, user_message)
                     if not card_text.strip():
                         card_text = f"[Batch {idx + 1}: empty response after retry]"
                     all_investor_cards.append(card_text)

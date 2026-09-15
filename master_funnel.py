@@ -2519,6 +2519,21 @@ def run_master_pipeline():
         print(f"   ✅ Forensics populated for {_forensics_populated}/{len(final_100_list)} stocks")
 
         # ─────────────────────────────────────────────────────────────────────
+        # SECTION 5A.6 (v17.9): NEWS / CATALYST SENTIMENT
+        # Fills the previously-empty news_sentiment input on every quality
+        # stock BEFORE composite scoring runs (Section 5D). When a stock gets an
+        # informed POSITIVE/NEGATIVE signal, scoring_engine uses the CANONICAL
+        # 10% sentiment weight; stocks with no news keep today's redistribution.
+        # Fully fail-safe: any error leaves scores exactly as they were.
+        # Set NEWS_SENTIMENT_SHADOW=1 to compute+log without touching scores.
+        # ─────────────────────────────────────────────────────────────────────
+        try:
+            from analysis.news_sentiment import enrich_stocks_with_news
+            enrich_stocks_with_news(final_100_list)
+        except Exception as _nse:
+            print(f"   ⚠️  News sentiment enrichment skipped (non-fatal): {_nse}")
+
+        # ─────────────────────────────────────────────────────────────────────
         # SECTION 5B: FAIR VALUE ENGINE
         # ─────────────────────────────────────────────────────────────────────
         from analysis.fair_value_engine import FairValueEngine
@@ -3616,20 +3631,60 @@ def run_master_pipeline():
             "that failed the universal quality bar — see Verdict, Score, and "
             "forensic columns for the drop reasons.]"
         )
-        _ai_input_stocks = []   # stocks that will be sent to Gemini
-        _avoid_indices   = set()  # positions in final_100_list to patch post-call
+        # ── v17.10: SCOPE investor cards to Gold picks + currently-held ────
+        # Previously every non-AVOID stock (~97) got a narrative card. Nobody
+        # reads 97 paragraphs daily, and it cost ~$1/day. Cards now go ONLY to:
+        #   (a) stocks that will qualify for the Gold sheet today, and
+        #   (b) positions currently OPEN in the performance tracker.
+        # Everyone else gets a clear placeholder. Gold membership is decided by
+        # the SAME _get_gold() the Excel sheet uses (no duplicated gate logic),
+        # so the cards target exactly the stocks that appear on the Gold sheet.
+        # Fully fail-safe: any error here falls back to "cards for none" with
+        # placeholders, never a crash.
+        _card_syms = set()
+        try:
+            from reporting.excel_generator import ExcelGeneratorV6 as _EGV
+            _nc, _nsma = get_nifty_20d_sma()
+            _pre_regime = "BULLISH"
+            if _nsma > 0:
+                _pre_gap = (_nc - _nsma) / _nsma * 100.0
+                _pre_regime = "BEARISH" if _pre_gap < -_REGIME_TOLERANCE_PCT else "BULLISH"
+            _pre_gen = _EGV(final_100_list, target_date.strftime("%Y%m%d"),
+                            market_stats={"market_regime": _pre_regime})
+            _gold_df = _pre_gen._get_gold()
+            if _gold_df is not None and not _gold_df.empty and "symbol" in _gold_df.columns:
+                _card_syms.update(str(x).strip() for x in _gold_df["symbol"].tolist())
+        except Exception as _gse:
+            print(f"   ⚠️  Card scope: Gold pre-check failed (non-fatal): {_gse}")
+        try:
+            from database.data_bridge import get_open_recommendations
+            for _orec in (get_open_recommendations() or []):
+                _card_syms.add(str(_orec.get("symbol", "")).strip())
+        except Exception as _hse:
+            print(f"   ⚠️  Card scope: held-positions lookup failed (non-fatal): {_hse}")
+        _card_syms.discard("")
+
+        _NOT_IN_SCOPE_PLACEHOLDER = (
+            "[AI skipped — narrative cards are generated only for Gold picks and "
+            "currently-held positions (v17.10). See Verdict, Score and forensic "
+            "columns for this stock's full quantitative picture.]"
+        )
+        _ai_input_stocks = []     # stocks that will be sent to the LLM
+        _avoid_indices   = set()  # AVOID verdict → AVOID placeholder
+        _scope_indices   = set()  # not Gold / not held → scope placeholder
         for _idx, _stock in enumerate(final_100_list):
             _v = str(_stock.get("verdict", "") or "").upper()
+            _sy = str(_stock.get("symbol", "") or "").strip()
             if _v.startswith("AVOID"):
                 _avoid_indices.add(_idx)
+            elif _sy not in _card_syms:
+                _scope_indices.add(_idx)
             else:
                 _ai_input_stocks.append(_stock)
 
-        if _avoid_indices:
-            print(
-                f"   ⏭  Skipping AI for {len(_avoid_indices)} AVOID-verdict stocks "
-                f"(quota saver). Analysing {len(_ai_input_stocks)} remaining."
-            )
+        print(f"   🎯 Card scope: {len(_ai_input_stocks)} stock(s) "
+              f"(Gold + held) · {len(_scope_indices)} out of scope · "
+              f"{len(_avoid_indices)} AVOID")
 
         if _ai_input_stocks:
             investor_cards_text = get_ai_analysis(pd.DataFrame(_ai_input_stocks))
@@ -3637,13 +3692,16 @@ def run_master_pipeline():
             investor_cards_text = ""
 
         # Map AI analysis back — skipped stocks keep placeholder, rest read
-        # positionally from the Gemini output (same behavior as pre-v10.13
+        # positionally from the LLM output (same behavior as pre-v10.13
         # for non-AVOID stocks, so no regression in mapping quality).
         ai_lines = investor_cards_text.split("\n\n") if investor_cards_text else []
         _ai_cursor = 0
         for i, stock in enumerate(final_100_list):
             if i in _avoid_indices:
                 stock["Analysis_Summary_Block_H"] = _AVOID_PLACEHOLDER
+                continue
+            if i in _scope_indices:   # v17.10
+                stock["Analysis_Summary_Block_H"] = _NOT_IN_SCOPE_PLACEHOLDER
                 continue
             if _ai_cursor < len(ai_lines):
                 stock["Analysis_Summary_Block_H"] = ai_lines[_ai_cursor]
