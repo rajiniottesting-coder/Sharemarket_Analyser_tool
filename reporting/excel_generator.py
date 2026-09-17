@@ -54,9 +54,15 @@ FULL_GROUPS = [
     # (single-Target model). All groups after it shift left by 2:
     #   TRADE PLAN:       cols 113-119 (start=113, span=7)
     #   NEWS & RISK:      cols 120-123 (start=120, span=4)
-    #   ANALYSIS SUMMARY: col 124      (start=124, span=1)
+    # ANALYSIS SUMMARY was col 124 and is gone from this sheet.
+    #
+    # Narrative cards are written only for Gold picks and currently-held
+    # positions, so on the full dashboard every row carried the same skip
+    # notice - 94 identical cells explaining why the column was empty. A
+    # column that is 100% notice costs a screen of width and tells a reader
+    # nothing they cannot learn from its absence. The cards still appear where
+    # they are produced: the Gold sheet and the Performance open positions.
     (113,"TRADE PLAN",      "059669",7),(120,"NEWS & RISK",    "475569",4),
-    (124,"ANALYSIS SUMMARY","0F172A",1),
 ]
 
 FULL_COLS = [
@@ -143,7 +149,6 @@ FULL_COLS = [
     ("Sizing Rationale",55,"alloc_rationale"),
     ("Key Catalyst",42,"key_catalyst"),("News Sentiment",15,"news_sentiment"),
     ("Primary Risk",42,"primary_risk"),("SEBI Flags",22,"sebi_flags"),
-    ("View Analysis Summary",70,"Analysis_Summary_Block_H"),
 ]
 
 GOLD_GROUPS = [
@@ -2870,7 +2875,16 @@ class ExcelGeneratorV6:
                      # (Outcome=4, Trailing=17, Regime=18, etc.) is unchanged.
                      # Time Horizon (col 3) and Score (col 15) already exist and
                      # are NOT repeated here.
-                     ("Score Band",13),("Archetype",20),("Sector",22)]
+                     ("Score Band",13),("Archetype",20),("Sector",22),
+                     # v17.11 col 24: the narrative card for a position you
+                     # actually hold. Cards are written for Gold picks and
+                     # currently-held positions, and until now had nowhere to
+                     # appear on this sheet - the table had 23 columns and no
+                     # summary, so the text was generated and discarded. These
+                     # are the only rows where a memo earns its width: the
+                     # dashboard's 94 candidates are not held, and its column
+                     # carried nothing but a skip notice.
+                     ("View Analysis Summary",70)]
         for ci,(h,w) in enumerate(open_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
@@ -2886,7 +2900,10 @@ class ExcelGeneratorV6:
         _open_df = _df_all[_df_all["outcome_type"] == "OPEN"].copy()
         _approaching_count = 0   # for an end-of-table summary
         if _open_df.empty:
-            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=20)
+            # v17.11: 24, matching the widened header. A merge narrower than
+            # the table leaves the "no positions" banner stopping short of the
+            # columns it is meant to cover.
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=24)
             c = ws.cell(next_row,1,"  No currently-open positions.")
             c.fill = _f(LG); c.font = _ft(False,"6B7280",9,True); c.alignment = _al("left")
             next_row += 1
@@ -2976,6 +2993,10 @@ class ExcelGeneratorV6:
                     str(row_o.get("_score_band", "—") or "—"),
                     str(row_o.get("quick_pick_label", "—") or "—"),
                     str(row_o.get("sector", "—") or "—"),
+                    # v17.11: the card itself. "—" when none was produced,
+                    # which is the same honest-unknown marker every other
+                    # unavailable field on this sheet uses.
+                    str(row_o.get("Analysis_Summary_Block_H", "—") or "—"),
                 ]
                 for ci, v in enumerate(vals, 1):
                     cc = ws.cell(next_row, ci, v); cc.fill = _f(bg)
