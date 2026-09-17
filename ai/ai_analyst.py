@@ -18,6 +18,9 @@ import os
 import re
 import time
 import json
+import glob
+import hashlib
+import datetime as _dt
 from dotenv import load_dotenv
 from analysis.fundamental_engine import FundamentalEngine
 
@@ -131,7 +134,7 @@ def _is_auth_error(err: Exception) -> bool:
     return any(m in err_str for m in auth_markers)
 
 
-def get_ai_analysis(stock_list_df) -> str:
+def _generate_ai_analysis(stock_list_df) -> str:
     """
     SECTION 0D & 3: Grounded Batch Processing via the company LLM (Sonnet).
 
@@ -385,3 +388,119 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                     )
 
     return "\n\n".join(all_investor_cards)
+
+
+# =============================================================================
+# v17.12 — PER-DAY AI CARD CACHE
+#
+# WHY: every LLM call is billed, and the pipeline is re-run several times a
+# day (after a data fix, to regenerate a sheet, to retry a step). Without a
+# cache each re-run regenerated every card from scratch.
+#
+# KEY = date + hash(input). Keyed on the ACTUAL input — symbol, score, label,
+# entry, SL, target, horizon — not on price ticks (hashing every field would
+# change the key on any drift and defeat the cache).
+#   same day, same picks     -> served from cache, zero API calls
+#   same day, picks changed  -> regenerates (different stocks = different key)
+#   next day                 -> regenerates; yesterday's files are purged
+#   AI_CACHE=0               -> bypass, for when fresh output is wanted
+#
+# FAILED BATCHES ARE NEVER CACHED. Pinning a failure for a day costs a
+# debugging session, because a cache hit looks exactly like a success.
+# Cache lives in downloads/ai_cache/ (gitignored). Any cache error falls back
+# to a normal generate — the cache can only save cost, never break a run.
+# =============================================================================
+_AI_CACHE_ENABLED = os.getenv("AI_CACHE", "1").strip() != "0"
+_AI_CACHE_DIR     = os.path.join("downloads", "ai_cache")
+
+
+def _ai_cache_key(stock_list_df) -> str:
+    """date + sha1 of the identity-defining input fields, sorted by symbol so
+    row order never changes the key. Returns '' if the input is unusable."""
+    try:
+        rows = []
+        for _, r in stock_list_df.iterrows():
+            g = lambda k: str(r.get(k, "") if hasattr(r, "get") else "").strip()
+            rows.append("|".join([
+                g("symbol"),
+                f"{_sf(r.get('composite_score', 0)):.1f}",
+                g("quick_pick_label") or g("label"),
+                f"{_sf(r.get('close', 0)):.2f}",
+                f"{_sf(r.get('stop_loss', 0)):.2f}",
+                f"{_sf(r.get('t1', 0)):.2f}",
+                g("time_horizon") or g("horizon"),
+            ]))
+        rows.sort()
+        today = _dt.date.today().strftime("%Y%m%d")
+        digest = hashlib.sha1(("\n".join(rows)).encode("utf-8")).hexdigest()[:12]
+        return f"{today}_{digest}"
+    except Exception:
+        return ""
+
+
+def _ai_cache_purge_old(today: str) -> int:
+    """Delete cache files not from today. Returns count removed."""
+    n = 0
+    try:
+        for f in glob.glob(os.path.join(_AI_CACHE_DIR, "*.json")):
+            if not os.path.basename(f).startswith(today + "_"):
+                os.remove(f); n += 1
+    except Exception:
+        pass
+    return n
+
+
+def _ai_output_is_failure(text: str) -> bool:
+    """True if the generated output represents a failed/skipped run. Such output
+    must NEVER be cached (a cached failure is indistinguishable from success)."""
+    if not text or not text.strip():
+        return True
+    t = text.strip()
+    # Whole-output failure markers used by _generate_ai_analysis
+    if t.startswith("[AI unavailable") or t.startswith("[AI skipped"):
+        return True
+    return False
+
+
+def get_ai_analysis(stock_list_df) -> str:
+    """PUBLIC entry point (v17.12): cache-aware wrapper around
+    _generate_ai_analysis(). Same signature and return value as before, so
+    every caller is unchanged."""
+    if not _AI_CACHE_ENABLED or stock_list_df is None or len(stock_list_df) == 0:
+        return _generate_ai_analysis(stock_list_df)
+
+    key = _ai_cache_key(stock_list_df)
+    if not key:
+        return _generate_ai_analysis(stock_list_df)
+    today = key.split("_", 1)[0]
+    path = os.path.join(_AI_CACHE_DIR, f"{key}.json")
+
+    # ── cache hit ──
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            text = payload.get("cards", "")
+            if not _ai_output_is_failure(text):
+                print(f"   💾 AI cards served from today's cache ({key}) — "
+                      f"no API calls, no cost.")
+                return text
+    except Exception as e:
+        print(f"   ⚠️  AI cache read failed ({e}) — regenerating.")
+
+    # ── cache miss: generate, then store only if it succeeded ──
+    text = _generate_ai_analysis(stock_list_df)
+    try:
+        os.makedirs(_AI_CACHE_DIR, exist_ok=True)
+        purged = _ai_cache_purge_old(today)
+        if _ai_output_is_failure(text):
+            print("   ℹ️  AI cards not cached (failed/skipped output is never pinned).")
+        else:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"key": key, "generated": _dt.datetime.now().isoformat(),
+                           "n_stocks": int(len(stock_list_df)), "cards": text}, fh)
+            print(f"   💾 AI cards cached for today ({key})"
+                  + (f" · purged {purged} stale file(s)" if purged else ""))
+    except Exception as e:
+        print(f"   ⚠️  AI cache write failed ({e}) — output still returned.")
+    return text

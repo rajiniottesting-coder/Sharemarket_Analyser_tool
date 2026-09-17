@@ -37,6 +37,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ── v17.12: per-day AI card cache across runs ─────────────────────────
+      # Each Actions run is a fresh VM, so downloads/ai_cache/ written by one
+      # run vanishes before the next — the same-day re-run cache never hit and
+      # every re-run re-billed the LLM. actions/cache restores the latest
+      # cache at job start and saves it at job end automatically.
+      #   key          — unique per run, so every run SAVES its (possibly
+      #                  updated) cache; actions/cache never overwrites a hit key
+      #   restore-keys — prefix match restores the most recent cache from
+      #                  ANY prior run. Same-day files are then served; the
+      #                  Python layer purges any older-dated files itself.
+      # AI_CACHE=0 (repo variable) bypasses without touching this step.
+      - name: Restore AI card cache (v17.12)
+        uses: actions/cache@v4
+        with:
+          path: downloads/ai_cache
+          key: ai-cache-${{ github.run_id }}
+          restore-keys: |
+            ai-cache-
+
       - name: Restore market_data.db from artifact
         continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
@@ -225,6 +244,7 @@ jobs:
           OPENAI_API_BASE:       ${{ secrets.OPENAI_API_BASE }}
           LLM_MODEL:             ${{ secrets.LLM_MODEL }}
           NEWS_SENTIMENT_SHADOW: ${{ vars.NEWS_SENTIMENT_SHADOW }}
+          AI_CACHE:              ${{ vars.AI_CACHE }}   # v17.12: unset/1 = cache on, 0 = bypass
           SENDER_EMAIL:          ${{ secrets.SENDER_EMAIL }}
           SENDER_APP_PASSWORD:   ${{ secrets.SENDER_APP_PASSWORD }}
           USER_EMAIL_ID:         ${{ secrets.USER_EMAIL_ID }}

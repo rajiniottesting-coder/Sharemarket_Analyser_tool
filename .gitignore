@@ -35,3 +35,6 @@ Daily_Analysis_Report_*.txt
 
 ngrok Installer.exe
 *.exe
+
+# v17.12: per-day AI card cache (regenerated; never commit)
+downloads/ai_cache/
