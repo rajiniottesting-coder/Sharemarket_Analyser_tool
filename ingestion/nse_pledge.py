@@ -163,57 +163,10 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
     print("   ℹ️  NSE bulk pledge: no endpoint returned records. "
           "If this is HTTP 404 the path has moved again - open the NSE "
           "pledged-data page, DevTools > Network > Fetch/XHR, and read "
-          "the live URL off it. Falling back to downloads/pledge_manual.csv "
-          "if present.")
+          "the live URL off it. Pledge % shows \u2014 for this run, which is "
+          "the honest answer: a hand-maintained figure would look like data "
+          "and feed the spike guard while quietly going out of date.")
     return {}
-
-
-def load_manual_pledge_csv(path: Optional[str] = None) -> Dict[str, float]:
-    """Read a hand-maintained pledge file. Empty dict when absent or unusable.
-
-    Never raises: a missing or malformed override must leave the pipeline
-    exactly where it was, not stop it.
-    """
-    import csv as _csv
-    import os as _os
-    from pathlib import Path as _Path
-
-    target = path or _os.getenv(_PLEDGE_CSV_ENV) or _PLEDGE_CSV_DEFAULT
-    f = _Path(target)
-    if not f.is_file():
-        return {}
-
-    out: Dict[str, float] = {}
-    skipped = 0
-    try:
-        with f.open(newline="", encoding="utf-8-sig") as fh:
-            for row in _csv.reader(fh):
-                if len(row) < 2:
-                    continue
-                sym = str(row[0]).strip().upper()
-                if not sym or sym in ("SYMBOL", "NSE_SYMBOL", "TICKER"):
-                    continue          # header line, in either spelling
-                try:
-                    pct = float(str(row[1]).strip().replace("%", ""))
-                except (TypeError, ValueError):
-                    skipped += 1
-                    continue
-                # A pledge percentage outside 0-100 is a parse error, not a
-                # holding. Dropping it is safer than screening on a number
-                # that cannot be true.
-                if 0.0 <= pct <= 100.0:
-                    out[sym] = pct
-                else:
-                    skipped += 1
-    except Exception as e:                                     # noqa: BLE001
-        print(f"   ⚠️  Could not read {f}: {e}. Continuing without it.")
-        return {}
-
-    if out:
-        print(f"   📄 Pledge: {len(out)} symbol(s) from {f}"
-              + (f" ({skipped} unusable row(s) skipped)" if skipped else ""))
-    return out
-
 def merge_pledge_into_rows(rows: list, pledge_map: Dict[str, float]) -> int:
     """
     Update each row dict in-place with pledge_pct from the bulk map.

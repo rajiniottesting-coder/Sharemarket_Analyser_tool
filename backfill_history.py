@@ -2362,19 +2362,16 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
     if sh_rows:
         try:
             from ingestion.nse_pledge import (fetch_bulk_pledge_data,
-                                              load_manual_pledge_csv,
                                               merge_pledge_into_rows)
             _pledge_session, _ = _make_nse_session()
             _pledge_map = fetch_bulk_pledge_data(_pledge_session)
 
-            # The NSE endpoints now 404. Fall back to the hand-maintained
-            # file, and let it OVERRIDE the feed where both have a symbol:
-            # someone who edited that file did so deliberately, and a stale
-            # feed value silently winning would make the override look broken.
-            _manual = load_manual_pledge_csv()
-            if _manual:
-                _pledge_map = {**_pledge_map, **_manual}
-
+            # Exchange data only. A hand-maintained CSV was tried here and
+            # removed: pledge % feeds the spike anti-trigger guard, and a
+            # figure kept up to date by remembering to update it is one that
+            # eventually is not - at which point it still LOOKS like data and
+            # the guard acts on a number nobody has checked in months. An
+            # honest "—" is worse to read and better to trust.
             if _pledge_map:
                 _pledge_updated = merge_pledge_into_rows(sh_rows, _pledge_map)
                 print(f"   NSE bulk pledge: {len(_pledge_map):,} symbols in source, "
