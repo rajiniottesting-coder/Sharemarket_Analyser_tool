@@ -2361,9 +2361,20 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
     # anti-trigger guard (pledge > 20% suppresses Spike Score).
     if sh_rows:
         try:
-            from ingestion.nse_pledge import fetch_bulk_pledge_data, merge_pledge_into_rows
+            from ingestion.nse_pledge import (fetch_bulk_pledge_data,
+                                              load_manual_pledge_csv,
+                                              merge_pledge_into_rows)
             _pledge_session, _ = _make_nse_session()
             _pledge_map = fetch_bulk_pledge_data(_pledge_session)
+
+            # The NSE endpoints now 404. Fall back to the hand-maintained
+            # file, and let it OVERRIDE the feed where both have a symbol:
+            # someone who edited that file did so deliberately, and a stale
+            # feed value silently winning would make the override look broken.
+            _manual = load_manual_pledge_csv()
+            if _manual:
+                _pledge_map = {**_pledge_map, **_manual}
+
             if _pledge_map:
                 _pledge_updated = merge_pledge_into_rows(sh_rows, _pledge_map)
                 print(f"   NSE bulk pledge: {len(_pledge_map):,} symbols in source, "

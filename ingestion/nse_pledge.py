@@ -52,12 +52,23 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
     if target_date is None:
         target_date = datetime.date.today()
 
-    # v15.2.1: NSE bulk pledge endpoints are increasingly blocked on cloud IPs
-    # (GitHub Actions, AWS, GCP). Try both legacy URL and the newer hyphenated
-    # variant before giving up. On free-tier this commonly fails — log once,
-    # politely, not 3 noisy retries. Real fix is paid feed (Trendlyne ~$30/mo)
-    # or manual CSV import; see CHANGES.md for details.
+    # These endpoints return HTTP 404 from an ordinary residential IP, which
+    # means the path has been moved or retired - NOT that cloud IPs are
+    # blocked, as this comment previously claimed. The difference decides the
+    # remedy: a block is worked around with a session or a proxy, a 404 is not
+    # worked around at all. Anyone chasing the old diagnosis loses an
+    # afternoon to headers and user agents.
+    #
+    # Both URLs are kept because they cost one request each and a retired path
+    # occasionally returns. When they fail, load_manual_pledge_csv() above is
+    # the supported substitute.
     urls_to_try = [
+        # SINGULAR "corporate-". Confirmed live 17 Sep 2026 from the page's own
+        # network tab: 200 OK, ~121 kB, no query parameters. The two below it
+        # are the ones this module tried for a year and are why every run
+        # reported a 404 - `corporates-` with an s, and a `corporate-filings-`
+        # prefix that does not exist. One character.
+        "https://www.nseindia.com/api/corporate-pledgedata",
         "https://www.nseindia.com/api/corporates-pledgedata?index=equities",
         "https://www.nseindia.com/api/corporate-filings-pledgedata?index=equities",
     ]
@@ -71,8 +82,26 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
                 continue
 
             data = r.json()
-            # NSE wraps payload either as raw list or under 'data' key
-            records = data if isinstance(data, list) else data.get("data", [])
+            # NSE wraps the payload differently per endpoint, and a wrapper it
+            # does not recognise reads as "zero records" - the same as a
+            # failure, and indistinguishable from one in the logs. Try each
+            # known key and take the first that yields a non-empty list.
+            if isinstance(data, list):
+                records = data
+            elif isinstance(data, dict):
+                records = []
+                for _k in ("data", "records", "pledgeData", "companyPledgeData"):
+                    _v = data.get(_k)
+                    if isinstance(_v, list) and _v:
+                        records = _v
+                        break
+                else:
+                    # Nothing matched. Say what the payload DID contain, or the
+                    # next person debugging this has only "0 symbols" to go on.
+                    print(f"   ℹ️  Pledge: 200 OK but no known record key. "
+                          f"Payload keys: {sorted(data.keys())[:8]}")
+            else:
+                records = []
 
             out: Dict[str, float] = {}
             for rec in records:
@@ -130,13 +159,60 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
         except Exception as e:
             last_err = e
 
-    # Both endpoints failed — single honest log line (no retries, no alarm).
-    # This is the expected free-tier behavior on cloud IPs and is documented.
-    # Pledge % column will show "—" with tooltip explaining paid-tier fallback.
-    print(f"   ℹ️  NSE bulk pledge: free endpoint unavailable on this IP "
-          f"(known limitation; paid-tier fallback expected)")
+    # Every endpoint failed — one honest line, no retries, no alarm.
+    print("   ℹ️  NSE bulk pledge: no endpoint returned records. "
+          "If this is HTTP 404 the path has moved again - open the NSE "
+          "pledged-data page, DevTools > Network > Fetch/XHR, and read "
+          "the live URL off it. Falling back to downloads/pledge_manual.csv "
+          "if present.")
     return {}
 
+
+def load_manual_pledge_csv(path: Optional[str] = None) -> Dict[str, float]:
+    """Read a hand-maintained pledge file. Empty dict when absent or unusable.
+
+    Never raises: a missing or malformed override must leave the pipeline
+    exactly where it was, not stop it.
+    """
+    import csv as _csv
+    import os as _os
+    from pathlib import Path as _Path
+
+    target = path or _os.getenv(_PLEDGE_CSV_ENV) or _PLEDGE_CSV_DEFAULT
+    f = _Path(target)
+    if not f.is_file():
+        return {}
+
+    out: Dict[str, float] = {}
+    skipped = 0
+    try:
+        with f.open(newline="", encoding="utf-8-sig") as fh:
+            for row in _csv.reader(fh):
+                if len(row) < 2:
+                    continue
+                sym = str(row[0]).strip().upper()
+                if not sym or sym in ("SYMBOL", "NSE_SYMBOL", "TICKER"):
+                    continue          # header line, in either spelling
+                try:
+                    pct = float(str(row[1]).strip().replace("%", ""))
+                except (TypeError, ValueError):
+                    skipped += 1
+                    continue
+                # A pledge percentage outside 0-100 is a parse error, not a
+                # holding. Dropping it is safer than screening on a number
+                # that cannot be true.
+                if 0.0 <= pct <= 100.0:
+                    out[sym] = pct
+                else:
+                    skipped += 1
+    except Exception as e:                                     # noqa: BLE001
+        print(f"   ⚠️  Could not read {f}: {e}. Continuing without it.")
+        return {}
+
+    if out:
+        print(f"   📄 Pledge: {len(out)} symbol(s) from {f}"
+              + (f" ({skipped} unusable row(s) skipped)" if skipped else ""))
+    return out
 
 def merge_pledge_into_rows(rows: list, pledge_map: Dict[str, float]) -> int:
     """
