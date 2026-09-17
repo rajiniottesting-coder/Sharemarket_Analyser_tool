@@ -2314,6 +2314,35 @@ class ExcelGeneratorV6:
             ws.row_dimensions[r].height=15
             ws.cell(r,2,f"{cmd:<28}{desc}").font=_ft(False,NAVY,9); r+=1
 
+    def _card_for(self, symbol) -> str:
+        """Today's narrative card for `symbol`, or the honest-unknown marker.
+
+        The Performance sheet's rows come from outcome tracking; the cards are
+        written against today's funnel. The two share only the symbol, so that
+        is what joins them.
+        """
+        sym = str(symbol or "").strip().upper()
+        if not sym or getattr(self, "df", None) is None or self.df.empty:
+            return "—"
+        if "symbol" not in self.df.columns or \
+                "Analysis_Summary_Block_H" not in self.df.columns:
+            return "—"
+        try:
+            hit = self.df.loc[
+                self.df["symbol"].astype(str).str.strip().str.upper() == sym,
+                "Analysis_Summary_Block_H"]
+            if hit.empty:
+                return "—"
+            text = str(hit.iloc[0] or "").strip()
+        except Exception:                                      # noqa: BLE001
+            return "—"
+        # A placeholder is not a card. Showing "[AI skipped ...]" here would
+        # repeat on every row the same way it did on the dashboard column that
+        # was removed for exactly that reason.
+        if not text or text.startswith("[") or text == "—":
+            return "—"
+        return text
+
     def _performance_sheet(self, wb):
         """v14.0: Performance dashboard for Gold-pick outcome tracking.
 
@@ -2993,10 +3022,16 @@ class ExcelGeneratorV6:
                     str(row_o.get("_score_band", "—") or "—"),
                     str(row_o.get("quick_pick_label", "—") or "—"),
                     str(row_o.get("sector", "—") or "—"),
-                    # v17.11: the card itself. "—" when none was produced,
-                    # which is the same honest-unknown marker every other
-                    # unavailable field on this sheet uses.
-                    str(row_o.get("Analysis_Summary_Block_H", "—") or "—"),
+                    # v17.11.1: look the card up BY SYMBOL in today's funnel.
+                    #
+                    # These rows come from outcome tracking, not from the
+                    # funnel - a held position was recommended days ago and
+                    # its row carries entry price, days held and P&L, never a
+                    # narrative. Reading Analysis_Summary_Block_H off row_o
+                    # therefore returned nothing for every position and the
+                    # whole column rendered "—", which looked like the cards
+                    # had not been generated when they had.
+                    self._card_for(row_o.get("symbol")),
                 ]
                 for ci, v in enumerate(vals, 1):
                     cc = ws.cell(next_row, ci, v); cc.fill = _f(bg)

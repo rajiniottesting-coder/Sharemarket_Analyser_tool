@@ -60,8 +60,8 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
     # afternoon to headers and user agents.
     #
     # Both URLs are kept because they cost one request each and a retired path
-    # occasionally returns. When they fail, load_manual_pledge_csv() above is
-    # the supported substitute.
+    # occasionally returns. When every one fails the pledge column shows an
+    # honest —: exchange data or nothing.
     urls_to_try = [
         # SINGULAR "corporate-". Confirmed live 17 Sep 2026 from the page's own
         # network tab: 200 OK, ~121 kB, no query parameters. The two below it
