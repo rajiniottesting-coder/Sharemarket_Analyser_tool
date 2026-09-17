@@ -1122,6 +1122,19 @@ TIPS: Dict[str, Tuple[str, str]] = {
                 "Target, P&L, days held). Held stocks usually rotate out of the\n"
                 "top-100, so the card lives here rather than on the dashboard.\n"
                 "Framed as hold / trim / exit guidance, not a fresh buy thesis."),
+    "Insider (news)": ("Promoter/insider BUY or SELL stated in recent headlines (v17.11)",
+                       "Extracted by the company LLM ONLY when a headline explicitly\n"
+                       "reports insider/promoter buying or selling. A BUY here upgrades\n"
+                       "insider_buy_alert (additive: never overrides a real SAST YES).\n"
+                       "NONE = no such headline. No figures are ever inferred."),
+    "Bulk Deal": ("Bulk/block deal reported in headlines (v17.11)",
+                  "BUY / SELL only when a headline names a bulk or block deal.\n"
+                  "Supplements the NSE bulk-deal feed, which is often blocked\n"
+                  "for cloud runners."),
+    "Reg Flag": ("SEBI / RBI / court / auditor action stated in headlines (v17.11)",
+                 "YES only when a headline explicitly reports regulatory or\n"
+                 "legal action, an auditor resignation, or a fraud probe.\n"
+                 "A hard fact worth reading before acting on any BUY."),
     "Target": ("Single price target (v17.8.1) = regime × SL",
                "1.3× SL in a calm regime, 1.5× normal, 1.8× volatile.\n"
                "Fair-value and the old +10% cap were removed. T2/T3 hidden."),

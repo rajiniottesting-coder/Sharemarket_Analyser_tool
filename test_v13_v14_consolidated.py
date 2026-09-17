@@ -5579,6 +5579,44 @@ def test_g39_v17_7_shadow_stop_isolation():
             "a round-trip SL_HIT into a profitable TRAIL_SL in shadow")
 
 
+
+def test_g40_v17_11_1_market_stats_not_referenced_before_creation():
+    """v17.11.1 regression guard.
+
+    On 2026-09-17 the pipeline crashed with UnboundLocalError because a new
+    line wrote market_stats["held_cards"] in Section 7/8, while market_stats is
+    only created (market_stats = {...}) in Section 9/10. Python treats the
+    later assignment as making the name local for the whole function, so the
+    earlier reference is unbound. This guard fails if ANY subscript/attribute
+    use of the market_stats local appears before its creation line. Keyword
+    arguments named market_stats= (e.g. to ExcelGeneratorV6) are not
+    references to the local and are excluded.
+    """
+    import re
+    src = open('master_funnel.py', 'r', encoding='utf-8').read()
+    lines = src.splitlines()
+    create_idx = None
+    for i, ln in enumerate(lines):
+        if re.match(r'\s*market_stats\s+=\s+\{', ln):   # spaced '=' → statement, not a kwarg
+            create_idx = i
+            break
+    assert create_idx is not None, "v17.11.1: could not find 'market_stats = {' creation"
+    offenders = []
+    for i in range(create_idx):
+        ln = lines[i]
+        if ln.lstrip().startswith('#'):
+            continue
+        # A real reference: market_stats followed by [ or . (subscript/attr use)
+        # or a bare read like `x = market_stats`. Exclude `market_stats=` kwargs.
+        if re.search(r'(?<![\w.])market_stats\s*[\[\.]', ln) or \
+           re.search(r'(?<![\w.])market_stats\s*\)', ln):
+            offenders.append(f"line {i+1}: {ln.strip()[:80]}")
+    assert not offenders, (
+        "v17.11.1: market_stats is referenced BEFORE its creation (this raised "
+        "UnboundLocalError on 2026-09-17 and crashed the run):\n  " + "\n  ".join(offenders))
+    return ("\u2705 v17.11.1: market_stats is never referenced before it is created "
+            "(UnboundLocalError regression guard)")
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -5854,6 +5892,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g37_v17_3_continuation_tracking_isolation_and_expiry))
     v14_1_results.append(_run_one_test(test_g38_v17_5_resilience_watchlist_isolation_and_retention))
     v14_1_results.append(_run_one_test(test_g39_v17_7_shadow_stop_isolation))
+    v14_1_results.append(_run_one_test(test_g40_v17_11_1_market_stats_not_referenced_before_creation))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

@@ -55,8 +55,10 @@ FULL_GROUPS = [
     #   TRADE PLAN:       cols 113-119 (start=113, span=7)
     #   NEWS & RISK:      cols 120-123 (start=120, span=4)
     #   ANALYSIS SUMMARY: col 124      (start=124, span=1)
-    (113,"TRADE PLAN",      "059669",7),(120,"NEWS & RISK",    "475569",4),
-    (124,"ANALYSIS SUMMARY","0F172A",1),
+    # v17.11: NEWS & RISK span 4→7 (Insider/Bulk Deal/Reg Flag added);
+    # ANALYSIS SUMMARY start 124→127.
+    (113,"TRADE PLAN",      "059669",7),(120,"NEWS & RISK",    "475569",7),
+    (127,"ANALYSIS SUMMARY","0F172A",1),
 ]
 
 FULL_COLS = [
@@ -143,6 +145,10 @@ FULL_COLS = [
     ("Sizing Rationale",55,"alloc_rationale"),
     ("Key Catalyst",42,"key_catalyst"),("News Sentiment",15,"news_sentiment"),
     ("Primary Risk",42,"primary_risk"),("SEBI Flags",22,"sebi_flags"),
+    # v17.11: structured facts extracted from headlines by the company LLM,
+    # each backed by the headline that states it (never inferred, no numbers).
+    ("Insider (news)",14,"news_insider"),("Bulk Deal",12,"news_bulk_deal"),
+    ("Reg Flag",10,"regulatory_flag"),
     ("View Analysis Summary",70,"Analysis_Summary_Block_H"),
 ]
 

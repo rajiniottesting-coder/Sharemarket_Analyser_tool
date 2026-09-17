@@ -3615,6 +3615,7 @@ def run_master_pipeline():
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 7 & 8: AI INVESTOR CARDS
         # ─────────────────────────────────────────────────────────────────────
+        _held_cards_pending = {}   # v17.11.1: always bound; filled below if cards run
         print("🤖 [Section 7/8] Generating AI Cards...")
 
         # v10.13 FIX #1 — Skip AI calls for AVOID-verdict stocks.
@@ -3762,7 +3763,10 @@ def run_master_pipeline():
                 _held_cards[_hx["symbol"]] = ai_lines[_ai_cursor]; _ai_cursor += 1
             else:
                 _held_cards[_hx["symbol"]] = "[AI not yet generated — Analysis pending]"
-        market_stats["held_cards"] = _held_cards
+        # v17.11.1 FIX: market_stats is not created until Section 9/10 (below).
+        # Writing to it here raised UnboundLocalError and crashed the run.
+        # Park the cards in a plain local; merged into market_stats once it exists.
+        _held_cards_pending = _held_cards
 
         # Format investor cards for text report
         final_cards_for_display = []
@@ -3823,6 +3827,8 @@ def run_master_pipeline():
             "nifty_200d":    get_nifty_200_sma(),
             "vix":           0,    # v13.x: was 12.0 placeholder; now honest "—" in report
         }
+        # v17.11.1: attach the held-position cards computed in Section 7/8.
+        market_stats["held_cards"] = _held_cards_pending
         # v17.0: market-regime gate — Nifty50 vs 20-day SMA
         # Falls through to BULLISH when Nifty data is unavailable (returns 0.0)
         # so new installations without Nifty price history are not silently broken.

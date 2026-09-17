@@ -63,8 +63,8 @@ _API_BASE  = os.getenv("OPENAI_API_BASE", "").strip().rstrip("/")
 _MODEL     = os.getenv("LLM_MODEL", "").strip()
 _ENABLED   = os.getenv("NEWS_SENTIMENT_ENABLED", "1").strip() == "1"
 _SHADOW    = os.getenv("NEWS_SENTIMENT_SHADOW", "0").strip() == "1"
-_MAX_HEADLINES = int(os.getenv("NEWS_MAX_HEADLINES", "8") or 8)
-_LOOKBACK_DAYS = int(os.getenv("NEWS_LOOKBACK_DAYS", "7") or 7)
+_MAX_HEADLINES = int(os.getenv("NEWS_MAX_HEADLINES", "15") or 15)   # v17.11: was 8
+_LOOKBACK_DAYS = int(os.getenv("NEWS_LOOKBACK_DAYS", "14") or 14)  # v17.11: was 7
 _TIMEOUT_S = 25
 _RATE_LIMIT_S = 0.4   # polite gap between LLM calls
 
@@ -83,6 +83,10 @@ def _neutral(reason: str, headlines=None, raw: str = "") -> dict:
         "news_reason": reason,
         "news_raw_llm": raw,
         "news_shadow": _SHADOW,
+        "news_insider": "NONE", "news_insider_evidence": "",
+        "news_bulk_deal": "NONE", "news_bulk_deal_evidence": "",
+        "news_regulatory_flag": False, "news_regulatory_evidence": "",
+        "news_results_tone": "NONE",
     }
 
 
@@ -120,19 +124,33 @@ def fetch_headlines(symbol: str, company_name: str = "", max_items: int = None) 
 
 # ── 2. LLM sentiment (OpenAI-compatible /chat/completions) ───────────────────
 _SYSTEM = (
-    "You are an equity-news analyst for Indian listed companies. "
-    "Given recent headlines for ONE stock, classify the net near-term "
-    "sentiment for its share price. Respond with ONLY a JSON object and "
-    "nothing else, using exactly these keys:\n"
+    "You are an equity-news analyst for Indian listed companies. Given recent "
+    "headlines for ONE stock, extract FACTS that are explicitly stated in the "
+    "headlines. Respond with ONLY a JSON object and nothing else, using exactly "
+    "these keys:\n"
     '{"sentiment": "POSITIVE"|"NEGATIVE"|"NEUTRAL", '
     '"confidence": <number 0.0-1.0>, '
-    '"catalyst": "<one short line: the main positive driver, or empty>", '
-    '"risk": "<one short line: the main negative driver, or empty>"}\n'
-    "Rules: NEUTRAL if headlines are routine/mixed/irrelevant. POSITIVE only "
-    "for a concrete favourable catalyst (order win, approval, strong results, "
-    "upgrade). NEGATIVE only for a concrete adverse event (fraud probe, "
-    "regulatory action, downgrade, results miss, promoter pledge/exit). "
-    "Ignore generic market-wide noise. Be conservative."
+    '"catalyst": "<one short line: main positive driver, or empty>", '
+    '"risk": "<one short line: main negative driver, or empty>", '
+    '"insider_activity": "BUY"|"SELL"|"NONE", '
+    '"insider_evidence": "<the headline that shows insider/promoter buying or selling, or empty>", '
+    '"bulk_deal": "BUY"|"SELL"|"NONE", '
+    '"bulk_deal_evidence": "<the headline showing a bulk/block deal, or empty>", '
+    '"regulatory_flag": true|false, '
+    '"regulatory_evidence": "<the headline showing SEBI/regulator/court/auditor action, or empty>", '
+    '"results_tone": "BEAT"|"MISS"|"INLINE"|"NONE"}\n'
+    "STRICT RULES:\n"
+    "1. Every non-empty *_evidence field MUST quote or closely paraphrase an actual "
+    "headline from the list. Never infer an event that is not stated.\n"
+    "2. NEVER output a number, percentage, price, or ratio that does not appear "
+    "verbatim in a headline. If a figure is not stated, leave it out.\n"
+    "3. insider_activity = BUY only for promoter/insider/director PURCHASES stated in "
+    "the headlines; SELL only for stated sales or pledge INCREASES. Otherwise NONE.\n"
+    "4. bulk_deal = BUY/SELL only if a headline names a bulk or block deal.\n"
+    "5. regulatory_flag = true only for a stated SEBI/RBI/court/auditor/fraud action.\n"
+    "6. NEUTRAL sentiment if headlines are routine, mixed, or irrelevant. POSITIVE "
+    "only for a concrete favourable catalyst; NEGATIVE only for a concrete adverse "
+    "event. Ignore generic market-wide noise. Be conservative."
 )
 
 
@@ -207,11 +225,34 @@ def get_news_sentiment(symbol: str, company_name: str = "") -> dict:
     else:
         sent_effective = sent
 
+    def _enum(k, allowed, default):
+        v = str(parsed.get(k, default) or default).upper().strip()
+        return v if v in allowed else default
+    _ins  = _enum("insider_activity", ("BUY", "SELL", "NONE"), "NONE")
+    _bulk = _enum("bulk_deal", ("BUY", "SELL", "NONE"), "NONE")
+    _res  = _enum("results_tone", ("BEAT", "MISS", "INLINE", "NONE"), "NONE")
+    _reg  = bool(parsed.get("regulatory_flag", False))
+    # A fact without evidence is not a fact — drop it (guards against invention).
+    if _ins != "NONE" and not str(parsed.get("insider_evidence", "") or "").strip():
+        _ins = "NONE"
+    if _bulk != "NONE" and not str(parsed.get("bulk_deal_evidence", "") or "").strip():
+        _bulk = "NONE"
+    if _reg and not str(parsed.get("regulatory_evidence", "") or "").strip():
+        _reg = False
+
     return {
         "news_sentiment": sent_effective,
         "news_confidence": round(conf, 2),
         "news_catalyst": str(parsed.get("catalyst", "") or "")[:200],
         "news_risk": str(parsed.get("risk", "") or "")[:200],
+        # v17.11 structured facts — each backed by the headline that states it
+        "news_insider": _ins,
+        "news_insider_evidence": str(parsed.get("insider_evidence", "") or "")[:200],
+        "news_bulk_deal": _bulk,
+        "news_bulk_deal_evidence": str(parsed.get("bulk_deal_evidence", "") or "")[:200],
+        "news_regulatory_flag": _reg,
+        "news_regulatory_evidence": str(parsed.get("regulatory_evidence", "") or "")[:200],
+        "news_results_tone": _res,
         "news_headline_count": len(headlines),
         "news_informed": sent_effective != "NEUTRAL",
         "news_reason": "ok" if sent_effective == sent else f"downgraded (conf {conf:.2f} < 0.6)",
@@ -245,6 +286,22 @@ def enrich_stocks_with_news(stocks: list, log_fn=print) -> int:
                 st["news_sentiment"] = res["news_sentiment"]
                 if res.get("news_catalyst"):
                     st["key_catalyst"] = res["news_catalyst"]
+                if res.get("news_risk"):
+                    st["primary_risk"] = res["news_risk"]
+                # v17.11: news-evidenced insider BUY upgrades the (often starved)
+                # SAST-derived alert. STRICTLY ADDITIVE: only NO -> YES, never
+                # downgrade a real SAST YES, and only with a supporting headline.
+                if res.get("news_insider") == "BUY" and res.get("news_insider_evidence"):
+                    if str(st.get("insider_buy_alert", "NO")).upper() != "YES":
+                        st["insider_buy_alert"] = "YES"
+                        st["insider_buy_source"] = "news"
+                # Regulatory action is a hard fact worth surfacing on the row.
+                if res.get("news_regulatory_flag"):
+                    st["regulatory_flag"] = "YES"
+                # Lift the structured facts onto the row for the dashboard columns.
+                st["news_insider"]   = res.get("news_insider", "NONE")
+                st["news_bulk_deal"] = res.get("news_bulk_deal", "NONE")
+                st.setdefault("regulatory_flag", "NO")
             if res.get("news_informed"):
                 informed += 1
         except Exception as e:
