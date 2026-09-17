@@ -54,15 +54,9 @@ FULL_GROUPS = [
     # (single-Target model). All groups after it shift left by 2:
     #   TRADE PLAN:       cols 113-119 (start=113, span=7)
     #   NEWS & RISK:      cols 120-123 (start=120, span=4)
-    # ANALYSIS SUMMARY was col 124 and is gone from this sheet.
-    #
-    # Narrative cards are written only for Gold picks and currently-held
-    # positions, so on the full dashboard every row carried the same skip
-    # notice - 94 identical cells explaining why the column was empty. A
-    # column that is 100% notice costs a screen of width and tells a reader
-    # nothing they cannot learn from its absence. The cards still appear where
-    # they are produced: the Gold sheet and the Performance open positions.
+    #   ANALYSIS SUMMARY: col 124      (start=124, span=1)
     (113,"TRADE PLAN",      "059669",7),(120,"NEWS & RISK",    "475569",4),
+    (124,"ANALYSIS SUMMARY","0F172A",1),
 ]
 
 FULL_COLS = [
@@ -149,6 +143,7 @@ FULL_COLS = [
     ("Sizing Rationale",55,"alloc_rationale"),
     ("Key Catalyst",42,"key_catalyst"),("News Sentiment",15,"news_sentiment"),
     ("Primary Risk",42,"primary_risk"),("SEBI Flags",22,"sebi_flags"),
+    ("View Analysis Summary",70,"Analysis_Summary_Block_H"),
 ]
 
 GOLD_GROUPS = [
@@ -1187,13 +1182,16 @@ NO_FREE_SOURCE_COLS = {
     "Altman Z","Beneish M","Earn Quality",
     # Intelligence / pipeline (needs company-specific filed data)
     "OB/Bill Ratio","Pipeline Vis","L1 Wins 90D","L1 Est (₹Cr)","New Mkt Entry",
-    # AI-generated text fields (needs Gemini credits — separate amber set below)
-    "Key Catalyst","News Sentiment","Primary Risk","SEBI Flags",
+    # v17.10.1: Key Catalyst / News Sentiment / Primary Risk are NOW populated by
+    # the company LLM (news_sentiment.py) — removed from the no-source set so
+    # their headers no longer show the misleading "permanently blank" red.
+    # SEBI Flags still has no free source.
+    "SEBI Flags",
     # NOTE: NPM Q (latest)/Q-1/Q-2, Margin Expansion, CAGRs, Q3 Rev/PAT/EBITDA
     # were previously red but are now calculated via yfinance — moved to normal.
     # (Pre-v12.6 these were labelled NPM Q1/Q2/Q3.)
 }
-# Needs Gemini API credits — amber highlight
+# Needs LLM (company Sonnet endpoint) — amber highlight
 NEEDS_AI_CREDITS = {"View Analysis Summary"}
 
 def _sf(val, default=0.0):
@@ -2314,35 +2312,6 @@ class ExcelGeneratorV6:
             ws.row_dimensions[r].height=15
             ws.cell(r,2,f"{cmd:<28}{desc}").font=_ft(False,NAVY,9); r+=1
 
-    def _card_for(self, symbol) -> str:
-        """Today's narrative card for `symbol`, or the honest-unknown marker.
-
-        The Performance sheet's rows come from outcome tracking; the cards are
-        written against today's funnel. The two share only the symbol, so that
-        is what joins them.
-        """
-        sym = str(symbol or "").strip().upper()
-        if not sym or getattr(self, "df", None) is None or self.df.empty:
-            return "—"
-        if "symbol" not in self.df.columns or \
-                "Analysis_Summary_Block_H" not in self.df.columns:
-            return "—"
-        try:
-            hit = self.df.loc[
-                self.df["symbol"].astype(str).str.strip().str.upper() == sym,
-                "Analysis_Summary_Block_H"]
-            if hit.empty:
-                return "—"
-            text = str(hit.iloc[0] or "").strip()
-        except Exception:                                      # noqa: BLE001
-            return "—"
-        # A placeholder is not a card. Showing "[AI skipped ...]" here would
-        # repeat on every row the same way it did on the dashboard column that
-        # was removed for exactly that reason.
-        if not text or text.startswith("[") or text == "—":
-            return "—"
-        return text
-
     def _performance_sheet(self, wb):
         """v14.0: Performance dashboard for Gold-pick outcome tracking.
 
@@ -2905,15 +2874,11 @@ class ExcelGeneratorV6:
                      # Time Horizon (col 3) and Score (col 15) already exist and
                      # are NOT repeated here.
                      ("Score Band",13),("Archetype",20),("Sector",22),
-                     # v17.11 col 24: the narrative card for a position you
-                     # actually hold. Cards are written for Gold picks and
-                     # currently-held positions, and until now had nowhere to
-                     # appear on this sheet - the table had 23 columns and no
-                     # summary, so the text was generated and discarded. These
-                     # are the only rows where a memo earns its width: the
-                     # dashboard's 94 candidates are not held, and its column
-                     # carried nothing but a skip notice.
-                     ("View Analysis Summary",70)]
+                     # v17.10.1: narrative card for each HELD position. Held stocks
+                     # usually rotate out of the top-100, so their card cannot live on
+                     # the dashboard row — it is surfaced here instead. Appended LAST
+                     # so every existing column index is unchanged.
+                     ("AI Card",70)]
         for ci,(h,w) in enumerate(open_cols, 1):
             cc = ws.cell(next_row, ci, h)
             cc.fill = _f(NAVY); cc.font = _ft(True, WHITE, 9); cc.alignment = _al()
@@ -2929,10 +2894,7 @@ class ExcelGeneratorV6:
         _open_df = _df_all[_df_all["outcome_type"] == "OPEN"].copy()
         _approaching_count = 0   # for an end-of-table summary
         if _open_df.empty:
-            # v17.11: 24, matching the widened header. A merge narrower than
-            # the table leaves the "no positions" banner stopping short of the
-            # columns it is meant to cover.
-            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=24)
+            ws.merge_cells(start_row=next_row,start_column=1,end_row=next_row,end_column=20)
             c = ws.cell(next_row,1,"  No currently-open positions.")
             c.fill = _f(LG); c.font = _ft(False,"6B7280",9,True); c.alignment = _al("left")
             next_row += 1
@@ -3022,16 +2984,11 @@ class ExcelGeneratorV6:
                     str(row_o.get("_score_band", "—") or "—"),
                     str(row_o.get("quick_pick_label", "—") or "—"),
                     str(row_o.get("sector", "—") or "—"),
-                    # v17.11.1: look the card up BY SYMBOL in today's funnel.
-                    #
-                    # These rows come from outcome tracking, not from the
-                    # funnel - a held position was recommended days ago and
-                    # its row carries entry price, days held and P&L, never a
-                    # narrative. Reading Analysis_Summary_Block_H off row_o
-                    # therefore returned nothing for every position and the
-                    # whole column rendered "—", which looked like the cards
-                    # had not been generated when they had.
-                    self._card_for(row_o.get("symbol")),
+                    # v17.10.1: held-position card (from market_stats["held_cards"] if
+                    # the stock rotated out of the top-100; else the dashboard card).
+                    str((self.market_stats.get("held_cards") or {}).get(
+                        str(row_o.get("symbol","")).strip(), "") or
+                        row_o.get("Analysis_Summary_Block_H","") or "—"),
                 ]
                 for ci, v in enumerate(vals, 1):
                     cc = ws.cell(next_row, ci, v); cc.fill = _f(bg)

@@ -3656,10 +3656,14 @@ def run_master_pipeline():
                 _card_syms.update(str(x).strip() for x in _gold_df["symbol"].tolist())
         except Exception as _gse:
             print(f"   ⚠️  Card scope: Gold pre-check failed (non-fatal): {_gse}")
+        _held_recs = {}   # symbol -> tracker row (for held stocks NOT in top-100)
         try:
             from database.data_bridge import get_open_recommendations
             for _orec in (get_open_recommendations() or []):
-                _card_syms.add(str(_orec.get("symbol", "")).strip())
+                _hs = str(_orec.get("symbol", "")).strip()
+                if _hs:
+                    _card_syms.add(_hs)
+                    _held_recs[_hs] = _orec
         except Exception as _hse:
             print(f"   ⚠️  Card scope: held-positions lookup failed (non-fatal): {_hse}")
         _card_syms.discard("")
@@ -3682,9 +3686,50 @@ def run_master_pipeline():
             else:
                 _ai_input_stocks.append(_stock)
 
+        # v17.10.1 FIX: held positions are usually NOT in today's top-100 (they
+        # were picked days ago and have since rotated out). The loop above only
+        # sees final_100_list, so those positions silently got no card. Build a
+        # card input for each held stock absent from the dashboard, using its
+        # tracker row (entry, SL, target, P&L, days held) — the most relevant
+        # context for a stock you actually hold. Their cards are stored in
+        # _held_cards and surfaced on the Performance sheet (they have no
+        # dashboard row to write into).
+        _top100_syms = {str(_st.get("symbol", "") or "").strip() for _st in final_100_list}
+        _held_extra = []
+        for _hs, _hrec in _held_recs.items():
+            if _hs in _top100_syms:
+                continue          # already handled by the loop above
+            try:
+                _cmp = float(_hrec.get("cmp_at_recommendation", 0) or 0)
+                _sl  = float(_hrec.get("stop_loss", 0) or 0)
+                _t1  = float(_hrec.get("t1", 0) or 0)
+                _held_extra.append({
+                    "symbol": _hs,
+                    "company_name": _hs,
+                    "verdict": "HELD POSITION",
+                    "composite_score": float(_hrec.get("composite_score", 0) or 0),
+                    "quick_pick_label": str(_hrec.get("quick_pick_label", "") or ""),
+                    "time_horizon": str(_hrec.get("time_horizon", "") or ""),
+                    "close": _cmp,
+                    "stop_loss": _sl, "t1": _t1,
+                    "recommendation_date": str(_hrec.get("recommendation_date", "") or ""),
+                    "max_runup_pct": float(_hrec.get("max_runup_pct", 0) or 0),
+                    "max_drawdown_pct": float(_hrec.get("max_drawdown_pct", 0) or 0),
+                    "_held_context": (
+                        f"CURRENTLY HELD since {_hrec.get('recommendation_date','')}. "
+                        f"Entry {_cmp:.2f}, SL {_sl:.2f}, Target {_t1:.2f}. "
+                        f"Max runup {float(_hrec.get('max_runup_pct',0) or 0):+.1f}%, "
+                        f"max drawdown {float(_hrec.get('max_drawdown_pct',0) or 0):+.1f}%. "
+                        f"Focus the card on: hold / trim / exit guidance vs SL and Target."
+                    ),
+                })
+            except Exception as _hxe:
+                print(f"   ⚠️  Card scope: could not build held input for {_hs}: {_hxe}")
+        _ai_input_stocks.extend(_held_extra)
+
         print(f"   🎯 Card scope: {len(_ai_input_stocks)} stock(s) "
-              f"(Gold + held) · {len(_scope_indices)} out of scope · "
-              f"{len(_avoid_indices)} AVOID")
+              f"(Gold + held; {len(_held_extra)} held not in top-100) · "
+              f"{len(_scope_indices)} out of scope · {len(_avoid_indices)} AVOID")
 
         if _ai_input_stocks:
             investor_cards_text = get_ai_analysis(pd.DataFrame(_ai_input_stocks))
@@ -3708,6 +3753,16 @@ def run_master_pipeline():
                 _ai_cursor += 1
             else:
                 stock["Analysis_Summary_Block_H"] = "[AI not yet generated — Analysis pending]"
+        # v17.10.1: held-not-in-top-100 cards come AFTER the dashboard stocks in
+        # the LLM output (they were appended last). Collect them by symbol so the
+        # Performance sheet can show them; they have no dashboard row.
+        _held_cards = {}
+        for _hx in _held_extra:
+            if _ai_cursor < len(ai_lines):
+                _held_cards[_hx["symbol"]] = ai_lines[_ai_cursor]; _ai_cursor += 1
+            else:
+                _held_cards[_hx["symbol"]] = "[AI not yet generated — Analysis pending]"
+        market_stats["held_cards"] = _held_cards
 
         # Format investor cards for text report
         final_cards_for_display = []

@@ -3260,8 +3260,8 @@ def test_g23_v15_7_minor_cleanups():
     )
     # Count tuples in open_cols — should be 20
     tuple_count = len(re.findall(r'\("[^"]+"\s*,\s*\d+\)', open_cols_text))
-    assert tuple_count == 21, (
-        f"v17.8: Performance open_cols should have 21 tuples (T2/T3 removed), got {tuple_count}"
+    assert tuple_count == 22, (
+        f"v17.10.1: Performance open_cols should have 22 tuples (T2/T3 removed, AI Card added), got {tuple_count}"
     )
 
     # ----- Cleanup 3b: schema has the new columns -----
@@ -4174,7 +4174,7 @@ def test_g31_v16_3_column_width_floor():
     # ── Check 3: Performance OPEN POSITIONS narrow columns widened ──
     # Find the open_cols literal in source — it's inside _performance method
     open_cols_match = _re.search(
-        r'open_cols\s*=\s*\[\s*\("Symbol",\s*(\d+)\).*?\("Sector",\s*\d+\)\s*\]',
+        r'open_cols\s*=\s*\[\s*\("Symbol",\s*(\d+)\).*?\("AI Card",\s*\d+\)\s*\]',
         src_xl, _re.DOTALL,
     )
     assert open_cols_match, "Couldn't find open_cols literal in source"
