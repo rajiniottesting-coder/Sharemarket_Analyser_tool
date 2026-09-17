@@ -27,6 +27,10 @@ except ImportError:  # pragma: no cover
     requests = None
 
 
+import os as _os
+from pathlib import Path as _Path
+
+
 def _sf(val, default=0.0):
     """Safe float — handles '—', None, '', non-numeric strings."""
     if val is None or val == "" or str(val) in ("—", "--", "N/A"):
@@ -131,6 +135,81 @@ def _is_auth_error(err: Exception) -> bool:
     return any(m in err_str for m in auth_markers)
 
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# DAY-SCOPED CACHE
+#
+# Every LLM call is billed. The pipeline is re-run several times a day -
+# after a data fix, to regenerate a sheet, to retry a failed step - and each
+# run re-generated every narrative card from scratch, paying again for text
+# that had not changed. The cards are a view of the day's picks: if the picks
+# are the same, the cards are the same.
+#
+# Keyed on the trading DATE plus a hash of the exact input. The date alone
+# would serve yesterday's cards after midnight; the hash alone would serve
+# stale cards if a pick list happened to repeat. Both together mean: same day
+# AND same stocks -> reuse; a changed pick list on the same day regenerates,
+# because those are genuinely different stocks.
+# ─────────────────────────────────────────────────────────────────────────
+_CACHE_DIR = _Path(__file__).resolve().parent.parent / "downloads" / "ai_cache"
+
+
+def _cache_key(stock_list_df) -> str:
+    """A fingerprint of what the AI is being asked about.
+
+    Symbol plus the handful of fields the cards actually turn on. Reading the
+    whole row would make the key change on any trivial numeric drift - a price
+    tick - and defeat the cache entirely.
+    """
+    import hashlib
+    rows = []
+    try:
+        for _, r in stock_list_df.iterrows():
+            rows.append("|".join(str(r.get(k, "")) for k in (
+                "symbol", "composite_score", "quick_pick_label",
+                "entry_range", "stop_loss", "t1", "horizon")))
+    except Exception:                                          # noqa: BLE001
+        return ""
+    return hashlib.sha256("\n".join(sorted(rows)).encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_path(key: str):
+    from datetime import date
+    return _CACHE_DIR / f"{date.today().isoformat()}_{key}.txt"
+
+
+def _cache_read(key: str):
+    """Today's cards for this exact input, or None."""
+    if not key or _os.getenv("AI_CACHE", "1").strip().lower() in ("0", "false", "no"):
+        return None
+    try:
+        path = _cache_path(key)
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    except Exception:                                          # noqa: BLE001
+        pass
+    return None
+
+
+def _cache_write(key: str, text: str) -> None:
+    """Best-effort. A cache that cannot be written must never fail a run."""
+    if not key or not text:
+        return
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _cache_path(key).write_text(text, encoding="utf-8")
+        # Keep only today's files. Yesterday's can never be served - the date
+        # is in the name - so they are dead weight from the moment midnight
+        # passes.
+        from datetime import date
+        today = date.today().isoformat()
+        for old in _CACHE_DIR.glob("*.txt"):
+            if not old.name.startswith(today):
+                old.unlink(missing_ok=True)
+    except Exception:                                          # noqa: BLE001
+        pass
+
+
 def get_ai_analysis(stock_list_df) -> str:
     """
     SECTION 0D & 3: Grounded Batch Processing via the company LLM (Sonnet).
@@ -147,6 +226,13 @@ def get_ai_analysis(stock_list_df) -> str:
         return ("[AI unavailable — LLM not configured. "
                 "Cards skipped; all other Excel data is complete and accurate. "
                 "Set OPENAI_API_KEY / OPENAI_API_BASE / LLM_MODEL to enable AI narratives.]")
+
+    # Same day, same stocks - reuse rather than pay again.
+    _key = _cache_key(stock_list_df)
+    _hit = _cache_read(_key)
+    if _hit is not None:
+        print(f"💾 AI cards served from today's cache ({_key}) — no API calls, no cost.")
+        return _hit
 
     all_investor_cards = []
     batch_size = 12  # 10-15 per Section 0D
@@ -380,4 +466,10 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                         f"[Batch {idx + 1} analysis unavailable: {e2}]"
                     )
 
-    return "\n\n".join(all_investor_cards)
+    _out = "\n\n".join(all_investor_cards)
+    # Only a real result is cached. Caching a partial or failed batch would
+    # pin the failure for the rest of the day and cost a debugging session to
+    # notice, since a cache hit looks exactly like a successful run.
+    if all_investor_cards and "[AI unavailable" not in _out:
+        _cache_write(_key, _out)
+    return _out
