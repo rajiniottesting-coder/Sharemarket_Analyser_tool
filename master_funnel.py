@@ -2396,6 +2396,28 @@ def run_master_pipeline():
                 stock["rotation_stage"] = "NEUTRAL"
 
         # ─────────────────────────────────────────────────────────────────────
+        # SECTION 5A.3b (v17.13): NSE SNAPSHOT FALLBACK for pledge / DII / FII
+        # NSE serves a residential IP (your laptop: 200 OK) but blocks GitHub's
+        # datacenter IPs, so the live pledge/shareholding calls above return
+        # nothing on Actions. fetch_nse_local.py (scheduled on your machine)
+        # commits data/nse_snapshot.json; here it is validated (schema +
+        # freshness ≤ 14d) and used ONLY to fill values still blank after the
+        # live attempts. Live data is never overwritten. Missing / stale /
+        # malformed → ignored, one log line, pledge/DII stay — as before.
+        # Placed BEFORE 5A.4 so the QoQ recompute and spike guard see the
+        # filled values. Fully non-fatal.
+        # ─────────────────────────────────────────────────────────────────────
+        try:
+            from ingestion.nse_snapshot import load_snapshot, apply_snapshot
+            _snap = load_snapshot()
+            if _snap:
+                _sc = apply_snapshot(final_100_list, _snap)
+                print(f"   📌 NSE snapshot applied to blanks: pledge {_sc['pledge']} · "
+                      f"DII {_sc['dii']} · FII {_sc['fii']} · promoter {_sc['promoter']}")
+        except Exception as _snape:
+            print(f"   ⚠️  NSE snapshot fallback skipped (non-fatal): {_snape}")
+
+        # ─────────────────────────────────────────────────────────────────────
         # SECTION 5A.4: QoQ RECOMPUTE (v10.9)
         # The first _qoq() pass at line ~544 runs BEFORE Section 5 shareholding
         # enrichment. At that point stock['promoter_pct']=0 (not yet populated),
