@@ -1176,26 +1176,27 @@ GRP_COLORS = {
 # Columns permanently blank — no free data source available
 # These are highlighted with bold red headers so user knows at a glance
 NO_FREE_SOURCE_COLS = {
-    # Financial ratios needing balance sheet detail (BSE filings / paid API)
-    "ND/EBITDA","Int Coverage","CCC Days","Capex / Rev %",
-    # Shareholding QoQ changes (need quarterly filing history). Public Float % is derived and shown in normal colour.
-    "Pro QoQ Δ","Pledge %","Pledge Direction","DII %","DII QoQ Δ",
-    "FII QoQ Δ",
-    # Forensic / quality scores (need multi-year filed financials)
-    # Session 20: Piotroski F /9 removed — it now computes from free data
-    # via FundamentalEngine.calculate_piotroski_f_score (Session 14 wire-up).
-    # Typical output 4-8 of 9 on free data; no longer a paid-source column.
-    "Altman Z","Beneish M","Earn Quality",
-    # Intelligence / pipeline (needs company-specific filed data)
-    "OB/Bill Ratio","Pipeline Vis","L1 Wins 90D","L1 Est (₹Cr)","New Mkt Entry",
-    # v17.10.1: Key Catalyst / News Sentiment / Primary Risk are NOW populated by
-    # the company LLM (news_sentiment.py) — removed from the no-source set so
-    # their headers no longer show the misleading "permanently blank" red.
-    # SEBI Flags still has no free source.
+    # v17.13.4 AUDIT (18-Sep-2026, against a real run): this set was written
+    # when these columns were stubs and never trimmed as sources came online.
+    # Audited fill rates in the 17-Sep Excel: ND/EBITDA 85/95, Int Coverage
+    # 86/95, CCC Days 77/95, Capex/Rev 90/95, Pro QoQ 59/95, Pledge % 43/95,
+    # FII QoQ 75/95, Altman Z 92/95, Beneish M 92/95, Earn Quality 85/95 —
+    # all POPULATED (forensics engine, yfinance, and the v17.13 NSE pledge
+    # snapshot). A bold-red "permanently blank" header over a populated column
+    # is a false signal, so those ten are REMOVED. Only genuinely source-less
+    # columns remain red.
+    #
+    # Shareholding: NSE's free API exposes promoter vs public only. DII/FII
+    # are NOT broken out (the old corp-info endpoint that had diisTotal is
+    # retired, 404). FII % happens to arrive via yfinance; DII does not.
+    "DII %", "DII QoQ Δ",
+    # Pledge Direction needs a PRIOR snapshot to compare against; populates
+    # from the second weekly fetch onward. Kept red until history exists.
+    "Pledge Direction",
+    # Intelligence / pipeline (company-specific filed data — no free source)
+    "OB/Bill Ratio", "Pipeline Vis", "L1 Wins 90D", "L1 Est (₹Cr)", "New Mkt Entry",
+    # SEBI enforcement flags — no free structured source
     "SEBI Flags",
-    # NOTE: NPM Q (latest)/Q-1/Q-2, Margin Expansion, CAGRs, Q3 Rev/PAT/EBITDA
-    # were previously red but are now calculated via yfinance — moved to normal.
-    # (Pre-v12.6 these were labelled NPM Q1/Q2/Q3.)
 }
 # Needs LLM (company Sonnet endpoint) — amber highlight
 NEEDS_AI_CREDITS = {"View Analysis Summary"}
