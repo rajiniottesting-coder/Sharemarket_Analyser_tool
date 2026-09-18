@@ -76,7 +76,19 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
     last_err: Optional[Exception] = None
     for url in urls_to_try:
         try:
-            r = session.get(url, timeout=20)
+            # v17.13.1: the homepage warm-up carried browser headers but this
+            # API call sent requests' defaults ("python-requests/x.y",
+            # Accept */*), which NSE's edge rejects even from a residential IP.
+            # Send the same headers the page itself sends for this XHR.
+            r = session.get(url, timeout=20, headers={
+                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/124.0.0.0 Safari/537.36"),
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.nseindia.com/companies-listing/corporate-filings-pledged-data",
+                "X-Requested-With": "XMLHttpRequest",
+            })
             if r.status_code != 200:
                 last_err = RuntimeError(f"HTTP {r.status_code}")
                 continue
@@ -160,7 +172,8 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
             last_err = e
 
     # Every endpoint failed — one honest line, no retries, no alarm.
-    print("   ℹ️  NSE bulk pledge: no endpoint returned records. "
+    print(f"   ℹ️  NSE bulk pledge: no endpoint returned records "
+          f"(last error: {last_err}). "
           "If this is HTTP 404 the path has moved again - open the NSE "
           "pledged-data page, DevTools > Network > Fetch/XHR, and read "
           "the live URL off it. Pledge % shows \u2014 for this run, which is "

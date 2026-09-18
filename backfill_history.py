@@ -1548,7 +1548,15 @@ def _nse_shareholding(symbol: str, session) -> dict:
     """
     try:
         url = f"https://www.nseindia.com/api/corp-info?symbol={symbol}"
-        r = session.get(url, timeout=12)
+        # v17.13.1: carry browser/XHR headers on the API call itself (the
+        # session warm-up alone is not enough — NSE checks each request).
+        r = session.get(url, timeout=12, headers={
+            "User-Agent": NSE_HEADERS["User-Agent"],
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": f"https://www.nseindia.com/get-quotes/equity?symbol={symbol}",
+            "X-Requested-With": "XMLHttpRequest",
+        })
         if r.status_code != 200:
             return {}
         d = r.json()

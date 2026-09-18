@@ -58,31 +58,44 @@ SNAPSHOT_VERSION = 1
 
 
 def _universe_symbols() -> list:
-    """Symbols to fetch shareholding for. Prefer the last run's top-100
-    (latest_analysis_results) if a local DB exists; else the NSE index CSVs
-    the pipeline already ships; else fall back to the pledge-report symbols."""
+    """Symbols to fetch shareholding for.
+
+    v17.13.1: the laptop has NO market_data.db (it lives only on Actions), so
+    the previous DB-first lookup returned nothing and the fetcher iterated
+    zero symbols. Order now:
+      1. data/nse_symbols.txt  — a committed list you control (one per line).
+         The pipeline's last top-100 is a good source; see README.
+      2. NSE's own NIFTY 500 constituent CSV (public, no auth) — covers every
+         Gold candidate the funnel could ever produce.
+      3. Fallback: whatever symbols the pledge report itself returned.
+    """
     syms = []
+    # 1. committed list
     try:
-        import sqlite3
-        db = os.path.join(_HERE, "market_data.db")
-        if os.path.exists(db):
-            c = sqlite3.connect(db)
-            syms = [r[0] for r in c.execute(
-                "SELECT DISTINCT symbol FROM latest_analysis_results")]
-            c.close()
+        lst = os.path.join(_HERE, "data", "nse_symbols.txt")
+        if os.path.exists(lst):
+            with open(lst, encoding="utf-8") as fh:
+                syms = [ln.strip().upper() for ln in fh if ln.strip() and not ln.startswith("#")]
+            if syms:
+                print(f"   universe: {len(syms)} symbols from data/nse_symbols.txt")
+                return sorted(set(syms))
     except Exception:
         pass
-    if not syms:
-        try:
-            import glob, csv
-            for f in glob.glob(os.path.join(_HERE, "data", "nse_index_*.csv")):
-                with open(f, newline="", encoding="utf-8") as fh:
-                    for row in csv.DictReader(fh):
-                        s = (row.get("Symbol") or row.get("symbol") or "").strip()
-                        if s:
-                            syms.append(s)
-        except Exception:
-            pass
+    # 2. NIFTY 500 from NSE archives (plain CSV, no bot wall)
+    try:
+        import csv, io, requests
+        r = requests.get("https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
+                         timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200 and r.text:
+            for row in csv.DictReader(io.StringIO(r.text)):
+                sy = (row.get("Symbol") or "").strip().upper()
+                if sy:
+                    syms.append(sy)
+            if syms:
+                print(f"   universe: {len(syms)} symbols from NSE NIFTY 500 list")
+                return sorted(set(syms))
+    except Exception as e:
+        print(f"   ⚠️  NIFTY 500 list fetch failed: {e}")
     return sorted(set(syms))
 
 
@@ -147,13 +160,50 @@ def _load_existing() -> dict:
         return {}
 
 
+def _probe() -> int:
+    """Diagnostic only. Shows, per endpoint, the exact HTTP status and the
+    first 160 bytes of the body — so 403 (blocked) vs 404 (moved) vs 200-but-
+    HTML (bot challenge page) vs 200-JSON (works) is settled in one look."""
+    _nse_session, _, _ = _import_pipeline_parsers()
+    import requests
+    sess = _nse_session()
+    hdrs = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nseindia.com/companies-listing/corporate-filings-pledged-data",
+            "X-Requested-With": "XMLHttpRequest"}
+    print(f"🔎 cookies after warm-up: {list(sess.cookies.keys()) or 'NONE (warm-up blocked?)'}")
+    for url in ("https://www.nseindia.com/api/corporate-pledgedata",
+                "https://www.nseindia.com/api/corporates-pledgedata?index=equities",
+                "https://www.nseindia.com/api/corp-info?symbol=RELIANCE",
+                "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"):
+        try:
+            r = sess.get(url, timeout=20, headers=hdrs)
+            body = (r.text or "")[:160].replace("\n", " ")
+            kind = ("JSON" if body.lstrip().startswith(("{", "[")) else
+                    "HTML/challenge" if "<html" in body.lower() else "other")
+            print(f"  HTTP {r.status_code:<4} {kind:<14} {url}\n        {body!r}")
+        except Exception as e:
+            print(f"  ERR  {url}\n        {e}")
+    print("\nReading: 200+JSON = works · 403 = blocked for this client · 404 = path moved · "
+          "200+HTML = bot challenge (cookie/fingerprint) · warm-up NONE = homepage itself blocked")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--push", action="store_true",
                     help="git add/commit/push the snapshot if it changed")
     ap.add_argument("--dry-run", action="store_true",
                     help="fetch and report, but do not write the file")
+    ap.add_argument("--probe", action="store_true",
+                    help="diagnostic: print raw HTTP status + first bytes from each "
+                         "NSE endpoint so a block vs a moved path is unambiguous")
     args = ap.parse_args()
+
+    if args.probe:
+        return _probe()
 
     snap = fetch_snapshot()
     n_pl, n_sh = len(snap["pledge"]), len(snap["shareholding"])
