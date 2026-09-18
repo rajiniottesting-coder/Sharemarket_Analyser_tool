@@ -1,7 +1,7 @@
 # NSE pledge / DII snapshot — local fetch setup
 
 NSE serves your home/office IP but blocks GitHub's datacenter runners, so
-pledge % and DII % cannot be fetched on Actions. `fetch_nse_local.py` runs on
+pledge % and promoter % cannot be fetched on Actions. `fetch_nse_local.py` runs on
 **your laptop** (weekly), writes `data/nse_snapshot.json`, and pushes it. The
 pipeline validates the file (schema + ≤ 14 days old) and uses it only to fill
 blanks — it never overwrites live data and never raises.
@@ -66,6 +66,15 @@ lands exactly on that line, so a small delay tips it to "stale" for a run.
 Weekly keeps the file ≤ 7 days old with a 7-day cushion: **one missed week
 costs nothing**; only two consecutive misses cause pledge/DII to show `—`.
 Pledge/DII change quarterly, so weekly loses no information.
+
+## What NSE does and does not provide (verified 18-Sep-2026)
+
+| Field | Source | Status |
+|---|---|---|
+| Pledge % | `corporate-pledgedata` → `percSharesPledged` | ✅ live |
+| Promoter % | `corporate-share-holdings-master` → `pr_and_prgrp` | ✅ live |
+| Public % | same → `public_val` | ✅ live |
+| **DII % / FII %** | — | ❌ **NSE's free API no longer exposes these separately**; the old `corp-info` endpoint that had `diisTotal`/`fiisTotal` is retired (404). They stay `—`. They are NOT derived from the public bucket — that would be a fabricated number. |
 
 ## What the file is
 

@@ -28,8 +28,19 @@ import time
 from typing import Dict, Optional
 
 
+def _norm_name(n) -> str:
+    """Normalise a company name for matching: lowercase, strip corporate
+    suffixes and punctuation. '360 ONE WAM LIMITED' == '360 ONE WAM Ltd.'."""
+    import re as _re
+    n = str(n or "").lower()
+    n = _re.sub(r"\b(limited|ltd\.?|private|pvt\.?|company|co\.?)\b", " ", n)
+    n = _re.sub(r"[^a-z0-9]+", " ", n)
+    return " ".join(n.split())
+
+
 def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
-                           max_retries: int = 3) -> Dict[str, float]:
+                           max_retries: int = 3,
+                           name_map: Optional[Dict[str, str]] = None) -> Dict[str, float]:
     """
     Fetch the bulk pledge report from NSE.
 
@@ -69,8 +80,8 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
         # reported a 404 - `corporates-` with an s, and a `corporate-filings-`
         # prefix that does not exist. One character.
         "https://www.nseindia.com/api/corporate-pledgedata",
-        "https://www.nseindia.com/api/corporates-pledgedata?index=equities",
-        "https://www.nseindia.com/api/corporate-filings-pledgedata?index=equities",
+        # v17.13.3: the plural and corporate-filings- variants are confirmed
+        # 404 (probe 18-Sep-2026); retired so a failure reports the live path.
     ]
 
     last_err: Optional[Exception] = None
@@ -118,12 +129,22 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
             out: Dict[str, float] = {}
             for rec in records:
                 try:
+                    # v17.13.3: NSE's live payload has NO symbol field — only comName.
+                    # Map company name -> symbol via name_map (built by the caller from
+                    # the NIFTY 500 CSV). Fall back to any symbol field if present.
                     sym = str(rec.get("symbol") or rec.get("Symbol") or "").strip().upper()
+                    if not sym and name_map:
+                        sym = name_map.get(_norm_name(rec.get("comName", "")), "")
                     if not sym:
                         continue
 
-                    # Prefer the SEBI-standard `pctEncumbered` field
-                    pct = rec.get("pctEncumbered")
+                    # v17.13.3: NSE's LIVE field is `percSharesPledged` (confirmed from
+                    # the real payload, 18-Sep-2026). The three names below it were
+                    # never in the response — they are why "200 OK" still yielded 0
+                    # records. Kept as fallbacks only.
+                    pct = rec.get("percSharesPledged")
+                    if pct is None:
+                        pct = rec.get("pctEncumbered")
                     if pct is None:
                         pct = rec.get("pctOfPledged")
                     if pct is None:

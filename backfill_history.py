@@ -1547,7 +1547,13 @@ def _nse_shareholding(symbol: str, session) -> dict:
     extending the parse adds zero new API calls.
     """
     try:
-        url = f"https://www.nseindia.com/api/corp-info?symbol={symbol}"
+        # v17.13.3: corp-info is 404 (retired). The live endpoint is
+        # corporate-share-holdings-master: a list of filings, newest first,
+        # each carrying promoter (pr_and_prgrp) and public (public_val) %.
+        # NOTE: NSE no longer exposes FII/DII as separate free fields — only
+        # promoter vs public. fii_pct/dii_pct stay 0 (rendered as —) rather
+        # than being fabricated from the public bucket.
+        url = f"https://www.nseindia.com/api/corporate-share-holdings-master?index=equities&symbol={symbol}"
         # v17.13.1: carry browser/XHR headers on the API call itself (the
         # session warm-up alone is not enough — NSE checks each request).
         r = session.get(url, timeout=12, headers={
@@ -1560,8 +1566,14 @@ def _nse_shareholding(symbol: str, session) -> dict:
         if r.status_code != 200:
             return {}
         d = r.json()
-        sh_block = d.get("shareholdingPatterns") or {}
-        sh_rows  = sh_block.get("data") or []
+        # v17.13.3: live shape is a top-level LIST of filings (newest first),
+        # not the old {"shareholdingPatterns": {"data": [...]}} wrapper.
+        if isinstance(d, list):
+            sh_rows = [x for x in d if isinstance(x, dict)]
+        elif isinstance(d, dict):
+            sh_rows = (d.get("shareholdingPatterns") or {}).get("data") or []
+        else:
+            sh_rows = []
         if not sh_rows:
             return {}
 
@@ -1579,17 +1591,21 @@ def _nse_shareholding(symbol: str, session) -> dict:
                     continue
             return 0.0
 
+        # v17.13.3: live field names. pr_and_prgrp = promoter %, public_val =
+        # everyone else. fii/dii are NOT separately exposed by NSE's free API
+        # any more (the old fiisTotal/diisTotal came from the retired corp-info
+        # endpoint). They stay 0 -> rendered — . Never derive them from public.
         out = {
-            "promoter_pct": _f(latest, "promoterAndPromoterGroupTotal"),
-            "fii_pct":      _f(latest, "fiisTotal"),
-            "dii_pct":      _f(latest, "diisTotal"),
-            "public_float": _f(latest, "publicTotal"),
+            "promoter_pct": _f(latest, "pr_and_prgrp", "promoterAndPromoterGroupTotal"),
+            "fii_pct":      _f(latest, "fiisTotal"),          # 0 on live API
+            "dii_pct":      _f(latest, "diisTotal"),          # 0 on live API
+            "public_float": _f(latest, "public_val", "publicTotal"),
         }
 
         # v13.0: QoQ deltas — only compute when prior quarter is fully
         # populated (not zero — zero would falsely yield a huge delta).
         if prior:
-            p_promo = _f(prior, "promoterAndPromoterGroupTotal")
+            p_promo = _f(prior, "pr_and_prgrp", "promoterAndPromoterGroupTotal")   # v17.13.3
             p_fii   = _f(prior, "fiisTotal")
             p_dii   = _f(prior, "diisTotal")
             if p_promo > 0:

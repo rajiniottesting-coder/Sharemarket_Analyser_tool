@@ -57,7 +57,7 @@ SNAPSHOT_PATH = os.path.join(_HERE, "data", "nse_snapshot.json")
 SNAPSHOT_VERSION = 1
 
 
-def _universe_symbols() -> list:
+def _universe_symbols(with_names: bool = False):
     """Symbols to fetch shareholding for.
 
     v17.13.1: the laptop has NO market_data.db (it lives only on Actions), so
@@ -78,7 +78,7 @@ def _universe_symbols() -> list:
                 syms = [ln.strip().upper() for ln in fh if ln.strip() and not ln.startswith("#")]
             if syms:
                 print(f"   universe: {len(syms)} symbols from data/nse_symbols.txt")
-                return sorted(set(syms))
+                return (sorted(set(syms)), {}) if with_names else sorted(set(syms))
     except Exception:
         pass
     # 2. NIFTY 500 from NSE archives (plain CSV, no bot wall)
@@ -87,16 +87,22 @@ def _universe_symbols() -> list:
         r = requests.get("https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
                          timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200 and r.text:
+            name_map = {}
             for row in csv.DictReader(io.StringIO(r.text)):
                 sy = (row.get("Symbol") or "").strip().upper()
+                nm = (row.get("Company Name") or "").strip()
                 if sy:
                     syms.append(sy)
+                    if nm:
+                        from ingestion.nse_pledge import _norm_name
+                        name_map[_norm_name(nm)] = sy
             if syms:
-                print(f"   universe: {len(syms)} symbols from NSE NIFTY 500 list")
-                return sorted(set(syms))
+                print(f"   universe: {len(syms)} symbols from NSE NIFTY 500 list "
+                      f"({len(name_map)} name->symbol pairs)")
+                return (sorted(set(syms)), name_map) if with_names else sorted(set(syms))
     except Exception as e:
         print(f"   ⚠️  NIFTY 500 list fetch failed: {e}")
-    return sorted(set(syms))
+    return (sorted(set(syms)), {}) if with_names else sorted(set(syms))
 
 
 def _import_pipeline_parsers():
@@ -117,17 +123,22 @@ def fetch_snapshot() -> dict:
 
     session = _nse_session()
 
+    # ── 0. Symbol universe + company-name -> symbol map (NIFTY 500 CSV) ──
+    # v17.13.3: NSE's pledge payload carries comName only, no symbol. The
+    # NIFTY 500 CSV has both columns, so it doubles as the name map.
+    syms, name_map = _universe_symbols(with_names=True)
+
     # ── 1. Bulk pledge (one call, whole market) ──
     print("📥 NSE bulk pledge …")
     pledge = {}
     try:
-        pledge = fetch_bulk_pledge_data(session) or {}
+        pledge = fetch_bulk_pledge_data(session, name_map=name_map) or {}
     except Exception as e:
         print(f"   ⚠️  pledge fetch failed: {e}")
     print(f"   pledge records: {len(pledge)}")
 
-    # ── 2. Shareholding per symbol (promoter / FII / DII) ──
-    syms = _universe_symbols() or sorted(pledge.keys())
+    # ── 2. Shareholding per symbol (promoter; FII/DII not exposed by NSE) ──
+    syms = syms or sorted(pledge.keys())
     print(f"📥 NSE shareholding for {len(syms)} symbols …")
     share = {}
     for i, sym in enumerate(syms, 1):
@@ -175,8 +186,11 @@ def _probe() -> int:
             "X-Requested-With": "XMLHttpRequest"}
     print(f"🔎 cookies after warm-up: {list(sess.cookies.keys()) or 'NONE (warm-up blocked?)'}")
     for url in ("https://www.nseindia.com/api/corporate-pledgedata",
-                "https://www.nseindia.com/api/corporates-pledgedata?index=equities",
+                # shareholding candidates — corp-info is 404 now; probe the likely successors
                 "https://www.nseindia.com/api/corp-info?symbol=RELIANCE",
+                "https://www.nseindia.com/api/corporate-share-holdings-master?index=equities&symbol=RELIANCE",
+                "https://www.nseindia.com/api/quote-equity?symbol=RELIANCE&section=trade_info",
+                "https://www.nseindia.com/api/top-corp-info?symbol=RELIANCE&market=equities",
                 "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"):
         try:
             r = sess.get(url, timeout=20, headers=hdrs)
@@ -184,6 +198,47 @@ def _probe() -> int:
             kind = ("JSON" if body.lstrip().startswith(("{", "[")) else
                     "HTML/challenge" if "<html" in body.lower() else "other")
             print(f"  HTTP {r.status_code:<4} {kind:<14} {url}\n        {body!r}")
+            # v17.13.2: for the endpoint that WORKS, dump its structure so the
+            # parser is written from the real schema, not a guess.
+            if r.status_code == 200 and kind == "JSON":
+                try:
+                    j = r.json()
+                    if isinstance(j, dict):
+                        print(f"        top-level keys: {sorted(j.keys())}")
+                        for k, v in j.items():
+                            if isinstance(v, list) and v:
+                                first = v[0]
+                                print(f"        '{k}': list of {len(v)}; first item type={type(first).__name__}")
+                                if isinstance(first, dict):
+                                    print(f"           fields: {sorted(first.keys())}")
+                                    print(f"           sample: { {kk: first[kk] for kk in list(first)[:6]} }")
+                                else:
+                                    print(f"           sample: {v[:3]!r}")
+                    elif isinstance(j, list) and j:
+                        print(f"        top-level: list of {len(j)}; first fields: {sorted(j[0].keys()) if isinstance(j[0],dict) else type(j[0]).__name__}")
+                        # v17.13.3: shareholding-master — the % values are NOT top-level.
+                        # Open the fields that plausibly hold them.
+                        if isinstance(j[0], dict):
+                            f0 = j[0]
+                            for k in ("pr_and_prgrp", "public_val", "employeeTrusts", "underlyingDrs", "date", "symbol"):
+                                if k in f0:
+                                    print(f"           {k} = {f0[k]!r}"[:300])
+                    # top-corp-info: open shareholdings_patterns fully
+                    if isinstance(j, dict) and "shareholdings_patterns" in j:
+                        sp = j["shareholdings_patterns"]
+                        print(f"        shareholdings_patterns type={type(sp).__name__}")
+                        if isinstance(sp, dict):
+                            print(f"           keys: {sorted(sp.keys())}")
+                            d = sp.get("data")
+                            if isinstance(d, dict):
+                                for dk, dv in list(d.items())[:3]:
+                                    print(f"           data['{dk}'] = {dv!r}"[:400])
+                            elif isinstance(d, list) and d:
+                                print(f"           data: list of {len(d)}; first = {d[0]!r}"[:400])
+                        else:
+                            print(f"           value: {sp!r}"[:400])
+                except Exception as e:
+                    print(f"        (could not introspect: {e})")
         except Exception as e:
             print(f"  ERR  {url}\n        {e}")
     print("\nReading: 200+JSON = works · 403 = blocked for this client · 404 = path moved · "
