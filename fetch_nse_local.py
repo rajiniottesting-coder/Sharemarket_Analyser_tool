@@ -283,22 +283,58 @@ def main():
           f"{n_pl} pledge + {n_sh} shareholding · fetched_at {snap['fetched_at']}")
 
     if args.push:
-        if not changed:
-            # Still bump fetched_at so the pipeline's freshness check passes —
-            # a real fetch ran and confirmed the figures.
-            pass
         rel = os.path.relpath(SNAPSHOT_PATH, _HERE).replace("\\", "/")
+
+        def _git(*args, check=True, **kw):
+            # v17.13.5: GIT_TERMINAL_PROMPT=0 + GCM_INTERACTIVE=Never stop git /
+            # Credential Manager from opening a "Sign in to GitHub" window that
+            # an unattended scheduled task can never answer. If credentials are
+            # not already cached, the push FAILS FAST with a clear message
+            # instead of hanging forever behind a popup.
+            env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="Never",
+                       GCM_PROMPT="false")
+            return subprocess.run(["git", "-C", _HERE, *args], check=check,
+                                  capture_output=True, text=True, env=env, **kw)
+
         try:
-            subprocess.run(["git", "-C", _HERE, "pull", "--rebase", "--quiet"], check=False)
-            subprocess.run(["git", "-C", _HERE, "add", rel], check=True)
+            # 1. Stage ONLY the snapshot. The owner's checkout may have other
+            #    uncommitted edits; we never touch them and never require a
+            #    clean tree.
+            _git("add", rel)
+            # 2. Commit the snapshot FIRST. The previous order (rebase, then
+            #    commit) failed with "cannot pull with rebase: unstaged changes"
+            #    because the snapshot itself was the unstaged change.
             msg = (f"chore(nse-snapshot): pledge {n_pl} / shareholding {n_sh} "
                    f"@ {snap['fetched_at'][:10]}")
-            r = subprocess.run(["git", "-C", _HERE, "commit", "-m", msg],
-                               capture_output=True, text=True)
-            if r.returncode != 0 and "nothing to commit" in (r.stdout + r.stderr):
-                print("ℹ️  snapshot unchanged — nothing to commit")
-                return 0
-            subprocess.run(["git", "-C", _HERE, "push"], check=True)
+            r = _git("commit", "-m", msg, check=False)
+            if r.returncode != 0:
+                if "nothing to commit" in (r.stdout + r.stderr):
+                    print("ℹ️  snapshot unchanged — nothing to commit")
+                    return 0
+                print(f"⚠️  git commit failed:\n{(r.stdout + r.stderr).strip()}")
+                return 1
+            # 3. Now rebase onto the remote (dodges the keep-alive bot). With
+            #    the snapshot committed, the only thing rebased is our commit;
+            #    other unstaged edits are left alone via --autostash.
+            r = _git("pull", "--rebase", "--autostash", "--quiet", check=False)
+            if r.returncode != 0:
+                print(f"⚠️  git pull --rebase failed (commit is safe locally):\n"
+                      f"{(r.stdout + r.stderr).strip()}\n"
+                      f"   Fix: open the repo, resolve, then `git push`.")
+                return 1
+            # 4. Push, non-interactive.
+            r = _git("push", check=False)
+            if r.returncode != 0:
+                out = (r.stdout + r.stderr).strip()
+                hint = ""
+                if any(k in out.lower() for k in ("authentication", "could not read username",
+                                                  "terminal prompts disabled", "403", "permission")):
+                    hint = ("\n   Credentials are not cached for unattended use. One-time fix:"
+                            "\n     git config --global credential.helper manager"
+                            "\n     git push          <- sign in ONCE interactively; GCM stores the token"
+                            "\n   After that, scheduled runs push silently.")
+                print(f"⚠️  git push failed (commit is safe locally):\n{out}{hint}")
+                return 1
             print("🚀 pushed")
         except subprocess.CalledProcessError as e:
             print(f"⚠️  git step failed: {e} — snapshot is written locally; push manually")
