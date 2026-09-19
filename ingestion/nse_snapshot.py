@@ -66,6 +66,13 @@ def load_snapshot(path: str = SNAPSHOT_PATH, max_age_days: int = None) -> dict:
         return {}
     print(f"   ✅ NSE snapshot: {n_pl} pledge + {n_sh} shareholding records, "
           f"{age}d old (≤ {max_age_days}d) — used as fallback for blanks")
+    # v17.13.6: expose provenance so the Excel can show WHEN this data was
+    # fetched. _age_days and _fetched_display are derived, not stored.
+    snap["_age_days"] = age
+    try:
+        snap["_fetched_display"] = fetched.astimezone().strftime("%d-%b-%Y %H:%M")
+    except Exception:
+        snap["_fetched_display"] = str(snap.get("fetched_at", ""))[:16]
     return snap
 
 

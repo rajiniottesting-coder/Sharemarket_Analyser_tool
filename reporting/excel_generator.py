@@ -1716,7 +1716,8 @@ class ExcelGeneratorV6:
         ws.row_dimensions[1].height=34
         # R2
         ws.merge_cells(start_row=2,start_column=1,end_row=2,end_column=N)
-        c2=ws.cell(2,1,"AutoFilter (row 4): Exchange · Cap Category · Sector · Verdict · MoS Label · BS Flag · Risk · Storm · Sector Stage · Weekly Change   |  Last column = 'View Analysis Summary' — scroll right to see full AI reasoning with recent company facts   |  GOLD=Early Mover · GREEN=Deep Value · BLUE=Buy · AMBER=Watch · RED=Avoid   |  RED column header = No free data source (requires paid API / BSE filings). AMBER header = Needs Gemini API credits. Normal header = calculated from free sources (yfinance / NSE).")
+        c2=ws.cell(2,1,"AutoFilter (row 4): Exchange · Cap Category · Sector · Verdict · MoS Label · BS Flag · Risk · Storm · Sector Stage · Weekly Change   |  Last column = 'View Analysis Summary' — scroll right to see full AI reasoning with recent company facts   |  GOLD=Early Mover · GREEN=Deep Value · BLUE=Buy · AMBER=Watch · RED=Avoid   |  RED column header = No free data source (requires paid API / BSE filings). AMBER header = AI-generated (company LLM). Normal header = calculated from free sources (yfinance / NSE)."
+                    + self._nse_snapshot_note())
         c2.fill=_f(LG); c2.font=_ft(False,"475569",8,True); c2.alignment=_al("left","center")
         ws.row_dimensions[2].height=16
         # R3 groups
@@ -1853,6 +1854,17 @@ class ExcelGeneratorV6:
                     ColorScaleRule(start_type="min",start_color="FEE2E2",
                     mid_type="num",mid_value=0,mid_color="FFFFFF",
                     end_type="max",end_color="D1FAE5"))
+
+    def _nse_snapshot_note(self) -> str:
+        """v17.13.6: '  |  Pledge/Promoter data as of DD-Mon-YYYY HH:MM (Nd old)'"""
+        m = (self.market_stats or {}).get("nse_snapshot") or {}
+        if not m or not m.get("fetched"):
+            return "   |  Pledge/Promoter snapshot: not available this run"
+        age = m.get("age_days")
+        age_s = f" ({age}d old)" if isinstance(age, int) else ""
+        return (f"   |  Pledge/Promoter data as of {m['fetched']}{age_s} "
+                f"· {m.get('pledge_n',0)} pledge / {m.get('share_n',0)} shareholding records "
+                f"(NSE via weekly local fetch)")
 
     def _gold_sheet(self,wb):
         ws=wb.create_sheet("⭐ Gold – Early Movers"); self._gold_ws(ws)

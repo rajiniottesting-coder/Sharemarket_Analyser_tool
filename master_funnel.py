@@ -2407,11 +2407,17 @@ def run_master_pipeline():
         # Placed BEFORE 5A.4 so the QoQ recompute and spike guard see the
         # filled values. Fully non-fatal.
         # ─────────────────────────────────────────────────────────────────────
+        _nse_snap_meta = {}   # v17.13.6: always bound; filled if snapshot used
         try:
             from ingestion.nse_snapshot import load_snapshot, apply_snapshot
             _snap = load_snapshot()
             if _snap:
                 _sc = apply_snapshot(final_100_list, _snap)
+                # v17.13.6: provenance for the Excel header ("pledge data as of …").
+                _nse_snap_meta = {"fetched": _snap.get("_fetched_display", ""),
+                                  "age_days": _snap.get("_age_days", None),
+                                  "pledge_n": len(_snap.get("pledge", {}) or {}),
+                                  "share_n":  len(_snap.get("shareholding", {}) or {})}
                 print(f"   📌 NSE snapshot applied to blanks: pledge {_sc['pledge']} · "
                       f"DII {_sc['dii']} · FII {_sc['fii']} · promoter {_sc['promoter']}")
         except Exception as _snape:
@@ -3851,6 +3857,7 @@ def run_master_pipeline():
         }
         # v17.11.1: attach the held-position cards computed in Section 7/8.
         market_stats["held_cards"] = _held_cards_pending
+        market_stats["nse_snapshot"] = _nse_snap_meta   # v17.13.6 provenance
         # v17.0: market-regime gate — Nifty50 vs 20-day SMA
         # Falls through to BULLISH when Nifty data is unavailable (returns 0.0)
         # so new installations without Nifty price history are not silently broken.
