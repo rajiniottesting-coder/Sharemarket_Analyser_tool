@@ -82,7 +82,26 @@ def _llm_complete(system_prompt: str, user_message: str,
         # Surface status in the message so _is_auth_error/_is_quota_error match.
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     data = r.json()
-    return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    # v17.14: a gateway can answer HTTP 200 with an error body, no choices, a
+    # list-form content, or finish_reason="length" and empty text. Previously all
+    # of these collapsed into "" -> "[AI unavailable — LLM returned empty"
+    # response]" with the real cause lost. Now: accept list-form content, and
+    # raise with the actual reason so the batch log states what happened.
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(f"LLM error body (HTTP 200): {str(data.get('error'))[:300]}")
+    choices = (data or {}).get("choices") or []
+    if not choices:
+        raise RuntimeError(f"LLM returned no choices: {str(data)[:300]}")
+    msg = choices[0].get("message") or {}
+    content = msg.get("content")
+    if isinstance(content, list):   # [{"type":"text","text":...}, ...]
+        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    content = content or ""
+    if not content.strip():
+        fr = choices[0].get("finish_reason")
+        usage = (data or {}).get("usage")
+        raise RuntimeError(f"LLM returned empty content (finish_reason={fr}, usage={usage})")
+    return content
 
 
 MASTER_PROMPT_PATH = "master_prompt/NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt"
@@ -306,7 +325,11 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
         "   'WATCHLIST (thin data)', this is a v10.17 quality-guard demotion — "
         "   the score qualified for BUY but data was too sparse (<3 of 5 sub-score "
         "   dimensions actually fired). Do NOT upgrade it back to BUY in your "
-        "   narrative; instead acknowledge that data gaps blocked a confident BUY call."
+        "   narrative; instead acknowledge that data gaps blocked a confident BUY call.\n"
+        "7. OUTPUT FORMAT (mandatory): begin EACH stock's analysis with a line that is "
+        "   exactly `=== CARD: <SYMBOL> ===` using the symbol given in its data card, "
+        "   then the analysis. One marker per stock, in any order. No text before the "
+        "   first marker."
     )
 
     # v17.10: master_prompt is passed as the system message to _llm_complete().
@@ -317,10 +340,10 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
         # Skip remaining batches if quota exhausted
         if quota_exhausted:
             # v12.6 (#14): standardised "[AI <verb> — <reason>]" format.
-            all_investor_cards.append(
-                f"[AI skipped — LLM quota exhausted (batch {idx + 1}). "
-                f"Check quota/billing at https://aistudio.google.com/apikey]"
-            )
+            all_investor_cards.append(_mark_batch(batch,
+                f"[AI skipped — LLM quota exhausted or key invalid (batch {idx + 1}). "
+                f"Check OPENAI_API_KEY / OPENAI_API_BASE / LLM_MODEL.]"
+            ))
             continue
 
         print(f"🤖 Processing batch {idx + 1}/{total_batches} "
@@ -364,11 +387,11 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                 print(f"   ⚠️  LLM {_reason} — skipping ALL remaining batches "
                       f"(no point retrying).")
                 print(f"      Check OPENAI_API_KEY / OPENAI_API_BASE / LLM_MODEL and your gateway quota.")
-                all_investor_cards.append(
+                all_investor_cards.append(_mark_batch(batch,
                     f"[AI unavailable — LLM {_reason}. "
                     f"Check OPENAI_API_KEY / OPENAI_API_BASE / LLM_MODEL. "
                     f"All other Excel data is complete and accurate.]"
-                )
+                ))
             else:
                 # Non-quota error — retry once
                 print(f"   ⚠️  Batch {idx + 1} attempt 1 failed: {e}. Retrying in 5s...")
@@ -383,9 +406,9 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                         time.sleep(2)
                 except Exception as e2:
                     print(f"   ❌ Batch {idx + 1} failed after retry: {e2}")
-                    all_investor_cards.append(
-                        f"[Batch {idx + 1} analysis unavailable: {e2}]"
-                    )
+                    all_investor_cards.append(_mark_batch(batch,
+                        f"[AI unavailable — batch {idx + 1} failed: {str(e2)[:200]}]"
+                    ))
 
     return "\n\n".join(all_investor_cards)
 
@@ -431,6 +454,10 @@ def _ai_cache_key(stock_list_df) -> str:
                 g("time_horizon") or g("horizon"),
             ]))
         rows.sort()
+        # v17.14: include the card output-format version, so a change to the
+        # prompt/output contract (e.g. the per-symbol markers) never serves
+        # cached text produced under the previous format.
+        rows.append(f"fmt={_CARD_FORMAT_VERSION}")
         today = _dt.date.today().strftime("%Y%m%d")
         digest = hashlib.sha1(("\n".join(rows)).encode("utf-8")).hexdigest()[:12]
         return f"{today}_{digest}"
@@ -460,6 +487,24 @@ def _ai_output_is_failure(text: str) -> bool:
     if t.startswith("[AI unavailable") or t.startswith("[AI skipped"):
         return True
     return False
+
+
+CARD_MARKER = "=== CARD: {sym} ==="
+_CARD_FORMAT_VERSION = "v17.14-symbol-markers"
+
+
+def _mark_batch(batch, text: str) -> str:
+    """v17.14: attach a placeholder to EVERY stock in a failed/skipped batch,
+    each under its own symbol marker, so the caller maps results by symbol
+    instead of by position (one placeholder used to land on the first stock
+    only, and the rest showed 'Analysis pending')."""
+    out = []
+    try:
+        for _, row in batch.iterrows():
+            out.append(CARD_MARKER.format(sym=str(row.get("symbol", "?")).strip()) + "\n" + text)
+    except Exception:
+        return text
+    return "\n\n".join(out) if out else text
 
 
 def get_ai_analysis(stock_list_df) -> str:

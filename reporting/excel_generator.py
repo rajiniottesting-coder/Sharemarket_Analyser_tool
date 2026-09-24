@@ -3582,4 +3582,8 @@ class ExcelGeneratorV6:
                 _sector_gate      # v17.0: sector-cycle filter
             )
             return self.df[mask].copy().reset_index(drop=True)
-        except Exception: return pd.DataFrame()
+        except Exception as _ge:
+            # v17.14: never fail silently — an error here empties the Gold sheet
+            # AND the AI-card scope, and used to leave no trace in the log.
+            print(f"   ⚠️  _get_gold() failed — Gold treated as empty: {type(_ge).__name__}: {_ge}")
+            return pd.DataFrame()

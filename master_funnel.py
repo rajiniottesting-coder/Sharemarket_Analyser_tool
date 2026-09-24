@@ -3643,169 +3643,11 @@ def run_master_pipeline():
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 7 & 8: AI INVESTOR CARDS
         # ─────────────────────────────────────────────────────────────────────
-        _held_cards_pending = {}   # v17.11.1: always bound; filled below if cards run
-        print("🤖 [Section 7/8] Generating AI Cards...")
-
-        # v10.13 FIX #1 — Skip AI calls for AVOID-verdict stocks.
-        # Saves Gemini quota (observed ~8-10% waste on stocks the scoring
-        # engine already flagged below the 38 AVOID floor). The skipped stocks
-        # receive a fixed placeholder message for Block H instead of a blank.
-        # v12.6 (#14): standardised placeholder format. All three "no
-        # analysis" cases (default-pending / AVOID-skip / quota-skip) now
-        # start with "[AI " and bracket the reason — easier to grep and
-        # filter, easier for users to interpret at a glance.
-        _AVOID_PLACEHOLDER = (
-            "[AI skipped — verdict AVOID, score below 38 floor. "
-            "No research value in generating a Block H narrative for a stock "
-            "that failed the universal quality bar — see Verdict, Score, and "
-            "forensic columns for the drop reasons.]"
-        )
-        # ── v17.10: SCOPE investor cards to Gold picks + currently-held ────
-        # Previously every non-AVOID stock (~97) got a narrative card. Nobody
-        # reads 97 paragraphs daily, and it cost ~$1/day. Cards now go ONLY to:
-        #   (a) stocks that will qualify for the Gold sheet today, and
-        #   (b) positions currently OPEN in the performance tracker.
-        # Everyone else gets a clear placeholder. Gold membership is decided by
-        # the SAME _get_gold() the Excel sheet uses (no duplicated gate logic),
-        # so the cards target exactly the stocks that appear on the Gold sheet.
-        # Fully fail-safe: any error here falls back to "cards for none" with
-        # placeholders, never a crash.
-        _card_syms = set()
-        try:
-            from reporting.excel_generator import ExcelGeneratorV6 as _EGV
-            _nc, _nsma = get_nifty_20d_sma()
-            _pre_regime = "BULLISH"
-            if _nsma > 0:
-                _pre_gap = (_nc - _nsma) / _nsma * 100.0
-                _pre_regime = "BEARISH" if _pre_gap < -_REGIME_TOLERANCE_PCT else "BULLISH"
-            _pre_gen = _EGV(final_100_list, target_date.strftime("%Y%m%d"),
-                            market_stats={"market_regime": _pre_regime})
-            _gold_df = _pre_gen._get_gold()
-            if _gold_df is not None and not _gold_df.empty and "symbol" in _gold_df.columns:
-                _card_syms.update(str(x).strip() for x in _gold_df["symbol"].tolist())
-        except Exception as _gse:
-            print(f"   ⚠️  Card scope: Gold pre-check failed (non-fatal): {_gse}")
-        _held_recs = {}   # symbol -> tracker row (for held stocks NOT in top-100)
-        try:
-            from database.data_bridge import get_open_recommendations
-            for _orec in (get_open_recommendations() or []):
-                _hs = str(_orec.get("symbol", "")).strip()
-                if _hs:
-                    _card_syms.add(_hs)
-                    _held_recs[_hs] = _orec
-        except Exception as _hse:
-            print(f"   ⚠️  Card scope: held-positions lookup failed (non-fatal): {_hse}")
-        _card_syms.discard("")
-
-        _NOT_IN_SCOPE_PLACEHOLDER = (
-            "[AI skipped — narrative cards are generated only for Gold picks and "
-            "currently-held positions (v17.10). See Verdict, Score and forensic "
-            "columns for this stock's full quantitative picture.]"
-        )
-        _ai_input_stocks = []     # stocks that will be sent to the LLM
-        _avoid_indices   = set()  # AVOID verdict → AVOID placeholder
-        _scope_indices   = set()  # not Gold / not held → scope placeholder
-        for _idx, _stock in enumerate(final_100_list):
-            _v = str(_stock.get("verdict", "") or "").upper()
-            _sy = str(_stock.get("symbol", "") or "").strip()
-            if _v.startswith("AVOID"):
-                _avoid_indices.add(_idx)
-            elif _sy not in _card_syms:
-                _scope_indices.add(_idx)
-            else:
-                _ai_input_stocks.append(_stock)
-
-        # v17.10.1 FIX: held positions are usually NOT in today's top-100 (they
-        # were picked days ago and have since rotated out). The loop above only
-        # sees final_100_list, so those positions silently got no card. Build a
-        # card input for each held stock absent from the dashboard, using its
-        # tracker row (entry, SL, target, P&L, days held) — the most relevant
-        # context for a stock you actually hold. Their cards are stored in
-        # _held_cards and surfaced on the Performance sheet (they have no
-        # dashboard row to write into).
-        _top100_syms = {str(_st.get("symbol", "") or "").strip() for _st in final_100_list}
-        _held_extra = []
-        for _hs, _hrec in _held_recs.items():
-            if _hs in _top100_syms:
-                continue          # already handled by the loop above
-            try:
-                _cmp = float(_hrec.get("cmp_at_recommendation", 0) or 0)
-                _sl  = float(_hrec.get("stop_loss", 0) or 0)
-                _t1  = float(_hrec.get("t1", 0) or 0)
-                _held_extra.append({
-                    "symbol": _hs,
-                    "company_name": _hs,
-                    "verdict": "HELD POSITION",
-                    "composite_score": float(_hrec.get("composite_score", 0) or 0),
-                    "quick_pick_label": str(_hrec.get("quick_pick_label", "") or ""),
-                    "time_horizon": str(_hrec.get("time_horizon", "") or ""),
-                    "close": _cmp,
-                    "stop_loss": _sl, "t1": _t1,
-                    "recommendation_date": str(_hrec.get("recommendation_date", "") or ""),
-                    "max_runup_pct": float(_hrec.get("max_runup_pct", 0) or 0),
-                    "max_drawdown_pct": float(_hrec.get("max_drawdown_pct", 0) or 0),
-                    "_held_context": (
-                        f"CURRENTLY HELD since {_hrec.get('recommendation_date','')}. "
-                        f"Entry {_cmp:.2f}, SL {_sl:.2f}, Target {_t1:.2f}. "
-                        f"Max runup {float(_hrec.get('max_runup_pct',0) or 0):+.1f}%, "
-                        f"max drawdown {float(_hrec.get('max_drawdown_pct',0) or 0):+.1f}%. "
-                        f"Focus the card on: hold / trim / exit guidance vs SL and Target."
-                    ),
-                })
-            except Exception as _hxe:
-                print(f"   ⚠️  Card scope: could not build held input for {_hs}: {_hxe}")
-        _ai_input_stocks.extend(_held_extra)
-
-        print(f"   🎯 Card scope: {len(_ai_input_stocks)} stock(s) "
-              f"(Gold + held; {len(_held_extra)} held not in top-100) · "
-              f"{len(_scope_indices)} out of scope · {len(_avoid_indices)} AVOID")
-
-        if _ai_input_stocks:
-            investor_cards_text = get_ai_analysis(pd.DataFrame(_ai_input_stocks))
-        else:
-            investor_cards_text = ""
-
-        # Map AI analysis back — skipped stocks keep placeholder, rest read
-        # positionally from the LLM output (same behavior as pre-v10.13
-        # for non-AVOID stocks, so no regression in mapping quality).
-        ai_lines = investor_cards_text.split("\n\n") if investor_cards_text else []
-        _ai_cursor = 0
-        for i, stock in enumerate(final_100_list):
-            if i in _avoid_indices:
-                stock["Analysis_Summary_Block_H"] = _AVOID_PLACEHOLDER
-                continue
-            if i in _scope_indices:   # v17.10
-                stock["Analysis_Summary_Block_H"] = _NOT_IN_SCOPE_PLACEHOLDER
-                continue
-            if _ai_cursor < len(ai_lines):
-                stock["Analysis_Summary_Block_H"] = ai_lines[_ai_cursor]
-                _ai_cursor += 1
-            else:
-                stock["Analysis_Summary_Block_H"] = "[AI not yet generated — Analysis pending]"
-        # v17.10.1: held-not-in-top-100 cards come AFTER the dashboard stocks in
-        # the LLM output (they were appended last). Collect them by symbol so the
-        # Performance sheet can show them; they have no dashboard row.
-        _held_cards = {}
-        for _hx in _held_extra:
-            if _ai_cursor < len(ai_lines):
-                _held_cards[_hx["symbol"]] = ai_lines[_ai_cursor]; _ai_cursor += 1
-            else:
-                _held_cards[_hx["symbol"]] = "[AI not yet generated — Analysis pending]"
-        # v17.11.1 FIX: market_stats is not created until Section 9/10 (below).
-        # Writing to it here raised UnboundLocalError and crashed the run.
-        # Park the cards in a plain local; merged into market_stats once it exists.
-        _held_cards_pending = _held_cards
-
-        # Format investor cards for text report
+        _held_cards_pending = {}   # v17.11.1: always bound
+        # v17.14: AI cards are generated LATER — after the Gold picks are logged
+        # and the tracker has run — so card scope comes from the SAME Gold result
+        # the tracker records (see "SECTION 7/8 (deferred)" before the Excel build).
         final_cards_for_display = []
-        for stock in final_100_list:
-            try:
-                card = formatter.format_investor_card(stock)
-                final_cards_for_display.append(card)
-            except Exception as e:
-                final_cards_for_display.append(
-                    f"{stock.get('symbol', '?')} — card formatting error: {e}"
-                )
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 9 & 10: REPORTING & DELIVERY
@@ -4186,6 +4028,207 @@ def run_master_pipeline():
         # NOW build the Excel — Performance sheet will see today's freshly-logged
         # Gold picks AND refreshed price/P&L data from the tracker.
         # ─────────────────────────────────────────────────────────────────────
+        print("🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...")
+
+        # v10.13 FIX #1 — Skip AI calls for AVOID-verdict stocks.
+        # Saves Gemini quota (observed ~8-10% waste on stocks the scoring
+        # engine already flagged below the 38 AVOID floor). The skipped stocks
+        # receive a fixed placeholder message for Block H instead of a blank.
+        # v12.6 (#14): standardised placeholder format. All three "no
+        # analysis" cases (default-pending / AVOID-skip / quota-skip) now
+        # start with "[AI " and bracket the reason — easier to grep and
+        # filter, easier for users to interpret at a glance.
+        _AVOID_PLACEHOLDER = (
+            "[AI skipped — verdict AVOID, score below 38 floor. "
+            "No research value in generating a Block H narrative for a stock "
+            "that failed the universal quality bar — see Verdict, Score, and "
+            "forensic columns for the drop reasons.]"
+        )
+        # ── v17.10: SCOPE investor cards to Gold picks + currently-held ────
+        # Previously every non-AVOID stock (~97) got a narrative card. Nobody
+        # reads 97 paragraphs daily, and it cost ~$1/day. Cards now go ONLY to:
+        #   (a) stocks that will qualify for the Gold sheet today, and
+        #   (b) positions currently OPEN in the performance tracker.
+        # Everyone else gets a clear placeholder. Gold membership is decided by
+        # the SAME _get_gold() the Excel sheet uses (no duplicated gate logic),
+        # so the cards target exactly the stocks that appear on the Gold sheet.
+        # Fully fail-safe: any error here falls back to "cards for none" with
+        # placeholders, never a crash.
+        _card_syms = set()
+        try:
+            # v17.14: use the SAME generator (and therefore the same regime and
+            # data) that renders the Gold sheet and logged today's picks. The
+            # previous separate pre-check at Section 7/8 disagreed with the real
+            # Gold sheet (23-Sep: SUNTV/NATIONALUM were Gold but got no card) and
+            # _get_gold() swallows errors, so the mismatch was silent.
+            _gold_df = excel_gen._get_gold()
+            if _gold_df is not None and not _gold_df.empty and "symbol" in _gold_df.columns:
+                _card_syms.update(str(x).strip() for x in _gold_df["symbol"].tolist())
+        except Exception as _gse:
+            print(f"   ⚠️  Card scope: Gold pre-check failed (non-fatal): {_gse}")
+        _held_recs = {}   # symbol -> tracker row (for held stocks NOT in top-100)
+        try:
+            from database.data_bridge import get_open_recommendations
+            for _orec in (get_open_recommendations() or []):
+                _hs = str(_orec.get("symbol", "")).strip()
+                if _hs:
+                    _card_syms.add(_hs)
+                    _held_recs[_hs] = _orec
+        except Exception as _hse:
+            print(f"   ⚠️  Card scope: held-positions lookup failed (non-fatal): {_hse}")
+        _card_syms.discard("")
+
+        _NOT_IN_SCOPE_PLACEHOLDER = (
+            "[AI skipped — narrative cards are generated only for Gold picks and "
+            "currently-held positions (v17.10). See Verdict, Score and forensic "
+            "columns for this stock's full quantitative picture.]"
+        )
+        _ai_input_stocks = []     # stocks that will be sent to the LLM
+        _avoid_indices   = set()  # AVOID verdict → AVOID placeholder
+        _scope_indices   = set()  # not Gold / not held → scope placeholder
+        for _idx, _stock in enumerate(final_100_list):
+            _v = str(_stock.get("verdict", "") or "").upper()
+            _sy = str(_stock.get("symbol", "") or "").strip()
+            if _v.startswith("AVOID"):
+                _avoid_indices.add(_idx)
+            elif _sy not in _card_syms:
+                _scope_indices.add(_idx)
+            else:
+                _ai_input_stocks.append(_stock)
+
+        # v17.10.1 FIX: held positions are usually NOT in today's top-100 (they
+        # were picked days ago and have since rotated out). The loop above only
+        # sees final_100_list, so those positions silently got no card. Build a
+        # card input for each held stock absent from the dashboard, using its
+        # tracker row (entry, SL, target, P&L, days held) — the most relevant
+        # context for a stock you actually hold. Their cards are stored in
+        # _held_cards and surfaced on the Performance sheet (they have no
+        # dashboard row to write into).
+        _top100_syms = {str(_st.get("symbol", "") or "").strip() for _st in final_100_list}
+        _held_extra = []
+        for _hs, _hrec in _held_recs.items():
+            if _hs in _top100_syms:
+                continue          # already handled by the loop above
+            try:
+                _cmp = float(_hrec.get("cmp_at_recommendation", 0) or 0)
+                _sl  = float(_hrec.get("stop_loss", 0) or 0)
+                _t1  = float(_hrec.get("t1", 0) or 0)
+                _held_extra.append({
+                    "symbol": _hs,
+                    "company_name": _hs,
+                    "verdict": "HELD POSITION",
+                    "composite_score": float(_hrec.get("composite_score", 0) or 0),
+                    "quick_pick_label": str(_hrec.get("quick_pick_label", "") or ""),
+                    "time_horizon": str(_hrec.get("time_horizon", "") or ""),
+                    "close": _cmp,
+                    "stop_loss": _sl, "t1": _t1,
+                    "recommendation_date": str(_hrec.get("recommendation_date", "") or ""),
+                    "max_runup_pct": float(_hrec.get("max_runup_pct", 0) or 0),
+                    "max_drawdown_pct": float(_hrec.get("max_drawdown_pct", 0) or 0),
+                    "_held_context": (
+                        f"CURRENTLY HELD since {_hrec.get('recommendation_date','')}. "
+                        f"Entry {_cmp:.2f}, SL {_sl:.2f}, Target {_t1:.2f}. "
+                        f"Max runup {float(_hrec.get('max_runup_pct',0) or 0):+.1f}%, "
+                        f"max drawdown {float(_hrec.get('max_drawdown_pct',0) or 0):+.1f}%. "
+                        f"Focus the card on: hold / trim / exit guidance vs SL and Target."
+                    ),
+                })
+            except Exception as _hxe:
+                print(f"   ⚠️  Card scope: could not build held input for {_hs}: {_hxe}")
+        _ai_input_stocks.extend(_held_extra)
+
+        print(f"   🎯 Card scope: {len(_ai_input_stocks)} stock(s) "
+              f"(Gold + held; {len(_held_extra)} held not in top-100) · "
+              f"{len(_scope_indices)} out of scope · {len(_avoid_indices)} AVOID")
+
+        if _ai_input_stocks:
+            investor_cards_text = get_ai_analysis(pd.DataFrame(_ai_input_stocks))
+        else:
+            investor_cards_text = ""
+
+        # Map AI analysis back — skipped stocks keep placeholder, rest read
+        # positionally from the LLM output (same behavior as pre-v10.13
+        # for non-AVOID stocks, so no regression in mapping quality).
+        # v17.14: map cards BY SYMBOL, not by position. The old code split the
+        # whole LLM output on blank lines and handed the n-th paragraph to the
+        # n-th stock — but one card has several paragraphs, so text drifted onto
+        # the wrong stocks, and a single failure placeholder for a batch landed on
+        # the first stock only (the rest showed "Analysis pending"). The prompt
+        # now requires "=== CARD: <SYMBOL> ===" before each card, and failure
+        # placeholders carry the same marker per stock (ai_analyst._mark_batch).
+        import re as _re_cards
+        _card_by_sym = {}
+        _txt = investor_cards_text or ""
+        _parts = _re_cards.split(r"^\s*=== CARD:\s*([^=\n]+?)\s*===\s*$", _txt, flags=_re_cards.M)
+        # _parts = [preamble, sym1, body1, sym2, body2, ...]
+        for _k in range(1, len(_parts) - 1, 2):
+            _sym_k = _parts[_k].strip().upper()
+            _body = _parts[_k + 1].strip()
+            if _sym_k and _body and _sym_k not in _card_by_sym:
+                _card_by_sym[_sym_k] = _body
+        _in_scope_n = len(_ai_input_stocks)
+        if not _card_by_sym and _txt.strip():
+            # No markers at all (cached pre-v17.14 text or a single whole-run
+            # placeholder): a lone in-scope stock can take it verbatim; otherwise
+            # apply it only if it is a placeholder, never guess an attribution.
+            if _in_scope_n == 1:
+                _card_by_sym[str(_ai_input_stocks[0].get("symbol", "")).strip().upper()] = _txt.strip()
+            elif _txt.strip().startswith("[AI"):
+                for _st in _ai_input_stocks:
+                    _card_by_sym[str(_st.get("symbol", "")).strip().upper()] = _txt.strip()
+        _mapped_n = 0
+        _MISSING = "[AI card not returned for this stock — see run log for the batch result]"
+        for i, stock in enumerate(final_100_list):
+            if i in _avoid_indices:
+                stock["Analysis_Summary_Block_H"] = _AVOID_PLACEHOLDER
+                continue
+            if i in _scope_indices:   # v17.10
+                stock["Analysis_Summary_Block_H"] = _NOT_IN_SCOPE_PLACEHOLDER
+                continue
+            _c = _card_by_sym.get(str(stock.get("symbol", "")).strip().upper())
+            stock["Analysis_Summary_Block_H"] = _c if _c else _MISSING
+            _mapped_n += 1 if _c else 0
+        _held_cards = {}
+        for _hx in _held_extra:
+            _c = _card_by_sym.get(str(_hx.get("symbol", "")).strip().upper())
+            _held_cards[_hx["symbol"]] = _c if _c else _MISSING
+            _mapped_n += 1 if _c else 0
+        print(f"   🗂  AI cards mapped by symbol: {_mapped_n}/{_in_scope_n}")
+        # v17.11.1 FIX: market_stats is not created until Section 9/10 (below).
+        # Writing to it here raised UnboundLocalError and crashed the run.
+        # Park the cards in a plain local; merged into market_stats once it exists.
+        # v17.14: key held_cards for EVERY carded symbol, not only held stocks
+        # outside the top 100 — a held stock that is also in today's top 100
+        # (e.g. a pick logged today) otherwise showed "—" on the Performance sheet.
+        for _st in final_100_list:
+            _sy = str(_st.get("symbol", "") or "").strip()
+            if _sy in _card_syms and _sy not in _held_cards:
+                _held_cards[_sy] = _st.get("Analysis_Summary_Block_H", "") or ""
+        _held_cards_pending = _held_cards
+        market_stats["held_cards"] = _held_cards_pending
+        # The generator built its DataFrame before cards existed; copy the card
+        # text in by symbol so the Full Dashboard / Gold sheet show it.
+        try:
+            _cmap = {str(_st.get("symbol", "") or "").strip():
+                     _st.get("Analysis_Summary_Block_H", "") for _st in final_100_list}
+            if "symbol" in excel_gen.df.columns:
+                _mapped = excel_gen.df["symbol"].astype(str).str.strip().map(_cmap)
+                if "Analysis_Summary_Block_H" in excel_gen.df.columns:
+                    _mapped = _mapped.fillna(excel_gen.df["Analysis_Summary_Block_H"])
+                excel_gen.df["Analysis_Summary_Block_H"] = _mapped.fillna("—")
+        except Exception as _syncx:
+            print(f"   ⚠️  card sync into Excel frame failed (non-fatal): {_syncx}")
+
+        # Format investor cards for text report
+        final_cards_for_display = []
+        for stock in final_100_list:
+            try:
+                card = formatter.format_investor_card(stock)
+                final_cards_for_display.append(card)
+            except Exception as e:
+                final_cards_for_display.append(
+                    f"{stock.get('symbol', '?')} — card formatting error: {e}"
+                )
         master_file, gold_file = excel_gen.generate_excel_reports()
         print(f"   ✅ Excel saved: {master_file}")
 
