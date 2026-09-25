@@ -1100,6 +1100,52 @@ def run_master_pipeline():
         print(f"   Universe: {len(all_stocks)} → Stage1: {len(stage1_candidates)} "
               f"→ Stage2: {len(stage2_qualified)} → Stage3: {len(final_100_list)}")
 
+        # ── v17.15: HELD-POSITION MONITORING ────────────────────────────────
+        # Open positions usually rotate out of the daily top 100 within days.
+        # Their AI cards were then built from the tracker row alone (entry, SL,
+        # target), so the model saw "—" for every fundamental / technical /
+        # valuation field and wrote "data is missing", and CMP was the ENTRY
+        # price. Held symbols are now appended here so they pass through the
+        # SAME enrichment, forensics, fair-value, scoring and news steps as the
+        # top 100. They carry _held_monitor=True and are split out again before
+        # Section 9/10, so the dashboard, Gold sheet and saved scores are
+        # unchanged. Non-fatal: any error leaves the list exactly as it was.
+        _held_monitor_syms = []
+        try:
+            from database.data_bridge import get_open_recommendations as _gor_hm
+            _in_top = {str(x.get("symbol", "")).strip() for x in final_100_list}
+            _want = [str(r.get("symbol", "")).strip() for r in (_gor_hm() or [])]
+            _want = [x for x in dict.fromkeys(_want) if x and x not in _in_top]
+            if _want:
+                _cols = list(final_100_df.columns)
+                _num = set(final_100_df.select_dtypes("number").columns)
+                _pools = []
+                for _src in (stage2_qualified, pd.DataFrame(stage1_candidates), all_stocks):
+                    try:
+                        if isinstance(_src, pd.DataFrame) and not _src.empty and "symbol" in _src.columns:
+                            _pools.append(_src)
+                    except Exception:
+                        pass
+                for _sym in _want:
+                    _row = None
+                    for _src in _pools:
+                        _hit = _src[_src["symbol"].astype(str).str.strip() == _sym]
+                        if not _hit.empty:
+                            _row = _hit.iloc[0].to_dict(); break
+                    if _row is None:
+                        continue          # not traded today — tracker stub is used later
+                    for _c in _cols:      # same key set as a funnel row
+                        if _c not in _row:
+                            _row[_c] = 0 if _c in _num else ""
+                    _row["_held_monitor"] = True
+                    final_100_list.append(_row)
+                    _held_monitor_syms.append(_sym)
+            if _held_monitor_syms:
+                print(f"   👁  Held positions added for full analysis (not in top 100): "
+                      f"{', '.join(_held_monitor_syms)}")
+        except Exception as _hme:
+            print(f"   ⚠️  held-position monitoring skipped (non-fatal): {_hme}")
+
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 6: CORE ANALYTICAL ENGINES
         # ─────────────────────────────────────────────────────────────────────
@@ -3661,6 +3707,11 @@ def run_master_pipeline():
         # but never removed from final_100_list to avoid restructuring the
         # earlier enrichment loop. Here at the Excel hand-off, we drop them
         # so they don't appear in the Full Dashboard / Gold sheets.
+        # v17.15: take held-monitor rows out before anything that renders or
+        # saves the top-100 view; keep them (fully enriched) for the AI cards.
+        _held_monitor_map = {str(s.get("symbol", "")).strip(): s
+                             for s in final_100_list if s.get("_held_monitor")}
+        final_100_list = [s for s in final_100_list if not s.get("_held_monitor")]
         _pre_prune = len(final_100_list)
         _etf_pruned = [s.get("symbol","?") for s in final_100_list
                         if s.get("_v158_etf_filtered")]
@@ -4113,6 +4164,28 @@ def run_master_pipeline():
                 _cmp = float(_hrec.get("cmp_at_recommendation", 0) or 0)
                 _sl  = float(_hrec.get("stop_loss", 0) or 0)
                 _t1  = float(_hrec.get("t1", 0) or 0)
+                _ctx = (f"CURRENTLY HELD since {_hrec.get('recommendation_date','')}. "
+                        f"Entry {_cmp:.2f}, SL {_sl:.2f}, Target {_t1:.2f}. "
+                        f"Max runup {float(_hrec.get('max_runup_pct',0) or 0):+.1f}%, "
+                        f"max drawdown {float(_hrec.get('max_drawdown_pct',0) or 0):+.1f}%. "
+                        f"Focus the card on: hold / trim / exit guidance vs SL and Target.")
+                # v17.15: use the FULLY ENRICHED row for this held stock (built by
+                # held-position monitoring after Stage 3) so the card sees today's
+                # price, fundamentals, technicals, fair value and news. The entry,
+                # SL and Target are the FROZEN levels from the tracker, not today's
+                # recomputed ones — those are what the position is managed against.
+                _enr = _held_monitor_map.get(_hs)
+                if _enr:
+                    _d = dict(_enr)
+                    _d.update({"stop_loss": _sl, "t1": _t1,
+                               "entry_price": _cmp,
+                               "recommendation_date": str(_hrec.get("recommendation_date", "") or ""),
+                               "max_runup_pct": float(_hrec.get("max_runup_pct", 0) or 0),
+                               "max_drawdown_pct": float(_hrec.get("max_drawdown_pct", 0) or 0),
+                               "_held_context": _ctx})
+                    _held_extra.append(_d)
+                    continue
+                # Fallback (stock did not trade today): tracker stub, clearly labelled.
                 _held_extra.append({
                     "symbol": _hs,
                     "company_name": _hs,
@@ -4120,18 +4193,14 @@ def run_master_pipeline():
                     "composite_score": float(_hrec.get("composite_score", 0) or 0),
                     "quick_pick_label": str(_hrec.get("quick_pick_label", "") or ""),
                     "time_horizon": str(_hrec.get("time_horizon", "") or ""),
-                    "close": _cmp,
+                    "close": _cmp,          # entry — no price for this stock today
+                    "entry_price": _cmp,
                     "stop_loss": _sl, "t1": _t1,
                     "recommendation_date": str(_hrec.get("recommendation_date", "") or ""),
                     "max_runup_pct": float(_hrec.get("max_runup_pct", 0) or 0),
                     "max_drawdown_pct": float(_hrec.get("max_drawdown_pct", 0) or 0),
-                    "_held_context": (
-                        f"CURRENTLY HELD since {_hrec.get('recommendation_date','')}. "
-                        f"Entry {_cmp:.2f}, SL {_sl:.2f}, Target {_t1:.2f}. "
-                        f"Max runup {float(_hrec.get('max_runup_pct',0) or 0):+.1f}%, "
-                        f"max drawdown {float(_hrec.get('max_drawdown_pct',0) or 0):+.1f}%. "
-                        f"Focus the card on: hold / trim / exit guidance vs SL and Target."
-                    ),
+                    "_held_context": _ctx + " NOTE: this stock has no market data for "
+                                     "today, so only the position levels are available.",
                 })
             except Exception as _hxe:
                 print(f"   ⚠️  Card scope: could not build held input for {_hs}: {_hxe}")

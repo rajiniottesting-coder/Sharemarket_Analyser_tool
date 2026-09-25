@@ -552,7 +552,7 @@ def _cards_complete(text: str, df) -> bool:
         return True
     except Exception:
         return False
-_CARD_FORMAT_VERSION = "v17.14.1-blockH-only"
+_CARD_FORMAT_VERSION = "v17.15-held-enriched"
 
 
 def _mark_batch(batch, text: str) -> str:
