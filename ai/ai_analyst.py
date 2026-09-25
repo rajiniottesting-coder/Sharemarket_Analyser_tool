@@ -56,6 +56,7 @@ if not _AI_ENABLED:
           "fair value, SL/targets, outcome tracking, Excel, delivery) runs normally.")
 
 _LLM_TIMEOUT_S = 90
+_LAST_CALL = {}   # v17.14: finish_reason + usage of the most recent call (diagnostics)
 
 
 def _llm_complete(system_prompt: str, user_message: str,
@@ -97,10 +98,14 @@ def _llm_complete(system_prompt: str, user_message: str,
     if isinstance(content, list):   # [{"type":"text","text":...}, ...]
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
     content = content or ""
+    fr = choices[0].get("finish_reason")
+    usage = (data or {}).get("usage")
+    _LAST_CALL.update({"finish_reason": fr, "usage": usage})
     if not content.strip():
-        fr = choices[0].get("finish_reason")
-        usage = (data or {}).get("usage")
         raise RuntimeError(f"LLM returned empty content (finish_reason={fr}, usage={usage})")
+    if str(fr).lower() in ("length", "max_tokens"):
+        print(f"   ⚠️  LLM output was CUT OFF by the token limit (finish_reason={fr}, usage={usage}) "
+              f"— missing cards will be re-requested one stock at a time.")
     return content
 
 
@@ -308,8 +313,11 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
 
     grounding_instruction = (
         "You are a senior Indian equity research analyst. "
-        "For EACH stock card below, produce a crisp institutional-grade analysis "
-        "following the Section 8 format from your system prompt.\n\n"
+        "For EACH stock card below, write ONLY its Block H Analysis Summary "
+        "(150-250 words, a concise analyst note — no other blocks, no tables, "
+        "no price/metric strips; those are already in the spreadsheet). "
+        "v17.14: the full Section 8 card overran the output limit after the "
+        "first stock, so the other stocks received nothing.\n\n"
         "CRITICAL RULES:\n"
         "1. USE the provided Calculated_CFV and Graham_No — do not recalculate.\n"
         "2. For Block H Analysis Summary (150-250 words): write like the research widget "
@@ -331,6 +339,33 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
         "   then the analysis. One marker per stock, in any order. No text before the "
         "   first marker."
     )
+
+    def _recover_missing(card_text, batch, idx):
+        """v17.14: if a batch reply lacks cards for some stocks (output cut off,
+        or the model skipped one), request each missing stock on its own. One
+        small call per missing stock; failures get a per-stock placeholder."""
+        have = _parse_marked(card_text)
+        missing = [r for _, r in batch.iterrows()
+                   if str(r.get("symbol", "")).strip().upper() not in have]
+        if not missing:
+            return card_text
+        print(f"   ↻ Batch {idx + 1}: {len(missing)}/{len(batch)} card(s) missing "
+              f"(last finish_reason={_LAST_CALL.get('finish_reason')}) — requesting individually")
+        extra = []
+        for r in missing:
+            sym = str(r.get("symbol", "")).strip()
+            msg = (f"{grounding_instruction}\n\n"
+                   f"SINGLE STOCK — 1 stock:\n{_fmt_stock_card(r.to_dict())}")
+            try:
+                t = _llm_complete(master_prompt, msg)
+                one = _parse_marked(t).get(sym.upper()) or t.strip()
+                extra.append(CARD_MARKER.format(sym=sym) + "\n" + one)
+                print(f"      ✅ {sym} recovered")
+            except Exception as e:
+                extra.append(CARD_MARKER.format(sym=sym) + "\n"
+                             + f"[AI unavailable — {sym} single-stock request failed: {str(e)[:160]}]")
+                print(f"      ❌ {sym}: {str(e)[:160]}")
+        return (card_text.rstrip() + "\n\n" + "\n\n".join(extra)).strip()
 
     # v17.10: master_prompt is passed as the system message to _llm_complete().
 
@@ -370,6 +405,7 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                     f"[AI unavailable — LLM returned empty response for batch "
                     f"{idx + 1}. The batch may have been truncated or filtered.]"
                 )
+            card_text = _recover_missing(card_text, batch, idx)
             all_investor_cards.append(card_text)
             print(f"   ✅ Batch {idx + 1} complete.")
             # Section 0D: Rate limiting — 2s between successful batches
@@ -400,6 +436,7 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                     card_text = _llm_complete(master_prompt, user_message)
                     if not card_text.strip():
                         card_text = f"[Batch {idx + 1}: empty response after retry]"
+                    card_text = _recover_missing(card_text, batch, idx)
                     all_investor_cards.append(card_text)
                     print(f"   ✅ Batch {idx + 1} complete (retry).")
                     if idx < total_batches - 1:
@@ -490,7 +527,32 @@ def _ai_output_is_failure(text: str) -> bool:
 
 
 CARD_MARKER = "=== CARD: {sym} ==="
-_CARD_FORMAT_VERSION = "v17.14-symbol-markers"
+_CARD_RE = re.compile(r"^\s*=== CARD:\s*([^=\n]+?)\s*===\s*$", re.M)
+
+
+def _parse_marked(text: str) -> dict:
+    """v17.14: {SYMBOL: body} from '=== CARD: SYMBOL ===' delimited text."""
+    parts = _CARD_RE.split(text or "")
+    out = {}
+    for k in range(1, len(parts) - 1, 2):
+        sym, body = parts[k].strip().upper(), parts[k + 1].strip()
+        if sym and body and sym not in out:
+            out[sym] = body
+    return out
+
+
+def _cards_complete(text: str, df) -> bool:
+    """True only if EVERY stock in df has a real (non-placeholder) card."""
+    try:
+        got = _parse_marked(text)
+        for _, row in df.iterrows():
+            b = got.get(str(row.get("symbol", "")).strip().upper(), "")
+            if not b or b.startswith("[AI"):
+                return False
+        return True
+    except Exception:
+        return False
+_CARD_FORMAT_VERSION = "v17.14.1-blockH-only"
 
 
 def _mark_batch(batch, text: str) -> str:
@@ -526,7 +588,7 @@ def get_ai_analysis(stock_list_df) -> str:
             with open(path, "r", encoding="utf-8") as fh:
                 payload = json.load(fh)
             text = payload.get("cards", "")
-            if not _ai_output_is_failure(text):
+            if not _ai_output_is_failure(text) and _cards_complete(text, stock_list_df):
                 print(f"   💾 AI cards served from today's cache ({key}) — "
                       f"no API calls, no cost.")
                 return text
@@ -538,8 +600,8 @@ def get_ai_analysis(stock_list_df) -> str:
     try:
         os.makedirs(_AI_CACHE_DIR, exist_ok=True)
         purged = _ai_cache_purge_old(today)
-        if _ai_output_is_failure(text):
-            print("   ℹ️  AI cards not cached (failed/skipped output is never pinned).")
+        if _ai_output_is_failure(text) or not _cards_complete(text, stock_list_df):
+            print("   ℹ️  AI cards not cached (failed, skipped or incomplete output is never pinned).")
         else:
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump({"key": key, "generated": _dt.datetime.now().isoformat(),
