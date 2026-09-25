@@ -2415,7 +2415,7 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             if not _pledge_map:
                 try:
                     from ingestion.nse_snapshot import load_snapshot as _load_snap
-                    _snap_p = (_load_snap() or {}).get("pledge") or {}
+                    _snap_p = (_load_snap(quiet=True) or {}).get("pledge") or {}
                     if _snap_p:
                         _pledge_map = {k: float(v) for k, v in _snap_p.items()}
                         _pledge_src = "snapshot (live returned nothing)"

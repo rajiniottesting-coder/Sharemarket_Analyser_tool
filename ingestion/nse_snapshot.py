@@ -28,7 +28,8 @@ MAX_AGE_DAYS = int(os.getenv("NSE_SNAPSHOT_MAX_AGE_DAYS", "14") or 14)
 _REQUIRED_KEYS = ("version", "fetched_at", "pledge", "shareholding")
 
 
-def load_snapshot(path: str = SNAPSHOT_PATH, max_age_days: int = None) -> dict:
+def load_snapshot(path: str = SNAPSHOT_PATH, max_age_days: int = None,
+                  quiet: bool = False) -> dict:
     """Return the validated snapshot dict, or {} if it must be ignored.
     Prints exactly one line explaining the decision."""
     max_age_days = MAX_AGE_DAYS if max_age_days is None else max_age_days
@@ -64,13 +65,18 @@ def load_snapshot(path: str = SNAPSHOT_PATH, max_age_days: int = None) -> dict:
     if n_pl == 0 and n_sh == 0:
         print("   ⚠️  NSE snapshot: contains no records — ignored")
         return {}
-    print(f"   ✅ NSE snapshot: {n_pl} pledge + {n_sh} shareholding records, "
-          f"{age}d old (≤ {max_age_days}d) — used as fallback for blanks")
+    if not quiet:
+        print(f"   ✅ NSE snapshot: {n_pl} pledge + {n_sh} shareholding records, "
+              f"{age}d old (≤ {max_age_days}d) — used as fallback for blanks")
     # v17.13.6: expose provenance so the Excel can show WHEN this data was
     # fetched. _age_days and _fetched_display are derived, not stored.
     snap["_age_days"] = age
     try:
-        snap["_fetched_display"] = fetched.astimezone().strftime("%d-%b-%Y %H:%M")
+        # v17.16.1: show IST explicitly. astimezone() with no argument used the
+        # RUNNER's zone (UTC on GitHub Actions), so a 06:12 IST fetch printed
+        # as "00:42" with no zone — easy to misread as a midnight run.
+        _ist = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
+        snap["_fetched_display"] = fetched.astimezone(_ist).strftime("%d-%b-%Y %H:%M IST")
     except Exception:
         snap["_fetched_display"] = str(snap.get("fetched_at", ""))[:16]
     return snap

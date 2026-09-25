@@ -325,8 +325,12 @@ def enrich_stocks_with_news(stocks: list, log_fn=print) -> int:
     # (e.g. output cut off) is visible instead of looking like "no news".
     try:
         from collections import Counter as _C
-        _why = _C(str((st.get("news_detail") or {}).get("news_reason", "?"))[:60]
-                  for st in stocks if not (st.get("news_detail") or {}).get("news_informed"))
+        def _lbl(st):
+            r = str((st.get("news_detail") or {}).get("news_reason", "?"))[:60]
+            # "ok" = headlines were read and judged NEUTRAL (routine news) — not a failure
+            return "headlines neutral" if r == "ok" else r
+        _why = _C(_lbl(st) for st in stocks
+                  if not (st.get("news_detail") or {}).get("news_informed"))
         if _why:
             log_fn("   📰   not informed: " + " · ".join(f"{k} ×{v}" for k, v in _why.most_common(4)))
     except Exception:
