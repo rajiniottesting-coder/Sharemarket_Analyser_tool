@@ -23,6 +23,7 @@ Direction logic:
     module just fetches the current snapshot.
 """
 
+import os
 import datetime
 import time
 from typing import Dict, Optional
@@ -193,6 +194,15 @@ def fetch_bulk_pledge_data(session, target_date: Optional[datetime.date] = None,
             last_err = e
 
     # Every endpoint failed — one honest line, no retries, no alarm.
+    # v17.16: on GitHub Actions this is the EXPECTED outcome — NSE serves a
+    # residential client but returns an empty body to cloud runners, and the
+    # weekly local snapshot (ingestion/nse_snapshot.py) supplies pledge %.
+    # The old "endpoint may have moved / open DevTools" text sent readers
+    # chasing a non-problem on every run. Keep the diagnostic for local runs.
+    if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
+        print("   ℹ️  NSE bulk pledge (live): not served to cloud runners — expected. "
+              "Pledge % comes from the weekly local snapshot (see the 'NSE snapshot' line).")
+        return {}
     print(f"   ℹ️  NSE bulk pledge: no endpoint returned records "
           f"(last error: {last_err}). "
           "If this is HTTP 404 the path has moved again - open the NSE "

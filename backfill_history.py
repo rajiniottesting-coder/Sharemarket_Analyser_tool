@@ -2370,8 +2370,12 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
                 except Exception:
                     pass
                 time.sleep(0.3)   # respect NSE rate limit
-            print(f"   NSE shareholding: enriched DII for {_nse_dii_count}/{_nse_attempts} symbols, "
-                  f"QoQ deltas for {_nse_qoq_count}/{_nse_attempts}")
+            # v17.16: NSE's live shareholding API exposes promoter vs public only,
+            # so DII is always 0 here — say so instead of reporting "0/N" as if
+            # the enrichment had failed.
+            print(f"   NSE shareholding: promoter QoQ for {_nse_qoq_count}/{_nse_attempts} symbols"
+                  + (f", DII for {_nse_dii_count}" if _nse_dii_count else
+                     " (DII not exposed by NSE's free API — shown as —)"))
         except Exception as _e:
             print(f"   ⚠️  NSE shareholding enrichment skipped: {_e}")
 
@@ -2396,10 +2400,31 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
             # eventually is not - at which point it still LOOKS like data and
             # the guard acts on a number nobody has checked in months. An
             # honest "—" is worse to read and better to trust.
+            # v17.13.7: SNAPSHOT FALLBACK for the HISTORY write. On GitHub Actions the
+            # live bulk-pledge call returns an empty body, so _pledge_map is {} and
+            # every daily shareholding row was persisted with pledge_pct = 0. The
+            # quarterly pledge_dir compares today vs a >=90-day-old row from THIS
+            # table, so 0-vs-0 would have kept Pledge Direction at "—" forever, even
+            # after the snapshot fixed the display. Now: if the live map is empty,
+            # use the validated snapshot (exchange data, dated, freshness-gated <=14d
+            # in ingestion.nse_snapshot) so real values accumulate as history.
+            # This is NOT the rejected hand-maintained CSV: the snapshot carries a
+            # fetched_at and is refused when stale, which is the property that
+            # comment says a source must have. Live data still wins when present.
+            _pledge_src = "live NSE"
+            if not _pledge_map:
+                try:
+                    from ingestion.nse_snapshot import load_snapshot as _load_snap
+                    _snap_p = (_load_snap() or {}).get("pledge") or {}
+                    if _snap_p:
+                        _pledge_map = {k: float(v) for k, v in _snap_p.items()}
+                        _pledge_src = "snapshot (live returned nothing)"
+                except Exception as _snpe:
+                    print(f"   ℹ️  pledge snapshot fallback unavailable: {_snpe}")
             if _pledge_map:
                 _pledge_updated = merge_pledge_into_rows(sh_rows, _pledge_map)
-                print(f"   NSE bulk pledge: {len(_pledge_map):,} symbols in source, "
-                      f"{_pledge_updated} matched in funnel")
+                print(f"   NSE bulk pledge [{_pledge_src}]: {len(_pledge_map):,} symbols in source, "
+                      f"{_pledge_updated} matched in funnel -> persisted to shareholding history")
             # else: fetch_bulk_pledge_data already logged a single ℹ️ line (v15.2.1)
         except Exception as _ple:
             print(f"   ⚠️  NSE bulk pledge fetch skipped: {_ple}")

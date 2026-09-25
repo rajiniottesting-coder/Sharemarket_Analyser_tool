@@ -55,7 +55,16 @@ if not _AI_ENABLED:
           "— AI narrative cards will be skipped. All other analysis (screening, "
           "fair value, SL/targets, outcome tracking, Excel, delivery) runs normally.")
 
-_LLM_TIMEOUT_S = 90
+_LLM_TIMEOUT_S = 180
+# v17.16: the configured model is a REASONING model — its hidden reasoning
+# tokens count against max_tokens. On 25-Sep a 4,096 budget was spent entirely
+# on reasoning (reasoning_tokens=4096, text_tokens=0 -> empty reply), and the
+# retry got 2,621 reasoning + 1,475 text (cut off). Cards now get a budget that
+# leaves room for both; override with LLM_MAX_TOKENS.
+LLM_CARD_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "16000") or 16000)
+# Optional: ask the gateway for less reasoning ("low"/"medium"/"high"). Sent
+# ONLY when set — not every OpenAI-compatible gateway accepts the field.
+LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "").strip()
 _LAST_CALL = {}   # v17.14: finish_reason + usage of the most recent call (diagnostics)
 
 
@@ -68,6 +77,7 @@ def _llm_complete(system_prompt: str, user_message: str,
         "model": LLM_MODEL,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        **({"reasoning_effort": LLM_REASONING_EFFORT} if LLM_REASONING_EFFORT else {}),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_message},
@@ -110,6 +120,31 @@ def _llm_complete(system_prompt: str, user_message: str,
 
 
 MASTER_PROMPT_PATH = "master_prompt/NSE_BSE_Analyser_Master_Prompt_v7_FINAL.txt"
+
+
+def _load_card_system_prompt() -> str:
+    """v17.16: the cards need the analyst ROLE and the BLOCK H spec only.
+
+    Sending the whole 84 KB master prompt cost ~44,000 input tokens per call
+    (x6 calls on 25-Sep with recovery), and its Section-8 rule "No paragraphs
+    in default output (Blocks A-G only)" directly contradicts the Block H
+    request — one reason the model kept producing full investor cards. The
+    two relevant sections are extracted from the master prompt (still the
+    single source of truth); falls back to the full prompt if the section
+    markers are ever renamed."""
+    full = _load_master_prompt()
+    try:
+        a = full.index("SYSTEM ROLE")
+        b = full.index("SECTION 1A", a)
+        c = full.index("BLOCK H — ANALYSIS SUMMARY")
+        d = full.index("LIST VIEW sort", c)
+        role = full[a:b].rsplit("═", 1)[0].strip()
+        blockh = full[c:d].strip()
+        return (role + "\n\n" + blockh +
+                "\n\nIn this task you write ONLY Block H notes, for the stocks given, "
+                "using ONLY the data provided in each stock's data card.")
+    except ValueError:
+        return full
 
 
 def _load_master_prompt() -> str:
@@ -176,10 +211,10 @@ def _generate_ai_analysis(stock_list_df) -> str:
                 "Set OPENAI_API_KEY / OPENAI_API_BASE / LLM_MODEL to enable AI narratives.]")
 
     all_investor_cards = []
-    batch_size = 12  # 10-15 per Section 0D
+    batch_size = 4   # v17.16: was 12 — smaller batches keep each reply well inside the budget
 
     engine       = FundamentalEngine()
-    master_prompt = _load_master_prompt()
+    master_prompt = _load_card_system_prompt()   # v17.16: role + Block H only
 
     # ── Pre-calculation: Inject hard math into the DataFrame ──────────────────
     print("🧮 Running Python Fundamental Engine pre-calculations...")
@@ -357,7 +392,7 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
             msg = (f"{grounding_instruction}\n\n"
                    f"SINGLE STOCK — 1 stock:\n{_fmt_stock_card(r.to_dict())}")
             try:
-                t = _llm_complete(master_prompt, msg)
+                t = _llm_complete(master_prompt, msg, max_tokens=LLM_CARD_MAX_TOKENS)
                 one = _parse_marked(t).get(sym.upper()) or t.strip()
                 extra.append(CARD_MARKER.format(sym=sym) + "\n" + one)
                 print(f"      ✅ {sym} recovered")
@@ -398,7 +433,7 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
 
         # Try once; NO retry on quota errors (pointless — quota won't refill mid-run)
         try:
-            card_text = _llm_complete(master_prompt, user_message)
+            card_text = _llm_complete(master_prompt, user_message, max_tokens=LLM_CARD_MAX_TOKENS)
             if not card_text.strip():
                 # v12.6 (#14): standardised "[AI <verb> — <reason>]" format.
                 card_text = (
@@ -433,7 +468,7 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
                 print(f"   ⚠️  Batch {idx + 1} attempt 1 failed: {e}. Retrying in 5s...")
                 time.sleep(5)
                 try:
-                    card_text = _llm_complete(master_prompt, user_message)
+                    card_text = _llm_complete(master_prompt, user_message, max_tokens=LLM_CARD_MAX_TOKENS)
                     if not card_text.strip():
                         card_text = f"[Batch {idx + 1}: empty response after retry]"
                     card_text = _recover_missing(card_text, batch, idx)
@@ -552,7 +587,7 @@ def _cards_complete(text: str, df) -> bool:
         return True
     except Exception:
         return False
-_CARD_FORMAT_VERSION = "v17.15-held-enriched"
+_CARD_FORMAT_VERSION = "v17.16-compact-prompt"
 
 
 def _mark_batch(batch, text: str) -> str:

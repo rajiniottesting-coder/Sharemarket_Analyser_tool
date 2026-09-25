@@ -65,7 +65,13 @@ _ENABLED   = os.getenv("NEWS_SENTIMENT_ENABLED", "1").strip() == "1"
 _SHADOW    = os.getenv("NEWS_SENTIMENT_SHADOW", "0").strip() == "1"
 _MAX_HEADLINES = int(os.getenv("NEWS_MAX_HEADLINES", "15") or 15)   # v17.11: was 8
 _LOOKBACK_DAYS = int(os.getenv("NEWS_LOOKBACK_DAYS", "14") or 14)  # v17.11: was 7
-_TIMEOUT_S = 25
+_TIMEOUT_S = 60
+# v17.16: the gateway model is a REASONING model; hidden reasoning tokens count
+# against max_tokens. The old 300-token cap could be consumed entirely by
+# reasoning, leaving no JSON — the stock then silently fell back to NEUTRAL
+# ("LLM call failed or returned non-JSON"). Budget now leaves room for both.
+_NEWS_MAX_TOKENS = int(os.getenv("NEWS_MAX_TOKENS", "3000") or 3000)
+_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "").strip()
 _RATE_LIMIT_S = 0.4   # polite gap between LLM calls
 
 NEWS_AVAILABLE = bool(_API_KEY and _API_BASE and _MODEL) and _ENABLED and requests is not None
@@ -164,7 +170,8 @@ def _call_llm(symbol: str, headlines: list) -> tuple:
     payload = {
         "model": _MODEL,
         "temperature": 0,
-        "max_tokens": 300,
+        "max_tokens": _NEWS_MAX_TOKENS,
+        **({"reasoning_effort": _REASONING_EFFORT} if _REASONING_EFFORT else {}),
         "messages": [
             {"role": "system", "content": _SYSTEM},
             {"role": "user",   "content": user},
@@ -180,7 +187,12 @@ def _call_llm(symbol: str, headlines: list) -> tuple:
         if r.status_code != 200:
             return None, f"HTTP {r.status_code}: {r.text[:300]}"
         data = r.json()
-        raw = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        _ch = (data.get("choices") or [{}])[0]
+        raw = _ch.get("message", {}).get("content", "") or ""
+        if isinstance(raw, list):
+            raw = "".join(p.get("text", "") for p in raw if isinstance(p, dict))
+        if not raw.strip():
+            return None, f"empty reply (finish_reason={_ch.get('finish_reason')})"
         # Strip code fences if the model added them despite instructions.
         clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.S)
         m = re.search(r"\{.*\}", clean, flags=re.S)
@@ -207,7 +219,9 @@ def get_news_sentiment(symbol: str, company_name: str = "") -> dict:
     time.sleep(_RATE_LIMIT_S)
     parsed, raw = _call_llm(symbol, headlines)
     if not parsed:
-        return _neutral("LLM call failed or returned non-JSON", headlines, raw)
+        _r = str(raw or "")
+        _why = (_r[:45] if _r.startswith(("HTTP", "EXC", "empty reply")) else "reply was not JSON")
+        return _neutral(f"LLM: {_why}", headlines, raw)
 
     sent = str(parsed.get("sentiment", "NEUTRAL")).upper().strip()
     if sent not in ("POSITIVE", "NEGATIVE", "NEUTRAL"):
@@ -307,4 +321,14 @@ def enrich_stocks_with_news(stocks: list, log_fn=print) -> int:
         except Exception as e:
             st["news_detail"] = _neutral(f"enrich error: {e}")
     log_fn(f"   📰 News sentiment: {informed}/{len(stocks)} stocks got an informed signal")
+    # v17.16: show why the rest were not informed, so a silent LLM failure
+    # (e.g. output cut off) is visible instead of looking like "no news".
+    try:
+        from collections import Counter as _C
+        _why = _C(str((st.get("news_detail") or {}).get("news_reason", "?"))[:60]
+                  for st in stocks if not (st.get("news_detail") or {}).get("news_informed"))
+        if _why:
+            log_fn("   📰   not informed: " + " · ".join(f"{k} ×{v}" for k, v in _why.most_common(4)))
+    except Exception:
+        pass
     return informed
