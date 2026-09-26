@@ -133,6 +133,7 @@ def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFr
         bse_df["final_symbol"] = bse_df["symbol"].astype(str)
         bse_df["final_close"]  = pd.to_numeric(bse_df.get("close", 0), errors="coerce").fillna(0)
         bse_df["diff_pct"]     = 0.0
+        bse_df.attrs["dual_match_method"] = "bse_only"      # v17.17
         return bse_df
 
     if bse_df is None or bse_df.empty:
@@ -152,6 +153,9 @@ def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFr
         nse_df["final_symbol"] = nse_df["symbol"].astype(str)
         nse_df["final_close"]  = pd.to_numeric(nse_df.get("close", 0), errors="coerce").fillna(0)
         nse_df["diff_pct"]     = 0.0
+        # v17.17: tags here come FROM the allowlist, not from observing both
+        # exchanges — the allowlist recorder must never learn from them.
+        nse_df.attrs["dual_match_method"] = "allowlist_fallback"
         return nse_df
 
     # ── Ensure isin column exists in both ─────────────────────────────────────
@@ -298,6 +302,11 @@ def reconcile_exchanges(nse_df: pd.DataFrame, bse_df: pd.DataFrame) -> pd.DataFr
         return "NSE_ONLY"
 
     merged["exchange_tag"] = merged.apply(_apply_exchange_tag, axis=1)
+    # v17.17: record HOW dual listings were identified, for the allowlist
+    # recorder. "isin" = matched on a real 12-char ISIN on both exchanges (the
+    # only reliable evidence); "symbol" = last-resort symbol-name merge, which
+    # can collide across exchanges and must not be learned from.
+    merged.attrs["dual_match_method"] = "isin" if use_isin_merge else "symbol"
 
     # Session 22 safety override: if a stock is on the curated allowlist
     # but the BSE merge somehow tagged it as NSE_ONLY (ISIN format issue,

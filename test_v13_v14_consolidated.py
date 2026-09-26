@@ -5617,6 +5617,82 @@ def test_g40_v17_11_1_market_stats_not_referenced_before_creation():
     return ("\u2705 v17.11.1: market_stats is never referenced before it is created "
             "(UnboundLocalError regression guard)")
 
+
+def test_g41_v17_17_allowlist_write_time_guards():
+    """v17.17: the dual-listed allowlist is protected at WRITE time instead of
+    being wiped every run by the retired v12.1 workflow step.
+
+    Uses the REAL reconcile_exchanges() so the match-method flag is proven to
+    survive into the recorder. Asserts:
+      A. normal ISIN day (~91% dual) -> real equities recorded incl. RBA and
+         SKYGOLD; ETFs skipped
+      B. BSE down (allowlist fallback) -> nothing learned
+      C. no ISINs (symbol-name fallback) -> nothing learned
+      D. one-to-many duplicate fingerprint (old cross-join) -> refused
+      E. fund rows stored before the guards are removed
+      F. the retired workflow steps are gone from market_run.yml
+    """
+    import os, sqlite3, tempfile
+    import pandas as pd
+    import ingestion.allowlist_maintainer as AM
+    import ingestion.reconciler as RC
+    saved = AM._DB_PATH
+    AM._DB_PATH = os.path.join(tempfile.mkdtemp(), "g41.db")
+    try:
+        def rows():
+            c = sqlite3.connect(AM._DB_PATH); AM._ensure_table(c)
+            r = {x[0]: x[1] for x in c.execute("SELECT symbol, last_seen_date FROM dual_listed_runtime")}
+            c.close(); return r
+        def frame(pairs, isin=True, bse=False):
+            d = [{"symbol": s, "isin": (f"INE{i:09d}" if isin else ""), "close": 100.0 + i,
+                  "company_name": n} for i, (s, n) in enumerate(pairs)]
+            if bse:
+                for x in d: x["sc_group"] = "A"
+            return pd.DataFrame(d)
+        eq = [(f"EQ{i:03d}", f"Equity {i} Ltd") for i in range(89)] + \
+             [("RBA", "Restaurant Brands Asia Ltd"), ("SKYGOLD", "Sky Gold Ltd")]
+        etf = [("NIFTYBEES", "Nippon India ETF Nifty 50 BeES"), ("MON100", "Motilal Oswal Nasdaq 100 ETF")]
+        nse_only = [(f"NS{i:03d}", f"NSE only {i} Ltd") for i in range(9)]
+        m = RC.reconcile_exchanges(frame(eq + etf + nse_only), frame(eq + etf, bse=True))
+        assert m.attrs.get("dual_match_method") == "isin", "match-method flag lost"
+        AM.record_dual_listed_observations(m, "2026-09-26", hardcoded_allowlist=set())
+        r = rows()
+        assert len(r) == 91 and "RBA" in r and "SKYGOLD" in r, f"A: recorded {len(r)}"
+        assert "NIFTYBEES" not in r and "MON100" not in r, "A: ETF recorded"
+        before = rows()
+        mb = RC.reconcile_exchanges(frame(eq + nse_only), pd.DataFrame())
+        assert mb.attrs.get("dual_match_method") == "allowlist_fallback"
+        AM.record_dual_listed_observations(mb, "2026-09-27")
+        assert rows() == before, "B: learned from allowlist-driven tags"
+        mc = RC.reconcile_exchanges(frame(eq, isin=False), frame(eq, isin=False, bse=True))
+        AM.record_dual_listed_observations(mc, "2026-09-28")
+        assert rows() == before, "C: learned from symbol-name fallback"
+        # C2: data that LOOKS like an ISIN merge (both symbol columns) but was
+        # flagged as a symbol-name match must still be refused (method guard).
+        _c2 = m.copy(); _c2["symbol_NSE"] = _c2["symbol_NSE"].astype(object)
+        _c2.loc[_c2["exchange_tag"] == "DUAL_LISTED", "symbol_NSE"] = [
+            f"NEW{i:03d}" for i in range(int((_c2["exchange_tag"] == "DUAL_LISTED").sum()))]
+        _c2.attrs["dual_match_method"] = "symbol"
+        AM.record_dual_listed_observations(_c2, "2026-09-28")
+        assert rows() == before, "C2: learned from a symbol-flagged match"
+        cart = m.copy()
+        cart = pd.concat([cart, cart[cart["exchange_tag"] == "DUAL_LISTED"]], ignore_index=True)
+        cart.attrs["dual_match_method"] = "isin"
+        assert AM.record_dual_listed_observations(cart, "2026-09-29") == 0 and rows() == before, \
+            "D: cross-join fingerprint not refused"
+        c = sqlite3.connect(AM._DB_PATH)
+        c.execute("INSERT OR IGNORE INTO dual_listed_runtime VALUES ('BANKBEES','2026-09-01','2026-09-01','bse_merge')")
+        c.commit(); c.close()
+        AM.record_dual_listed_observations(m, "2026-09-30", hardcoded_allowlist=set())
+        assert "BANKBEES" not in rows(), "E: old fund row not cleaned"
+    finally:
+        AM._DB_PATH = saved
+    wf = open(".github/workflows/market_run.yml", encoding="utf-8").read()
+    assert "name: 🔍 v12.1 self-healing diagnostic" not in wf, "F: v12.1 wipe step still present"
+    assert "v16_5_cleanup_false_kovai.py --commit" not in wf, "F: KOVAI step still present"
+    return ("\u2705 v17.17: allowlist guarded at write time (ISIN-only, both exchanges, "
+            "no funds, cross-join refused, self-cleaning); wipe + KOVAI steps retired")
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -5893,6 +5969,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g38_v17_5_resilience_watchlist_isolation_and_retention))
     v14_1_results.append(_run_one_test(test_g39_v17_7_shadow_stop_isolation))
     v14_1_results.append(_run_one_test(test_g40_v17_11_1_market_stats_not_referenced_before_creation))
+    v14_1_results.append(_run_one_test(test_g41_v17_17_allowlist_write_time_guards))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
