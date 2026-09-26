@@ -876,9 +876,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Primary Risk": ("Biggest downside risk", "Always read before investing."),
     "SEBI Flags": ("NONE = clean | Any flag = investigate first",
                    "Any flag = investigate before buying."),
-    "View Analysis Summary": ("Gemini AI investor narrative (150–250 words)",
+    "View Analysis Summary": ("AI analyst note (150–250 words, company LLM)",
                               "Business quality, ratios, risks, catalysts, verdict rationale.\n"
-                              "Generated fresh each trading day."),
+                              "Generated for Gold picks and open positions only; cached per day."),
 
     # ── Alert Log specific ──────────────────────────────────────────────────
     "Date": ("Date alert was generated", "Trading day of the alert."),
@@ -1496,9 +1496,9 @@ GROUP_TIPS: Dict[str, Tuple[str, str]] = {
     "NEWS": ("Sentiment + risk summary",
              "Key catalyst, news sentiment, primary risk."),
     "ANALYSIS SUMMARY": ("Full AI-written investor memo",
-                         "150–250-word narrative from Gemini AI covering quality,\n"
+                         "150–250-word note from the company LLM covering quality,\n"
                          "ratios, risks, catalysts, and verdict rationale.\n"
-                         "Generated fresh each trading day."),
+                         "Gold sheet only (open positions: Performance → AI Card)."),
     "KEY METRICS": ("Essential ratios for gold-tier candidates",
                     "P/E, PEG, ROE, D/E, PAT YoY, Piotroski F.\n"
                     "Quick-glance fundamentals for early-mover candidates."),

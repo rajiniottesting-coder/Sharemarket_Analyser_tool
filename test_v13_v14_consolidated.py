@@ -5693,6 +5693,51 @@ def test_g41_v17_17_allowlist_write_time_guards():
     return ("\u2705 v17.17: allowlist guarded at write time (ISIN-only, both exchanges, "
             "no funds, cross-join refused, self-cleaning); wipe + KOVAI steps retired")
 
+
+def test_g42_v17_18_no_ai_summary_on_full_dashboard():
+    """v17.18: AI notes are generated only for Gold picks and open positions,
+    so the Full Dashboard no longer carries a "View Analysis Summary" column
+    (it showed an "[AI skipped …]" placeholder on ~90 of ~95 rows). Asserts:
+      A. FULL_COLS has no summary column; GOLD_COLS still has it
+      B. band spans still equal column counts on both sheets
+      C. a rendered workbook: dashboard header row has no summary column,
+         and has exactly len(FULL_COLS) columns
+      D. dashboard text columns are left-aligned by NAME (Key Catalyst,
+         Primary Risk) — the old fixed positions had drifted
+    """
+    import glob, os, tempfile
+    import openpyxl
+    from reporting.excel_generator import (ExcelGeneratorV6, FULL_COLS, FULL_GROUPS,
+                                           GOLD_COLS, GOLD_GROUPS)
+    SUM = "View Analysis Summary"
+    assert SUM not in [h for h, _w, _k in FULL_COLS], "A: summary column still on Full Dashboard"
+    assert SUM in [h for h, _w, _k in GOLD_COLS], "A: summary column missing from Gold sheet"
+    assert sum(g[3] for g in FULL_GROUPS) == len(FULL_COLS), "B: FULL band spans != columns"
+    assert sum(g[3] for g in GOLD_GROUPS) == len(GOLD_COLS), "B: GOLD band spans != columns"
+    assert not any(g[1] == "ANALYSIS SUMMARY" for g in FULL_GROUPS), "B: stale band on Full Dashboard"
+    cwd = os.getcwd(); tmp = tempfile.mkdtemp()
+    try:
+        os.chdir(tmp)
+        stock = {"symbol": "ABC", "company_name": "ABC Ltd", "sector": "Technology",
+                 "verdict": "BUY", "composite_score": 80, "close": 100,
+                 "key_catalyst": "Large order win", "primary_risk": "Client concentration",
+                 "Analysis_Summary_Block_H": "NOTE-ABC"}
+        ExcelGeneratorV6([stock], "20260926", market_stats={"market_regime": "BULLISH"}).generate_excel_reports()
+        wb = openpyxl.load_workbook(sorted(glob.glob("*.xlsx"))[0])
+        fd = wb["\U0001f4ca Full Dashboard"]
+        heads = [str(fd.cell(4, c).value or "").replace(" \u24d8", "").strip() for c in range(1, fd.max_column + 1)]
+        assert SUM not in heads, "C: rendered dashboard still has the summary column"
+        assert fd.max_column == len(FULL_COLS), f"C: dashboard has {fd.max_column} cols, expected {len(FULL_COLS)}"
+        for h in ("Key Catalyst", "Primary Risk"):
+            c = heads.index(h) + 1
+            assert fd.cell(5, c).alignment.horizontal == "left", f"D: {h} not left-aligned"
+        c = heads.index("News Sentiment") + 1
+        assert fd.cell(5, c).alignment.horizontal == "center", "D: News Sentiment should be centred"
+    finally:
+        os.chdir(cwd)
+    return ("\u2705 v17.18: AI summary column removed from Full Dashboard (kept on Gold "
+            "sheet); band spans consistent; text columns aligned by name")
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -5970,6 +6015,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g39_v17_7_shadow_stop_isolation))
     v14_1_results.append(_run_one_test(test_g40_v17_11_1_market_stats_not_referenced_before_creation))
     v14_1_results.append(_run_one_test(test_g41_v17_17_allowlist_write_time_guards))
+    v14_1_results.append(_run_one_test(test_g42_v17_18_no_ai_summary_on_full_dashboard))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

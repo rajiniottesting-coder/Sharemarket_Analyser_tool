@@ -37,6 +37,10 @@ VERDICT_STYLES = {
 }
 _DS = {"bg":"F8FAFC","text":"1E293B"}
 
+# v17.18: Full Dashboard text columns (left-aligned), selected by header name.
+_FULL_LEFT_ALIGNED = {"Company Name", "Sector", "Verdict", "Quick Pick", "Sector Stage",
+                      "Entry Range (₹)", "Key Catalyst", "Primary Risk", "SEBI Flags"}
+
 FULL_GROUPS = [
     # v13.x: SCORES band widened 4→5 to accommodate new "Quick Pick" column
     # inserted right after Verdict. All subsequent starts shift by +1.
@@ -58,7 +62,7 @@ FULL_GROUPS = [
     # v17.11: NEWS & RISK span 4→7 (Insider/Bulk Deal/Reg Flag added);
     # ANALYSIS SUMMARY start 124→127.
     (113,"TRADE PLAN",      "059669",7),(120,"NEWS & RISK",    "475569",7),
-    (127,"ANALYSIS SUMMARY","0F172A",1),
+    # v17.18: ANALYSIS SUMMARY band removed with its column (sum = 126 = len(FULL_COLS)).
 ]
 
 FULL_COLS = [
@@ -149,7 +153,11 @@ FULL_COLS = [
     # each backed by the headline that states it (never inferred, no numbers).
     ("Insider (news)",14,"news_insider"),("Bulk Deal",12,"news_bulk_deal"),
     ("Reg Flag",10,"regulatory_flag"),
-    ("View Analysis Summary",70,"Analysis_Summary_Block_H"),
+    # v17.18: "View Analysis Summary" removed from the Full Dashboard. AI notes
+    # are generated only for Gold picks and open positions (v17.10 scope), so
+    # on this sheet ~90 of ~95 rows showed an "[AI skipped …]" placeholder.
+    # The notes live on the Gold sheet (Analysis Summary) and the Performance
+    # sheet (AI Card).
 ]
 
 GOLD_GROUPS = [
@@ -665,7 +673,7 @@ GLOSSARY_DATA = [
      "any cap-category multiplier (LARGE×1.0 / SMALL×0.85 / MICRO×0.70) + "
      "any sector exposure cap or safety clamp adjustments. "
      "Lets you audit the sizing decision without re-computing manually.","All sheets"),
-    ("ANALYSIS SUMMARY","View Analysis Summary","150–250 word AI note with exact ₹ figures, catalysts, risks","All sheets"),
+    ("ANALYSIS SUMMARY","View Analysis Summary","150–250 word AI note with exact ₹ figures, catalysts, risks","Gold sheet · Performance (AI Card)"),
 
     # ── IDENTITY ──────────────────────────────────────────────────────────────
     ("IDENTITY","Company Name","Full registered company name on NSE/BSE","All sheets"),
@@ -1350,7 +1358,7 @@ _HDR_TIPS = {
     "News Sentiment":("POSITIVE=tailwind | NEGATIVE=headwind","POSITIVE:Favourable | NEUTRAL:No news | NEGATIVE:Headwinds"),
     "Primary Risk":("Biggest downside risk","Always read before investing"),
     "SEBI Flags":("NONE=clean | Any flag=investigate first","Any flag=investigate before buying"),
-    "View Analysis Summary":("Gemini AI investor narrative(150-250 words)","Business quality,ratios,risks,catalysts,verdict rationale.\nGenerated fresh each trading day."),
+    "View Analysis Summary":("AI analyst note (150-250 words, company LLM)","Business quality, ratios, risks, catalysts, verdict rationale.\nGenerated for Gold picks and open positions only; cached per day."),
 }
 
 
@@ -1716,7 +1724,7 @@ class ExcelGeneratorV6:
         ws.row_dimensions[1].height=34
         # R2
         ws.merge_cells(start_row=2,start_column=1,end_row=2,end_column=N)
-        c2=ws.cell(2,1,"AutoFilter (row 4): Exchange · Cap Category · Sector · Verdict · MoS Label · BS Flag · Risk · Storm · Sector Stage · Weekly Change   |  Last column = 'View Analysis Summary' — scroll right to see full AI reasoning with recent company facts   |  GOLD=Early Mover · GREEN=Deep Value · BLUE=Buy · AMBER=Watch · RED=Avoid   |  RED column header = No free data source (requires paid API / BSE filings). AMBER header = AI-generated (company LLM). Normal header = calculated from free sources (yfinance / NSE)."
+        c2=ws.cell(2,1,"AutoFilter (row 4): Exchange · Cap Category · Sector · Verdict · MoS Label · BS Flag · Risk · Storm · Sector Stage · Weekly Change   |  AI analyst notes: Gold sheet (Analysis Summary) and Performance sheet (AI Card) — generated for Gold picks and open positions only   |  GOLD=Early Mover · GREEN=Deep Value · BLUE=Buy · AMBER=Watch · RED=Avoid   |  RED column header = No free data source (requires paid API / BSE filings). Normal header = calculated from free sources (yfinance / NSE)."
                     + self._nse_snapshot_note())
         c2.fill=_f(LG); c2.font=_ft(False,"475569",8,True); c2.alignment=_al("left","center")
         ws.row_dimensions[2].height=16
@@ -1818,6 +1826,8 @@ class ExcelGeneratorV6:
             # all other numeric consumers continue to work normally.
             _cfv_for_display = stk.get("cfv", 0)
             _cfv_missing = (_cfv_for_display in (0, 0.0, None, "", "—"))
+            _left_cols = {i for i, (h, _w, _k) in enumerate(FULL_COLS, 1)
+                          if h in _FULL_LEFT_ALIGNED}
             for ci,(_,_,key) in enumerate(FULL_COLS,1):
                 val=_g(stk,key)
                 # FV models: 0 means "not applicable" → show "—" not 0
@@ -1835,8 +1845,13 @@ class ExcelGeneratorV6:
                     cell.fill=_f(ubg); cell.font=_ft(False,tx,9)
                 # v13.x: col 8 added (Quick Pick, left-aligned like Verdict).
                 # Cols 28+ shifted by +1 due to new column insertion.
-                wrap_cols={2,3,7,8,29,95,97,113,121,123,125}
-                cell.alignment=_al("left" if ci in wrap_cols else "center","center",wrap=(ci==N))
+                # v17.18: text columns are chosen by HEADER NAME. The old fixed
+                # positions {…,121,123,125} had drifted as columns were added and
+                # removed (they left-aligned News Sentiment / SEBI Flags / Bulk Deal
+                # instead of Key Catalyst / Primary Risk), and wrap=(ci==N) only
+                # ever targeted the removed last column. Rows are a fixed 20 pt,
+                # so wrapping adds nothing — no column wraps.
+                cell.alignment=_al("left" if ci in _left_cols else "center","center",wrap=False)
                 cell.border=Border(
                     left=Side(style="thin",color="E2E8F0"),
                     right=Side(style="thin",color="E2E8F0"),

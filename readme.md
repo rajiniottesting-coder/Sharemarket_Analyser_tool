@@ -320,7 +320,7 @@ Verdicts are cap-aware; thresholds live in `analysis/scoring_engine.py`.
 
 ## Excel output — 8 sheets
 
-1. **📊 Full Dashboard** — 100 stocks × 127 columns. Row 2 states the header colour legend and the NSE snapshot's fetch time and age. News columns include Key Catalyst, News Sentiment, Primary Risk, *Insider (news)*, *Bulk Deal* and *Reg Flag*. Red headers mark the few columns that genuinely have no free source.
+1. **📊 Full Dashboard** — 100 stocks × 126 columns. Row 2 states the header colour legend and the NSE snapshot's fetch time and age. AI analyst notes are not on this sheet — they appear on the Gold sheet and, for open positions, in the Performance sheet's AI Card column. News columns include Key Catalyst, News Sentiment, Primary Risk, *Insider (news)*, *Bulk Deal* and *Reg Flag*. Red headers mark the few columns that genuinely have no free source.
 2. **⭐ Gold – Early Movers** — the 15-condition filter; row 2 shows the criteria and, on bearish days, the suppression notice. Below it, the **Bearish-Regime Standouts** watchlist (or a greyed *Recent Resilience* strip on bullish days).
 3. **📊 Trade Summary** — Entry range / Stop Loss / Target / R:R / horizon / risk level for Gold picks.
 4. **🔔 Alert Log** — today's score vs yesterday's with an action label (`SCORE DEGRADED` fires only on a genuine ≥ 3-point drop; weak-but-stable names show `LOW SCORE`).
