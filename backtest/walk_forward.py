@@ -214,7 +214,8 @@ def calibrate_multipliers(out_path: str) -> int:
     #   - avg_R (avg gain on wins / avg loss on losses)
     # subject to:
     #   - SL stays in [4.5%, 15%] bounds
-    #   - R:R ≥ 1.5:1 by construction
+    #   - R:R = regime multiplier by construction (1.3 / 1.5 / 1.8 since
+    #     v17.8.1 — calibrate those three values, not a fixed 1.5:1 floor)
     #   - No look-ahead bias (only use data ≤ rec_date)
     print(f"📊  Sample size: {n} closed positions.")
     print(f"    Full calibration implementation deferred until production")

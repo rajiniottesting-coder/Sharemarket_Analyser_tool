@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>NSE/BSE Stock Analyser — Pipeline Reference (v16.5)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline Reference</title>
 <style>
   :root {
     --bg-primary:#fff;--bg-secondary:#f8f7f3;--bg-tertiary:#f1efe8;
@@ -72,24 +73,145 @@
     .c-pink rect,.c-pink ellipse,.c-pink circle{fill:var(--c-pink-800);stroke:var(--c-pink-200)}
     .c-pink text{fill:var(--c-pink-50)} .c-pink text.ts{fill:var(--c-pink-200)}
   }
+  .tbl{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0 16px}
+  .tbl th,.tbl td{border:1px solid var(--border);padding:6px 8px;text-align:left;vertical-align:top}
+  .tbl th{background:var(--bg-secondary);font-weight:500}
+  .tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+  pre.log{background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;overflow-x:auto;line-height:1.5}
+  .callout{background:var(--bg-secondary);border-left:3px solid var(--border-info);padding:10px 14px;border-radius:4px;font-size:13px;color:var(--text-secondary);margin:12px 0}
+  .new{font-size:11px;color:var(--text-info);border:1px solid var(--border-info);border-radius:10px;padding:0 6px;margin-left:6px;vertical-align:middle}
+  code{overflow-wrap:anywhere}
+  @media (max-width:640px){.wrap{padding:20px 16px}.tbl{font-size:12px;display:block;overflow-x:auto}.toc ol{padding-left:16px}}
 </style>
 </head>
 <body>
 <div class="wrap">
 <h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
-<div class="meta">v16.5 · Daily pre-market intelligence pipeline · Single source of truth for end-to-end logic · Post-pipeline layers (outcome tracking from v14.0+, trailing stops + regime detection from v15.0, risk-parity sizing from v15.5, institutional risk metrics + DD-duration tracking + survivorship audit from v16.0, Gold-tier Quality Floor gate (ROE ≥ 10% · PEG ≤ 8) from v16.2, Excel column-width fixes from v16.3, Beneish threshold recalibration (-2.22 → -1.78) from v16.4, trailing-stop recalibration (+5% → +10% break-even) + TRAIL_SL outcome label from v16.5) covered separately in CLAUDE.md</div>
+<div class="meta">v17.19 · 8 October 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
 <div class="toc">
   <h3>Contents</h3>
-  <ol>
-    <li><a href="#part1">Part 1 — End-to-end pipeline (Stage 1 → Verdict)</a></li>
+  <ol start="0">
+    <li><a href="#part0">Part 0 — The daily run, end to end</a></li>
+    <li><a href="#part1">Part 1 — Screening &amp; scoring (Stage 1 → Verdict)</a></li>
     <li><a href="#part2">Part 2 — Stage 3 overrides (O1–O5) deep-dive</a></li>
     <li><a href="#part3">Part 3 — Sub-score derivation deep-dive (f/t/e/safe/sent)</a></li>
     <li><a href="#part4">Part 4 — Composite assembly &amp; verdict derivation</a></li>
-    <li><a href="#notes">Implementation notes &amp; code references</a></li>
+    <li><a href="#part5">Part 5 — Gold gate &amp; trade plan</a></li>
+    <li><a href="#part6">Part 6 — Outcome tracking</a></li>
+    <li><a href="#part7">Part 7 — AI, news &amp; external data</a></li>
+    <li><a href="#part8">Part 8 — Outputs &amp; operations</a></li>
+    <li value="9"><a href="#notes">Implementation notes &amp; code references</a></li>
   </ol>
 </div>
-<h2 id="part1">Part 1 — End-to-end pipeline</h2>
-<p>From ~5,150 daily NSE bhav rows to top 100 stocks with verdicts. All values verified against actual code in <code>screening/pre_screener.py</code>, <code>screening/priority_ranker.py</code>, and <code>analysis/scoring_engine.py</code>.</p>
+<h2 id="part0">Part 0 — The daily run, end to end <span class="new">v17.19</span></h2>
+<p>Everything one scheduled run does, in code order. Parts 1–4 zoom into the screening and scoring core; Parts 5–8 cover the decision, tracking, AI and delivery layers.</p>
+<div class="nav"><span class="label">View:</span>
+<button onclick="showP('e',0)" class="active" data-grp="e">Overview</button>
+<button onclick="showP('e',1)" data-grp="e">Gate &amp; data in</button>
+<button onclick="showP('e',2)" data-grp="e">Enrich &amp; score</button>
+<button onclick="showP('e',3)" data-grp="e">Decide &amp; deliver</button>
+</div>
+<div class="section">
+<div id="e0" class="panel active">
+<svg viewBox="0 0 680 1172" role="img" aria-label="diagram">
+<defs><marker id="arrE0" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">The daily run — what happens, in order</text>
+<text class="ts" x="340" y="48" text-anchor="middle">master_funnel.run_master_pipeline · ~12 minutes on GitHub Actions</text>
+<g class="c-gray"><rect x="40.0" y="72" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">SCHEDULE · cron 23:00 UTC Mon–Fri = 04:30 IST Tue–Sat</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">restore AI-card cache + market_data.db artifact · backfill if &lt; 50,000 rows</text><text class="ts" x="340" y="134" text-anchor="middle" dominant-baseline="central">delivery ~05:00–09:30 IST (GitHub queues scheduled runs)</text></g>
+<line x1="340" y1="152" x2="340" y2="164" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-blue"><rect x="40.0" y="174" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="194" text-anchor="middle" dominant-baseline="central">GATE · C1 weekday · C2 NSE holiday · C3 NSE bhav available</text><text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">C2 fail-closed on unknown calendar · C4 BSE never blocks</text><text class="ts" x="340" y="236" text-anchor="middle" dominant-baseline="central">fail → skip email + stop · pass → "GATE APPROVED"</text></g>
+<line x1="340" y1="254" x2="340" y2="266" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-blue"><rect x="40.0" y="276" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="296" text-anchor="middle" dominant-baseline="central">HARVEST + INTEGRITY · Sections 1, 3J/K</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">NSE bhav + delivery · BSE (bse → cloudscraper → curl_cffi) · SME · F&amp;O</text><text class="ts" x="340" y="338" text-anchor="middle" dominant-baseline="central">bulk deals + insider trades · C5: NSE ≥ 500 rows, else skip email + stop</text></g>
+<line x1="340" y1="356" x2="340" y2="368" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-blue"><rect x="40.0" y="378" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="398" text-anchor="middle" dominant-baseline="central">DB SYNC + TECHNICALS · Sections 1.2 – 1.5</text><text class="ts" x="340" y="420" text-anchor="middle" dominant-baseline="central">gap detection → save + reconcile (allowlist recorder) → gap-fill → indicators</text></g>
+<line x1="340" y1="438" x2="340" y2="450" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-teal"><rect x="40.0" y="460" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="480" text-anchor="middle" dominant-baseline="central">FUNNEL · Section 0 · ~5,200 → ~1,900 → ~1,600 → 100</text><text class="ts" x="340" y="502" text-anchor="middle" dominant-baseline="central">Stage 1 eligibility · Stage 2 quality /35 · Stage 3 priority + overrides</text><text class="ts" x="340" y="522" text-anchor="middle" dominant-baseline="central">+ open positions outside the top 100 (held monitoring)</text></g>
+<line x1="340" y1="540" x2="340" y2="552" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-purple"><rect x="40.0" y="562" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="582" text-anchor="middle" dominant-baseline="central">ENRICH · Sections 3 → 5A.5</text><text class="ts" x="340" y="604" text-anchor="middle" dominant-baseline="central">overlays · NSE refresh · DB enrichment · NSE snapshot fills blanks</text><text class="ts" x="340" y="624" text-anchor="middle" dominant-baseline="central">QoQ recompute · forensics re-run</text></g>
+<line x1="340" y1="642" x2="340" y2="654" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-pink"><rect x="40.0" y="664" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="684" text-anchor="middle" dominant-baseline="central">NEWS · Section 5A.6 · company LLM</text><text class="ts" x="340" y="706" text-anchor="middle" dominant-baseline="central">headlines → sentiment + evidenced facts · feeds the sentiment sub-score</text></g>
+<line x1="340" y1="724" x2="340" y2="736" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-amber"><rect x="40.0" y="746" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="766" text-anchor="middle" dominant-baseline="central">VALUE · SCORE · PLAN · Sections 5B, 6</text><text class="ts" x="340" y="788" text-anchor="middle" dominant-baseline="central">7 FV models → MoS · sub-scores → composite → verdict · storm · spike</text><text class="ts" x="340" y="808" text-anchor="middle" dominant-baseline="central">regime-aware stop-loss + single Target · risk-parity size</text></g>
+<line x1="340" y1="826" x2="340" y2="838" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-amber"><rect x="40.0" y="848" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="868" text-anchor="middle" dominant-baseline="central">DECIDE · Section 9/10</text><text class="ts" x="340" y="890" text-anchor="middle" dominant-baseline="central">market-regime gate · resilience watchlist · save scores · log Gold picks</text></g>
+<line x1="340" y1="908" x2="340" y2="920" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-teal"><rect x="40.0" y="930" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="950" text-anchor="middle" dominant-baseline="central">TRACK · track_outcomes.main()</text><text class="ts" x="340" y="972" text-anchor="middle" dominant-baseline="central">walk every open pick · live trailing stop · shadow stop · continuation audit</text></g>
+<line x1="340" y1="990" x2="340" y2="1002" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-pink"><rect x="40.0" y="1012" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1032" text-anchor="middle" dominant-baseline="central">AI NOTES · Section 7/8 (deferred)</text><text class="ts" x="340" y="1054" text-anchor="middle" dominant-baseline="central">Block H notes for Gold picks + open positions only · per-day cache</text></g>
+<line x1="340" y1="1072" x2="340" y2="1084" class="arr" marker-end="url(#arrE0)"/>
+<g class="c-gray"><rect x="40.0" y="1094" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1114" text-anchor="middle" dominant-baseline="central">DELIVER · Sections 9/10, 12, 13</text><text class="ts" x="340" y="1136" text-anchor="middle" dominant-baseline="central">8-sheet Excel + text report → email · 400-day DB window · upload DB artifact</text></g>
+</svg>
+</div>
+<div id="e1" class="panel">
+<svg viewBox="0 0 680 638" role="img" aria-label="diagram">
+<defs><marker id="arrE1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Gate check and data in</text>
+<text class="ts" x="340" y="48" text-anchor="middle">ingestion/orchestrator.py · master_funnel Sections 1 – 1.5</text>
+<g class="c-blue"><rect x="40.0" y="72" width="193.3" height="100" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="92" text-anchor="middle" dominant-baseline="central">C1 · C2</text><text class="ts" x="136.65" y="114" text-anchor="middle" dominant-baseline="central">weekday?</text><text class="ts" x="136.65" y="134" text-anchor="middle" dominant-baseline="central">NSE holiday master (cached)</text><text class="ts" x="136.65" y="154" text-anchor="middle" dominant-baseline="central">unknown calendar → FAIL</text></g>
+<g class="c-blue"><rect x="243.3" y="72" width="193.3" height="100" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="92" text-anchor="middle" dominant-baseline="central">C3</text><text class="ts" x="339.95" y="114" text-anchor="middle" dominant-baseline="central">NSE bhav URL HEAD</text><text class="ts" x="339.95" y="134" text-anchor="middle" dominant-baseline="central">one retry after 30 s</text><text class="ts" x="339.95" y="154" text-anchor="middle" dominant-baseline="central">fail → skip email</text></g>
+<g class="c-gray"><rect x="446.7" y="72" width="193.3" height="100" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="92" text-anchor="middle" dominant-baseline="central">C4 · C5</text><text class="ts" x="543.35" y="114" text-anchor="middle" dominant-baseline="central">C4 BSE: always PASS</text><text class="ts" x="543.35" y="134" text-anchor="middle" dominant-baseline="central">C5 watchlist: skipped</text><text class="ts" x="543.35" y="154" text-anchor="middle" dominant-baseline="central">→ GATE APPROVED</text></g>
+<line x1="340" y1="172" x2="340" y2="184" class="arr" marker-end="url(#arrE1)"/>
+<g class="c-blue"><rect x="40.0" y="194" width="193.3" height="100" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="214" text-anchor="middle" dominant-baseline="central">NSE</text><text class="ts" x="136.65" y="236" text-anchor="middle" dominant-baseline="central">bhav copy</text><text class="ts" x="136.65" y="256" text-anchor="middle" dominant-baseline="central">delivery file</text><text class="ts" x="136.65" y="276" text-anchor="middle" dominant-baseline="central">F&amp;O participants</text></g>
+<g class="c-blue"><rect x="243.3" y="194" width="193.3" height="100" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="214" text-anchor="middle" dominant-baseline="central">BSE</text><text class="ts" x="339.95" y="236" text-anchor="middle" dominant-baseline="central">bse package client</text><text class="ts" x="339.95" y="256" text-anchor="middle" dominant-baseline="central">→ cloudscraper</text><text class="ts" x="339.95" y="276" text-anchor="middle" dominant-baseline="central">→ curl_cffi</text></g>
+<g class="c-blue"><rect x="446.7" y="194" width="193.3" height="100" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="214" text-anchor="middle" dominant-baseline="central">Smart money</text><text class="ts" x="543.35" y="236" text-anchor="middle" dominant-baseline="central">bulk deals</text><text class="ts" x="543.35" y="256" text-anchor="middle" dominant-baseline="central">SAST insider trades</text><text class="ts" x="543.35" y="276" text-anchor="middle" dominant-baseline="central">(Section 3J/K)</text></g>
+<line x1="340" y1="294" x2="340" y2="306" class="arr" marker-end="url(#arrE1)"/>
+<g class="c-amber"><rect x="40.0" y="316" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="336" text-anchor="middle" dominant-baseline="central">C5 · data integrity (check_data_integrity)</text><text class="ts" x="340" y="358" text-anchor="middle" dominant-baseline="central">NSE frame present and ≥ 500 rows — else skip email + stop</text><text class="ts" x="340" y="378" text-anchor="middle" dominant-baseline="central">BSE missing is fine: NSE-only mode (normal on cloud runners)</text></g>
+<line x1="340" y1="396" x2="340" y2="408" class="arr" marker-end="url(#arrE1)"/>
+<g class="c-teal"><rect x="40.0" y="418" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="438" text-anchor="middle" dominant-baseline="central">1.2 gap detection</text><text class="ts" x="136.65" y="460" text-anchor="middle" dominant-baseline="central">missed trading days</text><text class="ts" x="136.65" y="480" text-anchor="middle" dominant-baseline="central">since last DB date</text></g>
+<g class="c-teal"><rect x="243.3" y="418" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="438" text-anchor="middle" dominant-baseline="central">1.3 save + reconcile</text><text class="ts" x="339.95" y="460" text-anchor="middle" dominant-baseline="central">ISIN merge NSE ↔ BSE</text><text class="ts" x="339.95" y="480" text-anchor="middle" dominant-baseline="central">allowlist recorder</text></g>
+<g class="c-teal"><rect x="446.7" y="418" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="438" text-anchor="middle" dominant-baseline="central">1.4 / 1.5</text><text class="ts" x="543.35" y="460" text-anchor="middle" dominant-baseline="central">≥ 2 missed → gap-fill</text><text class="ts" x="543.35" y="480" text-anchor="middle" dominant-baseline="central">else daily indicators</text></g>
+<line x1="340" y1="498" x2="340" y2="510" class="arr" marker-end="url(#arrE1)"/>
+<g class="c-purple"><rect x="40.0" y="520" width="600.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="540" text-anchor="middle" dominant-baseline="central">Dual-listed allowlist recorder · v17.17 write-time guards</text><text class="ts" x="340" y="562" text-anchor="middle" dominant-baseline="central">writes only when the run used the ISIN merge, only rows on both exchanges</text><text class="ts" x="340" y="582" text-anchor="middle" dominant-baseline="central">skips ETFs / funds / index products · refuses cross-join-looking runs</text><text class="ts" x="340" y="602" text-anchor="middle" dominant-baseline="central">(duplicate share &gt; 1 % or dual share &gt; 99 %) · 30-day prune</text></g>
+</svg>
+</div>
+<div id="e2" class="panel">
+<svg viewBox="0 0 680 680" role="img" aria-label="diagram">
+<defs><marker id="arrE2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Enrich, read the news, score</text>
+<text class="ts" x="340" y="48" text-anchor="middle">Sections 3 → 6</text>
+<g class="c-purple"><rect x="40.0" y="72" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">Section 3 · per-stock overlays</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">3A valuation · 3B inline yfinance forensic fetch · 3D/3G forensics</text><text class="ts" x="340" y="134" text-anchor="middle" dominant-baseline="central">3E capital allocation · 3F ownership · 3H anti-trigger guard · 3L rotation</text></g>
+<line x1="340" y1="152" x2="340" y2="164" class="arr" marker-end="url(#arrE2)"/>
+<g class="c-purple"><rect x="40.0" y="174" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="194" text-anchor="middle" dominant-baseline="central">4B · NSE refresh</text><text class="ts" x="187.5" y="216" text-anchor="middle" dominant-baseline="central">live NSE calls</text><text class="ts" x="187.5" y="236" text-anchor="middle" dominant-baseline="central">(empty on Actions)</text></g>
+<g class="c-purple"><rect x="345.0" y="174" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="194" text-anchor="middle" dominant-baseline="central">5 · DB enrichment</text><text class="ts" x="492.5" y="216" text-anchor="middle" dominant-baseline="central">technicals · fundamentals</text><text class="ts" x="492.5" y="236" text-anchor="middle" dominant-baseline="central">weekly momentum</text></g>
+<line x1="340" y1="254" x2="340" y2="266" class="arr" marker-end="url(#arrE2)"/>
+<g class="c-teal"><rect x="40.0" y="276" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="296" text-anchor="middle" dominant-baseline="central">5A.3b · NSE snapshot fallback (v17.13)</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">data/nse_snapshot.json from the owner's weekly fetch</text><text class="ts" x="340" y="338" text-anchor="middle" dominant-baseline="central">valid + ≤ 14 days old → fills BLANK pledge / promoter only · never overwrites</text></g>
+<line x1="340" y1="356" x2="340" y2="368" class="arr" marker-end="url(#arrE2)"/>
+<g class="c-purple"><rect x="40.0" y="378" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="398" text-anchor="middle" dominant-baseline="central">5A.4 · QoQ</text><text class="ts" x="187.5" y="420" text-anchor="middle" dominant-baseline="central">Pro / FII deltas from</text><text class="ts" x="187.5" y="440" text-anchor="middle" dominant-baseline="central">stored history</text></g>
+<g class="c-purple"><rect x="345.0" y="378" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="398" text-anchor="middle" dominant-baseline="central">5A.5 · forensics</text><text class="ts" x="492.5" y="420" text-anchor="middle" dominant-baseline="central">Altman Z · Beneish M</text><text class="ts" x="492.5" y="440" text-anchor="middle" dominant-baseline="central">earnings quality</text></g>
+<line x1="340" y1="458" x2="340" y2="470" class="arr" marker-end="url(#arrE2)"/>
+<g class="c-pink"><rect x="40.0" y="480" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="500" text-anchor="middle" dominant-baseline="central">5A.6 · news &amp; catalyst (v17.9 / v17.11)</text><text class="ts" x="340" y="522" text-anchor="middle" dominant-baseline="central">≤ 15 Google News headlines (14 days) → LLM, temperature 0, JSON</text><text class="ts" x="340" y="542" text-anchor="middle" dominant-baseline="central">confidence &lt; 0.6 → NEUTRAL · facts must quote their headline</text></g>
+<line x1="340" y1="560" x2="340" y2="572" class="arr" marker-end="url(#arrE2)"/>
+<g class="c-amber"><rect x="40.0" y="582" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="602" text-anchor="middle" dominant-baseline="central">5B · fair value</text><text class="ts" x="136.65" y="624" text-anchor="middle" dominant-baseline="central">7 models → CFV</text><text class="ts" x="136.65" y="644" text-anchor="middle" dominant-baseline="central">MoS · score adj</text></g>
+<g class="c-amber"><rect x="243.3" y="582" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="602" text-anchor="middle" dominant-baseline="central">6 · scoring</text><text class="ts" x="339.95" y="624" text-anchor="middle" dominant-baseline="central">sub-scores → composite</text><text class="ts" x="339.95" y="644" text-anchor="middle" dominant-baseline="central">verdict · storm · spike</text></g>
+<g class="c-amber"><rect x="446.7" y="582" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="602" text-anchor="middle" dominant-baseline="central">6 · trade plan</text><text class="ts" x="543.35" y="624" text-anchor="middle" dominant-baseline="central">SL + Target</text><text class="ts" x="543.35" y="644" text-anchor="middle" dominant-baseline="central">risk-parity size</text></g>
+</svg>
+</div>
+<div id="e3" class="panel">
+<svg viewBox="0 0 680 682" role="img" aria-label="diagram">
+<defs><marker id="arrE3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Decide, track, write, deliver</text>
+<text class="ts" x="340" y="48" text-anchor="middle">Section 9/10 onwards — order matters (guards G10, G11, G40)</text>
+<g class="c-gray"><rect x="40.0" y="72" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">set aside held-monitor rows · prune ETF leakers</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">held rows are kept only for AI notes; dashboard stays the top 100</text></g>
+<line x1="340" y1="132" x2="340" y2="144" class="arr" marker-end="url(#arrE3)"/>
+<g class="c-amber"><rect x="40.0" y="154" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="174" text-anchor="middle" dominant-baseline="central">market-regime gate</text><text class="ts" x="340" y="196" text-anchor="middle" dominant-baseline="central">Nifty vs 20-day SMA · BEARISH only when more than 2 % below</text></g>
+<line x1="340" y1="214" x2="340" y2="226" class="arr" marker-end="url(#arrE3)"/>
+<g class="c-amber"><rect x="40.0" y="236" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="256" text-anchor="middle" dominant-baseline="central">resilience watchlist</text><text class="ts" x="187.5" y="278" text-anchor="middle" dominant-baseline="central">bearish days only</text><text class="ts" x="187.5" y="298" text-anchor="middle" dominant-baseline="central">reference, never a pick</text></g>
+<g class="c-gray"><rect x="345.0" y="236" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="256" text-anchor="middle" dominant-baseline="central">save today's scores</text><text class="ts" x="492.5" y="278" text-anchor="middle" dominant-baseline="central">streaks · Alert Log Δ</text><text class="ts" x="492.5" y="298" text-anchor="middle" dominant-baseline="central">allowlist prune</text></g>
+<line x1="340" y1="316" x2="340" y2="328" class="arr" marker-end="url(#arrE3)"/>
+<g class="c-teal"><rect x="40.0" y="338" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="358" text-anchor="middle" dominant-baseline="central">log Gold picks (v14 hook)</text><text class="ts" x="340" y="380" text-anchor="middle" dominant-baseline="central">first appearance only · levels frozen · re-appearance counter</text></g>
+<line x1="340" y1="398" x2="340" y2="410" class="arr" marker-end="url(#arrE3)"/>
+<g class="c-teal"><rect x="40.0" y="420" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="440" text-anchor="middle" dominant-baseline="central">outcome tracker</text><text class="ts" x="340" y="462" text-anchor="middle" dominant-baseline="central">live walk · trailing stop · shadow stop · continuation</text></g>
+<line x1="340" y1="480" x2="340" y2="492" class="arr" marker-end="url(#arrE3)"/>
+<g class="c-pink"><rect x="40.0" y="502" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="522" text-anchor="middle" dominant-baseline="central">AI notes (deferred to here)</text><text class="ts" x="340" y="544" text-anchor="middle" dominant-baseline="central">scope = today's Gold ∪ open positions · mapped by symbol</text></g>
+<line x1="340" y1="562" x2="340" y2="574" class="arr" marker-end="url(#arrE3)"/>
+<g class="c-gray"><rect x="40.0" y="584" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="604" text-anchor="middle" dominant-baseline="central">Excel (8 sheets) + text report</text><text class="ts" x="187.5" y="626" text-anchor="middle" dominant-baseline="central">generate_excel_reports()</text><text class="ts" x="187.5" y="646" text-anchor="middle" dominant-baseline="central">DailyReportGenerator</text></g>
+<g class="c-gray"><rect x="345.0" y="584" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="604" text-anchor="middle" dominant-baseline="central">email · DB window</text><text class="ts" x="492.5" y="626" text-anchor="middle" dominant-baseline="central">Gmail SMTP</text><text class="ts" x="492.5" y="646" text-anchor="middle" dominant-baseline="central">400-day circular queue</text></g>
+</svg>
+</div>
+</div>
+
+<h2 id="part1">Part 1 — Screening &amp; scoring (Stage 1 → Verdict)</h2>
+<p>From ~5,200 daily NSE+BSE bhav rows to top 100 stocks with verdicts. All values verified against actual code in <code>screening/pre_screener.py</code>, <code>screening/priority_ranker.py</code>, and <code>analysis/scoring_engine.py</code>.</p>
 <div class="nav">
   <span class="label">Pipeline stage:</span>
   <button onclick="showA(0)" class="active" data-grp="a">Overview</button>
@@ -106,12 +228,12 @@
 <div id="a0" class="panel active">
 <svg viewBox="0 0 680 504">
 <defs><marker id="arrA0" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
-<text class="th" x="340" y="28" text-anchor="middle">From 5,150 tickers to 100 conviction-ranked picks — the daily pipeline</text>
-<g class="c-gray"><rect x="40" y="60" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="80" text-anchor="middle" dominant-baseline="central">INPUT · Daily market snapshot from NSE + BSE + yfinance</text><text class="ts" x="340" y="100" text-anchor="middle" dominant-baseline="central">~5,150 stocks · OHLCV + delivery + F&amp;O · fundamentals · 400-day history from local DB</text></g>
+<text class="th" x="340" y="28" text-anchor="middle">From ~5,200 tickers to 100 conviction-ranked picks — screening &amp; scoring</text>
+<g class="c-gray"><rect x="40" y="60" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="80" text-anchor="middle" dominant-baseline="central">INPUT · Daily market snapshot from NSE + BSE + yfinance</text><text class="ts" x="340" y="100" text-anchor="middle" dominant-baseline="central">~5,200 stocks · OHLCV + delivery + F&amp;O · fundamentals · 400-day history from local DB</text></g>
 <line x1="340" y1="116" x2="340" y2="128" class="arr" marker-end="url(#arrA0)"/>
-<g class="c-blue"><rect x="40" y="138" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="158" text-anchor="middle" dominant-baseline="central">STAGE 1 · Eligibility filter (V0–V9 hard drops)</text><text class="ts" x="340" y="180" text-anchor="middle" dominant-baseline="central">9 filters · ETF/MF group · vol&gt;0 · price≥₹10 · delivery≥40%</text><text class="ts" x="340" y="200" text-anchor="middle" dominant-baseline="central">circuit · suspended · SME liquidity → ~3,500 pass</text></g>
+<g class="c-blue"><rect x="40" y="138" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="158" text-anchor="middle" dominant-baseline="central">STAGE 1 · Eligibility filter (V0–V9 hard drops)</text><text class="ts" x="340" y="180" text-anchor="middle" dominant-baseline="central">9 filters · ETF/MF group · vol&gt;0 · price≥₹10 · delivery≥40%</text><text class="ts" x="340" y="200" text-anchor="middle" dominant-baseline="central">circuit · suspended · SME liquidity → ~1,900 pass</text></g>
 <line x1="340" y1="218" x2="340" y2="230" class="arr" marker-end="url(#arrA0)"/>
-<g class="c-blue"><rect x="40" y="240" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="260" text-anchor="middle" dominant-baseline="central">STAGE 2 · Bhav-quality scorer /35 (B1–B7 binary criteria, +5 each)</text><text class="ts" x="340" y="280" text-anchor="middle" dominant-baseline="central">Delivery · turnover · price zone · dual-listing · 3 hard drops · gate ≥15 → ~600 pass</text></g>
+<g class="c-blue"><rect x="40" y="240" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="260" text-anchor="middle" dominant-baseline="central">STAGE 2 · Bhav-quality scorer /35 (B1–B7 binary criteria, +5 each)</text><text class="ts" x="340" y="280" text-anchor="middle" dominant-baseline="central">Delivery · turnover · price zone · dual-listing · 3 hard drops · gate ≥15 → ~1,600 pass</text></g>
 <line x1="340" y1="296" x2="340" y2="308" class="arr" marker-end="url(#arrA0)"/>
 <g class="c-teal"><rect x="40" y="318" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="338" text-anchor="middle" dominant-baseline="central">STAGE 3 · Priority ranker /100 + 5 overrides (O1–O5) → top 100</text><text class="ts" x="340" y="358" text-anchor="middle" dominant-baseline="central">vol_spike(25)+s2(30)+delivery(20)+cap(15)+turnover(10) · cap-mix LARGE≥20, MID≥15</text></g>
 <line x1="340" y1="374" x2="340" y2="386" class="arr" marker-end="url(#arrA0)"/>
@@ -124,7 +246,7 @@
 <svg viewBox="0 0 680 716">
 <defs><marker id="arrA1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">Stage 1 · screening/pre_screener.stage_1_filter (V0–V9)</text>
-<text class="ts" x="340" y="48" text-anchor="middle">All 9 hard-drop filters · sequential AND-gates · ~5,150 → ~3,500 pass</text>
+<text class="ts" x="340" y="48" text-anchor="middle">All 9 hard-drop filters · sequential AND-gates · ~5,200 → ~1,900 pass</text>
 <g class="c-gray"><rect x="40" y="76" width="600" height="64" rx="8" stroke-width="0.5"/><text class="th" x="340" y="96" text-anchor="middle" dominant-baseline="central">INPUT · daily bhav row</text><text class="ts" x="340" y="120" text-anchor="middle" dominant-baseline="central">{symbol, sc_group, close, prev_close, volume, turnover, delivery_pct, exchange_tag}</text></g>
 <g class="c-blue"><rect x="40" y="148" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="185" y="168" text-anchor="middle" dominant-baseline="central">V0 · sc_group filter</text><text class="ts" x="185" y="188" text-anchor="middle" dominant-baseline="central">drops EF/MF/IF/IR/BE</text></g>
 <g class="c-blue"><rect x="350" y="148" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="495" y="168" text-anchor="middle" dominant-baseline="central">V0b · ETF symbol patterns</text><text class="ts" x="495" y="188" text-anchor="middle" dominant-baseline="central">~70 keywords · ends-with ETF/BEES</text></g>
@@ -136,8 +258,8 @@
 <g class="c-blue"><rect x="350" y="352" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="495" y="372" text-anchor="middle" dominant-baseline="central">V3 · Delivery floor</text><text class="ts" x="495" y="392" text-anchor="middle" dominant-baseline="central">delivery_pct ≥ 40%</text></g>
 <g class="c-blue"><rect x="40" y="420" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="440" text-anchor="middle" dominant-baseline="central">V9 · BSE SME liquidity floor</text><text class="ts" x="340" y="460" text-anchor="middle" dominant-baseline="central">if "SME" in exchange_tag → turnover ≥ ₹5L (else dropped)</text></g>
 <line x1="340" y1="480" x2="340" y2="494" class="arr" marker-end="url(#arrA1)"/>
-<g class="c-teal"><rect x="40" y="504" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="526" text-anchor="middle">PASS · ~3,500 stocks proceed to Stage 2</text><text class="ts" x="340" y="546" text-anchor="middle">All 9 gates AND'd — must pass every check</text></g>
-<g class="c-amber"><rect x="40" y="584" width="600" height="116" rx="8" stroke-width="0.5"/><text class="th" x="340" y="604" text-anchor="middle" dominant-baseline="central">DROP COUNTERS (printed at end of Stage 1)</text><text class="ts" x="340" y="626" text-anchor="middle" dominant-baseline="central">no_volume · penny · low_delivery · circuit · etf_mf · suspended · illiquid_sme</text><text class="ts" x="340" y="646" text-anchor="middle" dominant-baseline="central">Watchlist override: stocks with watchlist_override=True bypass V3 (delivery)</text><text class="ts" x="340" y="666" text-anchor="middle" dominant-baseline="central">but NOT V0/V1/V4/V7/V8 — even watchlist stocks must trade and be priced normally</text><text class="ts" x="340" y="686" text-anchor="middle" dominant-baseline="central">Example print: "Stage 1 Complete: 5150 → 3489 candidates"</text></g>
+<g class="c-teal"><rect x="40" y="504" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="526" text-anchor="middle">PASS · ~1,900 stocks proceed to Stage 2</text><text class="ts" x="340" y="546" text-anchor="middle">All 9 gates AND'd — must pass every check</text></g>
+<g class="c-amber"><rect x="40" y="584" width="600" height="116" rx="8" stroke-width="0.5"/><text class="th" x="340" y="604" text-anchor="middle" dominant-baseline="central">DROP COUNTERS (printed at end of Stage 1)</text><text class="ts" x="340" y="626" text-anchor="middle" dominant-baseline="central">no_volume · penny · low_delivery · circuit · etf_mf · suspended · illiquid_sme</text><text class="ts" x="340" y="646" text-anchor="middle" dominant-baseline="central">Watchlist override: stocks with watchlist_override=True bypass V3 (delivery)</text><text class="ts" x="340" y="666" text-anchor="middle" dominant-baseline="central">but NOT V0/V1/V4/V7/V8 — even watchlist stocks must trade and be priced normally</text><text class="ts" x="340" y="686" text-anchor="middle" dominant-baseline="central">Real log (25-Sep-2026): "Stage 1 Complete: 5234 → 1993 candidates"</text></g>
 </svg>
 </div>
 
@@ -147,7 +269,7 @@
 <defs><marker id="arrA2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">Stage 2 · screening/pre_screener.stage_2_fundamental_scorer</text>
 <text class="ts" x="340" y="48" text-anchor="middle">7 binary criteria (B1–B7) · each +5 · max 35 · gate ≥ 15 · uses ONLY bhav data</text>
-<g class="c-gray"><rect x="40" y="68" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="90" text-anchor="middle">INPUT · ~3,500 stocks + {close, volume, turnover, delivery_pct, exchange_tag}</text></g>
+<g class="c-gray"><rect x="40" y="68" width="600" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="90" text-anchor="middle">INPUT · ~1,900 stocks + {close, volume, turnover, delivery_pct, exchange_tag}</text></g>
 <g class="c-amber"><rect x="40" y="124" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="144" text-anchor="middle" dominant-baseline="central">HARD DROPS (run BEFORE scoring — auto-disqualify)</text><text class="ts" x="340" y="166" text-anchor="middle" dominant-baseline="central">HD1 · turnover &lt; ₹2 Lakh (illiquid)</text><text class="ts" x="340" y="184" text-anchor="middle" dominant-baseline="central">HD2 · delivery &lt; 30% (purely speculative) · HD3 · price &lt; ₹20 (excludes nano)</text></g>
 <line x1="340" y1="204" x2="340" y2="214" class="arr" marker-end="url(#arrA2)"/>
 <g class="c-teal"><rect x="40" y="224" width="290" height="56" rx="8" stroke-width="0.5"/><text class="th" x="185" y="244" text-anchor="middle" dominant-baseline="central">B1 · +5 if delivery ≥ 50%</text><text class="ts" x="185" y="264" text-anchor="middle" dominant-baseline="central">basic institutional interest</text></g>
@@ -168,7 +290,7 @@
 <svg viewBox="0 0 680 730">
 <defs><marker id="arrA3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">Stage 3 · screening/priority_ranker.calculate_priority_score</text>
-<text class="ts" x="340" y="48" text-anchor="middle">~600 candidates → priority_score /100 + 5 overrides + cap-mix → top 100</text>
+<text class="ts" x="340" y="48" text-anchor="middle">~1,600 candidates → priority_score /100 + 5 overrides + cap-mix → top 100</text>
 <g class="c-gray"><rect x="40" y="76" width="600" height="56" rx="8" stroke-width="0.5"/><text class="th" x="340" y="96" text-anchor="middle">PRIORITY SCORE = vol_spike(25) + stage2(30) + delivery(20)</text><text class="ts" x="340" y="116" text-anchor="middle">+ cap(15) + turnover(10) · all 5 components SCALED so max = 100</text></g>
 <g class="c-teal"><rect x="40" y="148" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="185" y="168" text-anchor="middle" dominant-baseline="central">25% · Volume spike</text><text class="ts" x="185" y="188" text-anchor="middle" dominant-baseline="central">today/20d_avg, capped 5× → /5×25</text></g>
 <g class="c-teal"><rect x="350" y="148" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="495" y="168" text-anchor="middle" dominant-baseline="central">30% · Stage 2 score</text><text class="ts" x="495" y="188" text-anchor="middle" dominant-baseline="central">(stage2_score / 35) × 30</text></g>
@@ -207,7 +329,7 @@
 <line x1="340" y1="500" x2="340" y2="512" class="arr" marker-end="url(#arrA4)"/>
 <g class="c-blue"><rect x="40" y="522" width="600" height="200" rx="8" stroke-width="0.5"/><text class="th" x="340" y="544" text-anchor="middle">Step 3 · C · Forensic adjustment (capped −10 / +8)</text><text class="ts" x="340" y="568" text-anchor="middle" dominant-baseline="central">Altman Z ≥ 3.0 → +3 (safe zone) · Altman Z &lt; 1.8 → −5 (distress)</text><text class="ts" x="340" y="588" text-anchor="middle" dominant-baseline="central">Earnings quality HIGH → +2 · LOW → −3</text><text class="ts" x="340" y="608" text-anchor="middle" dominant-baseline="central">ND/EBITDA &lt; 1.0 → +1 (strong solvency) · &gt; 5.0 → −2 (high leverage warning)</text><text class="ts" x="340" y="628" text-anchor="middle" dominant-baseline="central">Int Coverage &gt; 5x → +2 (comfortable) · &lt; 1.5x → −3 (distress warning)</text><text class="ts" x="340" y="652" text-anchor="middle" dominant-baseline="central">Each contribution guarded against missing data (None, "—" → no penalty)</text><text class="ts" x="340" y="672" text-anchor="middle" dominant-baseline="central">Sum capped: max(-10, min(8, forensic_adj))</text><text class="ts" x="340" y="692" text-anchor="middle" dominant-baseline="central">Final score CLAMPED to [0, 100] after adjustment — score is now LOCKED</text></g>
 <line x1="340" y1="722" x2="340" y2="734" class="arr" marker-end="url(#arrA4)"/>
-<g class="c-purple"><rect x="40" y="744" width="600" height="120" rx="8" stroke-width="0.5"/><text class="th" x="340" y="766" text-anchor="middle">v10.16 PE NEUTRALITY in fundamental_score (master_funnel.py L1852)</text><text class="ts" x="340" y="790" text-anchor="middle" dominant-baseline="central">if pe_num ≥ 500: pass        ← NEW v10.16 NEUTRAL branch (clamped noise)</text><text class="ts" x="340" y="810" text-anchor="middle" dominant-baseline="central">elif 0 &lt; pe_f ≤ 20: +12   elif ≤ 40: +7   elif &gt; 60: −8</text><text class="ts" x="340" y="830" text-anchor="middle" dominant-baseline="central">Real expensive stocks (PE 60-499) STILL get the −8 penalty</text><text class="ts" x="340" y="850" text-anchor="middle" dominant-baseline="central">Only clamped noise (PE ≥ 500) is neutral — honest "valuation unknown"</text></g>
+<g class="c-purple"><rect x="40" y="744" width="600" height="120" rx="8" stroke-width="0.5"/><text class="th" x="340" y="766" text-anchor="middle">v10.16 PE NEUTRALITY in fundamental_score (master_funnel.py Section 6)</text><text class="ts" x="340" y="790" text-anchor="middle" dominant-baseline="central">if pe_num ≥ 500: pass        ← NEW v10.16 NEUTRAL branch (clamped noise)</text><text class="ts" x="340" y="810" text-anchor="middle" dominant-baseline="central">elif 0 &lt; pe_f ≤ 20: +12   elif ≤ 40: +7   elif &gt; 60: −8</text><text class="ts" x="340" y="830" text-anchor="middle" dominant-baseline="central">Real expensive stocks (PE 60-499) STILL get the −8 penalty</text><text class="ts" x="340" y="850" text-anchor="middle" dominant-baseline="central">Only clamped noise (PE ≥ 500) is neutral — honest "valuation unknown"</text></g>
 </svg>
 <p style="text-align:center; color:#666; font-size:0.85em; margin-top:6px;">RESULT · final composite_score in [0, 100] · also produces forensic_factors string · persists in latest_analysis_results table along with v11.0.2 streak counters → drives next-day O4/O5 logic + chronic-AVOID demotion + turnaround flag</p>
 </div>
@@ -229,7 +351,7 @@
 <g class="c-amber"><rect x="350" y="392" width="290" height="60" rx="8" stroke-width="0.5"/><text class="th" x="495" y="412" text-anchor="middle" dominant-baseline="central">MICRO CAP</text><text class="ts" x="495" y="430" text-anchor="middle" dominant-baseline="central">BUY ≥ 70 · WATCHLIST ≥ 60</text></g>
 <line x1="340" y1="452" x2="340" y2="466" class="arr" marker-end="url(#arrA5)"/>
 <g class="c-purple"><rect x="40" y="476" width="600" height="160" rx="8" stroke-width="0.5"/><text class="th" x="340" y="496" text-anchor="middle">DECISION 4 · Verdict assignment (in order)</text><text class="ts" x="340" y="520" text-anchor="middle" dominant-baseline="central">if score ≥ buy_min AND mos &gt; mos_gate → BUY (good business + safe MoS)</text><text class="ts" x="340" y="540" text-anchor="middle" dominant-baseline="central">if score ≥ buy_min AND mos ≤ mos_gate → OVERVALUED (great biz, expensive)</text><text class="ts" x="340" y="560" text-anchor="middle" dominant-baseline="central">elif score ≥ watch_min → WATCHLIST</text><text class="ts" x="340" y="580" text-anchor="middle" dominant-baseline="central">else (score 38 to watch_min) → NEUTRAL</text><text class="ts" x="340" y="604" text-anchor="middle" dominant-baseline="central">Confidence: distance from threshold → ≥5 = HIGH ●●● · 2-5 = MED ●●○ · &lt;2 = LOW ●○○</text><text class="ts" x="340" y="624" text-anchor="middle" dominant-baseline="central">Display string includes dots: "BUY ●●●", "OVERVALUED ●●○", "AVOID ●○○"</text></g>
-<g class="c-teal"><rect x="40" y="660" width="600" height="92" rx="8" stroke-width="0.5"/><text class="th" x="340" y="680" text-anchor="middle">EXCEL OUTPUT (reporting/excel_generator.py)</text><text class="ts" x="340" y="704" text-anchor="middle" dominant-baseline="central">Full Dashboard · 123 columns · all 100 stocks (v12.0: NEUTRAL filter removed) · color-coded verdict cells</text><text class="ts" x="340" y="722" text-anchor="middle" dominant-baseline="central">Gold sheet · top BUY-only filtered (11 conditions) · with confidence dots</text><text class="ts" x="340" y="740" text-anchor="middle" dominant-baseline="central">Tooltip Reference + Glossary · 173 fields documented with v10.16 "—" notes</text></g>
+<g class="c-teal"><rect x="40" y="660" width="600" height="92" rx="8" stroke-width="0.5"/><text class="th" x="340" y="680" text-anchor="middle">EXCEL OUTPUT (reporting/excel_generator.py)</text><text class="ts" x="340" y="704" text-anchor="middle" dominant-baseline="central">Full Dashboard · 126 columns · all 100 stocks · colour-coded verdict cells (Part 8)</text><text class="ts" x="340" y="722" text-anchor="middle" dominant-baseline="central">Gold sheet · market-regime gate + 15 conditions (Part 5) · with confidence dots</text><text class="ts" x="340" y="740" text-anchor="middle" dominant-baseline="central">Tooltip Reference (210 tips) + Glossary (~196 rows)</text></g>
 </svg>
 </div>
 
@@ -261,7 +383,7 @@
 <g class="c-blue"><rect x="40" y="256" width="290" height="80" rx="8" stroke-width="0.5"/><text class="th" x="185" y="278" text-anchor="middle" dominant-baseline="central">stock["pe_num"] = 500.0</text><text class="ts" x="185" y="298" text-anchor="middle" dominant-baseline="central">used by scoring code</text><text class="ts" x="185" y="316" text-anchor="middle" dominant-baseline="central">always numeric, never "—"</text></g>
 <g class="c-amber"><rect x="350" y="256" width="290" height="80" rx="8" stroke-width="0.5"/><text class="th" x="495" y="278" text-anchor="middle" dominant-baseline="central">stock["pe"] = "—"</text><text class="ts" x="495" y="298" text-anchor="middle" dominant-baseline="central">used by Excel display only</text><text class="ts" x="495" y="316" text-anchor="middle" dominant-baseline="central">v10.16 honest "—" instead of 1000</text></g>
 <line x1="340" y1="336" x2="340" y2="350" class="arr" marker-end="url(#arrA7)"/>
-<g class="c-teal"><rect x="40" y="360" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="382" text-anchor="middle" dominant-baseline="central">SCORING · fundamental_score (master_funnel.py L1852, v10.16)</text><text class="ts" x="340" y="404" text-anchor="middle" dominant-baseline="central">if pe_num ≥ 500: pass     ← NEUTRAL (no penalty applied)</text><text class="ts" x="340" y="424" text-anchor="middle" dominant-baseline="central">PRE-v10.16 hit "elif &gt; 60: −8" → wrong "expensive" penalty (−8 spurious)</text></g>
+<g class="c-teal"><rect x="40" y="360" width="600" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="382" text-anchor="middle" dominant-baseline="central">SCORING · fundamental_score (master_funnel.py Section 6, v10.16)</text><text class="ts" x="340" y="404" text-anchor="middle" dominant-baseline="central">if pe_num ≥ 500: pass     ← NEUTRAL (no penalty applied)</text><text class="ts" x="340" y="424" text-anchor="middle" dominant-baseline="central">PRE-v10.16 hit "elif &gt; 60: −8" → wrong "expensive" penalty (−8 spurious)</text></g>
 <line x1="340" y1="440" x2="340" y2="454" class="arr" marker-end="url(#arrA7)"/>
 <g class="c-teal"><rect x="40" y="464" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="484" text-anchor="middle" dominant-baseline="central">DOWNSTREAM · v7_analysis_engine.apply_section_3A_valuation</text><text class="ts" x="340" y="506" text-anchor="middle" dominant-baseline="central">_pe_num("—") → 0.0 (defensive coerce, v10.16 FIX #4)</text><text class="ts" x="340" y="524" text-anchor="middle" dominant-baseline="central">"HIST. CHEAP" tag correctly NOT applied (valuation unknown)</text><text class="ts" x="340" y="542" text-anchor="middle" dominant-baseline="central">Pre-v10.16 would have crashed TypeError on string comparison</text></g>
 <line x1="340" y1="564" x2="340" y2="578" class="arr" marker-end="url(#arrA7)"/>
@@ -371,7 +493,7 @@
 <svg viewBox="0 0 680 660">
 <defs><marker id="arrB6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">Final assembly · how overrides + ranking produce top 100</text>
-<g class="c-gray"><rect x="40" y="60" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="82" text-anchor="middle">STEP 1 · Compute priority_score for ALL ~600 Stage 2 survivors</text></g>
+<g class="c-gray"><rect x="40" y="60" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="82" text-anchor="middle">STEP 1 · Compute priority_score for ALL ~1,600 Stage 2 survivors</text></g>
 <line x1="340" y1="104" x2="340" y2="114" class="arr" marker-end="url(#arrB6)"/>
 <g class="c-blue"><rect x="40" y="124" width="600" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="144" text-anchor="middle">STEP 2 · Evaluate all 5 override masks (boolean per stock)</text><text class="ts" x="340" y="164" text-anchor="middle">override_mask = o1 OR o2 OR o3 OR o4 OR o5</text></g>
 <line x1="340" y1="184" x2="340" y2="194" class="arr" marker-end="url(#arrB6)"/>
@@ -698,7 +820,7 @@
 
 
 <div id="d4" class="panel">
-<svg viewBox="0 0 680 1480">
+<svg viewBox="0 0 680 1512">
 <defs><marker id="arrD4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">Step 4 · Verdict derivation — final_score → verdict</text>
 <text class="ts" x="340" y="48" text-anchor="middle">Source: <tspan font-family="ui-monospace,Menlo,monospace" font-size="11">_get_verdict_with_confidence()</tspan> · runs after composite is finalised</text>
@@ -736,13 +858,13 @@
 
 <g class="c-gray"><rect x="40" y="1098" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1120" text-anchor="middle">Side-output 1 · Risk Level classification (display-only)</text></g>
 
-<g class="c-pink"><rect x="40" y="1156" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1176" text-anchor="middle" dominant-baseline="central">stock["risk_level"] · master_funnel.py:2655 · independent of verdict</text><text class="ts" x="340" y="1198" text-anchor="middle" dominant-baseline="central">HIGH if bs_status=ALERT OR <tspan font-family="ui-monospace,Menlo,monospace" font-size="11">pledge&gt;20%</tspan> OR (D/E&gt;2.5 AND small/micro cap)</text><text class="ts" x="340" y="1216" text-anchor="middle" dominant-baseline="central">LOW if LARGE cap AND D/E&lt;0.5 AND beta&lt;0.9 (or D/E&lt;1.0 AND beta&lt;1.2)</text><text class="ts" x="340" y="1234" text-anchor="middle" dominant-baseline="central">HIGH if small/micro cap OR D/E&gt;1.5 OR beta&gt;1.5 · else MEDIUM</text></g>
+<g class="c-pink"><rect x="40" y="1156" width="600" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1176" text-anchor="middle" dominant-baseline="central">stock["risk_level"] · master_funnel.py Section 6 · independent of verdict</text><text class="ts" x="340" y="1198" text-anchor="middle" dominant-baseline="central">HIGH if bs_status=ALERT OR <tspan font-family="ui-monospace,Menlo,monospace" font-size="11">pledge&gt;20%</tspan> OR (D/E&gt;2.5 AND small/micro cap)</text><text class="ts" x="340" y="1216" text-anchor="middle" dominant-baseline="central">LOW if LARGE cap AND D/E&lt;0.5 AND beta&lt;0.9 (or D/E&lt;1.0 AND beta&lt;1.2)</text><text class="ts" x="340" y="1234" text-anchor="middle" dominant-baseline="central">HIGH if small/micro cap OR D/E&gt;1.5 OR beta&gt;1.5 · else MEDIUM</text></g>
 
 <line x1="340" y1="1262" x2="340" y2="1276" class="arr" marker-end="url(#arrD4)"/>
 
 <g class="c-gray"><rect x="40" y="1284" width="600" height="44" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1306" text-anchor="middle">Side-output 2 · Gold-tier filter (binary include/exclude)</text></g>
 
-<g class="c-amber"><rect x="40" y="1342" width="600" height="160" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1362" text-anchor="middle" dominant-baseline="central">Gold sheet membership — ALL 13 conditions must pass (excel_generator.py::_get_gold)</text><text class="ts" x="340" y="1384" text-anchor="middle" dominant-baseline="central">1) verdict==BUY · 2) score≥70 · 3) MoS 15-100 · 4) Storm≥5 · 5) RSI≤70</text><text class="ts" x="340" y="1402" text-anchor="middle" dominant-baseline="central">6) bs_status≠ALERT · 7) <tspan font-family="ui-monospace,Menlo,monospace" font-size="11">pledge_pct≤10</tspan> · 8) spike_suppressed=False</text><text class="ts" x="340" y="1420" text-anchor="middle" dominant-baseline="central">9) Altman Z≥1.8 OR "—" · 10) Earn Quality≠LOW · 11) Int Coverage≥1.5 OR "—"</text><text class="ts" x="340" y="1442" text-anchor="middle" dominant-baseline="central">12) ROE≥10% OR "—" · 13) PEG≤8 OR "—" OR ≤0 (v16.2 Quality Floor)</text><text class="ts" x="340" y="1464" text-anchor="middle" dominant-baseline="central">High pledge → never reaches Gold even if score=95+verdict=BUY (binary exclusion)</text><text class="ts" x="340" y="1486" text-anchor="middle" dominant-baseline="central">Permissive on missing data: ROE=None / PEG=None / loss-makers pass these gates</text></g>
+<g class="c-amber"><rect x="40" y="1342" width="600" height="160" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1362" text-anchor="middle" dominant-baseline="central">Gold membership — regime gate + ALL 15 must pass (excel_generator.py::_get_gold)</text><text class="ts" x="340" y="1384" text-anchor="middle" dominant-baseline="central">1) verdict==BUY · 2) score≥70 · 3) MoS 15-100 · 4) Storm≥5 · 5) RSI≤70</text><text class="ts" x="340" y="1402" text-anchor="middle" dominant-baseline="central">6) bs_status≠ALERT · 7) <tspan font-family="ui-monospace,Menlo,monospace" font-size="11">pledge_pct≤10</tspan> · 8) spike_suppressed=False</text><text class="ts" x="340" y="1420" text-anchor="middle" dominant-baseline="central">9) Altman Z≥1.8 OR "—" · 10) Earn Quality≠LOW · 11) Int Coverage≥1.5 OR "—"</text><text class="ts" x="340" y="1442" text-anchor="middle" dominant-baseline="central">12) ROE≥10% · 13) PEG≤8 (v16.2) · 14) 3d-ROC≥0 · 15) sector cycle (v17.0)</text><text class="ts" x="340" y="1464" text-anchor="middle" dominant-baseline="central">High pledge → never reaches Gold even if score=95+verdict=BUY (binary exclusion)</text><text class="ts" x="340" y="1486" text-anchor="middle" dominant-baseline="central">Permissive on missing data: ROE=None / PEG=None / loss-makers pass these gates</text></g>
 </svg>
 </div>
 
@@ -820,101 +942,374 @@
 </div>
 
 
-<h2 id="notes">Implementation notes &amp; code references</h2>
 
-<h3>File-level entry points</h3>
-<p style="margin-top:0">
-<strong>Stage 1:</strong> <code>screening/pre_screener.py::stage_1_filter</code> (L20–133) — 9 V-prefix filters<br>
-<strong>Stage 2:</strong> <code>screening/pre_screener.py::stage_2_fundamental_scorer</code> (L138–228) — 7 B-prefix criteria + 3 hard drops<br>
-<strong>Stage 3 priority:</strong> <code>screening/priority_ranker.py::calculate_priority_score</code> (L20–82) — 5-component blend<br>
-<strong>Stage 3 overrides:</strong> <code>screening/priority_ranker.py::get_top_100_candidates</code> (L85–250) — 5 overrides O1–O5 + cap-mix<br>
-<strong>Section 6 composite scoring:</strong> <code>analysis/scoring_engine.py::calculate_composite_score</code> (L60–230)<br>
-<strong>Fundamental sub-score:</strong> <code>master_funnel.py</code> Section 6 loop — 15 bucket groups (weight 0.35)<br>
-<strong>Technical sub-score:</strong> <code>master_funnel.py</code> Section 6 loop (fallback computation) — 9 indicator groups (weight 0.30)<br>
-<strong>Early entry sub-score:</strong> <code>master_funnel.py</code> Section 6 loop — 11 conditions (weight 0.15)<br>
-<strong>Safety sub-score:</strong> <code>master_funnel.py</code> Section 6 loop (fallback computation) — 11 contributors (weight 0.10)<br>
-<strong>Sentiment sub-score:</strong> <code>master_funnel.py</code> Section 6 loop (fallback computation) — 8 contributors (weight 0.10)<br>
-<strong>Verdict derivation:</strong> <code>analysis/scoring_engine.py::_get_verdict_with_confidence</code> (L286–361)<br>
-<strong>Storm score:</strong> <code>analysis/scoring_engine.py::calculate_storm_score</code> (L232–272)<br>
-<strong>Quick-pick label:</strong> <code>analysis/scoring_engine.py::_assign_quick_pick</code> (L368–381)<br>
-<strong>Excel writer:</strong> <code>reporting/excel_generator.py</code> — 7 sheets including Full Dashboard, Gold, Tooltip Reference, Glossary
-</p>
+<h2 id="part5">Part 5 — Gold gate &amp; trade plan <span class="new">v17.19</span></h2>
+<p>How a scored BUY becomes a Gold pick, and how its stop-loss, target and size are set. These levels are written to <code>gold_recommendations</code> once and never changed.</p>
+<div class="nav"><span class="label">View:</span>
+<button onclick="showP('f',0)" class="active" data-grp="f">Regime gate</button>
+<button onclick="showP('f',1)" data-grp="f">15 conditions</button>
+<button onclick="showP('f',2)" data-grp="f">Stop-loss</button>
+<button onclick="showP('f',3)" data-grp="f">Target &amp; size</button>
+</div>
+<div class="section">
+<div id="f0" class="panel active">
+<svg viewBox="0 0 680 558" role="img" aria-label="diagram">
+<defs><marker id="arrF0" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Market-regime gate</text>
+<text class="ts" x="340" y="48" text-anchor="middle">master_funnel Section 9/10 · v17.0, tolerance band v17.5.1</text>
+<g class="c-gray"><rect x="40.0" y="72" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">INPUT · get_nifty_20d_sma()</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">Nifty close + 20-day SMA · DB first, yfinance ^NSEI fallback</text></g>
+<line x1="340" y1="132" x2="340" y2="144" class="arr" marker-end="url(#arrF0)"/>
+<g class="c-amber"><rect x="40.0" y="154" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="174" text-anchor="middle" dominant-baseline="central">gap = (close − SMA) / SMA × 100</text><text class="ts" x="340" y="196" text-anchor="middle" dominant-baseline="central">SMA ≤ 0 (no data) → BULLISH — the gate never blocks silently</text></g>
+<line x1="340" y1="214" x2="340" y2="226" class="arr" marker-end="url(#arrF0)"/>
+<g class="c-teal"><rect x="40.0" y="236" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="256" text-anchor="middle" dominant-baseline="central">gap ≥ −2.0 %</text><text class="ts" x="187.5" y="278" text-anchor="middle" dominant-baseline="central">BULLISH / neutral</text><text class="ts" x="187.5" y="298" text-anchor="middle" dominant-baseline="central">Gold filter runs</text></g>
+<g class="c-pink"><rect x="345.0" y="236" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="256" text-anchor="middle" dominant-baseline="central">gap &lt; −2.0 %</text><text class="ts" x="492.5" y="278" text-anchor="middle" dominant-baseline="central">BEARISH</text><text class="ts" x="492.5" y="298" text-anchor="middle" dominant-baseline="central">no Gold picks today</text></g>
+<line x1="340" y1="316" x2="340" y2="328" class="arr" marker-end="url(#arrF0)"/>
+<g class="c-gray"><rect x="40.0" y="338" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="358" text-anchor="middle" dominant-baseline="central">Why a 2 % band (_REGIME_TOLERANCE_PCT)</text><text class="ts" x="340" y="380" text-anchor="middle" dominant-baseline="central">the original knife-edge gate suppressed Gold on 29-Jul-2026, a +1.1 % day</text><text class="ts" x="340" y="400" text-anchor="middle" dominant-baseline="central">that closed above its EMAs; a 20-day SMA lags early recoveries</text></g>
+<line x1="340" y1="418" x2="340" y2="430" class="arr" marker-end="url(#arrF0)"/>
+<g class="c-purple"><rect x="40.0" y="440" width="600.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="460" text-anchor="middle" dominant-baseline="central">Resilience watchlist (bearish days only · v17.5)</text><text class="ts" x="340" y="482" text-anchor="middle" dominant-baseline="central">own 3-day return ≥ 5 % AND beating the Nifty's 3-day return</text><text class="ts" x="340" y="502" text-anchor="middle" dominant-baseline="central">30-day retention · shown when streak ≥ 2 of the last 5 bearish days</text><text class="ts" x="340" y="522" text-anchor="middle" dominant-baseline="central">reference only — never a Gold pick, never tracked</text></g>
+</svg>
+</div>
+<div id="f1" class="panel">
+<svg viewBox="0 0 680 540" role="img" aria-label="diagram">
+<defs><marker id="arrF1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Gold filter · ALL 15 must pass</text>
+<text class="ts" x="340" y="48" text-anchor="middle">reporting/excel_generator.py · ExcelGeneratorV6._get_gold()</text>
+<g class="c-teal"><rect x="40.0" y="72" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="92" text-anchor="middle" dominant-baseline="central">1 · BUY verdict</text><text class="ts" x="136.65" y="114" text-anchor="middle" dominant-baseline="central">not WATCHLIST</text></g>
+<g class="c-teal"><rect x="243.3" y="72" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="92" text-anchor="middle" dominant-baseline="central">2 · score ≥ 70</text><text class="ts" x="339.95" y="114" text-anchor="middle" dominant-baseline="central">uniform bar</text></g>
+<g class="c-teal"><rect x="446.7" y="72" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="92" text-anchor="middle" dominant-baseline="central">3 · 15 % ≤ MoS ≤ 100 %</text><text class="ts" x="543.35" y="114" text-anchor="middle" dominant-baseline="central">real upside</text></g>
+<g class="c-teal"><rect x="40.0" y="144" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="164" text-anchor="middle" dominant-baseline="central">4 · storm ≥ 5</text><text class="ts" x="136.65" y="186" text-anchor="middle" dominant-baseline="central">defensive quality</text></g>
+<g class="c-teal"><rect x="243.3" y="144" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="164" text-anchor="middle" dominant-baseline="central">5 · RSI ≤ 70</text><text class="ts" x="339.95" y="186" text-anchor="middle" dominant-baseline="central">not overbought</text></g>
+<g class="c-blue"><rect x="446.7" y="144" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="164" text-anchor="middle" dominant-baseline="central">6 · BS health ≠ ALERT</text><text class="ts" x="543.35" y="186" text-anchor="middle" dominant-baseline="central">balance sheet</text></g>
+<g class="c-blue"><rect x="40.0" y="216" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="236" text-anchor="middle" dominant-baseline="central">7 · pledge ≤ 10 %</text><text class="ts" x="136.65" y="258" text-anchor="middle" dominant-baseline="central">capital structure</text></g>
+<g class="c-blue"><rect x="243.3" y="216" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="236" text-anchor="middle" dominant-baseline="central">8 · not spike-suppressed</text><text class="ts" x="339.95" y="258" text-anchor="middle" dominant-baseline="central">anti-trigger clear</text></g>
+<g class="c-purple"><rect x="446.7" y="216" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="236" text-anchor="middle" dominant-baseline="central">9 · Altman Z ≥ 1.8</text><text class="ts" x="543.35" y="258" text-anchor="middle" dominant-baseline="central">or missing</text></g>
+<g class="c-purple"><rect x="40.0" y="288" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="308" text-anchor="middle" dominant-baseline="central">10 · Earn Quality ≠ LOW</text><text class="ts" x="136.65" y="330" text-anchor="middle" dominant-baseline="central">cash-backed profit</text></g>
+<g class="c-purple"><rect x="243.3" y="288" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="308" text-anchor="middle" dominant-baseline="central">11 · Int Cover ≥ 1.5×</text><text class="ts" x="339.95" y="330" text-anchor="middle" dominant-baseline="central">or missing</text></g>
+<g class="c-amber"><rect x="446.7" y="288" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="308" text-anchor="middle" dominant-baseline="central">12 · ROE ≥ 10 %</text><text class="ts" x="543.35" y="330" text-anchor="middle" dominant-baseline="central">or missing · v16.2</text></g>
+<g class="c-amber"><rect x="40.0" y="360" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="380" text-anchor="middle" dominant-baseline="central">13 · PEG ≤ 8</text><text class="ts" x="136.65" y="402" text-anchor="middle" dominant-baseline="central">missing / ≤ 0 pass</text></g>
+<g class="c-pink"><rect x="243.3" y="360" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="380" text-anchor="middle" dominant-baseline="central">14 · 3-day ROC ≥ 0</text><text class="ts" x="339.95" y="402" text-anchor="middle" dominant-baseline="central">momentum · v17.0</text></g>
+<g class="c-pink"><rect x="446.7" y="360" width="193.3" height="60" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="380" text-anchor="middle" dominant-baseline="central">15 · sector cycle OK</text><text class="ts" x="543.35" y="402" text-anchor="middle" dominant-baseline="central">weak sector → 4w &gt; 0</text></g>
+<line x1="340" y1="420" x2="340" y2="432" class="arr" marker-end="url(#arrF1)"/>
+<g class="c-gray"><rect x="40.0" y="442" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="462" text-anchor="middle" dominant-baseline="central">ONE result, three uses</text><text class="ts" x="340" y="484" text-anchor="middle" dominant-baseline="central">the same _get_gold() frame fills the Gold sheet, is logged by the outcome</text><text class="ts" x="340" y="504" text-anchor="middle" dominant-baseline="central">tracker, and sets the AI-note scope — they can never disagree</text></g>
+</svg>
+</div>
+<div id="f2" class="panel">
+<svg viewBox="0 0 680 538" role="img" aria-label="diagram">
+<defs><marker id="arrF2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Stop-loss derivation</text>
+<text class="ts" x="340" y="48" text-anchor="middle">master_funnel._compute_sl_t_v14_6() · frozen at log time</text>
+<g class="c-gray"><rect x="40.0" y="72" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">ATR % = ATR-14 ÷ CMP × 100</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">missing ATR → cap fallback LARGE 2.0 · MID 2.8 · SMALL 4.0 · MICRO 5.5 (else 3.0)</text></g>
+<line x1="340" y1="132" x2="340" y2="144" class="arr" marker-end="url(#arrF2)"/>
+<g class="c-blue"><rect x="40.0" y="154" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="174" text-anchor="middle" dominant-baseline="central">× (horizon multiplier + sector tier)</text><text class="ts" x="340" y="196" text-anchor="middle" dominant-baseline="central">SHORT TERM 2.5 · POSITIONAL 3.5 · LONG TERM 5.0</text><text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">sector: +0.60 very-high · +0.30 high · 0 · −0.20 low · −0.35 very-low</text></g>
+<line x1="340" y1="234" x2="340" y2="246" class="arr" marker-end="url(#arrF2)"/>
+<g class="c-blue"><rect x="40.0" y="256" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="276" text-anchor="middle" dominant-baseline="central">× volatility regime</text><text class="ts" x="340" y="298" text-anchor="middle" dominant-baseline="central">ATR % vs its own 252-trading-day average</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">≥ 1.20× → high, × 1.10 · ≤ 0.80× → low, × 0.90 · else neutral × 1.00</text></g>
+<line x1="340" y1="336" x2="340" y2="348" class="arr" marker-end="url(#arrF2)"/>
+<g class="c-teal"><rect x="40.0" y="358" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="378" text-anchor="middle" dominant-baseline="central">support floor (only if volume-confirmed)</text><text class="ts" x="340" y="400" text-anchor="middle" dominant-baseline="central">vol_ratio ≥ 1.20 → SL at least (CMP − Support 1) / CMP + 0.5 %</text></g>
+<line x1="340" y1="418" x2="340" y2="430" class="arr" marker-end="url(#arrF2)"/>
+<g class="c-amber"><rect x="40.0" y="440" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="460" text-anchor="middle" dominant-baseline="central">bounds</text><text class="ts" x="187.5" y="482" text-anchor="middle" dominant-baseline="central">clamp 4.5 % – 15 %</text><text class="ts" x="187.5" y="502" text-anchor="middle" dominant-baseline="central">SHORT TERM ≤ 7 % (v17.0)</text></g>
+<g class="c-gray"><rect x="345.0" y="440" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="460" text-anchor="middle" dominant-baseline="central">earnings week</text><text class="ts" x="492.5" y="482" text-anchor="middle" dominant-baseline="central">× 1.2 within 5 days</text><text class="ts" x="492.5" y="502" text-anchor="middle" dominant-baseline="central">no data source — never fires</text></g>
+</svg>
+</div>
+<div id="f3" class="panel">
+<svg viewBox="0 0 680 354" role="img" aria-label="diagram">
+<defs><marker id="arrF3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Single Target and position size</text>
+<text class="ts" x="340" y="48" text-anchor="middle">v17.8.1 target · v15.4/v15.5 risk-parity sizing</text>
+<g class="c-amber"><rect x="40.0" y="72" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">Target % = regime multiplier × SL %</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">low 1.3 · neutral 1.5 · high 1.8 · capped at +50 % (corrupt-input guard)</text><text class="ts" x="340" y="134" text-anchor="middle" dominant-baseline="central">no fair-value anchoring, no horizon caps — owner decision, review after ~30 closes</text></g>
+<line x1="340" y1="152" x2="340" y2="164" class="arr" marker-end="url(#arrF3)"/>
+<g class="c-gray"><rect x="40.0" y="174" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="194" text-anchor="middle" dominant-baseline="central">T2 / T3 — dormant</text><text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">Target × 1.35 and × 1.35² · kept for older rows and the continuation audit</text></g>
+<line x1="340" y1="234" x2="340" y2="246" class="arr" marker-end="url(#arrF3)"/>
+<g class="c-teal"><rect x="40.0" y="256" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="276" text-anchor="middle" dominant-baseline="central">Suggested Alloc % = 1.0 % risk budget ÷ SL %</text><text class="ts" x="340" y="298" text-anchor="middle" dominant-baseline="central">× cap multiplier LARGE / MID 1.0 · SMALL 0.85 · MICRO 0.70</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">30 % sector cap · clamped 1 % – 15 % · every position risks ≈ 1 % of capital</text></g>
+</svg>
+<table class="tbl" aria-label="Worked examples computed with the live functions">
+<thead><tr><th>Worked example (computed by the real functions)</th><th>A · POSITIONAL MID</th><th>B · SHORT TERM SMALL</th><th>C · LONG TERM LARGE</th></tr></thead>
+<tbody>
+<tr><td>Sector (tier)</td><td>Chemicals (−0.20)</td><td>Metals (+0.30)</td><td>FMCG (−0.35)</td></tr>
+<tr><td>CMP · ATR-14</td><td class="num">₹500 · ₹15 (3.0 %)</td><td class="num">₹200 · ₹8 (4.0 %)</td><td class="num">₹1,200 · ₹18 (1.5 %)</td></tr>
+<tr><td>252-day ATR average → regime</td><td class="num">3.1 % → 0.97× neutral</td><td class="num">3.0 % → 1.33× high</td><td class="num">2.0 % → 0.75× low</td></tr>
+<tr><td>Raw SL = ATR% × (mult + tier) × regime</td><td class="num">3.0 × 3.30 × 1.0 = 9.90 %</td><td class="num">4.0 × 2.80 × 1.1 = 12.32 %</td><td class="num">1.5 × 4.65 × 0.9 = 6.28 %</td></tr>
+<tr><td>After bounds</td><td class="num">9.90 %</td><td class="num">7.00 % (SHORT cap)</td><td class="num">6.28 %</td></tr>
+<tr><td>Stop-loss</td><td class="num">₹450.50</td><td class="num">₹186.00</td><td class="num">₹1,124.67</td></tr>
+<tr><td>Target % (multiplier × SL %)</td><td class="num">1.5 × 9.90 = 14.85 %</td><td class="num">1.8 × 7.00 = 12.60 %</td><td class="num">1.3 × 6.28 = 8.16 %</td></tr>
+<tr><td>Target</td><td class="num">₹574.25</td><td class="num">₹225.20</td><td class="num">₹1,297.93</td></tr>
+<tr><td>Suggested Alloc %</td><td class="num">1 ÷ 9.9 = 10.10 %</td><td class="num">14.29 % × 0.85 = 12.1 %</td><td class="num">15.92 % → clamped 15.0 %</td></tr>
+</tbody></table>
+<div class="callout">R:R on the Trade Summary is measured from the entry-range midpoint, so it lands near the multiplier (≈ 1.3–1.8). Its colour bands (green ≥ 3, amber ≥ 2) predate the single target, so every row currently shows red — an open decision, not a bug in the levels.</div>
+</div>
+</div>
+
+<h2 id="part6">Part 6 — Outcome tracking <span class="new">v17.19</span></h2>
+<p>Every Gold pick is logged once and walked forward on every run. The tracker is invoked by the pipeline itself (since v14.1.3) before the Excel is built, so today's picks and fresh P&amp;L appear in today's workbook.</p>
+<div class="nav"><span class="label">View:</span>
+<button onclick="showP('g',0)" class="active" data-grp="g">Lifecycle</button>
+<button onclick="showP('g',1)" data-grp="g">Trailing stop</button>
+<button onclick="showP('g',2)" data-grp="g">Observational layers</button>
+<button onclick="showP('g',3)" data-grp="g">Performance sheet</button>
+</div>
+<div class="section">
+<div id="g0" class="panel active">
+<svg viewBox="0 0 680 558" role="img" aria-label="diagram">
+<defs><marker id="arrG0" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Life of a Gold pick</text>
+<text class="ts" x="340" y="48" text-anchor="middle">master_funnel v14 hook → track_outcomes.main() → 🎯 Performance</text>
+<g class="c-teal"><rect x="40.0" y="72" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">LOG · first appearance only</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">gold_recommendations + OPEN gold_outcomes row · levels frozen</text><text class="ts" x="340" y="134" text-anchor="middle" dominant-baseline="central">re-appearance → times_reappeared + 1 (once per day)</text></g>
+<line x1="340" y1="152" x2="340" y2="164" class="arr" marker-end="url(#arrG0)"/>
+<g class="c-gray"><rect x="40.0" y="174" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="194" text-anchor="middle" dominant-baseline="central">EXPIRY by horizon</text><text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">SHORT TERM 30 days · POSITIONAL 90 · LONG TERM 270 (hard cutoff)</text></g>
+<line x1="340" y1="234" x2="340" y2="246" class="arr" marker-end="url(#arrG0)"/>
+<g class="c-blue"><rect x="40.0" y="256" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="276" text-anchor="middle" dominant-baseline="central">WALK · daily NSE bars from the next day</text><text class="ts" x="340" y="298" text-anchor="middle" dominant-baseline="central">same bar: SL beats target · T3 &gt; T2 &gt; T1 · first event wins</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">effective SL = max(original SL, trailing SL)</text></g>
+<line x1="340" y1="336" x2="340" y2="348" class="arr" marker-end="url(#arrG0)"/>
+<g class="c-teal"><rect x="40.0" y="358" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="378" text-anchor="middle" dominant-baseline="central">T1_HIT</text><text class="ts" x="136.65" y="400" text-anchor="middle" dominant-baseline="central">the Target</text></g>
+<g class="c-pink"><rect x="243.3" y="358" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="378" text-anchor="middle" dominant-baseline="central">SL_HIT</text><text class="ts" x="339.95" y="400" text-anchor="middle" dominant-baseline="central">original stop</text><text class="ts" x="339.95" y="420" text-anchor="middle" dominant-baseline="central">a real loss</text></g>
+<g class="c-purple"><rect x="446.7" y="358" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="378" text-anchor="middle" dominant-baseline="central">TRAIL_SL</text><text class="ts" x="543.35" y="400" text-anchor="middle" dominant-baseline="central">trailing stop</text><text class="ts" x="543.35" y="420" text-anchor="middle" dominant-baseline="central">not in SL rate</text></g>
+<line x1="340" y1="438" x2="340" y2="450" class="arr" marker-end="url(#arrG0)"/>
+<g class="c-gray"><rect x="40.0" y="460" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="480" text-anchor="middle" dominant-baseline="central">EXPIRED</text><text class="ts" x="136.65" y="502" text-anchor="middle" dominant-baseline="central">window ended</text><text class="ts" x="136.65" y="522" text-anchor="middle" dominant-baseline="central">no event</text></g>
+<g class="c-gray"><rect x="243.3" y="460" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="480" text-anchor="middle" dominant-baseline="central">OPEN</text><text class="ts" x="339.95" y="502" text-anchor="middle" dominant-baseline="central">refresh price, P&amp;L,</text><text class="ts" x="339.95" y="522" text-anchor="middle" dominant-baseline="central">runup, drawdown</text></g>
+<g class="c-gray"><rect x="446.7" y="460" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="480" text-anchor="middle" dominant-baseline="central">T2 / T3_HIT</text><text class="ts" x="543.35" y="502" text-anchor="middle" dominant-baseline="central">only on a gap through</text><text class="ts" x="543.35" y="522" text-anchor="middle" dominant-baseline="central">dormant levels</text></g>
+</svg>
+</div>
+<div id="g1" class="panel">
+<svg viewBox="0 0 680 600" role="img" aria-label="diagram">
+<defs><marker id="arrG1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Live trailing stop</text>
+<text class="ts" x="340" y="48" text-anchor="middle">track_outcomes._walk_forward() · v16.5 → v17.0 tiers</text>
+<g class="c-gray"><rect x="40.0" y="72" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">peak &lt; +12 %, or +12–15 % inside the first 10 days</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">no trailing stop — the original SL protects</text></g>
+<line x1="340" y1="132" x2="340" y2="144" class="arr" marker-end="url(#arrG1)"/>
+<g class="c-blue"><rect x="40.0" y="154" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="174" text-anchor="middle" dominant-baseline="central">peak ≥ +12 % AND ≥ 10 days held</text><text class="ts" x="340" y="196" text-anchor="middle" dominant-baseline="central">stop moves to entry → Trailing column "BE locked"</text></g>
+<line x1="340" y1="214" x2="340" y2="226" class="arr" marker-end="url(#arrG1)"/>
+<g class="c-teal"><rect x="40.0" y="236" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="256" text-anchor="middle" dominant-baseline="central">peak ≥ +15 % (no day gate)</text><text class="ts" x="340" y="278" text-anchor="middle" dominant-baseline="central">stop at entry + 5 % → "+5% locked"</text></g>
+<line x1="340" y1="296" x2="340" y2="308" class="arr" marker-end="url(#arrG1)"/>
+<g class="c-teal"><rect x="40.0" y="318" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="338" text-anchor="middle" dominant-baseline="central">peak ≥ +20 %</text><text class="ts" x="340" y="360" text-anchor="middle" dominant-baseline="central">stop at entry + 9 % → "+9% locked"</text></g>
+<line x1="340" y1="378" x2="340" y2="390" class="arr" marker-end="url(#arrG1)"/>
+<g class="c-teal"><rect x="40.0" y="400" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="420" text-anchor="middle" dominant-baseline="central">peak ≥ +25 %</text><text class="ts" x="340" y="442" text-anchor="middle" dominant-baseline="central">stop at entry + 12 % → "+12% locked"</text></g>
+<line x1="340" y1="460" x2="340" y2="472" class="arr" marker-end="url(#arrG1)"/>
+<g class="c-amber"><rect x="40.0" y="482" width="600.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="502" text-anchor="middle" dominant-baseline="central">rules</text><text class="ts" x="340" y="524" text-anchor="middle" dominant-baseline="central">ratchet up only · updated at the END of each bar (no look-ahead, G17)</text><text class="ts" x="340" y="544" text-anchor="middle" dominant-baseline="central">hit on the trailing level = TRAIL_SL, never SL_HIT (G33)</text><text class="ts" x="340" y="564" text-anchor="middle" dominant-baseline="central">label shows the level actually locked (v17.19, G43)</text></g>
+</svg>
+</div>
+<div id="g2" class="panel">
+<svg viewBox="0 0 680 230" role="img" aria-label="diagram">
+<defs><marker id="arrG2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">Observational layers — never change a live outcome</text>
+<text class="ts" x="340" y="48" text-anchor="middle">continuation v17.3 · shadow stop v17.7</text>
+<g class="c-purple"><rect x="40.0" y="72" width="295.0" height="140" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="92" text-anchor="middle" dominant-baseline="central">Continuation audit</text><text class="ts" x="187.5" y="114" text-anchor="middle" dominant-baseline="central">after each T1_HIT, walk on to</text><text class="ts" x="187.5" y="134" text-anchor="middle" dominant-baseline="central">the pick's own expiry</text><text class="ts" x="187.5" y="154" text-anchor="middle" dominant-baseline="central">T2 / T3 reach · peak / trough</text><text class="ts" x="187.5" y="174" text-anchor="middle" dominant-baseline="central">broke original SL?</text><text class="ts" x="187.5" y="194" text-anchor="middle" dominant-baseline="central">→ gold_continuation (G37)</text></g>
+<g class="c-purple"><rect x="345.0" y="72" width="295.0" height="140" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="92" text-anchor="middle" dominant-baseline="central">Shadow trailing stop</text><text class="ts" x="492.5" y="114" text-anchor="middle" dominant-baseline="central">Chandelier: peak − N × ATR × regime</text><text class="ts" x="492.5" y="134" text-anchor="middle" dominant-baseline="central">N = 2.5 / 3.0 / 3.5 by horizon</text><text class="ts" x="492.5" y="154" text-anchor="middle" dominant-baseline="central">ratchet up · no look-ahead</text><text class="ts" x="492.5" y="174" text-anchor="middle" dominant-baseline="central">real vs shadow P&amp;L compared</text><text class="ts" x="492.5" y="194" text-anchor="middle" dominant-baseline="central">→ shadow_* columns (G39)</text></g>
+</svg>
+</div>
+<div id="g3" class="panel">
+<table class="tbl" aria-label="Performance sheet sections in order">
+<thead><tr><th>#</th><th>🎯 Performance section (sheet order)</th><th>What it answers</th></tr></thead><tbody>
+<tr><td>1</td><td>Title + sample-size banner</td><td>Preliminary until 30 positions have closed</td></tr>
+<tr><td>2</td><td>Headline metrics</td><td>Total · Closed · Open · Hit rate · SL rate · tiles TARGET HIT / SL HIT / EXPIRED / TRAIL SL</td></tr>
+<tr><td>3</td><td>Speed metrics</td><td>Average days to Target and to SL</td></tr>
+<tr><td>4</td><td>Diagnostic breakdowns</td><td>Hit rate by score band, archetype, sector, time horizon</td></tr>
+<tr><td>5</td><td>Closed positions (15 columns)</td><td>Every realised outcome, newest first, with Score Band / Archetype / Sector</td></tr>
+<tr><td>6</td><td>Risk-adjusted returns</td><td>Sharpe · Sortino · Calmar (risk-free 6.5 %) · drawdown duration</td></tr>
+<tr><td>7</td><td>Open positions</td><td>SL (the original stop, frozen at log time), Target, Trailing (level locked so far — the tracker exits on the higher of the two), Regime, Suggested Alloc, AI Card; ⚠ when ≤ 14 days left</td></tr>
+<tr><td>8</td><td>Expired — missed-runup diagnostic</td><td>How far expired picks ran before timing out (≥ 3 expired)</td></tr>
+<tr><td>9</td><td>Continuation audit</td><td>What happened after the Target was hit</td></tr>
+<tr><td>10</td><td>Shadow exit comparison</td><td>Would the regime-aware stop have done better?</td></tr>
+<tr><td>11</td><td>Survivorship audit</td><td>Are all open positions still in today's universe?</td></tr>
+</tbody></table>
+</div>
+</div>
+
+<h2 id="part7">Part 7 — AI, news &amp; external data <span class="new">v17.19</span></h2>
+<p>One company OpenAI-compatible endpoint (<code>OPENAI_API_KEY</code> · <code>OPENAI_API_BASE</code> · <code>LLM_MODEL</code>) serves both the news engine and the analyst notes over plain HTTPS. Gemini was removed in v17.10. Without credentials everything else still runs.</p>
+<div class="nav"><span class="label">View:</span>
+<button onclick="showP('h',0)" class="active" data-grp="h">News engine</button>
+<button onclick="showP('h',1)" data-grp="h">AI notes</button>
+<button onclick="showP('h',2)" data-grp="h">NSE snapshot</button>
+</div>
+<div class="section">
+<div id="h0" class="panel active">
+<svg viewBox="0 0 680 558" role="img" aria-label="diagram">
+<defs><marker id="arrH0" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">News &amp; catalyst engine</text>
+<text class="ts" x="340" y="48" text-anchor="middle">analysis/news_sentiment.py · Section 5A.6 · before scoring</text>
+<g class="c-gray"><rect x="40.0" y="72" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">Google News RSS</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">up to 15 headlines from the last 14 days per stock (keyless)</text></g>
+<line x1="340" y1="132" x2="340" y2="144" class="arr" marker-end="url(#arrH0)"/>
+<g class="c-pink"><rect x="40.0" y="154" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="174" text-anchor="middle" dominant-baseline="central">company LLM · temperature 0 · strict JSON · max_tokens 3,000</text><text class="ts" x="340" y="196" text-anchor="middle" dominant-baseline="central">sentiment + confidence · catalyst · risk · insider · bulk deal · regulatory · results</text><text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">every fact must quote its headline · no numbers may be invented</text></g>
+<line x1="340" y1="234" x2="340" y2="246" class="arr" marker-end="url(#arrH0)"/>
+<g class="c-amber"><rect x="40.0" y="256" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="276" text-anchor="middle" dominant-baseline="central">confidence &lt; 0.6</text><text class="ts" x="187.5" y="298" text-anchor="middle" dominant-baseline="central">→ NEUTRAL</text><text class="ts" x="187.5" y="318" text-anchor="middle" dominant-baseline="central">(no score effect)</text></g>
+<g class="c-teal"><rect x="345.0" y="256" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="276" text-anchor="middle" dominant-baseline="central">POSITIVE / NEGATIVE</text><text class="ts" x="492.5" y="298" text-anchor="middle" dominant-baseline="central">sentiment +4 / −5</text><text class="ts" x="492.5" y="318" text-anchor="middle" dominant-baseline="central">canonical weights</text></g>
+<line x1="340" y1="336" x2="340" y2="348" class="arr" marker-end="url(#arrH0)"/>
+<g class="c-teal"><rect x="40.0" y="358" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="378" text-anchor="middle" dominant-baseline="central">row fields</text><text class="ts" x="187.5" y="400" text-anchor="middle" dominant-baseline="central">Key Catalyst · Primary Risk</text><text class="ts" x="187.5" y="420" text-anchor="middle" dominant-baseline="central">Insider (news) · Bulk Deal · Reg Flag</text></g>
+<g class="c-blue"><rect x="345.0" y="358" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="378" text-anchor="middle" dominant-baseline="central">insider BUY with evidence</text><text class="ts" x="492.5" y="400" text-anchor="middle" dominant-baseline="central">may raise insider_buy_alert</text><text class="ts" x="492.5" y="420" text-anchor="middle" dominant-baseline="central">NO → YES, never lowers SAST</text></g>
+<line x1="340" y1="438" x2="340" y2="450" class="arr" marker-end="url(#arrH0)"/>
+<g class="c-gray"><rect x="40.0" y="460" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="480" text-anchor="middle" dominant-baseline="central">switches</text><text class="ts" x="340" y="502" text-anchor="middle" dominant-baseline="central">NEWS_SENTIMENT_SHADOW=1 → log only · no credentials → skipped,</text><text class="ts" x="340" y="522" text-anchor="middle" dominant-baseline="central">the sentiment weight redistributes as before</text></g>
+</svg>
+</div>
+<div id="h1" class="panel">
+<svg viewBox="0 0 680 660" role="img" aria-label="diagram">
+<defs><marker id="arrH1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">AI analyst notes (Block H)</text>
+<text class="ts" x="340" y="48" text-anchor="middle">ai/ai_analyst.py · generated after the tracker (v17.14)</text>
+<g class="c-teal"><rect x="40.0" y="72" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">SCOPE</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">today's _get_gold() ∪ get_open_recommendations() — nothing else</text><text class="ts" x="340" y="134" text-anchor="middle" dominant-baseline="central">held stocks use their fully-enriched held-monitor row (v17.15)</text></g>
+<line x1="340" y1="152" x2="340" y2="164" class="arr" marker-end="url(#arrH1)"/>
+<g class="c-gray"><rect x="40.0" y="174" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="194" text-anchor="middle" dominant-baseline="central">per-day cache · downloads/ai_cache/</text><text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">key = date + sha1(symbol | score | label | entry | SL | target | horizon | format)</text><text class="ts" x="340" y="236" text-anchor="middle" dominant-baseline="central">hit → zero API calls · AI_CACHE=0 bypasses · actions/cache keeps it across runs</text></g>
+<line x1="340" y1="254" x2="340" y2="266" class="arr" marker-end="url(#arrH1)"/>
+<g class="c-pink"><rect x="40.0" y="276" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="296" text-anchor="middle" dominant-baseline="central">PROMPT · ~2 KB (v17.16)</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">SYSTEM ROLE + BLOCK H extracted from the master prompt + "write only Block H"</text></g>
+<line x1="340" y1="336" x2="340" y2="348" class="arr" marker-end="url(#arrH1)"/>
+<g class="c-pink"><rect x="40.0" y="358" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="378" text-anchor="middle" dominant-baseline="central">BATCHES of 4 · max_tokens 16,000</text><text class="ts" x="340" y="400" text-anchor="middle" dominant-baseline="central">reasoning model: hidden reasoning tokens count against the budget</text><text class="ts" x="340" y="420" text-anchor="middle" dominant-baseline="central">each note marked === CARD: SYMBOL === and mapped by symbol</text></g>
+<line x1="340" y1="438" x2="340" y2="450" class="arr" marker-end="url(#arrH1)"/>
+<g class="c-amber"><rect x="40.0" y="460" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="480" text-anchor="middle" dominant-baseline="central">missing note</text><text class="ts" x="136.65" y="502" text-anchor="middle" dominant-baseline="central">retried one stock</text><text class="ts" x="136.65" y="522" text-anchor="middle" dominant-baseline="central">at a time</text></g>
+<g class="c-amber"><rect x="243.3" y="460" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="480" text-anchor="middle" dominant-baseline="central">LLM error</text><text class="ts" x="339.95" y="502" text-anchor="middle" dominant-baseline="central">real cause raised</text><text class="ts" x="339.95" y="522" text-anchor="middle" dominant-baseline="central">(body · finish_reason)</text></g>
+<g class="c-amber"><rect x="446.7" y="460" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="480" text-anchor="middle" dominant-baseline="central">incomplete output</text><text class="ts" x="543.35" y="502" text-anchor="middle" dominant-baseline="central">never cached</text></g>
+<line x1="340" y1="540" x2="340" y2="552" class="arr" marker-end="url(#arrH1)"/>
+<g class="c-gray"><rect x="40.0" y="562" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="582" text-anchor="middle" dominant-baseline="central">WHERE THEY APPEAR</text><text class="ts" x="340" y="604" text-anchor="middle" dominant-baseline="central">Gold sheet Analysis Summary · Performance sheet AI Card</text><text class="ts" x="340" y="624" text-anchor="middle" dominant-baseline="central">not on the Full Dashboard (v17.18)</text></g>
+</svg>
+</div>
+<div id="h2" class="panel">
+<svg viewBox="0 0 680 536" role="img" aria-label="diagram">
+<defs><marker id="arrH2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">NSE pledge / promoter — weekly local snapshot</text>
+<text class="ts" x="340" y="48" text-anchor="middle">NSE answers a home IP, not GitHub's runners (v17.13.x)</text>
+<g class="c-blue"><rect x="40.0" y="72" width="295.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="92" text-anchor="middle" dominant-baseline="central">Owner's laptop · weekly</text><text class="ts" x="187.5" y="114" text-anchor="middle" dominant-baseline="central">Task Scheduler, Sunday</text><text class="ts" x="187.5" y="134" text-anchor="middle" dominant-baseline="central">+ catch-up if missed</text><text class="ts" x="187.5" y="154" text-anchor="middle" dominant-baseline="central">fetch_nse_now.bat = manual</text></g>
+<g class="c-teal"><rect x="345.0" y="72" width="295.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="92" text-anchor="middle" dominant-baseline="central">GitHub Actions · daily</text><text class="ts" x="492.5" y="114" text-anchor="middle" dominant-baseline="central">live NSE calls → empty</text><text class="ts" x="492.5" y="134" text-anchor="middle" dominant-baseline="central">loads the snapshot</text><text class="ts" x="492.5" y="154" text-anchor="middle" dominant-baseline="central">validates it</text></g>
+<line x1="340" y1="172" x2="340" y2="184" class="arr" marker-end="url(#arrH2)"/>
+<g class="c-blue"><rect x="40.0" y="194" width="295.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="214" text-anchor="middle" dominant-baseline="central">fetch_nse_local.py --push</text><text class="ts" x="187.5" y="236" text-anchor="middle" dominant-baseline="central">pledge: percSharesPledged</text><text class="ts" x="187.5" y="256" text-anchor="middle" dominant-baseline="central">comName → symbol (NIFTY 500)</text><text class="ts" x="187.5" y="276" text-anchor="middle" dominant-baseline="central">promoter: pr_and_prgrp</text></g>
+<g class="c-teal"><rect x="345.0" y="194" width="295.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="214" text-anchor="middle" dominant-baseline="central">nse_snapshot.load_snapshot()</text><text class="ts" x="492.5" y="236" text-anchor="middle" dominant-baseline="central">schema · records · fetched_at</text><text class="ts" x="492.5" y="256" text-anchor="middle" dominant-baseline="central">≤ 14 days old</text><text class="ts" x="492.5" y="276" text-anchor="middle" dominant-baseline="central">else ignored, one log line</text></g>
+<line x1="340" y1="294" x2="340" y2="306" class="arr" marker-end="url(#arrH2)"/>
+<g class="c-blue"><rect x="40.0" y="316" width="295.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="336" text-anchor="middle" dominant-baseline="central">git: commit → pull --rebase</text><text class="ts" x="187.5" y="358" text-anchor="middle" dominant-baseline="central">--autostash → push</text><text class="ts" x="187.5" y="378" text-anchor="middle" dominant-baseline="central">prompts disabled</text><text class="ts" x="187.5" y="398" text-anchor="middle" dominant-baseline="central">(never hangs a scheduled run)</text></g>
+<g class="c-teal"><rect x="345.0" y="316" width="295.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="336" text-anchor="middle" dominant-baseline="central">apply_snapshot()</text><text class="ts" x="492.5" y="358" text-anchor="middle" dominant-baseline="central">fills BLANK pledge / promoter</text><text class="ts" x="492.5" y="378" text-anchor="middle" dominant-baseline="central">never overwrites live data</text><text class="ts" x="492.5" y="398" text-anchor="middle" dominant-baseline="central">row 2: fetched at … IST (Nd old)</text></g>
+<line x1="340" y1="416" x2="340" y2="428" class="arr" marker-end="url(#arrH2)"/>
+<g class="c-gray"><rect x="40.0" y="438" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="458" text-anchor="middle" dominant-baseline="central">not available free</text><text class="ts" x="340" y="480" text-anchor="middle" dominant-baseline="central">DII % and DII QoQ — NSE exposes promoter vs public only → shown as —</text><text class="ts" x="340" y="500" text-anchor="middle" dominant-baseline="central">Pledge Direction needs ~90 days of stored pledge (≈ mid-Dec 2026)</text></g>
+</svg>
+</div>
+</div>
+
+<h2 id="part8">Part 8 — Outputs &amp; operations <span class="new">v17.19</span></h2>
+<p>What arrives in the inbox, how the workflow runs, and what a healthy run log looks like.</p>
+<div class="nav"><span class="label">View:</span>
+<button onclick="showP('i',0)" class="active" data-grp="i">Workbook</button>
+<button onclick="showP('i',1)" data-grp="i">Workflow</button>
+<button onclick="showP('i',2)" data-grp="i">Healthy run log</button>
+</div>
+<div class="section">
+<div id="i0" class="panel active">
+<table class="tbl" aria-label="Workbook sheets">
+<thead><tr><th>#</th><th>Sheet</th><th>Contents</th></tr></thead><tbody>
+<tr><td>1</td><td>📊 Full Dashboard</td><td>Top 100 × 126 columns in 18 bands. Row 2: header-colour legend and <em>Pledge/Promoter data as of … IST (Nd old)</em>. Red header = no free source and &lt; 30 % populated.</td></tr>
+<tr><td>2</td><td>⭐ Gold – Early Movers</td><td>41 columns incl. the AI Analysis Summary; row 2 lists the 15 criteria and any bearish-regime notice; resilience strip below.</td></tr>
+<tr><td>3</td><td>📊 Trade Summary</td><td>Entry range · SL · Target · R:R · horizon · risk for Gold picks.</td></tr>
+<tr><td>4</td><td>🔔 Alert Log</td><td>Score vs yesterday: ⬇ SCORE DEGRADED only on a real ≥ 3-point drop; ⚠ LOW SCORE for weak-but-stable; action label per row.</td></tr>
+<tr><td>5</td><td>📱 Delivery Preview</td><td>WhatsApp / email text.</td></tr>
+<tr><td>6</td><td>🎯 Performance</td><td>11 sections — see Part 6.</td></tr>
+<tr><td>7</td><td>📖 Glossary</td><td>~196 column definitions.</td></tr>
+<tr><td>8</td><td>📖 Tooltip Reference</td><td>All 210 header tooltips (the same text appears on hover with an ⓘ cue).</td></tr>
+</tbody></table>
+<table class="tbl" aria-label="Full Dashboard bands"><thead><tr><th>Full Dashboard band</th><th>Columns</th></tr></thead>
+<tbody><tr><td>IDENTITY</td><td class='num'>7</td></tr><tr><td>SCORES</td><td class='num'>5</td></tr><tr><td>PRICE &amp; MARKET</td><td class='num'>7</td></tr><tr><td>WEEKLY CHANGE %</td><td class='num'>4</td></tr><tr><td>FAIR VALUE</td><td class='num'>12</td></tr><tr><td>VALUATION</td><td class='num'>7</td></tr><tr><td>PROFITABILITY</td><td class='num'>10</td></tr><tr><td>GROWTH</td><td class='num'>10</td></tr><tr><td>FIN HEALTH</td><td class='num'>10</td></tr><tr><td>CAP ALLOC</td><td class='num'>3</td></tr><tr><td>SHAREHOLDING</td><td class='num'>9</td></tr><tr><td>QUALITY SCORES</td><td class='num'>4</td></tr><tr><td>PIPELINE / OB</td><td class='num'>5</td></tr><tr><td>EARLY DETECTION</td><td class='num'>3</td></tr><tr><td>TECHNICAL</td><td class='num'>14</td></tr><tr><td>BALANCE SHEET</td><td class='num'>2</td></tr><tr><td>TRADE PLAN</td><td class='num'>7</td></tr><tr><td>NEWS &amp; RISK</td><td class='num'>7</td></tr><tr><th>Total</th><th class='num'>126</th></tr></tbody></table>
+</div>
+<div id="i1" class="panel">
+<svg viewBox="0 0 680 832" role="img" aria-label="diagram">
+<defs><marker id="arrI1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<text class="th" x="340" y="28" text-anchor="middle">market_run.yml · 12 steps</text>
+<text class="ts" x="340" y="48" text-anchor="middle">cron 0 23 * * 1-5 + manual dispatch</text>
+<g class="c-gray"><rect x="40.0" y="72" width="600.0" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">1–3 · checkout · Python 3.11 · pip install -r requirements.txt</text></g>
+<line x1="340" y1="112" x2="340" y2="124" class="arr" marker-end="url(#arrI1)"/>
+<g class="c-teal"><rect x="40.0" y="134" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="154" text-anchor="middle" dominant-baseline="central">4 · restore AI-card cache (actions/cache)</text><text class="ts" x="340" y="176" text-anchor="middle" dominant-baseline="central">key ai-cache-&lt;run_id&gt; · restore-keys ai-cache-</text></g>
+<line x1="340" y1="194" x2="340" y2="206" class="arr" marker-end="url(#arrI1)"/>
+<g class="c-teal"><rect x="40.0" y="216" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="236" text-anchor="middle" dominant-baseline="central">5 · restore market_data.db artifact</text><text class="ts" x="340" y="258" text-anchor="middle" dominant-baseline="central">≈ 650 MB · 30-day retention · missing → fresh DB</text></g>
+<line x1="340" y1="276" x2="340" y2="288" class="arr" marker-end="url(#arrI1)"/>
+<g class="c-gray"><rect x="40.0" y="298" width="600.0" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="318" text-anchor="middle" dominant-baseline="central">6 · show DB size</text></g>
+<line x1="340" y1="338" x2="340" y2="350" class="arr" marker-end="url(#arrI1)"/>
+<g class="c-blue"><rect x="40.0" y="360" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="380" text-anchor="middle" dominant-baseline="central">7 · auto-backfill</text><text class="ts" x="340" y="402" text-anchor="middle" dominant-baseline="central">backfill_history.py 400 when daily_prices &lt; 50,000 rows</text></g>
+<line x1="340" y1="420" x2="340" y2="432" class="arr" marker-end="url(#arrI1)"/>
+<g class="c-pink"><rect x="40.0" y="442" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="462" text-anchor="middle" dominant-baseline="central">8 · performance reset — manual only</text><text class="ts" x="340" y="484" text-anchor="middle" dominant-baseline="central">input RESET-PERFORMANCE · wipes 3 outcome tables · irreversible</text></g>
+<line x1="340" y1="502" x2="340" y2="514" class="arr" marker-end="url(#arrI1)"/>
+<g class="c-amber"><rect x="40.0" y="524" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="544" text-anchor="middle" dominant-baseline="central">9 · python master_funnel.py</text><text class="ts" x="340" y="566" text-anchor="middle" dominant-baseline="central">secrets: OPENAI_* · SENDER_* · USER_EMAIL_ID · TWILIO_* (optional)</text><text class="ts" x="340" y="586" text-anchor="middle" dominant-baseline="central">variables: NEWS_SENTIMENT_SHADOW · AI_CACHE (optional)</text></g>
+<line x1="340" y1="604" x2="340" y2="616" class="arr" marker-end="url(#arrI1)"/>
+<g class="c-gray"><rect x="40.0" y="626" width="600.0" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="646" text-anchor="middle" dominant-baseline="central">10 · delete the previous DB artifact (REST API)</text></g>
+<line x1="340" y1="666" x2="340" y2="678" class="arr" marker-end="url(#arrI1)"/>
+<g class="c-teal"><rect x="40.0" y="688" width="600.0" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="708" text-anchor="middle" dominant-baseline="central">11 · upload market-data-db (overwrite, 30 days)</text></g>
+<line x1="340" y1="728" x2="340" y2="740" class="arr" marker-end="url(#arrI1)"/>
+<g class="c-gray"><rect x="40.0" y="750" width="600.0" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="770" text-anchor="middle" dominant-baseline="central">12 · show DB rows / date range</text></g>
+<text class="ts" x="340" y="808" text-anchor="middle">keep_alive.yml · Wed + Sun 10:00 UTC · always commits (60-day inactivity clock) · fine-grained KEEPALIVE_PAT</text>
+</svg>
+</div>
+<div id="i2" class="panel">
+<pre class="log">✅ GATE APPROVED: Processing data for …
+✅ Gate passed. Processing trading day: …
+✅ C5 PASS: NSE OK — N rows …
+   🔗 Allowlist recorder: N dual-listed seen on both exchanges (ISIN) · k new · M stored
+   Universe: 5234 → Stage1: 1993 → Stage2: 1696 → Stage3: 100
+   ✅ NSE snapshot: N pledge + M shareholding records, Xd old (≤ 14d) — used as fallback for blanks
+   📌 NSE snapshot applied to blanks: pledge N · DII 0 · FII N · promoter N
+   📰 News sentiment: LIVE (feeds score) · model=… · N stocks
+   📰 News sentiment: k/N stocks got an informed signal
+   📰   not informed: headlines neutral ×… · …
+   📊 Market regime: BULLISH (Nifty X vs 20d-SMA Y, gap +Z%, tolerance -2.0%)
+   📈 v14.1 outcome tracking: logged N Gold pick(s) …
+🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...
+   💾 AI cards served from today's cache (…)        ← only on a same-day re-run</pre>
+<div class="callout">Zero Gold picks is normal on BEARISH days and on weak tapes — 15 strict gates. A snapshot older than 7 days means the Sunday fetch was missed: double-click <code>fetch_nse_now.bat</code>.</div>
+</div>
+</div>
+
+<h2 id="notes">Implementation notes &amp; code references</h2>
+<h3>Where each part lives</h3>
+<table class="tbl"><thead><tr><th>Area</th><th>Code</th></tr></thead><tbody>
+<tr><td>Orchestration, Sections 0–13</td><td><code>master_funnel.py::run_master_pipeline</code></td></tr>
+<tr><td>Gate check · data integrity</td><td><code>ingestion/orchestrator.py::gate_check</code> · <code>database/data_bridge.py::check_data_integrity</code></td></tr>
+<tr><td>Reconcile · dual-listed allowlist</td><td><code>ingestion/reconciler.py::reconcile_exchanges</code> · <code>ingestion/allowlist_maintainer.py::record_dual_listed_observations</code></td></tr>
+<tr><td>Stage 1 · Stage 2 · Stage 3</td><td><code>screening/pre_screener.py::stage_1_filter</code>, <code>::stage_2_fundamental_scorer</code> · <code>screening/priority_ranker.py::get_top_100_candidates</code></td></tr>
+<tr><td>Sub-scores · composite · verdict</td><td><code>master_funnel.py</code> Section 6 loop · <code>analysis/scoring_engine.py::calculate_composite_score</code>, <code>_get_verdict_with_confidence</code>, <code>calculate_storm_score</code>, <code>_assign_quick_pick</code></td></tr>
+<tr><td>Fair value · forensics</td><td><code>analysis/fair_value_engine.py</code> · <code>analysis/forensics_engine.py</code></td></tr>
+<tr><td>NSE snapshot</td><td><code>fetch_nse_local.py</code> (laptop) · <code>ingestion/nse_snapshot.py::load_snapshot</code>, <code>apply_snapshot</code></td></tr>
+<tr><td>News engine</td><td><code>analysis/news_sentiment.py::enrich_stocks_with_news</code></td></tr>
+<tr><td>Stop-loss · Target</td><td><code>master_funnel.py::_compute_sl_t_v14_6</code></td></tr>
+<tr><td>Position size</td><td><code>risk/correlation_aware_sizing.py::compute_suggested_allocation</code></td></tr>
+<tr><td>Regime gate · resilience</td><td><code>master_funnel.py</code> Section 9/10 · <code>_refresh_resilience_watch</code> · <code>data_bridge.get_nifty_20d_sma</code></td></tr>
+<tr><td>Gold filter</td><td><code>reporting/excel_generator.py::ExcelGeneratorV6._get_gold</code></td></tr>
+<tr><td>Outcome tracking</td><td><code>track_outcomes.py::main</code>, <code>_walk_forward</code>, <code>_compute_shadow_stop</code> · <code>data_bridge</code> outcome helpers</td></tr>
+<tr><td>AI notes</td><td><code>ai/ai_analyst.py::get_ai_analysis</code> → <code>_generate_ai_analysis</code> · <code>_load_card_system_prompt</code></td></tr>
+<tr><td>Workbook · tooltips</td><td><code>reporting/excel_generator.py</code> (8 sheets) · <code>reporting/tooltip_formatter.py::TIPS</code></td></tr>
+<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 96 guards, all green at v17.19</td></tr>
+</tbody></table>
 
 <h3>Key constants &amp; thresholds</h3>
 <p style="margin-top:0">
-<code>AVOID_BELOW = 38</code> · universal AVOID floor (scoring_engine.py)<br>
-<code>CAP_THRESHOLDS</code> · {LARGE:(60,50), MID:(63,53), SMALL:(66,56), MICRO:(70,60)} · (BUY_min, WATCHLIST_min)<br>
-<code>mos_gate</code> · −20 if tech_confirmed (score≥70 + supertrend BUY + sector STAGE 2) else −10<br>
-<code>forensic_adj</code> cap · max(−10, min(+8, sum_of_factors))<br>
-<code>final_score</code> clamp · max(0, min(100, score)) after forensic adjustment<br>
-<code>storm_label</code> · ≥8 = STORM SAFE · ≥5 = MODERATE · else HIGH RISK<br>
-<code>MAX_OVERRIDES = 20</code> · cap on Stage 3 override forced inclusions<br>
-<code>cap-mix guarantee</code> · LARGE ≥ 20, MID ≥ 15, SMALL+MICRO ≤ 65 (priority_ranker.py L215)<br>
-<code>v10.16 display thresholds</code> · PE/PB/PS/EV/EBITDA = 500 · PEG = 50 (backfill_history.py)<br>
-<code>fundamental_score base</code> · 45 + (stage2_score / 30) × 10 → [45, 56.67] before bucket bumps
+<code>AVOID_BELOW = 38</code> · <code>CAP_THRESHOLDS</code> LARGE (60,50) · MID (63,53) · SMALL (66,56) · MICRO (70,60)<br>
+<code>mos_gate</code> −20 if tech-confirmed (score ≥ 70 + Supertrend BUY + Stage 2) else −10 · <code>forensic_adj</code> ∈ [−10, +8]<br>
+<code>_REGIME_TOLERANCE_PCT = 2.0</code> · Gold: score ≥ 70 · MoS 15–100 · storm ≥ 5 · RSI ≤ 70 · pledge ≤ 10 · Altman ≥ 1.8 · IntCov ≥ 1.5 · ROE ≥ 10 · PEG ≤ 8 · 3d ROC ≥ 0<br>
+SL: horizon mult 2.5 / 3.5 / 5.0 · bounds 4.5–15 % · SHORT ≤ 7 % · regime 1.20 / 0.80 → ×1.10 / ×0.90 · Target multipliers 1.3 / 1.5 / 1.8 · ceiling 50 %<br>
+Trailing: ≥ 25 % → +12 · ≥ 20 % → +9 · ≥ 15 % → +5 · ≥ 12 % and 10 days → break-even · expiry 30 / 90 / 270 days<br>
+Beneish anti-trigger M &gt; −1.78 · news confidence floor 0.6 · snapshot ≤ 14 days · DB window 400 days · MAX_OVERRIDES 20 · cap mix LARGE ≥ 20, MID ≥ 15, SMALL+MICRO ≤ 65<br>
+<code>final_score</code> clamped to [0, 100] after the forensic adjustment · <code>storm_label</code> ≥ 8 STORM SAFE · ≥ 5 MODERATE · else HIGH RISK · <code>fundamental_score</code> base 45 + (stage2_score / 30) × 10 before the bucket bumps<br>
+Display thresholds (v10.16 Option B): PE / PB / PS / EV-EBITDA above 500 and PEG above 50 show “—” (the DB keeps a clamped number for scoring hygiene)
 </p>
 
-<h3>v10.16 Option B summary</h3>
-<p style="margin-top:0">
-Five valuation fields (PE, PB, PS, EV/EBITDA, PEG) display <code>"—"</code> when raw values exceed thresholds (500 for PE/PB/PS/EV; 50 for PEG). The DB stores numeric clamps for scoring hygiene, but the display layer converts to honest <code>"—"</code>. The fundamental_score has new neutrality logic: <code>if pe_num ≥ 500: pass</code> (no penalty), preventing the spurious "expensive" tag on stocks with near-zero EPS. Defensive coerce helpers added to <code>v7_analysis_engine</code>, <code>bs_engine</code>, and <code>excel_generator</code> to handle <code>"—"</code> safely. 198/198 integration tests pass.
-</p>
+<h3>Stage progression — column lifecycle</h3>
+<table class="tbl">
+<tr><th>After</th><th>Columns added</th></tr>
+<tr><td>Stage 1</td><td>bhav columns only — symbol, close, prev_close, volume, turnover, delivery_pct, sc_group, exchange_tag</td></tr>
+<tr><td>Stage 2</td><td>+ stage2_score (0–35), + cap_category (turnover proxy until yfinance enrichment)</td></tr>
+<tr><td>Stage 3</td><td>+ priority_score, + override flags O1–O5, + days_since_analysis, + last_claude_score, + consecutive_avoid_quarters / consecutive_recovery_quarters (v11.0.2)</td></tr>
+<tr><td>yfinance / DB enrichment</td><td>+ fundamental fields (pe, pb, roe, de_ratio, … — 86 at the v16.5 count), technicals, forensic inputs</td></tr>
+<tr><td>Section 5A.3b – 5A.6</td><td>blank pledge / promoter filled from the NSE snapshot · QoQ deltas · news_sentiment, news_confidence, news_catalyst, news_insider, news_bulk_deal and their evidence fields</td></tr>
+<tr><td>Section 6</td><td>+ fundamental / technical / early-entry / safety / sentiment scores, composite_score, verdict, label, storm_score, forensic_adj, turnaround_candidate · horizon, risk_level · stop_loss, entry_range, t1 (the Target), dormant t2 / t3, regime_at_rec, atr_at_rec, original_stop_loss, suggested_alloc_pct, alloc_rationale</td></tr>
+</table>
 
-<h3>v10.13 prior-analysis enrichment (enables O4 + O5)</h3>
-<p style="margin-top:0">
-Stage 3 reads <code>latest_analysis_results</code> table at startup via <code>get_prior_analysis_map()</code>. This populates <code>last_claude_score</code> and <code>days_since_analysis</code> columns, activating O4/O5 overrides. As of v11.0.2 it also surfaces <code>consecutive_avoid_quarters</code> (drives chronic-AVOID demotion) and <code>consecutive_recovery_quarters</code> (drives turnaround flag). On the first-ever pipeline run the table is empty, so all overrides + streak features are no-ops — behavior matches pre-v10.13 (O1/O2/O3 only, no streaks).
-</p>
-
-<h3>Stage progression — exact column lifecycle</h3>
-<p style="margin-top:0">
-<strong>After Stage 1:</strong> bhav columns only — symbol, close, prev_close, volume, turnover, delivery_pct, sc_group, exchange_tag<br>
-<strong>After Stage 2:</strong> + stage2_score (0-35), + cap_category (proxy from turnover)<br>
-<strong>After Stage 3:</strong> + priority_score (0-100), + override flags (o1-o5), + days_since_analysis, + last_claude_score, + consecutive_avoid_quarters (v11.0.2), + consecutive_recovery_quarters (v11.0.2)<br>
-<strong>After yfinance enrichment:</strong> + 86 fundamental fields (pe, pb, roe, de_ratio, etc.)<br>
-<strong>After Section 6:</strong> + fundamental_score, + safety_score, + sentiment_score, + composite_score, + verdict, + label, + storm_score, + forensic_adj, + turnaround_candidate (v11.0.2)
-</p>
-
-<h3>Quick-pick labels are SEPARATE from verdict</h3>
-<p style="margin-top:0">
-<code>stock["verdict"]</code> (BUY/WATCHLIST/NEUTRAL/OVERVALUED/AVOID) and <code>stock["label"]</code> (DEEP VALUE / EARLY MOVER / etc.) are independent outputs assigned by different functions. The verdict drives Excel cell color; the label powers Gold-sheet sorting.
-</p>
-
+<h3>Quick-pick labels are separate from the verdict</h3>
+<p style="margin-top:0"><code>stock["verdict"]</code> (BUY / WATCHLIST / NEUTRAL / OVERVALUED / AVOID) and <code>stock["label"]</code> (DEEP VALUE / EARLY MOVER / …) come from different functions. The verdict drives colour and the Gold filter; the label is an archetype used for sorting and for the Performance breakdowns.</p>
 <div class="footer">
-NSE/BSE Stock Analyser · v16.5 · Pipeline reference document<br>
-This document covers the daily scoring pipeline only (Stage 1 eligibility → Composite Score → Verdict). For ongoing post-pipeline enhancements see CLAUDE.md and the per-release CHANGES.md files. Key post-v15.0 layers: <strong>v15.5</strong> institutional risk-parity sizing (1% risk budget per position, cap-category multipliers, 30% sector cap, MAX_ALLOCATION clamp); <strong>v15.7</strong> Performance-sheet alloc columns; <strong>v15.8 / v15.8.1</strong> ETF filter with AMC-parent carve-out (hotfix for EPS/mcap parsing); <strong>v15.9</strong> tooltip context-correctness for shared OPEN/CLOSED headers; <strong>v16.0</strong> institutional risk-adjusted metrics (Sharpe / Sortino / Calmar), Max DD Duration tracking, survivorship-bias audit; <strong>v16.2</strong> Gold-tier Quality Floor gate (ROE ≥ 10% and PEG ≤ 8) — Gold filter now has 13 must-pass criteria, up from 11; <strong>v16.3</strong> Excel column-width fixes across Performance / Gold / Full Dashboard sheets to eliminate header-text overlap; <strong>v16.4</strong> Beneish M threshold recalibration from -2.22 → -1.78 (Beneish 1999 "likely manipulator" cutoff, eliminates false-positive Gold exclusions on stocks like MAYURUNIQ / DRREDDY); <strong>v16.5</strong> trailing-stop recalibration — break-even activation raised +5% → +10% peak gain (eliminates KOVAI-class false break-even closes), plus new TRAIL_SL outcome type that separates trailing-stop risk-control exits from genuine SL_HIT losses so the SL-rate statistic is no longer polluted.
+NSE/BSE Stock Analyser · Pipeline reference · v17.19 (8 October 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
+Parts 1–4 are the v16.5 scoring deep-dives, re-checked against the code — the screening and scoring modules are unchanged since v16.4; only funnel counts and output facts were updated. Parts 0 and 5–8 are new and describe v17.0–v17.19: market-regime gate and 15-condition Gold filter (v17.0, v17.5.1), single regime-aware Target (v17.8.1), live trailing tiers (v17.0), continuation audit (v17.3), shadow stop (v17.7), news engine (v17.9/v17.11), company-LLM analyst notes with per-day cache (v17.10–v17.16), weekly NSE snapshot (v17.13), allowlist write-time guards (v17.17), Full Dashboard without the AI column (v17.18) and the Trailing-label fix (v17.19).
 </div>
-
 </div>
-
 <script>
-function showA(n) {
-  for (let i = 0; i < 8; i++) {
-    const el = document.getElementById('a' + i);
+function _show(prefix, n, count) {
+  for (let i = 0; i < count; i++) {
+    const el = document.getElementById(prefix + i);
     if (el) el.classList.toggle('active', i === n);
   }
-  document.querySelectorAll('button[data-grp="a"]').forEach((b, i) => b.classList.toggle('active', i === n));
+  document.querySelectorAll('button[data-grp="' + prefix + '"]').forEach((b, i) => b.classList.toggle('active', i === n));
 }
-function showB(n) {
-  for (let i = 0; i < 7; i++) {
-    const el = document.getElementById('b' + i);
-    if (el) el.classList.toggle('active', i === n);
-  }
-  document.querySelectorAll('button[data-grp="b"]').forEach((b, i) => b.classList.toggle('active', i === n));
-}
-function showC(n) {
-  for (let i = 0; i < 5; i++) {
-    const el = document.getElementById('c' + i);
-    if (el) el.classList.toggle('active', i === n);
-  }
-  document.querySelectorAll('button[data-grp="c"]').forEach((b, i) => b.classList.toggle('active', i === n));
-}
-function showD(n) {
-  for (let i = 0; i < 6; i++) {
-    const el = document.getElementById('d' + i);
-    if (el) el.classList.toggle('active', i === n);
-  }
-  document.querySelectorAll('button[data-grp="d"]').forEach((b, i) => b.classList.toggle('active', i === n));
-}
+function showA(n) { _show('a', n, 8); }
+function showB(n) { _show('b', n, 7); }
+function showC(n) { _show('c', n, 5); }
+function showD(n) { _show('d', n, 6); }
+function showP(g, n) { _show(g, n, 10); }
 </script>
-
 </body>
 </html>

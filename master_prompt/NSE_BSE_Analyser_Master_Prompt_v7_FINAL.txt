@@ -16,6 +16,19 @@
 #   All previous v6.0 features retained.                 #
 ##########################################################
 
+STATUS NOTE (Oct 2026, v17.19) — read before relying on this file:
+  Only two parts of this file are used at runtime: the analyst
+  role section that follows this note and the Block H (analysis
+  summary) section; ai/ai_analyst.py extracts exactly those for
+  the AI notes (see 0D). Everything else is the original v7.0
+  design spec, kept for reference. Where the code differs, the
+  code, pipeline_reference.html and CLAUDE.md are authoritative:
+  the run is a GitHub Actions cron at 04:30 IST (not a 19:00
+  gate); daily funnel counts are ~5,200 → ~1,900 → ~1,600 → 100
+  (not 5000→500→200); the workbook has 8 sheets; the LLM is the
+  company OpenAI-compatible endpoint and writes notes only for
+  Gold picks and open positions.
+
 ════════════════════════════════════════════════════════
 SYSTEM ROLE
 ════════════════════════════════════════════════════════
@@ -1388,7 +1401,8 @@ PURPOSE:
 
   19:20 IST  Stage 1 Filter — Python screener runs
              Volume · Liquidity · Price quality filters
-             Output: ~400–600 candidate symbols
+             Output: ~400–600 candidate symbols (design; ~1,900 in
+             production — see the Section 0 implementation note)
 
   19:25 IST  Stage 2 Fundamental Scorer — Python
              Reads stored fundamental data from DB
@@ -1620,11 +1634,23 @@ doesn't receive the usual 20:30 report.
 SECTION 0 — PRE-SCREENING ENGINE (Filter & Drill-Down)
 ════════════════════════════════════════════════════════
 
+IMPLEMENTATION NOTE (Oct 2026, v17.19):
+  0A–0C below are the original v7.0 design. The code differs in
+  detail — Stage 1 = V0–V9 hard drops (ETF/fund groups, ₹10
+  price floor, delivery ≥ 40%, circuit, suspension, SME
+  turnover); Stage 2 = bhav-only quality score /35 (gate ≥ 15);
+  Stage 3 = priority /100 + overrides O1–O5 + cap mix. Typical
+  daily counts: ~5,200 → ~1,900 → ~1,600 → 100. The
+  code-accurate description is in pipeline_reference.html and
+  scoring_logic_3Stagefunnel_explained.md.
+
 PURPOSE:
   Reduce the 5,000+ NSE+BSE universe to exactly 100 stocks
-  for Gemini expert analysis each day. All three stages run
-  in Python — zero API cost. Only the final 100 stocks
-  consume Gemini tokens via the Google Gemini API.
+  for full analysis each day. All three stages run in
+  Python — zero API cost. LLM calls (company OpenAI-compatible
+  endpoint) are made later and only where needed: headline
+  sentiment for the analysed stocks (Section 5A.6) and Block H
+  notes for Gold picks + open positions (see 0D).
 
   This runs AFTER gate_check passes (Section 12B) and AFTER
   Bhav Copy data is loaded into the DB (19:15–19:30 IST).
@@ -1768,39 +1794,42 @@ PRIORITISED ORDERING WITHIN 100:
   5. Ranked by Priority Score (remaining slots)
   6. Override O5: Expiry fills last
 
-OUTPUT: Ordered list of 100 symbols → Gemini API queue.
+OUTPUT: Ordered list of 100 symbols → full analysis (Sections 3–6).
   Also output: stage1_count, stage2_count, overrides_applied
   Store in run_log table for monitoring.
 
 ────────────────────────────────────────────────────────
-0D — GEMINI ANALYSIS BATCH EXECUTION
+0D — AI NOTE (BLOCK H) GENERATION — AS IMPLEMENTED (v17.18)
 ────────────────────────────────────────────────────────
 
-After Stage 3 outputs the 100 symbols:
+All scoring, verdicts, fair values and trade levels are computed
+in Python. The LLM only writes the Block H analysis note, and
+only for: today's Gold picks + every currently-open position.
 
-BATCH STRATEGY:
-  Process stocks in batches of 10–15 per API call
-  to stay within context window limits.
-  Each batch call includes:
-    - The full master prompt v7.0 as system prompt
-    - Today's Bhav Copy data for those 10–15 stocks
-    - Historical price data (52W high/low, weekly changes)
-    - Stage 2 fundamental scores as context
-    - Any new corporate announcements from Section 2
-    - Instruction: "Run full Section 3–8 analysis for
-      each stock in this batch. Output Section 8 card
-      for each. Store Analysis Summary in last column."
+SYSTEM PROMPT:
+  Not this whole file. ai/ai_analyst.py extracts two sections —
+  SYSTEM ROLE and BLOCK H — ANALYSIS SUMMARY — and adds one
+  instruction to write only Block H notes from the data given.
+  Do not rename those two headings without updating
+  _load_card_system_prompt().
 
-TIMEOUT HANDLING:
-  If Gemini API call takes > 120 seconds → retry once.
-  If retry fails → skip that batch → log skipped symbols.
-  Skipped symbols retain last known score in DB.
+BATCHES:
+  4 stocks per call, each delimited "=== CARD: SYMBOL ===" so
+  notes are mapped back by symbol, never by position. A stock
+  whose note is missing is retried on its own. A failed or
+  partial reply is never cached.
 
-RATE LIMITING:
-  Add 2-second delay between batch calls to avoid
-  Gemini API rate limits.
-  Estimated total time: 100 stocks ÷ 12 per batch = 9 calls
-  × (20–30 sec per call + 2 sec delay) ≈ 25–35 minutes.
+LIMITS:
+  max_tokens 16000 by default (LLM_MAX_TOKENS) — reasoning
+  models spend hidden tokens before writing. Optional
+  LLM_REASONING_EFFORT is passed through when set.
+  Timeout 180 s per call.
+
+CACHE:
+  One file per day in downloads/ai_cache/, keyed on date + a
+  hash of symbol, score, label, entry, SL, target, horizon and
+  card format. Same-day re-runs make no API calls.
+  AI_CACHE=0 bypasses it.
 
 RESULTS STORAGE:
   Write each stock's analysis results to DB:
@@ -1815,8 +1844,8 @@ RESULTS STORAGE:
 After each pipeline run, log to run_stats table:
   run_date            DATE
   total_universe      INT    (all stocks in DB)
-  stage1_passed       INT    (~400–600)
-  stage2_passed       INT    (~150–200)
+  stage1_passed       INT    (~1,900 in production; design ~400–600)
+  stage2_passed       INT    (~1,600 in production; design ~150–200)
   stage3_selected     INT    (always ≤ 100)
   watchlist_overrides INT
   announcement_overrides INT
@@ -1840,7 +1869,8 @@ These stats appear in the email body as:
 #
 # HOW TO DEPLOY:
 #   Paste this entire file as the SYSTEM PROMPT in your
-#   AI agent (Claude / GPT-4 / Gemini).
+#   AI agent (Claude / GPT-4 / Gemini). In the automated
+#   pipeline only SYSTEM ROLE + BLOCK H are sent (see 0D).
 #
 # REQUIRED TOOLS:
 #   1.  NSE Bhav Copy downloader       (Section 1A)

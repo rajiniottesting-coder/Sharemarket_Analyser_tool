@@ -8,7 +8,7 @@ from database.data_bridge import get_symbol_history
 
 class StockChatAI:
     def __init__(self):
-        print("🚀 Initializing Gemini V7 Stock Engine...")
+        print("🚀 Initializing V7 Stock Engine...")
         # Load existing analysis results to avoid re-running the 16-hour scan for every query
         try:
             self.context_data = pd.read_sql("SELECT * FROM latest_analysis_results", "sqlite:///market_data.db")
@@ -41,7 +41,7 @@ class StockChatAI:
                     symbol = user_input.split()[-1].upper()
                     response = self._run_on_demand_analysis(symbol)
 
-                print(f"\nGemini > {response}\n")
+                print(f"\nAnalyst > {response}\n")
 
             except KeyboardInterrupt:
                 break

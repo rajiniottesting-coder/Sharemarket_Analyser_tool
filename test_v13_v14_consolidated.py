@@ -34,9 +34,12 @@ import pandas as pd
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
-# Also add /home/claude/proj for development environment
-if os.path.isdir('/home/claude/proj'):
-    sys.path.insert(0, '/home/claude/proj')
+# v17.19: no hardcoded dev-sandbox path any more — every test reads
+# sources relative to this file, so the suite behaves the same anywhere
+# (the old absolute paths failed with FileNotFoundError on any other machine
+# and hid a real G9 failure behind "expected" path errors).
+def _src_path(rel):
+    return os.path.join(_HERE, *rel.split('/'))
 
 # Project imports needed by tests at function level — surfaced here so all
 # tests can use them without re-importing in each function body.
@@ -285,7 +288,6 @@ def test_fix2_normal_stocks_unchanged():
 def test_fix3_quick_pick_recomputed_after_ee_bonus():
     """When EE crosses a threshold due to the +8 convergence bonus,
     Quick Pick must be recomputed."""
-    sys.path.insert(0, '/home/claude/proj')
     from analysis.scoring_engine import ScoringEngine
     se = ScoringEngine()
 
@@ -532,7 +534,7 @@ def test_fix2_internal_dict_untouched():
     it numeric.
     """
     # Read the actual master_funnel patch — verify it doesn't write "—" to mos_pct
-    with open('/home/claude/proj/master_funnel.py') as f:
+    with open(_src_path('master_funnel.py'), encoding='utf-8') as f:
         content = f.read()
     
     # The MoS label block should NOT have been changed
@@ -542,7 +544,7 @@ def test_fix2_internal_dict_untouched():
         "Patch wrongly writes '—' to internal dict — would break DB / sort"
     
     # The Excel patch should be display-only
-    with open('/home/claude/proj/reporting/excel_generator.py') as f:
+    with open(_src_path('reporting/excel_generator.py'), encoding='utf-8') as f:
         ex_content = f.read()
     assert '_cfv_missing = (_cfv_for_display in (0, 0.0, None, "", "—"))' in ex_content
     assert 'val = "—"' in ex_content
@@ -1010,7 +1012,7 @@ def test_fix5_exit_alerts_dotted_verdict():
 
 def test_fix6_tooltip_explains_three_factor():
     """Tooltip should explain WHY DEEP VALUE EARLY MOVER uses 3 factors (combo + EE softening)."""
-    with open('/home/claude/proj/reporting/tooltip_formatter.py') as f:
+    with open(_src_path('reporting/tooltip_formatter.py'), encoding='utf-8') as f:
         content = f.read()
     
     # Tooltip should mention the combo nature
@@ -1026,7 +1028,7 @@ def test_fix6_tooltip_explains_three_factor():
 
 def test_fix6_glossary_explains_three_factor():
     """Glossary entry for Quick Pick should also explain the asymmetry."""
-    with open('/home/claude/proj/reporting/excel_generator.py') as f:
+    with open(_src_path('reporting/excel_generator.py'), encoding='utf-8') as f:
         content = f.read()
     # Find Quick Pick glossary entry
     qp_idx = content.find('"SCORES","Quick Pick"')
@@ -1963,7 +1965,7 @@ def test_g8_master_funnel_reads_horizon_key_not_time_horizon():
     empty for all production rows. v14.1 reads 'horizon' and passes it
     as 'time_horizon' to the helper (which is the column name)."""
     # Verify by inspecting the master_funnel source
-    with open('/home/claude/proj/master_funnel.py') as f:
+    with open(_src_path('master_funnel.py'), encoding='utf-8') as f:
         content = f.read()
     # The v14.1 hook should read 'horizon' from the stock dict.
     # The literal pattern '_grow.get("horizon"' must appear.
@@ -5738,6 +5740,82 @@ def test_g42_v17_18_no_ai_summary_on_full_dashboard():
     return ("\u2705 v17.18: AI summary column removed from Full Dashboard (kept on Gold "
             "sheet); band spans consistent; text columns aligned by name")
 
+def test_g43_v17_19_trailing_label_matches_tracker_tiers():
+    """v17.19: the Performance sheet 'Trailing' cell must name the level the
+    tracker actually locked. track_outcomes locks break-even / +5 / +9 / +12 %
+    (v16.5/v17.0) but the label still used v15.0's +3 / +7 buckets, so a +9%
+    lock read "+7% locked" and +12% read "+7% locked".
+      A. tracker tiers are still 1.00 / 1.05 / 1.09 / 1.12 x entry
+      B. for odd entry prices, the stored trailing_sl_pct maps to the right label
+      C. no trailing stop -> a dash
+      D. the sheet uses the helper; no hardcoded +3/+7 buckets remain
+    """
+    from reporting.excel_generator import _trailing_state_label
+    tro = open(_src_path('track_outcomes.py'), encoding='utf-8').read()
+    for mult in ("cmp_rec * 1.12", "cmp_rec * 1.09", "cmp_rec * 1.05", "cmp_rec * 1.00"):
+        assert mult in tro, f"A: tracker tier '{mult}' changed — update the label helper and this test"
+    expect = {1.00: "BE locked", 1.05: "+5% locked", 1.09: "+9% locked", 1.12: "+12% locked"}
+    for cmp_rec in (100.0, 47.35, 287.1, 1234.55, 3.97):
+        for mult, label in expect.items():
+            price = round(cmp_rec * mult, 2)                         # as the tracker stores it
+            pct = round((price - cmp_rec) / cmp_rec * 100, 2)
+            got = _trailing_state_label(pct, price)
+            assert got == label, f"B: entry {cmp_rec} lock x{mult} -> {got!r}, expected {label!r}"
+    assert _trailing_state_label(0, 0) == "\u2014", "C: no trailing stop must render as a dash"
+    assert _trailing_state_label(None, None) == "\u2014", "C: missing values must render as a dash"
+    xl = open(_src_path('reporting/excel_generator.py'), encoding='utf-8').read()
+    assert "_trailing_state_label(_trailing_pct, _trailing_price)" in xl, "D: sheet no longer uses the helper"
+    assert '"+7% locked"' not in xl and '"+3% locked"' not in xl, "D: stale v15.0 buckets are back"
+    return ("\u2705 v17.19: Trailing label shows BE / +5% / +9% / +12% exactly as the "
+            "tracker locks them")
+
+
+def test_g44_v17_19_user_text_matches_code():
+    """v17.19 second audit: tooltip / glossary text must describe what the code
+    does. Three statements had drifted from the code:
+      A. Time Horizon: master_funnel maps WATCHLIST -> POSITIONAL, but the text
+         listed WATCHLIST under LONG TERM.
+      B. Trailing tiers: the P&L % tooltip still quoted v15.0's "BE at +5%,
+         +3% lock at +10%, +7% lock at +15%".
+      C. Performance 'SL' cell: shows gold_recommendations.stop_loss (the
+         original stop, frozen at log time) but the text called it the
+         "effective" stop (MAX of original and trailing).
+    """
+    import re
+    from reporting.tooltip_formatter import TIPS
+    from reporting.excel_generator import GLOSSARY_DATA
+    mf = open(_src_path('master_funnel.py'), encoding='utf-8').read()
+    xl = open(_src_path('reporting/excel_generator.py'), encoding='utf-8').read()
+    db = open(_src_path('database/data_bridge.py'), encoding='utf-8').read()
+    gl = {(r[0], r[1]): r[2] for r in GLOSSARY_DATA}
+
+    # A. horizon rule in code, then the wording
+    assert re.search(r'elif _verd_tr == "WATCHLIST":\s*\n\s*stock\["horizon"\] = "POSITIONAL"', mf), \
+        "A: master_funnel no longer maps WATCHLIST -> POSITIONAL; update the texts and this test"
+    tip = TIPS["Time Horizon"][1]
+    pos_block = tip.split("POSITIONAL =", 1)[1].split("LONG TERM", 1)[0]
+    long_block = tip.split("LONG TERM  =", 1)[1].split("\n\n", 1)[0]
+    assert "WATCHLIST" in pos_block and "WATCHLIST" not in long_block, "A: tooltip puts WATCHLIST in the wrong horizon"
+    g = gl[("PERFORMANCE", "Time Horizon")]
+    assert "OR WATCHLIST; LONG TERM" in g and "WATCHLIST/NEUTRAL" not in g, "A: glossary puts WATCHLIST in the wrong horizon"
+
+    # B. no v15.0 / v16.5 trailing wording anywhere a user reads it
+    texts = [t for pair in TIPS.values() for t in pair] + [r[2] for r in GLOSSARY_DATA]
+    for stale in ("BE at +5%", "+3% lock", "+7% lock", "Peak gain \u2265 +10% \u2192 trailing SL = break-even"):
+        bad = [t[:60] for t in texts if stale in t]
+        assert not bad, f"B: stale trailing wording {stale!r} in: {bad}"
+    assert "+12%" in TIPS["P&L %"][1] and "10 days" in TIPS["P&L %"][1], "B: P&L % tooltip lost the current tiers"
+
+    # C. the SL cell is the ORIGINAL stop
+    assert 'SELECT r.*, o.outcome_type' in db, "C: get_outcome_stats no longer reads r.* — re-check what the SL cell shows"
+    assert '_sl_v = float(row_o.get("stop_loss",0) or 0)' in xl, "C: SL cell source changed — re-check the texts"
+    assert "effective" not in TIPS["SL"][0].lower() and "ORIGINAL" in TIPS["SL"][1], "C: SL tooltip must say ORIGINAL stop"
+    g = gl[("PERFORMANCE", "SL / Target columns")]
+    assert "ORIGINAL stop-loss" in g and "effective stop-loss" not in g, "C: glossary must say ORIGINAL stop"
+    return ("\u2705 v17.19: horizon rules, trailing tiers and the SL column are described "
+            "exactly as the code behaves")
+
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -5752,7 +5830,7 @@ def test_g11_tracker_invoked_from_master_funnel():
     Fix: invoke from inside master_funnel between v14 hook and Excel build, so
     Performance sheet sees fresh price/P&L data.
     """
-    with open('/home/claude/proj/master_funnel.py') as f:
+    with open(_src_path('master_funnel.py'), encoding='utf-8') as f:
         text = f.read()
     # Tracker import + invocation must both be present
     assert 'from track_outcomes import main' in text, (
@@ -5785,7 +5863,7 @@ def test_g10_v14_hook_fires_before_excel_generation():
     Fix: write to DB first, then render. Then the Performance sheet's
     get_outcome_stats() reads the row we just inserted for today.
     """
-    with open('/home/claude/proj/master_funnel.py') as f:
+    with open(_src_path('master_funnel.py'), encoding='utf-8') as f:
         text = f.read()
     # Locate the two anchors
     hook_anchor = text.find('OUTCOME TRACKING: Log Gold-sheet picks')
@@ -5809,9 +5887,9 @@ def test_g9_column_name_consistency_time_horizon_everywhere():
        - Tooltip Reference category
        The bare 'Horizon' label should NOT appear anywhere as a column header."""
     # Read excel_generator.py and tooltip_formatter.py source
-    with open('/home/claude/proj/reporting/excel_generator.py') as f:
+    with open(_src_path('reporting/excel_generator.py'), encoding='utf-8') as f:
         eg = f.read()
-    with open('/home/claude/proj/reporting/tooltip_formatter.py') as f:
+    with open(_src_path('reporting/tooltip_formatter.py'), encoding='utf-8') as f:
         tf = f.read()
     # Must NOT appear: ("Horizon", or "Horizon": as a glossary or column header
     # (excluding within prose strings — search for tuple/dict literal forms)
@@ -6016,6 +6094,8 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g40_v17_11_1_market_stats_not_referenced_before_creation))
     v14_1_results.append(_run_one_test(test_g41_v17_17_allowlist_write_time_guards))
     v14_1_results.append(_run_one_test(test_g42_v17_18_no_ai_summary_on_full_dashboard))
+    v14_1_results.append(_run_one_test(test_g43_v17_19_trailing_label_matches_tracker_tiers))
+    v14_1_results.append(_run_one_test(test_g44_v17_19_user_text_matches_code))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

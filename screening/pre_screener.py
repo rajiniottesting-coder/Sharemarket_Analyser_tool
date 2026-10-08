@@ -5,8 +5,8 @@ SECTION 0A & 0B — Stage 1 & Stage 2 Pre-Screener (v7 FINAL)
 Key fixes:
 - All column lookups use lowercase keys matching the DB schema
 - Stage 1: uses 'close', 'delivery_pct', 'volume', 'exchange_tag'
-- Stage 2: uses 'net_profit', 'rev_growth_yoy', 'debt_equity',
-           'promoter_holding', 'pe' — all lowercase
+- Stage 2: bhav-only quality score /35 from 'close', 'turnover',
+           'delivery_pct', 'exchange_tag' (gate ≥ 15) — all lowercase
 - Hard drop rules fully implemented per Section 0B
 - anti_trigger_guard uses correct method call on ForensicsEngine instance
 """
@@ -21,7 +21,8 @@ def stage_1_filter(all_stocks: list) -> list:
     """
     SECTION 0A: Volume / Liquidity / Price Quality Filter.
     Input : list of stock dicts from today's Bhav Copy (consolidated)
-    Output: ~400-600 candidates
+    Output: ~1,900 candidates (Sep-2026 run logs: 1,859–1,993 of ~5,200;
+            the v7.0 design estimate was ~400-600)
 
     All key lookups use LOWERCASE to match standardize_to_v7_schema output.
     """
@@ -187,7 +188,8 @@ def stage_2_fundamental_scorer(df: pd.DataFrame) -> pd.DataFrame:
       B7: DUAL_LISTED        (broader institutional access)
     
     Max = 35 pts. Threshold = 15 pts (must pass at least 3 criteria).
-    Hard drops: turnover < ₹2L (illiquid), delivery < 30% (speculative only).
+    Hard drops: turnover < ₹2L (illiquid), delivery < 30% (speculative only),
+    price < ₹20 (penny/nano caps).
     """
     if df is None or df.empty:
         print("⚠️  Stage 2: empty input DataFrame.")

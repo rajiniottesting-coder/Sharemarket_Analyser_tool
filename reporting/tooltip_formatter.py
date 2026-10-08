@@ -77,7 +77,7 @@ TIPS: Dict[str, Tuple[str, str]] = {
                 "regardless of fundamentals. Stage 3 already enforces the\n"
                 "quality gate; the prior 'exceptional NEUTRAL only' filter\n"
                 "was removed because it silently shrank the dashboard\n"
-                "below 100 rows whenever Gemini quota was exhausted.\n"
+                "below 100 rows whenever the AI quota was exhausted.\n"
                 "v12.1: reconciler hotfix — Exchange tag is now derived\n"
                 "purely from ISIN match (not symbol-match) for stocks with\n"
                 "no ISIN, so non-equity tickers (indices, ETFs) no longer\n"
@@ -599,14 +599,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "  0%: Clean cap structure → +4 (rewarded, not just neutral)\n"
                  "  10–20%: Watch → −7\n"
                  "  >20%: RED FLAG → −15, plus suppresses ALL spike signals.\n"
-                 "Display: v10.15 FIX #6 now shows '—' when value is 0,\n"
-                 "because pledge data is only in BSE corporate filings which\n"
-                 "have no free API. Zero pledge is structurally indistinguishable\n"
-                 "from 'unknown pledge' on free-tier, so honest display is '—'.\n"
-                 "v13.0: NSE bulk pledge endpoint (corporates-pledgedata) is now\n"
-                 "fetched daily — pledge_pct is real for any stock with reported\n"
-                 "promoter pledge. Score gates still fire on numeric values only.\n"
-                 "'—' treated as 0 for guard purposes (safe default)."),
+                 "Source: NSE bulk pledge data (percSharesPledged). NSE does not\n"
+                 "serve cloud runners, so the value arrives via the weekly local\n"
+                 "snapshot (data/nse_snapshot.json) — used only when ≤ 14 days old,\n"
+                 "and only to fill blanks. Row 2 of the Full Dashboard shows when\n"
+                 "the snapshot was fetched and how old it is.\n"
+                 "'—' = no NSE pledge record (most companies pledge nothing) or\n"
+                 "the snapshot is stale. Gold requires Pledge ≤ 10%; '—' is\n"
+                 "treated as 0 by the guards (safe default)."),
     "Pledge Direction": ("FALLING = positive | RISING = risk",
                           "Trend in promoter share pledge over time.\n"
                           "FALLING: Pledge dropped — promoters repaying loans (positive).\n"
@@ -624,21 +624,19 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "table (v10.4/v10.9). Populates after ~3 months of runs."),
     "DII %": (">10% domestic confidence",
               "Rising DII + FII = dual institutional accumulation = bullish.\n"
-              "Source: NSE corporate-info JSON API (heldPercentInstitutions\n"
-              "in yfinance is FII+DII combined; DII alone needs NSE).\n"
-              "Display: v10.15 FIX #6 shows '—' when value is 0, because\n"
-              "NSE corp-info API is blocked on cloud IPs (common for GH\n"
-              "Actions runs). Zero DII is indistinguishable from 'API\n"
-              "blocked' on free-tier, so honest display is '—'. Real DII\n"
-              "values display as numbers when API responds."),
+              "No free source today: NSE's public shareholding endpoint gives\n"
+              "promoter vs public only (the old corp-info DII field is\n"
+              "retired), and yfinance heldPercentInstitutions is FII+DII\n"
+              "combined. Shown as '—' rather than derived from the public\n"
+              "bucket, which would be a made-up number."),
     "DII QoQ Δ": (">0.5% domestic accumulation",
                   "Domestic institutional (MF/insurance) holding change.\n"
                   "Sentiment score impact:\n"
                   "  >+0.5%: Strong DII accumulation → +6\n"
                   "  +0.3–0.5%: Moderate accumulation → +4\n"
                   "  <−0.3%: DII distribution → −3.\n"
-                  "Display: '—' when DII % source unavailable (NSE corp-info\n"
-                  "API often blocked on cloud IPs) OR no ≥90-day history."),
+                  "Display: '—' — DII % has no free source (see DII %), so\n"
+                  "the quarterly change cannot be computed."),
     "Public Float %": (">50% good liquidity | <20% manipulation risk",
                        "<20%: Volatile, easier to manipulate."),
 
@@ -799,21 +797,31 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Entry Range (₹)": ("Ideal buy zone = CMP ± 0.5 × ATR",
                          "Avoid chasing if CMP moves significantly above upper bound."),
     "Stop Loss (₹)": ("Multi-factor SL — exit if CMP closes below this level",
-                       "v15.0 multi-factor: SL = ATR-14 × horizon × (1 + sector_tier) × regime,\n"
-                       "bounded [4.5%, 15%], floored at volume-confirmed support1.\n"
-                       "Earnings within 5 days → widened 20%. Trailing SL ratchets up at\n"
-                       "+5%/+10%/+15% peak gain (BE/+3%/+7%). Never risk >2–3% of portfolio."),
-    "Target (₹)": ("First profit target — book 30–50% here",
-                     "v15.0: T1 = max(1.5 × SL_pct, 0.40 × CFV_upside).\n"
-                     "Guarantees R:R ≥ 1.5:1. Book partial profit here."),
+                       "SL % = ATR-14 % × (horizon multiplier + sector tier) × regime.\n"
+                       "  horizon: SHORT 2.5× · POSITIONAL 3.5× · LONG 5×\n"
+                       "  regime: ATR ≥ 1.2× its 252-day average → ×1.1;\n"
+                       "          ≤ 0.8× → ×0.9\n"
+                       "Floored at volume-confirmed support; bounded 4.5%–15%;\n"
+                       "SHORT TERM never wider than 7%. Frozen at log time.\n"
+                       "Trailing stop (outcome tracker): peak ≥ +15% locks +5%,\n"
+                       "≥ +20% → +9%, ≥ +25% → +12%; break-even only after a\n"
+                       "≥ +12% peak AND 10 days held. Never risk >2–3% of portfolio."),
+    "Target (₹)": ("Single price target = regime multiplier × SL distance",
+                     "Target % = 1.3 × SL % in a calm regime, 1.5 × normal,\n"
+                     "1.8 × volatile (the stock's ATR-14 vs its 252-day average),\n"
+                     "with a +50% sanity ceiling. Fair value and horizon caps no\n"
+                     "longer set the target. The multipliers are starting values —\n"
+                     "review them once ~30 picks have closed."),
     "Time Horizon": ("How long the system claims to hold this pick",
                      "Time-horizon classification at recommendation time, set by the\n"
                      "pipeline based on verdict + spike + supertrend + MACD signals:\n"
                      "  SHORT TERM = BUY + Spike count ≥ 2 (high-momentum entry)\n"
                      "  POSITIONAL = BUY + supertrend BUY + MACD BUY (confirmed trend)\n"
                      "             OR BUY + Score ≥ 68 (high-conviction)\n"
-                     "  LONG TERM  = BUY + lower-conviction (gradual re-rating)\n"
-                     "             OR WATCHLIST / NEUTRAL / AVOID\n"
+                     "             OR WATCHLIST\n"
+                     "  LONG TERM  = any other BUY (gradual re-rating)\n"
+                     "             OR NEUTRAL / OVERVALUED / AVOID\n"
+                     "  (Gold picks are always BUY.)\n"
                      "\n"
                      "v14.1: Drives the per-recommendation expiry window in the\n"
                      "outcome tracker (when 90 days isn't right for SHORT or LONG plays):\n"
@@ -821,8 +829,8 @@ TIPS: Dict[str, Tuple[str, str]] = {
                      "  POSITIONAL  → expiry 90 days  (median of '1-3 months')\n"
                      "  LONG TERM   → expiry 270 days (median of '3-12 months')\n"
                      "\n"
-                     "v15.0: Also drives SL multiplier (SHORT 2.5×ATR, POSITIONAL 3.5×ATR,\n"
-                     "LONG 5×ATR) and T1/T3 horizon caps. Frozen at log time."),
+                     "Also drives the SL multiplier (SHORT 2.5×ATR, POSITIONAL 3.5×ATR,\n"
+                     "LONG 5×ATR) and the 7% SHORT TERM SL cap. Frozen at log time."),
     "Risk Level": ("LOW=safest | VERY HIGH=speculative only",
                    "LOW: High score + low beta + low D/E + no pledge\n"
                    "MEDIUM: Acceptable | HIGH: Small/micro | VERY HIGH: Speculative"),
@@ -855,14 +863,13 @@ TIPS: Dict[str, Tuple[str, str]] = {
                          "  'clamped to Y%'\n"
                          "      → safety clamp (above 15% or below 1%) fired\n"
                          "If SL is unavailable (rare), shows 'Fallback: 3.0%'."),
-    "R:R Ratio": ("v15.0: enforced ≥ 1.5 by formula construction",
-                  "R:R = (T1 − Entry mid) / (Entry mid − SL).\n"
-                  ">2 Excellent, 1.5–2 Acceptable, <1.5 Avoid.\n"
-                  "v15.0 multi-factor formula enforces R:R ≥ 1.5 at construction:\n"
-                  "T1 = max(1.5 × SL_pct, 0.40 × CFV_upside).\n"
-                  "Even when horizon T1-cap fires, R:R discipline is preserved\n"
-                  "(cap is effectively max(base_cap, 1.5×SL)).\n"
-                  "Some picks have higher R:R (3-4) when CFV upside is large."),
+    "R:R Ratio": ("Reward ÷ risk — set by the regime multiplier",
+                  "R:R = (Target − Entry mid) / (Entry mid − SL).\n"
+                  "The Target is a fixed multiple of the stop distance (1.3×\n"
+                  "calm · 1.5× normal · 1.8× volatile), so R:R sits close to that\n"
+                  "multiple. Measured from the entry-range midpoint rather than\n"
+                  "CMP, so it can read slightly lower or higher.\n"
+                  "It describes the trade plan, not stock quality."),
 
     # ── Narrative / AI ──────────────────────────────────────────────────────
     "Key Catalyst": ("Primary near-term growth driver",
@@ -919,8 +926,10 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # Keeping Glossary + Tooltip Reference sheet in sync matters — both are
     # discovery surfaces for the same knowledge.
     "Gold-Tier Filter": (
-        "11-condition filter for Gold – Early Movers sheet (v10.11)",
-        "ALL 11 conditions must be true for Gold qualification:\n"
+        "Market-regime gate + 15 conditions for the Gold – Early Movers sheet",
+        "Regime gate first: no Gold picks when the Nifty is more than 2%\n"
+        "below its 20-day SMA (data missing → gate stays open).\n"
+        "Then ALL 15 conditions must be true:\n"
         "1. Verdict = BUY (not WATCHLIST).\n"
         "2. Composite Score ≥ 70.\n"
         "3. 15% ≤ MoS ≤ 100% (real upside, not phantom).\n"
@@ -929,12 +938,15 @@ TIPS: Dict[str, Tuple[str, str]] = {
         "6. BS Health Flag ≠ ALERT.\n"
         "7. Pledge % ≤ 10 (clean capital structure).\n"
         "8. Not spike-suppressed (anti-trigger guard clear).\n"
-        "v10.11 forensic quality gates (3 new):\n"
         "9. Altman Z ≥ 1.8 or missing (not in distress zone).\n"
         "10. Earn Quality ≠ LOW (no accounting concern).\n"
         "11. Int Coverage ≥ 1.5× or missing (can service interest).\n"
-        "Missing forensic data passes the v10.11 gates — small caps without\n"
-        "forensic feeds aren't unfairly excluded. Daily count varies 0-10+."),
+        "12. ROE ≥ 10% or missing.\n"
+        "13. PEG ≤ 8, missing or ≤ 0.\n"
+        "14. 3-day price momentum (ROC) ≥ 0.\n"
+        "15. Sector cycle OK (weak sectors pass only with a positive 4-week move).\n"
+        "Missing forensic data passes gates 9–13 so small caps without\n"
+        "forensic feeds aren't unfairly excluded. Daily count varies 0–10."),
     "CFV Safety Cap": (
         "Composite Fair Value capped at 3× CMP",
         "CFV is capped at 3× Current Market Price as a safety net, which\n"
@@ -952,12 +964,13 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # v14.0: PERFORMANCE SHEET column tooltips (cell-hover variants)
     # ────────────────────────────────────────────────────────────────────
     "TOTAL TRACKED": ("All Gold-sheet picks ever logged",
-                       "Counts every stock that has ever made it through the 11-condition\n"
+                       "Counts every stock that has ever made it through the 15-condition\n"
                        "Gold-tier filter and been logged to gold_recommendations. Includes\n"
                        "both currently-open positions and historically-closed ones.\n"
                        "First-appearance rule: a stock is logged once when it FIRST appears\n"
                        "in Gold; re-appearances on subsequent days are skipped UNTIL the\n"
-                       "original recommendation closes (T1/T2/T3 hit, SL hit, or 90d expiry)."),
+                       "original recommendation closes (Target hit, stop or trailing\n"
+                       "stop hit, or horizon expiry)."),
     "CLOSED": ("Picks where outcome is final",
                 "Sum of T1_HIT + T2_HIT + T3_HIT + SL_HIT + TRAIL_SL +\n"
                 "EXPIRED. These are recommendations the tracker has finalised\n"
@@ -967,8 +980,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
                 "counted in the SL-rate — they are successful risk control,\n"
                 "not stop-loss failures."),
     "OPEN": ("Picks still being monitored",
-             "Recommendations currently within the 90-day tracking window with no\n"
-             "T1/T2/T3 hit and no SL break yet. The tracker re-walks these every\n"
+             "Recommendations still inside their horizon window (SHORT 30 /\n"
+             "POSITIONAL 90 / LONG 270 days) with no Target or stop hit yet.\n"
+             "The tracker re-walks these every\n"
              "day to catch new events. Open positions appear in the bottom table\n"
              "with running P&L and max runup/drawdown."),
     "HIT RATE (T1+)": ("% of closed picks reaching at least T1",
@@ -983,16 +997,20 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "SL RATE": ("% of closed picks hitting ORIGINAL stop loss",
                  "SL_HIT / CLOSED × 100. The fraction where price broke down\n"
                  "through the ORIGINAL stop loss before any target hit (a real\n"
-                 "loss — the trade thesis failed). Lower is better. The system\n"
-                 "is calibrated for ~6.5% risk per trade; an SL rate of 25-35%\n"
+                 "loss — the trade thesis failed). Lower is better. Stops are\n"
+                 "volatility-based (4.5–15% below entry) and position size keeps\n"
+                 "portfolio risk per trade at about 1%; an SL rate of 25-35%\n"
                  "is normal even for a healthy strategy. >50% suggests entries\n"
                  "are too late (chasing momentum) or SL too tight.\n"
                  "v16.5: TRAIL_SL (trailing-stop break-even/profit exits) are\n"
                  "EXCLUDED from this rate — they are not thesis failures."),
     "AVG DAYS → TARGET": ("Mean days from recommendation to Target hit",
-                          "v17.8.1 single-Target speed metric."),
-    "AVG DAYS → T1": ("Mean days from recommendation to T1 hit",
-                       "How quickly winners reached the first target. Lower = faster\n"
+                          "How quickly winners reached the Target. Lower = faster\n"
+                          "win realisation. If AVG=20, plan to hold ~3 weeks; if\n"
+                          "AVG=60, expect 2 months of patience. Mean only — a few\n"
+                          "slow winners can pull it up."),
+    "AVG DAYS → T1": ("Older name for AVG DAYS → TARGET",
+                       "How quickly winners reached the Target (stored as T1). Lower = faster\n"
                        "win realization. Useful for setting realistic expectations:\n"
                        "if AVG=20, plan to hold positions ~3 weeks; if AVG=60,\n"
                        "expect 2 months of patience. Median may differ from mean\n"
@@ -1115,7 +1133,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # v14.4: SL/T1/T2/T3 columns in OPEN POSITIONS
     # Each cell shows "₹price (±X.X%)" — distance is from current_price
     # (not entry), so it updates dynamically as the tracker refreshes price.
-    # v15.0 update: SL is now the EFFECTIVE SL — MAX(original_sl, trailing_sl).
+    # The SL cell shows the ORIGINAL stop (gold_recommendations.stop_loss, frozen
+    # at log time); the trailing level is shown in the separate Trailing column.
+    # (v17.19: earlier text claimed MAX(original, trailing) — the cell never did.)
     # ────────────────────────────────────────────────────────────────────
     "AI Card": ("Narrative card for this held position (v17.10.1)",
                 "Generated by the company LLM from the tracker row (entry, SL,\n"
@@ -1138,29 +1158,32 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Target": ("Single price target (v17.8.1) = regime × SL",
                "1.3× SL in a calm regime, 1.5× normal, 1.8× volatile.\n"
                "Fair-value and the old +10% cap were removed. T2/T3 hidden."),
-    "SL": ("Effective stop-loss (original or trailing, whichever is higher)",
+    "SL": ("Original stop-loss, frozen at recommendation time",
             "Format: ₹price (distance%). Distance is from CURRENT price.\n"
-            "This is the EFFECTIVE SL = MAX(original_sl, trailing_sl).\n"
-            "v16.5 trailing SL ratchets up as peak gain crosses thresholds:\n"
-            "  Peak gain ≥ +10% → trailing SL = break-even (entry price)\n"
-            "  Peak gain ≥ +15% → trailing SL = entry + 5% (locks profit)\n"
-            "  Peak gain ≥ +20% → trailing SL = entry + 9%\n"
-            "  Peak gain ≥ +25% → trailing SL = entry + 12%\n"
-            "  Peak gain < +10% → no trailing SL (original SL still protects)\n"
+            "This cell is the ORIGINAL stop; it does not move. Once a\n"
+            "trailing stop is active (see the Trailing column), the stop the\n"
+            "tracker actually uses is the higher of the two.\n"
+            "Trailing SL ratchets up as the peak gain crosses thresholds:\n"
+            "  Peak ≥ +25% → trailing SL = entry + 12%\n"
+            "  Peak ≥ +20% → trailing SL = entry + 9%\n"
+            "  Peak ≥ +15% → trailing SL = entry + 5%\n"
+            "  Peak ≥ +12% AND ≥ 10 days held → break-even (entry price)\n"
+            "  Otherwise → no trailing SL (original SL still protects)\n"
             "Once activated, trailing SL never moves down. Original SL preserved\n"
             "in original_stop_loss column for audit. Red = downside risk.\n"
-            "v16.5: break-even raised from +5% to +10% — small pops that\n"
-            "pulled back were being force-closed flat (KOVAI-class)."),
-    "T1": ("First profit target (1.5:1 R:R minimum by v15.0 formula)",
-            "Format: ₹price (distance%). Distance from CURRENT price.\n"
-            "v15.0: T1 = max(1.5 × SL_pct, 0.40 × CFV_upside) from CMP at\n"
-            "recommendation time. Guaranteed R:R ≥ 1.5:1. Most Gold picks aim\n"
-            "to hit at minimum T1 within their horizon window. Book partial here."),
+            "The break-even trigger is deliberately late (+12% and 10 days):\n"
+            "earlier triggers closed small pops flat (KOVAI-class)."),
+    "T1": ("Internal name of the Target level (T2/T3 are dormant)",
+            "The sheets show one Target column; the database stores it as t1.\n"
+            "Target % = regime multiplier (1.3 / 1.5 / 1.8) × SL %, from CMP\n"
+            "at recommendation time. T2/T3 are kept only as spacing multiples\n"
+            "(T1 × 1.35, T2 × 1.35) so older rows and the schema stay intact."),
     # ────────────────────────────────────────────────────────────────────
     # v14.5: CLOSED POSITIONS columns
     # ────────────────────────────────────────────────────────────────────
     "Outcome": ("How this position closed",
-                "One of: T1_HIT / T2_HIT / T3_HIT (profit targets), SL_HIT\n"
+                "One of: T1_HIT = Target reached (T2_HIT / T3_HIT appear only\n"
+                "if price gaps through the dormant spacing levels), SL_HIT\n"
                 "(original stop loss breached — a real loss), TRAIL_SL\n"
                 "(trailing stop hit after a favourable run — break-even or\n"
                 "locked profit, NOT a loss), EXPIRED (no event within the\n"
@@ -1205,15 +1228,15 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # v15.5: Performance sheet OPEN POSITIONS column tooltips
     # The 18 OPEN columns are: Symbol, Rec Date, Time Horizon, Days Held,
     # Days Left, Re-app, CMP at Rec, Current Price, P&L %, Max Runup %,
-    # SL, T1, T2, T3, Score, ⚠, Trailing, Regime
+    # SL, Target, Score, ⚠, Trailing, Regime (+ later: alloc, archetype, AI Card)
     # Most are already covered above; this block fills the gaps so all 18
     # have hoverable tooltips.
     # ────────────────────────────────────────────────────────────────────
     "Rec Date": ("Calendar date this stock was first logged to gold_recommendations",
                   "Frozen at log time — never updated even on re-appearance.\n"
                   "Format: YYYY-MM-DD. Days Held = today - Rec Date.\n"
-                  "The 90-day expiry window (or horizon-specific window) is\n"
-                  "measured from this date."),
+                  "The horizon expiry window (SHORT 30 / POSITIONAL 90 /\n"
+                  "LONG 270 days) is measured from this date."),
     "Re-app": ("Re-appearances in Gold sheet since first recommendation",
                 "Number of subsequent pipeline runs where this stock re-qualified\n"
                 "for Gold while the original recommendation is still open. A high\n"
@@ -1233,9 +1256,10 @@ TIPS: Dict[str, Tuple[str, str]] = {
               "Formula: (price - CMP at Rec) / CMP at Rec × 100\n"
               "  • OPEN rows: price = Current Price (latest close).\n"
               "    Positive = winning trade in progress. Negative = losing\n"
-              "    position still being monitored. Tracker uses this for\n"
-              "    trailing-SL ratchets (BE at +5%, +3% lock at +10%,\n"
-              "    +7% lock at +15%).\n"
+              "    position still being monitored. The tracker's trailing\n"
+              "    stop works off the PEAK gain, not this value (+5% lock at\n"
+              "    +15%, +9% at +20%, +12% at +25%, break-even at +12% after\n"
+              "    10 days held).\n"
               "  • CLOSED rows: price = Outcome Price (level where the\n"
               "    closing event fired). This is the FINAL realised return.\n"
               "Color: green if ≥ +5%, amber if 0 to +5%, red if negative."),
@@ -1253,9 +1277,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
           "either review your conviction (still believe in T1?) or consider\n"
           "manual exit if you've decided to give up."),
     "Trailing": ("Current trailing-SL state",
-                 "Shows the trailing-stop level locked in so far (v16.5 tiers):\n"
-                 "  '—' = trailing not yet activated (peak gain < +10%)\n"
-                 "  'BE locked' = peak gain ≥ +10%, SL ratcheted to break-even\n"
+                 "Shows the trailing-stop level locked in so far:\n"
+                 "  '—' = not active yet (peak < +12%, or < +15% in the first 10 days)\n"
+                 "  'BE locked' = peak ≥ +12% and ≥ 10 days held → stop at entry\n"
                  "  '+5% locked' = peak gain ≥ +15%, SL ratcheted to entry+5%\n"
                  "  '+9% locked' = peak gain ≥ +20%, SL ratcheted to entry+9%\n"
                  "  '+12% locked' = peak gain ≥ +25%, SL ratcheted to entry+12%\n"

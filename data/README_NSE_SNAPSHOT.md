@@ -13,14 +13,16 @@ blanks — it never overwrites live data and never raises.
    ```
    python fetch_nse_local.py --dry-run
    ```
-   You should see non-zero counts (`pledge records: 400+`, `shareholding
-   records: 50+`). Zeros mean NSE is not serving you right now — retry later.
+   You should see non-zero counts (typically `pledge records: ~340` and
+   `shareholding records: ~470` for the NIFTY 500 universe). Zeros mean NSE
+   is not serving you right now — retry later.
 
 2. **First real run:**
    ```
    python fetch_nse_local.py --push
    ```
-   Writes the file and commits/pushes it.
+   Writes the file, commits it as
+   `chore(nse-snapshot): pledge N / shareholding M @ YYYY-MM-DD`, and pushes.
 
 3. **Confirm on Actions** — trigger the pipeline; the log should show
    ```
@@ -74,7 +76,15 @@ Pledge/DII change quarterly, so weekly loses no information.
 | Pledge % | `corporate-pledgedata` → `percSharesPledged` | ✅ live |
 | Promoter % | `corporate-share-holdings-master` → `pr_and_prgrp` | ✅ live |
 | Public % | same → `public_val` | ✅ live |
-| **DII % / FII %** | — | ❌ **NSE's free API no longer exposes these separately**; the old `corp-info` endpoint that had `diisTotal`/`fiisTotal` is retired (404). They stay `—`. They are NOT derived from the public bucket — that would be a fabricated number. |
+| **DII % / FII %** | — | ❌ **NSE's free API no longer exposes these separately**; the old `corp-info` endpoint that had `diisTotal`/`fiisTotal` is retired (404). DII stays `—`; the dashboard's FII % is yfinance's institutional holding (FII + DII combined), used as a proxy. Neither is derived from the public bucket — that would be a fabricated number. |
+
+## Where you see it
+
+- **Full Dashboard, row 2:** `Pledge/Promoter data as of DD-Mon-YYYY HH:MM IST (Nd old)`.
+  More than 7 days old means the weekly run was missed.
+- **Pledge Direction** needs a quarter of stored history. Snapshot pledge is
+  written into the `shareholding` history on every run (since v17.13.7, real
+  history from 17-Sep-2026), so the column starts filling from about mid-December 2026.
 
 ## What the file is
 
@@ -90,8 +100,12 @@ audit trail of how each stock's pledge/DII moved.
 | `… Xd old (> 14d) — ignored as stale` | laptop missed 2+ weeks | double-click `fetch_nse_now.bat` |
 | `… missing keys` / `unreadable` | file corrupted | re-run the fetch; it overwrites |
 | fetcher prints `No usable records` | NSE blocked *your* IP this moment | VPN off? retry in a few min |
-| fetcher: git push failed | dirty checkout / bot collision | `git pull --rebase` then push, or use a dedicated clone |
+| fetcher: `git push failed` with an authentication hint | credentials not cached for unattended use | once: `git config --global credential.helper manager`, then one interactive `git push` |
+| fetcher: `git pull --rebase failed` | a real conflict with the remote | open the repo, resolve, `git push` — the snapshot commit is safe locally |
+| commit message reads `pledge 0 / …` | NSE answered the pledge call with nothing that run | double-click `fetch_nse_now.bat` later; pledge may show `—` until a good fetch |
 
-Keep the laptop's checkout clean (commit or stash local edits) — `--push`
-does a `git pull --rebase` first and a dirty tree can stall it. A separate
-clone dedicated to the fetcher is the tidiest setup.
+How `--push` works (v17.13.5): it stages and commits **only** the snapshot,
+then runs `git pull --rebase --autostash` (so the keep-alive bot's commits are
+picked up and your other uncommitted edits are left alone), then pushes with
+prompts disabled — a scheduled run can never hang behind a sign-in window. A
+separate clone dedicated to the fetcher is still the tidiest setup.

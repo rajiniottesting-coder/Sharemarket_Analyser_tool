@@ -1536,7 +1536,8 @@ def _nse_quote(symbol: str, session) -> dict:
 
 
 def _nse_shareholding(symbol: str, session) -> dict:
-    """Fetch shareholding pattern from NSE corp-info API.
+    """Fetch shareholding pattern from NSE (corporate-share-holdings-master
+    since v17.13.3; the corp-info API described below is retired).
 
     v13.0: now reads BOTH the latest quarter (index 0) AND the prior
     quarter (index 1) from `shareholdingPatterns.data` to compute
@@ -2315,7 +2316,9 @@ def fetch_nse_fundamentals(conn, symbols: list, max_symbols: int = 500):
 
     # ── v10.6 FIX (Bug #3): NSE shareholding enrichment for DII separation ────
     # yfinance only provides heldPercentInstitutions (FII+DII combined).
-    # NSE corp-info API returns separate fiisTotal and diisTotal.
+    # NSE corp-info API returned separate fiisTotal and diisTotal — retired
+    # (404) since v17.13.3; the live endpoint gives promoter vs public only, so
+    # DII stays 0 (shown "—"). This loop still refreshes promoter % and QoQ.
     # We call this for symbols where dii_pct is still 0 after yfinance pass.
     # Only attempts top-100 to respect NSE rate limits.
     #

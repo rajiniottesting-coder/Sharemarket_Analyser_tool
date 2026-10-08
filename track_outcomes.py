@@ -11,7 +11,13 @@ the first event that fires:
     T3_HIT   — daily high ≥ T3
     T2_HIT   — daily high ≥ T2 (and not yet T3)
     T1_HIT   — daily high ≥ T1 (and not yet T2)
-    EXPIRED  — 90 calendar days passed with no event
+    EXPIRED  — the horizon window passed with no event
+               (expiry_days per pick: SHORT TERM 30 / POSITIONAL 90 /
+               LONG TERM 270; legacy rows without it use 90)
+
+Since v17.8.1 T1 is the single live Target (regime multiplier × SL). T2/T3
+are dormant spacing levels (T1×1.35, T2×1.35); T2_HIT/T3_HIT can only fire
+when one bar gaps through them.
 
 v17.0 trailing-stop recalibration: break-even threshold raised +10%→+12%
 AND minimum 10-day holding gate before break-even activates (prevents
@@ -27,9 +33,17 @@ Design rules (locked in v14_state.md):
     - Updates current_price + current_pnl_pct + last_checked_date for OPEN rows
       so the dashboard can show "where is each open position right now?"
 
-Run as: `python3 track_outcomes.py` after the daily pipeline completes.
-Idempotent: closed rows are skipped; OPEN rows are re-walked each day to
-catch any new events since last run.
+Also, each run (observational only — never alters gold_outcomes' outcome):
+    v17.3 continuation walk — after a T1_HIT, follows the stock to its own
+          expiry and records T2/T3 reach, peak/trough, SL break
+          (gold_continuation table)
+    v17.7 shadow stop — a regime-aware Chandelier trailing stop computed
+          alongside the live walk (shadow_* columns), for comparison only
+
+Invoked automatically by master_funnel.py (v14.1.3) after the day's Gold
+picks are logged and before the Excel is built. It can also be run by hand:
+`python3 track_outcomes.py`. Idempotent: closed rows are skipped; OPEN rows
+are re-walked each day to catch any new events since last run.
 
 Exit code: 0 on success, 1 if DB unreachable.
 """
@@ -325,13 +339,15 @@ def _walk_forward(rec: dict) -> dict:
     in_drawdown          = False  # are we currently underwater?
 
     # ─────────────────────────────────────────────────────────────────────
-    # Trailing stop tracking (v16.5 recalibrated tiers)
+    # Trailing stop tracking (v16.5 tiers; break-even recalibrated in v17.0)
     # Peak price seen so far drives the trailing-SL ratchet:
     #   peak_gain ≥ +25% → trailing_sl = entry + 12%
     #   peak_gain ≥ +20% → trailing_sl = entry + 9%
     #   peak_gain ≥ +15% → trailing_sl = entry + 5%
-    #   peak_gain ≥ +10% → trailing_sl = entry (break-even)
-    #   peak_gain < +10% → NO trailing stop (original_sl still protects)
+    #   peak_gain ≥ +12% AND days held ≥ 10 → trailing_sl = entry (break-even)
+    #   otherwise → NO trailing stop (original_sl still protects)
+    # (v16.5 used ≥ +10% with no day gate for break-even; see the v17.0 block
+    #  at the end-of-bar update below, which is the code that applies these.)
     # Effective SL = max(original_sl, trailing_sl_price) — only ratchets UP.
     # Once activated, trailing SL never moves down even if peak retraces.
     # A trailing-stop exit returns outcome_type=TRAIL_SL (not SL_HIT).

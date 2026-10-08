@@ -447,15 +447,19 @@ def _sf(val, default=0.0):
 # back to v14.6-equivalent behavior):
 #   1. 5-tier sector system (very-high/high/neutral/low/very-low) — replaces
 #      binary classification. Captures more nuance (e.g. Realty +0.6 ≠ Metals +0.3).
-#   2. ATR-percentile regime detection — current 14-day ATR compared to 60-day
-#      baseline. High regime (current > 1.2× baseline) widens SL +10%; low
+#   2. ATR-percentile regime detection — current 14-day ATR compared to its
+#      1-year baseline (252 trading days since v15.0.1/v15.3; the original
+#      v14.7 window was 60 days). High regime (current > 1.2× baseline) widens SL +10%; low
 #      regime (< 0.8× baseline) tightens SL -10%.
 #   3. Volume-confirmed support — support1 only used as SL floor if recent
 #      volume is elevated (vol_ratio ≥ 1.2, proxy for real buying interest).
 #      Filters random lows that have no volume conviction.
 #
-# Targets enforce 1.5:1 R:R minimum and scale with CFV upside. Spacing
-# T2 ≥ T1×1.35, T3 ≥ T2×1.35. Horizon hard caps prevent absurd stretches.
+# Targets (v17.8.1, current): a single Target = regime multiplier × SL
+# (1.3 calm / 1.5 normal / 1.8 volatile) with a 50% sanity ceiling — see
+# _V14_6_TARGET_RR_BY_REGIME below. The v14.6 rule (1.5:1 floor scaled by CFV
+# upside, horizon caps) is gone. T2/T3 survive only as dormant spacing
+# multiples (T1×1.35, T2×1.35) so the schema stays intact.
 #
 # Honest grading: B+ (v14.6) → A- (v14.7) on technical-rigor scale. True A
 # would require walk-forward backtested multipliers, which need data we
@@ -529,8 +533,8 @@ _RW_MIN_ABS_RETURN = 5.0   # v17.5.1: stock's own 3d return must be >= this %.
 _V14_6_SL_MAX_PCT = 15.0   # never wider (caps risk per trade)
 # ── v17.8: REGIME-AWARE TARGET R:R MULTIPLIER (LIVE) ─────────────────────────
 # T1's risk/reward floor. Previously a flat 1.5×. Now varies with the stock's
-# OWN volatility regime (the same current-14 vs baseline-60 ATR regime the SL
-# engine already computes as regime_label):
+# OWN volatility regime (the same current-14 vs 252-day-baseline ATR regime
+# the SL engine already computes as regime_label):
 #   calm/low regime   → tighter 1.3×  (low vol → a modest target is realistic)
 #   normal regime     → 1.5×          (unchanged baseline)
 #   high/volatile     → wider 1.8×    (high vol → give the target room to breathe)
@@ -569,8 +573,9 @@ def _compute_sl_t_v14_6(cmp_price, atr_14, cfv, cap_category, sector,
     sector, time_horizon, support1.
 
     v14.7 inputs (backwards-compatible — missing → v14.6 behavior):
-      baseline_atr_pct: 60-day average ATR as percentage of CMP. Used for
-                        regime detection. If missing, no regime adjustment.
+      baseline_atr_pct: 1-year (252-trading-day) average ATR as percentage of
+                        CMP. Used for regime detection. If missing, no
+                        regime adjustment.
       vol_ratio: today's volume / 50-day avg volume. Used to confirm support
                  level is "real" (volume-backed). If missing or < 1.20,
                  support floor is not applied.
@@ -2559,8 +2564,10 @@ def run_master_pipeline():
                     stock[_qk] = "—"
 
             # v10.15 FIX #6: honest display for known-unavailable fields.
-            # Pledge % only in BSE corporate filings (no free API).
-            # DII % only in NSE corp-info API (blocked on cloud IPs).
+            # Pledge %: NSE pledge data reaches the cloud run only through the
+            # weekly local snapshot (Section 5A.3b, ≤ 14 days old).
+            # DII %: no free source — NSE's corp-info endpoint is retired and
+            # the live endpoint gives promoter vs public only (v17.13.3).
             # 0.0 in these fields almost always means "unknown", not
             # "measured zero". Display "—" so users don't misread 0.
             _pl = stock.get("pledge_pct", 0)
@@ -2947,7 +2954,8 @@ def run_master_pipeline():
                 if   _dq_sent >  0.5:  _sent += 6
                 elif _dq_sent >  0.3:  _sent += 4
                 elif _dq_sent < -0.3:  _sent -= 3
-                # News sentiment (populated by ai_analyst when credits available)
+                # News sentiment — set in Section 5A.6 by analysis/news_sentiment.py
+                # (left NEUTRAL when the LLM is not configured or in shadow mode)
                 _news_sent = str(stock.get("news_sentiment", "NEUTRAL") or "NEUTRAL").upper()
                 if   _news_sent == "POSITIVE": _sent += 4
                 elif _news_sent == "NEGATIVE": _sent -= 5
@@ -3544,11 +3552,11 @@ def run_master_pipeline():
             # raised concern after seeing positions stop out on routine -7%
             # moves that are normal for mid/small caps with 3-5% daily ATR.
             #
-            # v14.6: SL/T1/T2/T3 derived from ATR-14 (volatility), cap_category
+            # v14.6: SL derived from ATR-14 (volatility), cap_category
             # (fallback when ATR missing), time_horizon (SHORT/POSITIONAL/LONG),
-            # sector (HIGH_VOL widens, LOW_VOL tightens), CFV upside, and
-            # nearest support level. Targets enforce 1.5:1 R:R minimum and
-            # scale with fair-value upside.
+            # sector tier and nearest volume-confirmed support level.
+            # v17.8.1: the Target is regime multiplier × SL (1.3/1.5/1.8);
+            # CFV upside no longer sets it. See _compute_sl_t_v14_6().
             #
             # Existing positions in gold_recommendations table keep their
             # original SL/T (frozen at log time — preserves outcome tracking).
@@ -4082,8 +4090,9 @@ def run_master_pipeline():
         print("🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...")
 
         # v10.13 FIX #1 — Skip AI calls for AVOID-verdict stocks.
-        # Saves Gemini quota (observed ~8-10% waste on stocks the scoring
-        # engine already flagged below the 38 AVOID floor). The skipped stocks
+        # Saved LLM calls (observed ~8-10% waste on stocks the scoring
+        # engine already flagged below the 38 AVOID floor). Since v17.10 the
+        # card scope is Gold picks + open positions, so this rarely fires. The skipped stocks
         # receive a fixed placeholder message for Block H instead of a blank.
         # v12.6 (#14): standardised placeholder format. All three "no
         # analysis" cases (default-pending / AVOID-skip / quota-skip) now

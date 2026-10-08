@@ -1,7 +1,9 @@
 """
 excel_generator.py  —  NSE/BSE Stock Analyser v6 Dashboard Generator
-Matches the reference template exactly: 6 sheets, correct colours,
-group headers, column order, row heights, and column widths.
+Builds the 8-sheet workbook: Full Dashboard, Gold – Early Movers, Trade
+Summary, Alert Log, Delivery Preview, Performance, Glossary and Tooltip
+Reference (the original v6 template had 6 sheets) — colours, group headers,
+column order, row heights and column widths.
 """
 import os
 import pandas as pd
@@ -527,27 +529,28 @@ GLOSSARY_DATA = [
     ("SHAREHOLDING","Promoter %",
      "Promoter holding share. <25% = low conviction (consider Ownership "
      "red flag); 0% = Hard Drop from Gold filter. "
-     "Source: NSE corp-info API primary; yfinance heldPercentInsiders fallback. "
+     "Source: yfinance heldPercentInsiders; blanks filled from NSE "
+     "shareholding (pr_and_prgrp) via the weekly local snapshot. "
      "Rising over time = promoter conviction signal.",
      "All sheets"),
     ("SHAREHOLDING","Pro QoQ Δ",
      "Promoter shareholding change vs previous quarter (percentage points). "
      ">+0.5 = promoter buying (Sentiment +5); <−0.5 = selling (Sentiment −5). "
-     "Source: computed as (current promoter_pct − prior-quarter promoter_pct). "
-     "v13.0: now populates immediately from NSE corp-info JSON which returns "
-     "2–4 quarters of history in a single call (zero new API cost). Pre-v13.0 "
-     "depended on a 3-month rolling window of daily runs to accumulate prior "
-     "data. '—' = no prior quarter from NSE OR symbol failed corp-info call.",
+     "Source: computed as (current promoter_pct − prior-quarter promoter_pct) "
+     "from the stored shareholding history (Section 5A.4). NSE's multi-quarter "
+     "response is used only when NSE answers directly, which it does not do "
+     "for cloud runners. '—' = no prior-quarter value stored yet.",
      "Full Dashboard"),
     ("SHAREHOLDING","Pledge %",
      "Percentage of promoter shares pledged as loan collateral. "
      "0% = clean capital structure (Safety +4); 10–20% = watch (−7); "
      ">20% = RED FLAG (Safety −15 + suppresses all spike signals). "
-     "Source: NSE bulk pledge endpoint (corporates-pledgedata, free, daily). "
-     "v13.0 makes this real for the first time — pre-v13.0 was hardcoded 0 "
-     "from yfinance fallback. Shows '—' when no record in NSE feed (most "
-     "stocks have zero pledge so they don't appear in the report). Score "
-     "gates fire on numeric values; '—' treated as 0 for guard purposes.",
+     "Source: NSE bulk pledge data (percSharesPledged). NSE does not serve "
+     "cloud runners, so the value comes from the weekly local snapshot "
+     "(data/nse_snapshot.json, used only when ≤ 14 days old, fills blanks "
+     "only). Shows '—' when NSE has no record (most stocks pledge nothing) "
+     "or the snapshot is stale. Score gates fire on numeric values; '—' "
+     "treated as 0 for guard purposes.",
      "All sheets"),
     ("SHAREHOLDING","Pledge Direction",
      "FALLING = promoters repaying loans (positive); RISING = more shares "
@@ -561,24 +564,22 @@ GLOSSARY_DATA = [
      "Full Dashboard"),
     ("SHAREHOLDING","FII QoQ Δ",
      "FII holding change vs previous quarter. >+1 pp = strong accumulation "
-     "(Early Entry +8); <−1 = distribution. v13.0: populates immediately "
-     "from NSE corp-info multi-quarter response (single call, zero new API "
-     "cost). '—' when no prior quarter available.",
+     "(Early Entry +8); <−1 = distribution. Computed from the stored "
+     "shareholding history; '—' when no prior-quarter value is stored.",
      "Full Dashboard"),
     ("SHAREHOLDING","DII %",
      "Domestic Institutional Investor (MF/insurance/banks) holding %. "
      ">10% = domestic confidence. Rising DII + FII = dual institutional "
      "accumulation = bullish signal. "
-     "Source: NSE corp-info JSON API (heldPercentInstitutions in yfinance "
-     "is FII+DII combined; DII alone needs NSE). v10.15 FIX #6: shows '—' "
-     "when 0 because NSE API is commonly blocked on cloud IPs (GitHub "
-     "Actions etc.) — 0 is indistinguishable from 'API blocked' on free-tier.",
+     "No free source today: NSE's public shareholding endpoint gives "
+     "promoter vs public only (the old corp-info DII field is retired) and "
+     "yfinance heldPercentInstitutions is FII+DII combined. Shown as '—' — "
+     "never derived from the public bucket.",
      "Full Dashboard"),
     ("SHAREHOLDING","DII QoQ Δ",
      "DII holding change vs previous quarter. >+0.5 pp = strong domestic "
      "accumulation (Sentiment +6); <−0.3 = distribution (Sentiment −3). "
-     "v13.0: populates from NSE corp-info multi-quarter response. '—' when "
-     "no prior quarter computable.",
+     "'—' while DII % has no free source.",
      "Full Dashboard"),
     ("SHAREHOLDING","Public Float %",
      "Percentage of shares NOT held by promoter or institutions. "
@@ -646,12 +647,11 @@ GLOSSARY_DATA = [
      "WATCH = moderate debt or pledge 10–20%, monitor quarterly results | "
      "ALERT = high debt (D/E>2), pledge>20%, negative FCF, or interest coverage<1.5 (extra caution)","All sheets"),
     ("TRADE PLAN","R:R Ratio",
-     "Risk:Reward = (Target1 − Entry midpoint) ÷ (Entry midpoint − Stop Loss). "
-     "< 1:1 = Poor (avoid) | 1:1 to 2:1 = Acceptable | "
-     "2:1 to 3:1 = Good (standard for positional trades) | "
-     "> 3:1 = Excellent (asymmetric payoff). "
-     "Session 22: Target1 auto-derived to keep R:R ≥ 2.0 — uses max of "
-     "(Entry + 2× risk distance) and CFV-weighted target.","Trade Summary"),
+     "Risk:Reward = (Target − Entry midpoint) ÷ (Entry midpoint − Stop Loss). "
+     "The Target is a fixed multiple of the stop distance (1.3× calm / 1.5× "
+     "normal / 1.8× volatile regime), so R:R sits close to that multiple; "
+     "measured from the entry midpoint it can read slightly lower or higher. "
+     "It describes the trade plan, not stock quality.","Trade Summary"),
     ("TRADE PLAN","Risk Level",
      "LOW = large cap, low beta, positive MoS, strong balance sheet | "
      "MEDIUM = mid cap or slight premium or moderate debt | "
@@ -834,7 +834,7 @@ GLOSSARY_DATA = [
      "Promoter holding change quarter-over-quarter (%). "
      "Increasing = promoters buying → bullish signal. "
      "Decreasing = promoters selling → investigate reason. "
-     "v13.0: populated from NSE corp-info multi-quarter response.","Full Dashboard"),
+     "Computed from the stored shareholding history.","Full Dashboard"),
     ("SHAREHOLDING","Pledge Direction",
      "Direction of pledge change: FALLING / RISING / STABLE. "
      "RISING pledge is a red flag — promoters may be under financial stress. "
@@ -842,11 +842,11 @@ GLOSSARY_DATA = [
     ("SHAREHOLDING","DII %",
      "Domestic Institutional Investor holding %. "
      "DII (mutual funds, insurance) rising = domestic smart money accumulating. "
-     "v13.0: separated from FII via NSE corp-info diisTotal field.","Full Dashboard"),
+     "No free source today — shown as '—'.","Full Dashboard"),
     ("SHAREHOLDING","DII QoQ Δ","DII holding change quarter-over-quarter. "
-     "v13.0: from NSE corp-info multi-quarter history.","Full Dashboard"),
+     "'—' while DII % has no free source.","Full Dashboard"),
     ("SHAREHOLDING","FII QoQ Δ","FII holding change quarter-over-quarter. "
-     "v13.0: from NSE corp-info multi-quarter history.","Full Dashboard"),
+     "Computed from the stored shareholding history.","Full Dashboard"),
     ("SHAREHOLDING","Public Float %",
      "% of shares held by retail/public (100% − Promoter% − Institutional%). "
      "Higher float = more liquid, lower impact cost for large orders.","Full Dashboard"),
@@ -914,14 +914,14 @@ GLOSSARY_DATA = [
      "Falls back to '—' for stocks with < 80 days of price history.","Full Dashboard"),
     ("TECHNICAL","Resist 1 (₹)",
      "Short-term resistance = 20-day rolling high. Nearest price ceiling — "
-     "Target 1 is typically set at Resist 1.","Full Dashboard"),
+     "a close above it on rising volume is a breakout signal.","Full Dashboard"),
     ("TECHNICAL","Resist 2 (₹)",
      "Major long-term resistance = prior 52-week high (v12.4; excludes last 20d). "
      "Computed as the rolling 252-day max over bars BEFORE the most recent 20. "
      "Earlier v10.9 logic (rolling-252 over the full series) silently mirrored "
      "Resist 1 whenever the 52-week max landed inside the last 20 days — "
      "observed in 87.9 % of production rows. v12.4 separates them. "
-     "Target 2 / T3 set at Resist 2.","Full Dashboard"),
+     "Shown as '—' when within 0.5% of Resist 1 (no distinct prior ceiling).","Full Dashboard"),
 
     # ── BALANCE SHEET ─────────────────────────────────────────────────────────
     ("BALANCE SHEET","BS Health Note",
@@ -936,7 +936,9 @@ GLOSSARY_DATA = [
      "Use limit orders within this range for best execution.","All sheets"),
     ("TRADE PLAN","Stop Loss (₹)",
      "Mandatory stop loss price. Exit the trade if CMP closes below this on a daily basis. "
-     "Set at ~3–5% below entry, or just below key support level. "
+     "Set per stock from volatility: ATR-14 × horizon multiplier, adjusted for sector "
+     "and volatility regime, floored at volume-confirmed support, bounded 4.5%–15% "
+     "(SHORT TERM ≤ 7%). "
      "ALWAYS place stop loss before entering any trade.","All sheets"),
     ("TRADE PLAN","Target (₹)",
      "v17.8.1: single price target = regime_multiplier × SL "
@@ -950,19 +952,23 @@ GLOSSARY_DATA = [
     ("NEWS & RISK","Key Catalyst",
      "Primary upcoming event that could trigger price re-rating. "
      "Examples: order win, product launch, QIP, promoter buyback, index inclusion. "
-     "Requires Gemini API credits — populated by AI analyst (aistudio.google.com).","Full Dashboard"),
+     "Taken from recent headlines by the company LLM (news engine) when one is "
+     "reported; '—' otherwise.","Full Dashboard"),
     ("NEWS & RISK","News Sentiment",
-     "AI-assessed recent news tone: BULLISH / NEUTRAL / BEARISH. "
-     "Based on last 30 days of BSE announcements and news. "
-     "Requires Gemini API credits.","Full Dashboard"),
+     "LLM verdict on recent headlines: POSITIVE / NEUTRAL / NEGATIVE. "
+     "Up to 15 Google News headlines from the last 14 days; only verdicts with "
+     "confidence ≥ 0.6 count (others become NEUTRAL). POSITIVE adds +4 and "
+     "NEGATIVE −5 to the sentiment sub-score.","Full Dashboard"),
     ("NEWS & RISK","Primary Risk",
      "The single most important risk factor for this stock right now. "
      "Examples: regulatory overhang, promoter pledge, client concentration, commodity exposure. "
-     "Requires Gemini API credits.","Full Dashboard"),
+     "Taken from recent headlines by the company LLM when one is reported; "
+     "'—' otherwise.","Full Dashboard"),
     ("NEWS & RISK","SEBI Flags",
      "Any active SEBI actions, adjudication orders, or exchange surveillance flags. "
      "NONE = clean | Any other value = investigate before investing. "
-     "Requires Gemini API credits.","Full Dashboard"),
+     "No free structured source, so normally empty — the Reg Flag column "
+     "flags regulatory or legal action reported in headlines.","Full Dashboard"),
 
     # ── GOLD SHEET SPECIFIC ────────────────────────────────────────────────────
     # v12.5: removed the duplicate "F-Score /9" glossary entry that used
@@ -982,7 +988,7 @@ GLOSSARY_DATA = [
      "How long the system claims to hold this pick. "
      "SHORT TERM = 2–4 weeks (spike-driven entry) | "
      "POSITIONAL = 1–3 months (trend confirmed) | "
-     "LONG TERM = 6–12 months (value accumulation). "
+     "LONG TERM = 3–12 months (value accumulation). "
      "Drives the v14.1 outcome-tracking expiry window: "
      "SHORT TERM → 30 days, POSITIONAL → 90 days, LONG TERM → 270 days.","All sheets"),
     ("VALUATION","P/E",
@@ -1035,27 +1041,31 @@ GLOSSARY_DATA = [
     # the duplicate column itself (MoS % is the single source of truth).
     # Documents why the Gold sheet only shows a small number of stocks per day.
     # Any user looking at the Gold sheet with few or zero stocks can reference
-    # this to understand the strict 8-condition filter.
+    # this to understand the strict filter (regime gate + 15 conditions).
     ("GOLD FILTER","Gold-Tier Definition",
-     "A stock qualifies for the Gold – Early Movers sheet only if ALL 11 "
+     "Market-regime gate first: no Gold picks on days the Nifty is more than "
+     "2% below its 20-day SMA. Then a stock qualifies only if ALL 15 "
      "conditions are met: (1) Verdict = BUY (not WATCHLIST), (2) Composite "
      "Score ≥ 70, (3) Margin of Safety between 15% and 100%, (4) Storm Score "
      "≥ 5 (defensively sound), (5) RSI ≤ 70 (not overbought), (6) BS Health "
      "Flag ≠ ALERT, (7) Pledge % ≤ 10, (8) not spike-suppressed, "
-     "(9) Altman Z ≥ 1.8 or missing (v10.11 — not in distress zone), "
-     "(10) Earn Quality ≠ LOW (v10.11 — no accounting concern), "
-     "(11) Int Coverage ≥ 1.5× or missing (v10.11 — can service interest). "
-     "Some days may show 0-3 stocks; other days 8-12. This is by design — the "
+     "(9) Altman Z ≥ 1.8 or missing (not in distress zone), "
+     "(10) Earn Quality ≠ LOW (no accounting concern), "
+     "(11) Int Coverage ≥ 1.5× or missing (can service interest), "
+     "(12) ROE ≥ 10% or missing, (13) PEG ≤ 8 or missing/≤0, "
+     "(14) 3-day price momentum ≥ 0, (15) sector cycle OK (weak sectors need a positive 4-week move). "
+     "Some days show 0 stocks; others several. This is by design — the "
      "filter reflects market reality, not a fixed daily quota.","Gold Sheet"),
     ("GOLD FILTER","Why so few Gold stocks?",
      "The Gold filter is strict by design: 'patient upside, healthy stocks "
      "only'. It rejects (a) stocks the system isn't confident enough to BUY, "
      "(b) stocks already overbought (RSI > 70), (c) stocks with inflated or "
      "shallow margins of safety, (d) anything with balance-sheet red flags "
-     "or high pledge, (e) v10.11: stocks in Altman distress zone, with LOW "
-     "earnings quality, or with weak interest coverage. Most days the top "
-     "3-8 stocks by score will also pass; days with broad distress signals "
-     "will produce fewer.","Gold Sheet"),
+     "or high pledge, (e) stocks in Altman distress zone, with LOW "
+     "earnings quality, weak interest coverage, ROE < 10% or PEG > 8, "
+     "(f) stocks falling over the last 3 days, or in a weak sector without a positive 4-week move, and "
+     "(g) everything on days the market regime is BEARISH. Zero-Gold days are "
+     "normal in weak markets.","Gold Sheet"),
 
     # ── FAIR VALUE SAFETY CAP (Session 19) ────────────────────────────────────
     ("FAIR VALUE","CFV Cap (3× CMP)",
@@ -1073,35 +1083,36 @@ GLOSSARY_DATA = [
     # v14.0: PERFORMANCE SHEET column entries
     # ──────────────────────────────────────────────────────────────────────
     ("PERFORMANCE","Total Tracked",
-     "Total Gold-sheet picks ever logged to gold_recommendations. Counts every stock that has cleared the 11-condition Gold filter at least once. "
+     "Total Gold-sheet picks ever logged to gold_recommendations. Counts every stock that has cleared the 15-condition Gold filter at least once. "
      "First-appearance rule: a stock is logged ONCE on its first Gold appearance; re-appearances are skipped until the original recommendation closes "
-     "(T1/T2/T3 hit, SL break, or 90-day expiry). This prevents the same stock from inflating sample size with correlated outcomes.","🎯 Performance"),
+     "(Target hit, stop or trailing stop hit, or horizon expiry). This prevents the same stock from inflating sample size with correlated outcomes.","🎯 Performance"),
     ("PERFORMANCE","Closed",
      "Picks where outcome is final — sum of T1_HIT + T2_HIT + T3_HIT + SL_HIT + TRAIL_SL + EXPIRED. Hit rate / SL rate / expiry rate are computed against this denominator. "
-     "Closed rows are immutable — the tracker never re-evaluates them, so once a stock hits T1, subsequent T2 movement won't update the row. "
+     "Closed rows are immutable — the tracker never re-evaluates them; what a stock did after hitting its Target is measured separately in the Continuation Audit. "
      "TRAIL_SL (trailing-stop exits) count as closed but are excluded from the SL-rate — they represent successful risk control, not stop-loss failures.","🎯 Performance"),
     ("PERFORMANCE","Open",
-     "Picks still being monitored — within 90-day tracking window with no SL/T1/T2/T3 event yet. The tracker walks each open row's daily price history "
-     "every run, refreshing current_price + max_runup + max_drawdown. Open rows graduate to EXPIRED automatically at day 90 if no event fires.","🎯 Performance"),
+     "Picks still being monitored — inside their horizon window (SHORT TERM 30 / POSITIONAL 90 / LONG TERM 270 days) with no Target or stop event yet. "
+     "The tracker walks each open row's daily price history every run, refreshing current_price + max_runup + max_drawdown. Open rows become EXPIRED "
+     "automatically at the end of their window if no event fires.","🎯 Performance"),
     ("PERFORMANCE","Hit Rate (T1+)",
-     "(T1_HIT + T2_HIT + T3_HIT) / CLOSED × 100. The fraction of closed picks where price reached at least the first target. The headline measure of system accuracy. "
+     "(T1_HIT + T2_HIT + T3_HIT) / CLOSED × 100. The fraction of closed picks where price reached the Target (T2_HIT / T3_HIT occur only when price gaps through the dormant spacing levels). The headline measure of system accuracy. "
      "Heuristics: ≥60% = strong predictive value; 40-60% = useful but mixed; <40% = weak signal, review filter logic. "
      "Wait for ≥30 closed picks before drawing conclusions — sample size matters.","🎯 Performance"),
     ("PERFORMANCE","SL Rate",
      "SL_HIT / CLOSED × 100. The fraction of closed picks that broke down through the ORIGINAL stop loss before any target hit (a real loss — thesis failed). Lower is better. "
-     "System is calibrated for ~6.5% risk per trade; SL rate of 25-35% is normal even for a healthy strategy. >50% suggests entries are too late "
+     "Stops are volatility-based (4.5–15% below entry) and position size keeps portfolio risk per trade at about 1%; an SL rate of 25-35% is normal even for a healthy strategy. >50% suggests entries are too late "
      "(chasing momentum) or SL is set too tight. v16.5: TRAIL_SL (trailing-stop break-even / locked-profit exits) are EXCLUDED from this rate — they are not stop-loss failures.","🎯 Performance"),
-    ("PERFORMANCE","T1 Hit / T2 Hit / T3 Hit",
-     "Counts of closed picks bucketed by which target the price reached first. Note: a pick that reached T2 is NOT also counted in T1 — these are mutually exclusive buckets. "
-     "T1 = first target (~2× the risk distance from entry); T2 = T1 × 1.05; T3 = CFV-anchored (often 25-30% above entry).","🎯 Performance"),
+    ("PERFORMANCE","Target Hit",
+     "Headline tile TARGET HIT = T1_HIT + T2_HIT + T3_HIT. Since v17.8 there is one live Target: regime multiplier × SL distance (1.3× calm / 1.5× normal / 1.8× volatile), capped at +50%. "
+     "T2/T3 are dormant spacing levels (Target × 1.35 and × 1.35²) kept for older rows and the Continuation Audit; a T2_HIT/T3_HIT only appears when price gaps through them on one bar.","🎯 Performance"),
     ("PERFORMANCE","SL Hit",
      "Count of closed picks where the daily LOW touched/breached the stop loss before any target was hit. We use daily OHLC, so on same-day ties (low ≤ SL AND high ≥ T1), "
      "SL wins by convention — we can't tell intra-day order from daily bars.","🎯 Performance"),
     ("PERFORMANCE","Expired",
-     "Count of closed picks that crossed 90 calendar days from recommendation_date without hitting any target or SL. Bucketed separately because they're neither wins nor losses — "
+     "Count of closed picks that reached the end of their horizon window (SHORT TERM 30 / POSITIONAL 90 / LONG TERM 270 days) without hitting the Target or a stop. Bucketed separately because they're neither wins nor losses — "
      "the stock simply drifted sideways. High Expired rate suggests targets may be too ambitious for the chosen time horizon.","🎯 Performance"),
-    ("PERFORMANCE","Avg Days → T1 / T2 / T3 / SL",
-     "Mean calendar days from recommendation_date to the event firing. Useful for setting realistic expectations: if Avg Days→T1 is 20, plan to hold positions ~3 weeks. "
+    ("PERFORMANCE","Avg Days → Target / SL",
+     "Mean calendar days from recommendation_date to the event firing. Useful for setting realistic expectations: if Avg Days→Target is 20, plan to hold positions ~3 weeks. "
      "Long Avg→SL (>30d) suggests gradual drift after entry; short Avg→SL (<10d) suggests entries on weak setups.","🎯 Performance"),
     ("PERFORMANCE","Max Runup %",
      "Highest unrealized gain reached during the tracking period. Computed as max((daily_high - cmp_at_recommendation) / cmp × 100) across the walk. "
@@ -1111,7 +1122,7 @@ GLOSSARY_DATA = [
      "Worst unrealized loss reached during the tracking period — max negative excursion from cmp_at_recommendation. Computed as min((daily_low - cmp) / cmp × 100). "
      "For SL_HIT rows, this matches the SL distance. For winners, a deep DD before the win shows the system held conviction through volatility.","🎯 Performance"),
     ("PERFORMANCE","Days Held",
-     "For open positions only. Calendar days since recommendation_date. When this hits 90 with no SL/T1/T2/T3 event, the next tracker run bumps the row to EXPIRED.","🎯 Performance"),
+     "For open positions only. Calendar days since recommendation_date. When it reaches the horizon window (SHORT TERM 30 / POSITIONAL 90 / LONG TERM 270 days) with no Target or stop event, the next tracker run marks the row EXPIRED.","🎯 Performance"),
     ("PERFORMANCE","Archetype (in Performance sheet)",
      "Quick Pick label captured at the moment the stock was logged (frozen — not updated even if today's score/EE would change it). Lets the BY QUICK PICK ARCHETYPE table "
      "measure whether DEEP VALUE EARLY MOVER picks actually outperform DEEP VALUE — answers the question 'are the combo-archetype calls meaningfully different?'","🎯 Performance"),
@@ -1120,13 +1131,13 @@ GLOSSARY_DATA = [
     # ──────────────────────────────────────────────────────────────────────
     ("PERFORMANCE","Time Horizon",
      "Time-horizon classification at recommendation time, set by master_funnel based on verdict + spike + supertrend + MACD: "
-     "SHORT TERM = BUY + Spike count ≥ 2 (high momentum); POSITIONAL = BUY + supertrend BUY + MACD BUY (confirmed trend) OR BUY + Score ≥ 68; LONG TERM = BUY (lower conviction) OR WATCHLIST/NEUTRAL/AVOID. "
+     "SHORT TERM = BUY + Spike count ≥ 2 (high momentum); POSITIONAL = BUY + supertrend BUY + MACD BUY (confirmed trend) OR BUY + Score ≥ 68 OR WATCHLIST; LONG TERM = any other BUY OR NEUTRAL/OVERVALUED/AVOID (Gold picks are always BUY). "
      "v14.1 drives the per-recommendation expiry window: SHORT TERM → 30 days, POSITIONAL → 90 days, LONG TERM → 270 days. Frozen at log time so changing constants later doesn't retroactively re-bucket existing rows.","🎯 Performance"),
     ("PERFORMANCE","Days Left",
-     "Calendar days remaining until hard expiry. Computed as expiry_days minus days_held. When this hits 0 with no SL/T1/T2/T3 event, the next tracker run buckets the row as EXPIRED at the exact horizon-derived cutoff. "
+     "Calendar days remaining until hard expiry. Computed as expiry_days minus days_held. When this hits 0 with no Target or stop event, the next tracker run buckets the row as EXPIRED at the exact horizon-derived cutoff. "
      "HARD CUTOFF — no grace period, no extensions. When ≤14, the open-positions row is highlighted in pale yellow with a ⚠ flag to surface positions you may want to manually review before forced expiry.","🎯 Performance"),
     ("PERFORMANCE","Re-app",
-     "Times this stock re-appeared in Gold sheet on subsequent days while the original recommendation is still being tracked. First-appearance rule keeps the original entry/SL/T1/T2/T3 frozen — re-appearances do NOT update targets "
+     "Times this stock re-appeared in Gold sheet on subsequent days while the original recommendation is still being tracked. First-appearance rule keeps the original entry/SL/Target frozen — re-appearances do NOT update targets "
      "(preserves measurement integrity by not letting later optimism rescue earlier calls). The counter exists for diagnostic visibility: high count = 'the system kept saying buy this' which is a stronger conviction signal than a single appearance. "
      "Idempotent within a calendar day: same-day pipeline re-runs don't double-count.","🎯 Performance"),
     ("PERFORMANCE","Approaching Expiry Warning",
@@ -1138,27 +1149,28 @@ GLOSSARY_DATA = [
      "the SHORT TERM classification may need recalibration. v14.1 only — appears once data accumulates.","🎯 Performance"),
     ("PERFORMANCE","Avg / Peak Missed Runup",
      "Diagnostic for EXPIRED rows: how much max gain (max_runup_pct) the stock reached before being bucketed as EXPIRED. AVG MISSED RUNUP averages across all expired rows; PEAK MISSED RUNUP shows the worst single case. "
-     "Reading guide: AVG >15% suggests targets are too far OR expiry too early — stocks rallied during tracking but failed to reach T1 within the horizon window. AVG <5% means expiry was the right call (truly sideways stocks). "
+     "Reading guide: AVG >15% suggests targets are too far OR expiry too early — stocks rallied during tracking but failed to reach the Target within the horizon window. AVG <5% means expiry was the right call (truly sideways stocks). "
      "EXPIRED w/ ≥10% RUNUP shows count/total of expired rows that crossed 10% runup before failing — high ratio means the system identifies winners but mistimes them.","🎯 Performance"),
-    # v14.4: SL/T1/T2/T3 columns in Open Positions table
-    ("PERFORMANCE","SL / T1 / T2 / T3 columns",
-     "v14.4: each open position row shows the recommended stop-loss and three profit targets. Format: ₹price (distance%). The distance percentage is from CURRENT price (not entry), so it updates dynamically as the tracker refreshes price each pipeline run. "
-     "Example: PETRONET entered at ₹282.10 with T1 ₹310.30. After rallying to ₹283.80, T1 reads '₹310.30 (+9.3%)' — meaning we still need +9.3% more from current to hit T1. SL distance is naturally negative; target distances naturally positive while we're below them. "
-     "Levels are frozen at recommendation time — re-appearances do NOT update them, preserving measurement integrity. SL renders in red text (downside risk); T1/T2/T3 render in green (upside).","🎯 Performance"),
+    # v14.4 → v17.8.1: SL + single Target columns in Open Positions table
+    ("PERFORMANCE","SL / Target columns",
+     "Each open position row shows its ORIGINAL stop-loss (frozen at recommendation; the trailing level, once active, is in the separate Trailing column and the tracker uses whichever is higher) and its Target. Format: ₹price (distance%). The distance percentage is from CURRENT price (not entry), so it updates as the tracker refreshes price each pipeline run. "
+     "Example: entered at ₹282.10 with Target ₹310.30; after rallying to ₹283.80 the Target reads '₹310.30 (+9.3%)' — still +9.3% to go. SL distance is naturally negative; the Target distance positive while price is below it. "
+     "Levels are frozen at recommendation time — re-appearances do NOT update them, preserving measurement integrity. SL renders in red text (downside risk); Target in green (upside).","🎯 Performance"),
     # v14.5: CLOSED POSITIONS section
     ("PERFORMANCE","Closed Positions section",
-     "Chronological log of every closed pick (SL_HIT/TRAIL_SL/T1_HIT/T2_HIT/T3_HIT/EXPIRED), sorted most-recent-first. 12 columns: Symbol, Rec Date, Time Horizon, Outcome (colour-coded — green for targets, red for SL_HIT, blue for TRAIL_SL, amber for EXPIRED), Outcome Date, Days to Outcome, Entry CMP, Outcome Price, P&L %, Max Runup %, Max Drawdown %, Score. "
+     "Chronological log of every closed pick (SL_HIT/TRAIL_SL/T1_HIT/T2_HIT/T3_HIT/EXPIRED), sorted most-recent-first. 15 columns: Symbol, Rec Date, Time Horizon, Outcome (colour-coded — green for targets, red for SL_HIT, blue for TRAIL_SL, amber for EXPIRED), Outcome Date, Days to Outcome, Entry CMP, Outcome Price, P&L %, Max Runup %, Max Drawdown %, Score, Score Band, Archetype, Sector. "
      "Realised P&L is computed live from entry vs outcome_price (so it reflects what actually happened, not what was projected). Max Runup % is especially revealing for SL_HIT rows: a high value (e.g. +9%) means the stock rallied significantly BEFORE hitting SL — possible SL too tight. "
-     "Max Drawdown % matters for T-HIT rows: shows how much pain you'd have suffered before winning, useful for sizing future positions. Section appears between Diagnostic Breakdowns and Open Positions in the sheet — natural reading flow from aggregates to detail to current state. "
+     "Max Drawdown % matters for T-HIT rows: shows how much pain you'd have suffered before winning, useful for sizing future positions. Section appears after Diagnostic Breakdowns and before Risk-Adjusted Returns and Open Positions — natural reading flow from aggregates to detail to current state. "
      "Footer summarises counts per outcome bucket.","🎯 Performance"),
-    # v15.0: Multi-factor SL/T derivation
-    ("PERFORMANCE","v15.0 SL/T derivation methodology",
-     "v15.0 replaces the pre-v14.6 fixed -7%/+12.5% rule with a multi-factor formula that derives SL/T1/T2/T3 from six inputs: (1) ATR-14 daily volatility, (2) cap-category fallback (LARGE/MID/SMALL/MICRO), (3) time horizon (SHORT TERM=2.5×ATR, POSITIONAL=3.5×, LONG TERM=5×), (4) sector tier (very-high/high/neutral/low/very-low, ±0.6 to ±0.35), (5) ATR-percentile regime (current 14-day ATR vs 252-day baseline: high regime widens SL 10%, low tightens 10%), (6) volume-confirmed support floor (support1 only used when vol_ratio ≥ 1.20). "
-     "SL bounded [4.5%, 15.0%] (v15.1: raised from 12% to preserve multi-factor differentiation on Indian small/mid-caps with typical 3-5% ATR; previous 12% cap was firing for ~44% of stocks, collapsing their SL to a single value). Earnings within 5 days → SL widened 20% (infrastructure ready, data source pending). T1 = max(1.5 × SL_pct, 0.40 × CFV_upside) — guarantees R:R ≥ 1.5:1. T2 = max(2.5 × SL_pct, 0.70 × CFV_upside) ≥ T1 × 1.35. T3 = max(4.0 × SL_pct, 1.00 × CFV_upside) ≥ T2 × 1.35. "
-     "Hard T3 caps prevent absurd long-horizon stretches: SHORT TERM 35%, POSITIONAL 80%, LONG TERM 200%. Grade: A- (smart heuristics, not walk-forward backtested).","🎯 Performance"),
+    # v15.0 multi-factor SL; v17.8.1 regime × SL target
+    ("PERFORMANCE","SL / Target derivation",
+     "The stop-loss comes from a multi-factor formula with six inputs: (1) ATR-14 daily volatility, (2) cap-category fallback (LARGE/MID/SMALL/MICRO), (3) time horizon (SHORT TERM=2.5×ATR, POSITIONAL=3.5×, LONG TERM=5×), (4) sector tier (very-high/high/neutral/low/very-low: +0.6 / +0.3 / 0 / −0.2 / −0.35), (5) ATR-percentile regime (current 14-day ATR vs 252-day baseline: high regime widens SL 10%, low tightens 10%), (6) volume-confirmed support floor (support1 only used when vol_ratio ≥ 1.20). "
+     "SL bounded [4.5%, 15.0%]; SHORT TERM never wider than 7%. An earnings-week widening (+20%) is built in but has no data source yet, so it does not fire. "
+     "Target = regime multiplier × SL % — 1.3× calm, 1.5× normal, 1.8× volatile — with a +50% sanity ceiling. Fair value (CFV) and horizon caps no longer set the target. "
+     "T2/T3 are dormant spacing levels (Target × 1.35, × 1.35²). The multipliers are starting values; review them once ~30 picks have closed.","🎯 Performance"),
     ("PERFORMANCE","Trailing Stop logic",
-     "Outcome tracker ratchets up the stop-loss as the position gains. v16.5 peak-gain thresholds: ≥+10% → trailing SL moves to break-even (entry); ≥+15% → moves to entry+5%; ≥+20% → moves to entry+9%; ≥+25% → moves to entry+12%. Below +10% peak there is NO trailing stop — the original SL still protects. "
-     "(v16.5 raised break-even activation from +5% to +10%: the old +5% trigger force-closed positions that popped briefly then pulled back — e.g. KOVAI ran +5.4% then dipped and was falsely closed flat.) "
+     "Outcome tracker ratchets up the stop-loss as the position gains. Peak-gain thresholds: ≥+25% → trailing SL at entry+12%; ≥+20% → entry+9%; ≥+15% → entry+5%; ≥+12% AND at least 10 days held → break-even (entry). Below that there is NO trailing stop — the original SL still protects. "
+     "(Break-even activation was raised +5% → +10% in v16.5 and to +12% with a 10-day minimum hold in v17.0: earlier triggers force-closed positions that popped briefly then pulled back — e.g. KOVAI ran +5.4% then dipped and was closed flat.) "
      "Effective SL = MAX(original_sl, trailing_sl_price) — once activated, trailing SL only moves UP, never down. Zero look-ahead bias: trailing-SL update happens at END of each bar after the day's event check, so today's high cannot tighten today's stop and immediately trip it on today's low. "
      "Persisted in gold_outcomes: trailing_sl_pct, trailing_sl_price, peak_price_seen. Original SL preserved in gold_recommendations.original_stop_loss for audit. A trailing-stop exit is recorded as TRAIL_SL (NOT SL_HIT) — it is successful risk control, not a stop-loss failure, and is excluded from the SL-rate statistic.","🎯 Performance"),
     ("PERFORMANCE","Sector Tier / Regime / Volume confirmation columns",
@@ -1343,23 +1355,41 @@ _HDR_TIPS = {
     "BS Health Note":("Explains the health flag","Examples:NET CASH COMPANY|HIGH D/E 2.5x|NEGATIVE FCF|HIGH PLEDGE"),
     "Entry Range (\u20b9)":("Ideal buy zone = CMP +/- 0.5xATR","Avoid chasing if CMP moves significantly above upper bound"),
     "Stop Loss (\u20b9)":("Exit if CMP closes below this level","Never risk >2-3% of portfolio per trade"),
-    "Target 1 (\u20b9)":("First target=Resistance 1","Book 30-50% of position here. R:R should be >1:2"),
-    "Target 2 (\u20b9)":("Second target=Resistance 2","Hold remainder after Target 1"),
-    "Target 3 (\u20b9)":("Final target=Fair Value(CFV)","High MoS stocks can give 20-50% upside"),
-    "Time Horizon":("How long to hold","SHORT TERM:2-4wks(BUY+Spike>=2)\nPOSITIONAL:1-3mo(Score>=68+ST=BUY)\nLONG TERM:3-12mo(Score>=72+no spike)"),
+    "Target (\u20b9)":("Single target = regime multiplier x SL","1.3x SL calm | 1.5x normal | 1.8x volatile; capped at +50%"),
+    "Time Horizon":("How long to hold","SHORT TERM:2-4wks(BUY+Spike>=2)\nPOSITIONAL:1-3mo(BUY+ST&MACD BUY, or BUY+Score>=68, or WATCHLIST)\nLONG TERM:3-12mo(other BUY, or NEUTRAL/OVERVALUED/AVOID)"),
     "Risk Level":("LOW=safest | VERY HIGH=speculative only","LOW:High score+low beta+low D/E+no pledge\nMEDIUM:Acceptable | HIGH:Small/micro | VERY HIGH:Speculative"),
     "Exchange":("DUAL_LISTED=best liquidity","DUAL_LISTED:NSE+BSE(best) | NSE_ONLY:Good\nBSE_ONLY:Lower liq | BSE_SME:Very low-high impact cost"),
     "Cap Category":("LARGE=safest | MICRO=speculative","BUY thresholds: LARGE>=60|MID>=63|SMALL>=66|MICRO>=70"),
     "Support 1 (\u20b9)":("Nearest support=buy zone floor","20-day rolling low. Breach=bearish. Used for Stop Loss."),
-    "Support 2 (\u20b9)":("Deeper support level","40-day rolling low. Next level if Support 1 breaks."),
-    "Resist 1 (\u20b9)":("First resistance=Target 1","20-day rolling high. Breakout with volume=bullish."),
-    "Resist 2 (\u20b9)":("Stronger resistance=Target 2","40-day rolling high. Used as Target 2."),
+    "Support 2 (\u20b9)":("Deeper support level","Prior 52-week low (excludes last 20 days). Next level if Support 1 breaks."),
+    "Resist 1 (\u20b9)":("First resistance","20-day rolling high. Breakout with volume=bullish."),
+    "Resist 2 (\u20b9)":("Stronger resistance","Prior 52-week high (excludes last 20 days). '—' when within 0.5% of Resist 1."),
     "Key Catalyst":("Primary near-term growth driver","Product launch,order win,policy tailwind,expansion"),
     "News Sentiment":("POSITIVE=tailwind | NEGATIVE=headwind","POSITIVE:Favourable | NEUTRAL:No news | NEGATIVE:Headwinds"),
     "Primary Risk":("Biggest downside risk","Always read before investing"),
     "SEBI Flags":("NONE=clean | Any flag=investigate first","Any flag=investigate before buying"),
     "View Analysis Summary":("AI analyst note (150-250 words, company LLM)","Business quality, ratios, risks, catalysts, verdict rationale.\nGenerated for Gold picks and open positions only; cached per day."),
 }
+
+
+def _trailing_state_label(trailing_pct, trailing_price):
+    """Performance-sheet 'Trailing' cell text for an open position.
+
+    The tracker (track_outcomes._walk_forward) locks break-even, +5%, +9% or
+    +12% above entry; trailing_sl_pct is that lock in percent. Label the
+    level actually locked rather than a fixed bucket, so the cell can never
+    disagree with the tracker's tiers. No trailing stop yet → "—".
+    """
+    try:
+        _pct = float(trailing_pct or 0)
+        _price = float(trailing_price or 0)
+    except (TypeError, ValueError):
+        return "—"
+    if _price <= 0:
+        return "—"
+    if abs(_pct) < 0.5:
+        return "BE locked"
+    return f"+{_pct:.0f}% locked"
 
 
 def _patch_tooltip_vml(xlsx_path):
@@ -1639,8 +1669,8 @@ class ExcelGeneratorV6:
         # ── NEUTRAL filter: REMOVED in v12.0 ────────────────────────────────
         # Previously this block dropped NEUTRAL-verdict stocks unless they met
         # an "exceptional" bar (ROE>20% AND PE<30 AND MoS>10% AND ts>62). This
-        # caused the dashboard to silently shrink below 100 whenever Gemini
-        # quota was exhausted: stocks that didn't get an AI card stayed at the
+        # caused the dashboard to silently shrink below 100 whenever the AI
+        # quota was exhausted (Gemini at the time): stocks that didn't get an AI card stayed at the
         # default NEUTRAL label and got filtered out here, even though Stage 3
         # had already selected them as worth analysing.
         #
@@ -1655,7 +1685,7 @@ class ExcelGeneratorV6:
     def _safe_val(v): return _sv(v)
 
     def generate_excel_reports(self):
-        """Generates a single Excel file with all 6 sheets.
+        """Generates a single Excel file with all 8 sheets.
         Sheet 2 (Gold – Early Movers) is embedded inside the Full Dashboard file.
         No separate Gold file is produced — avoids duplication.
         Returns (master_file, None) — None is filtered out by master_funnel
@@ -1779,7 +1809,8 @@ class ExcelGeneratorV6:
                 c=ws.cell(4,i,h); c.fill=_f("991B1B"); c.font=_ft(True,"FEE2E2",8)
                 c.alignment=_al("center","center",True); c.border=_border()
             elif h in NEEDS_AI_CREDITS:
-                # Amber — populated only when Gemini API credits are loaded
+                # Amber — AI-generated column (company LLM; Gold picks and open
+                # positions only). None on the Full Dashboard since v17.18.
                 c=ws.cell(4,i,h); c.fill=_f("92400E"); c.font=_ft(True,"FEF3C7",8)
                 c.alignment=_al("center","center",True); c.border=_border()
             else:
@@ -2102,7 +2133,7 @@ class ExcelGeneratorV6:
         ws=wb.create_sheet("📊 Trade Summary"); ws.sheet_properties.tabColor="059669"
         gdf=self._get_gold()
         ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=16)
-        c=ws.cell(1,1,f"GOLD STOCKS — TRADE PLAN SUMMARY  ·  Entry / SL / Targets / R:R Ratio  ·  {self.dlbl}")
+        c=ws.cell(1,1,f"GOLD STOCKS — TRADE PLAN SUMMARY  ·  Entry / SL / Target / R:R Ratio  ·  {self.dlbl}")
         c.fill=_f("059669"); c.font=_ft(True,WHITE,11); c.alignment=_al()
         ws.row_dimensions[1].height=26
         hdrs=[("Symbol",12),("Company",25),("CMP (₹)",11),("CFV (₹)",12),
@@ -2879,9 +2910,11 @@ class ExcelGeneratorV6:
         ws.row_dimensions[next_row].height = 22
         next_row += 1
 
-        # v14.4: SL/T1/T2/T3 columns between Max Runup % and Score.
+        # v14.4: SL/T1/T2/T3 columns between Max Runup % and Score
+        # (v17.8.1: now SL + a single Target).
         # v15.0: Two new columns appended at end — "Trailing" (current trailing
-        # state: '—', 'BE locked', '+3% locked', '+7% locked') and "Regime"
+        # state: '—', 'BE locked', '+5% locked', '+9% locked', '+12% locked')
+        # and "Regime"
         # (high/neutral/low at log time). Total now 18 columns.
         # v15.7: Two more columns appended — "Suggested Alloc %" (the v15.5
         # risk-parity recommendation) and "Sizing Rationale" (the human-readable
@@ -2975,16 +3008,9 @@ class ExcelGeneratorV6:
                 # v15.0: derive Trailing-SL label + Regime label for columns 17/18.
                 _trailing_pct   = float(row_o.get("trailing_sl_pct", 0) or 0)
                 _trailing_price = float(row_o.get("trailing_sl_price", 0) or 0)
-                if _trailing_price <= 0:
-                    _trail_label = "—"
-                elif abs(_trailing_pct) < 0.5:
-                    _trail_label = "BE locked"
-                elif _trailing_pct >= 6.5:
-                    _trail_label = "+7% locked"
-                elif _trailing_pct >= 2.5:
-                    _trail_label = "+3% locked"
-                else:
-                    _trail_label = f"+{_trailing_pct:.1f}% locked"
+                # v17.19: label the level ACTUALLY locked (+5 / +9 / +12 since
+                # v16.5/v17.0). The old fixed buckets were v15.0's +3/+7 tiers.
+                _trail_label = _trailing_state_label(_trailing_pct, _trailing_price)
                 _regime = str(row_o.get("regime_at_rec", "") or "").strip().lower()
                 _regime_label = _regime.upper() if _regime in ("high","low","neutral") else "—"
                 # v15.7: pull risk-parity sizing fields (frozen at log time).
@@ -3268,7 +3294,7 @@ class ExcelGeneratorV6:
             ws.row_dimensions[next_row].height = 22
             next_row += 1
 
-            _sh_cols = [("Symbol",14),("Horizon",13),("Real Outcome",15),
+            _sh_cols = [("Symbol",14),("Time Horizon",15),("Real Outcome",15),
                         ("Real P&L %",12),("Shadow Outcome",16),("Shadow P&L %",13),
                         ("Difference",12),("Cur. Shadow Stop",16),("Regime",10)]
             for ci,(h,w) in enumerate(_sh_cols,1):
@@ -3434,7 +3460,8 @@ class ExcelGeneratorV6:
             if self.market_regime == "BEARISH":
                 return pd.DataFrame()
 
-            # Strict Gold-tier filter — all 13 conditions must be true:
+            # Strict Gold-tier filter — all 15 conditions must be true
+            # (1–13 below, plus the v17.0 momentum and sector-cycle gates):
             #
             #  1. Verdict = BUY                 — system-confident, not WATCHLIST
             #  2. Score >= 70                   — uniform Gold bar, not cap-adjusted

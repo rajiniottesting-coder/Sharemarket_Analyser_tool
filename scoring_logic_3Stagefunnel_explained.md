@@ -4,6 +4,15 @@ This is the single source of truth for how the pipeline turns ~5,150 daily bhav 
 
 Read it top-to-bottom and you'll understand the entire decision chain.
 
+> **Current-state note (October 2026, v17.19).** Parts 1–3 below — the funnel, the five sub-scores, the composite and the verdict — still describe the code accurately: the scoring and screening modules have not changed since v16.4 (Beneish anti-trigger now fires at M > −1.78). What has changed *around* them since this document was last revised:
+>
+> - **LLM.** Google Gemini was removed in v17.10. One company OpenAI-compatible endpoint now does two jobs: headline sentiment for the analysed stocks (Section 5A.6, feeds the sentiment sub-score: POSITIVE +4 / NEGATIVE −5) and Block H notes for **Gold picks and open positions only** (generated after the tracker runs, cached per day). The AVOID-skip in Step 6 below is therefore historical.
+> - **Gold filter.** A market-regime gate (no Gold when the Nifty is > 2 % below its 20-day SMA) followed by **15** conditions — the 11 described here plus ROE ≥ 10 %, PEG ≤ 8, 3-day momentum ≥ 0 and a sector-cycle check.
+> - **Trade plan.** Stop-loss = ATR-14 × horizon multiplier, adjusted for sector tier and volatility regime, bounded 4.5–15 % (SHORT TERM ≤ 7 %). A single Target = 1.3× / 1.5× / 1.8× the SL distance by regime; T2/T3 are dormant.
+> - **Outcome tracking.** Every Gold pick is logged and walked forward daily (live trailing stop, shadow stop, continuation audit) into the 🎯 Performance sheet.
+>
+> For the full current pipeline see `pipeline_reference.html`; for every change since v12.6.1 see the version history in `readme.md` / `CLAUDE.md`.
+
 ---
 
 ## Table of contents
@@ -29,21 +38,21 @@ Read it top-to-bottom and you'll understand the entire decision chain.
 
 # PART 1 — The Three-Stage Funnel
 
-Every morning, the pipeline has to decide which 100 stocks (out of ~5,150 traded on NSE+BSE) deserve the full treatment — yfinance fundamentals, forensics, technicals, scoring, Gemini AI cards. That decision is made in **three cascading stages**, from cheapest filter to most selective.
+Every morning, the pipeline has to decide which 100 stocks (out of ~5,200 traded on NSE+BSE) deserve the full treatment — yfinance fundamentals, forensics, technicals, news sentiment, scoring (and, for Gold picks and open positions, LLM investor notes). That decision is made in **three cascading stages**, from cheapest filter to most selective.
 
 ```
-~5,150 raw bhav rows
+~5,200 raw bhav rows
       ↓  Stage 1: structural hygiene filter
-~1,800 tradeable candidates
+~1,900 tradeable candidates          (run logs 18/25/26 Sep 2026: 1,859–1,993)
       ↓  Stage 2: tradeable-quality score /35
-~1,500 quality-passing stocks
+~1,600 quality-passing stocks        (same logs: 1,509–1,696)
       ↓  Stage 3: priority ranker + 5 overrides + cap mix
    100 final candidates
       ↓
    Scoring + verdict + AI (Part 2)
 ```
 
-The key design principle: **cheap filters first**. Stage 1 runs microseconds per stock (regex + comparisons). Stage 2 reads only bhav-copy columns (milliseconds). Stage 3 runs one batch SQL + priority scoring. Only these ~100 final stocks touch the expensive downstream layers (yfinance, forensic engine, Gemini). That's what keeps this running free-tier on GitHub Actions.
+The key design principle: **cheap filters first**. Stage 1 runs microseconds per stock (regex + comparisons). Stage 2 reads only bhav-copy columns (milliseconds). Stage 3 runs one batch SQL + priority scoring. Only these ~100 final stocks touch the expensive downstream layers (yfinance, forensic engine, the LLM). That's what keeps this running free-tier on GitHub Actions.
 
 ## 1.1 Stage 1 — Structural Eligibility Filter
 
@@ -191,9 +200,11 @@ The filler loop walks priority-ranked non-override stocks, skipping SMALL/MICRO 
 - Each stock gets a `selection_reason` string (e.g., "Large-cap institutional quality; strong institutional delivery 72%; significant volume surge 3.2× avg") — feeds directly into the AI prompt.
 - Final df is sorted by `verdict` (BUY → OVERVALUED → WATCHLIST → NEUTRAL → AVOID), then `priority_score` within tier. This determines Excel row order.
 
-### Step 6 — AVOID-skip for AI (v10.13 FIX #1 — in master_funnel Section 7/8)
+### Step 6 — AVOID-skip for AI (v10.13 FIX #1 — historical)
 
-Stage 3 returns 100 stocks. Section 6 then computes composite scores and verdicts. Then Section 7/8 calls Gemini. Here's where v10.13 saves quota:
+> Superseded in practice by v17.10: AI notes are now generated only for Gold picks and open positions, so AVOID stocks are out of scope anyway. The guard below is still in the code.
+
+Stage 3 returns 100 stocks. Section 6 then computes composite scores and verdicts. In the v10.13 design, Section 7/8 then called Gemini for every non-AVOID stock. Here's where v10.13 saved quota:
 
 ```python
 for _idx, _stock in enumerate(final_100_list):
@@ -266,7 +277,7 @@ Scoring:
 
 ### Then what?
 
-Sections 3–6 run: yfinance pulls fundamentals, forensics engine computes Altman Z / Earn Quality / ND-EBITDA / Int Coverage, technicals compute RSI / MACD / Supertrend, scoring engine computes the composite score (Part 2 below), verdict is derived. Section 7/8 sends the stock to Gemini (assuming the verdict isn't AVOID). The Excel gets generated.
+Sections 3–6 run: yfinance pulls fundamentals, forensics engine computes Altman Z / Earn Quality / ND-EBITDA / Int Coverage, technicals compute RSI / MACD / Supertrend, scoring engine computes the composite score (Part 2 below), verdict is derived. (Section 5A.6 has already added headline sentiment.) If the stock then passes the Gold filter, or is an open position, the company LLM writes its Block H note after the outcome tracker runs. The Excel gets generated.
 
 ---
 
@@ -580,7 +591,7 @@ Imagine INFY trades today with:
 
 **Excel shows:** `BUY ●●●` with composite score 82.45.
 
-**Section 7/8:** verdict is BUY (not AVOID), so Gemini generates the investor card for INFY. It lands in the Excel with a proper Block H analysis.
+**Section 7/8:** in today's pipeline INFY gets an LLM Block H note only if it also passes the Gold filter (or is an open position); the note then appears on the Gold sheet and in the Performance sheet's AI Card column.
 
 ---
 
@@ -786,7 +797,7 @@ Every piece of the logic above is documented in multiple user-facing layers:
 1. **Score /100 cell tooltip** — complete forensic threshold table inline
 2. **Verdict cell tooltip** — notes the forensic gate + references Score tooltip
 3. **SCORES group-header tooltip** (merged cell at row 3) — mentions forensic adj
-4. **Tooltip Reference sheet** (7th Excel tab) — auto-built from TIPS dict
+4. **Tooltip Reference sheet** (8th Excel tab) — auto-built from TIPS dict
 5. **Glossary sheet** — entries for Support/Resist 1/2 explain 20d vs 52w
 6. **CLAUDE.md Section 6** (AI context file) — full v10.9 + v10.13 specification
 7. **CLAUDE.md Section 14** — all forensic constants + Stage 3 constants (`FORENSIC_ALTMAN_Z_SAFE`, `O5_DAYS_SINCE_MIN`, etc.)
@@ -801,3 +812,7 @@ A user hovering over the **Score /100** or **Verdict** column headers sees exact
 ---
 
 **Document version:** reflects code as of v12.6.1 (backfill window bumped 365 → 400 calendar days for R2/S2 rolling-window headroom; no scoring/verdict logic change). Scoring logic (Parts 2-3) unchanged since v10.9 except for v10.16 PE-scoring-neutrality-for-clamped-values addition AND v12.6 thin-model FV guard. Funnel (Part 1) last changed in v10.13.
+
+---
+
+**Document version (October 2026):** funnel and scoring sections re-verified against the code at v17.19 — unchanged since v16.4. Stage counts updated from production logs. LLM, Gold-filter, trade-plan and outcome-tracking changes since v12.6.1 are summarised in the current-state note at the top.
