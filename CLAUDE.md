@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v17.19 · October 2026
+## AI Context File · v17.19.1 · October 2026
 
 This file gives Claude (or any AI assistant) the project context needed to understand, debug or extend this codebase. **Read it first** before making any change.
 
@@ -42,7 +42,7 @@ Sharemarket_Analyser_tool/
 ├── fetch_nse_local.py            OWNER'S MACHINE ONLY: NSE pledge + shareholding → data/nse_snapshot.json → git push
 ├── fetch_nse_now.bat             One-click manual trigger for the above
 ├── reset_performance_tracking.py Guarded wipe of the 3 outcome tables (workflow manual-dispatch only)
-├── test_v13_v14_consolidated.py  Regression suite — 96 guards, all green (v17.19)
+├── test_v13_v14_consolidated.py  Regression suite — 97 guards, all green on Linux and Windows (v17.19.1)
 ├── test_v11.0.2_full_withdummies.py  ⚠ NOT the deep ScoringEngine suite any more: overwritten on 16-May-2026
 │                                     (commit a09ba4c) with a stale copy of the consolidated suite (70/84 on
 │                                     current code). The real deep suite is in git history at d2f301a
@@ -952,12 +952,12 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 git pull origin main --rebase      # keep-alive bot and the weekly NSE snapshot commit to main
 git checkout -b fix/vXX-description
 # replace files
-python test_v13_v14_consolidated.py     # expect ALL green (96/96 at v17.19)
+python test_v13_v14_consolidated.py     # expect ALL green (97/97 at v17.19.1)
 git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PR → green check → merge
 ```
 
-**Test suite.** `test_v13_v14_consolidated.py` — 96 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, so a failure is always real (before that, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18). Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
+**Test suite.** `test_v13_v14_consolidated.py` — 97 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
 
 **Hard lessons — do not repeat.**
 1. **Tests must be bidirectional.** Reintroduce the bug, confirm the test fails, restore, confirm it passes (G35 once passed while the bug shipped; G40's first draft too).
@@ -968,12 +968,21 @@ git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 6. **When a rule changes, grep the labels, tooltips and glossary too** — v17.8 changed targets and v17.0 changed trailing tiers, but labels and tooltips kept the old numbers until v17.19.
 7. **Don't diagnose network blocks from this sandbox** — its egress proxy is not GitHub's or the owner's network (a "403 to datacenter IPs" claim was once retracted).
 8. **Never put tokens in remote URLs or files;** revoke anything exposed immediately.
+9. **"Green in the sandbox" is not "green on the owner's machine."** The owner runs Windows; v17.19 shipped 96/96 on Linux and 67/96 on Windows (`/tmp` paths). Before claiming a suite result, run it in the Windows-like check too: a private mount namespace with a read-only `/tmp` and `TMPDIR` elsewhere (`unshare -rm sh -c 'mount -t tmpfs -o ro tmpfs /tmp && TMPDIR=… python test_v13_v14_consolidated.py'`).
 
 ---
 
 # PART B — VERSION HISTORY (newest first)
 
 Entries from v17.3 downwards are preserved as written at the time. Where they describe behaviour that later changed, Part A is authoritative.
+
+### v17.19.1 — Test suite runs on Windows · 8 Oct 2026
+
+**Root cause.** The consolidated suite created its scratch DBs and workbooks under hard-coded `'/tmp/...'` paths (`_setup_temp_db`, `_restore`, nine `os.chdir('/tmp')` + `load_workbook(f"/tmp/{master}")` blocks, the runner's cleanup globs). `/tmp` does not exist on Windows, so on the owner's machine every DB-backed test failed with `OperationalError: unable to open database file` — 67/96, all 29 failures in v14_0 / v14_1 — while the same suite showed 96/96 in the Linux sandbox. v17.19 had removed the `/home/claude/proj` paths but missed these. No production code uses `/tmp`; the pipeline itself was never affected.
+
+**Fix (test file only).** `_TMP = tempfile.gettempdir()`, `_tmp(name)` and `_safe_remove(path)`; scratch DB names are unique per call (`test_consolidated_<name>_<pid>_<n>.db`) and deletes are best-effort with one retry after `gc.collect()`, because Windows keeps a file locked while any sqlite connection to it is open. All 36 `/tmp` uses replaced. New guard **G45**: no `/tmp` or `/home/` string literal in any project .py file (tokenizer-based, including Python 3.12+ f-string tokens; the stale `test_v11` copy excluded) and scratch DBs land in the OS temp dir.
+
+**Verification.** 97/97 on Linux (twice), in a Windows-like run (private mount namespace, read-only `/tmp`, `TMPDIR` elsewhere — which reproduced the owner's exact 67/96 before the fix), with every `.db` delete forced to raise `PermissionError` (Windows lock simulation), and with both at once. G45 fails on each injected variant: `f'/tmp/…'`, `'/tmp/…'`, `"/home/…"`, `rf'/tmp/…'`.
 
 ### v17.19 — Consistency pass: two display fixes, clean test suite, refreshed docs · October 2026
 
@@ -4164,4 +4173,4 @@ v17.3 does not improve returns and should not be read as if it does. What it cha
 
 ---
 
-*Last updated: 7 October 2026 · v17.19 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: 8 October 2026 · v17.19.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

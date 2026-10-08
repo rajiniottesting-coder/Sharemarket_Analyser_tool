@@ -1,10 +1,10 @@
 # NSE / BSE Stock Analyser
 
-[![Tests](https://img.shields.io/badge/regression%20tests-96-brightgreen)](./test_v13_v14_consolidated.py)
+[![Tests](https://img.shields.io/badge/regression%20tests-97-brightgreen)](./test_v13_v14_consolidated.py)
 [![Python](https://img.shields.io/badge/python-3.11-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Pipeline](https://img.shields.io/badge/pipeline-daily%20cron-orange)](./.github/workflows/market_run.yml)
-[![Version](https://img.shields.io/badge/version-v17.19-informational)](#version-history)
+[![Version](https://img.shields.io/badge/version-v17.19.1-informational)](#version-history)
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
 > 5,000+ stocks → scored, regime-gated Excel dashboard → your inbox every trading morning.
@@ -57,7 +57,7 @@ Sharemarket_Analyser_tool/
 ├── fetch_nse_local.py            Runs on the OWNER'S machine: NSE pledge + shareholding → data/nse_snapshot.json → git push
 ├── fetch_nse_now.bat             One-click manual trigger for the above (identical to the scheduled run)
 ├── reset_performance_tracking.py Guarded one-shot wipe of outcome-tracking tables (manual dispatch only)
-├── test_v13_v14_consolidated.py  Regression suite (96 guards) — `python test_v13_v14_consolidated.py`
+├── test_v13_v14_consolidated.py  Regression suite (97 guards) — `python test_v13_v14_consolidated.py`
 ├── requirements.txt
 ├── .env                          (local only — never committed)
 │
@@ -389,6 +389,7 @@ Most recent first. Earlier entries are preserved as written at the time.
 
 | Version | Key change |
 |---|---|
+| **v17.19.1** | **Test suite runs on Windows.** The suite's scratch DBs and workbooks used hard-coded `/tmp` paths, which do not exist on Windows, so 29 DB-backed tests failed there with "unable to open database file" (67/96) while passing on Linux. They now use the OS temp directory with unique names and lock-tolerant cleanup; new G45 rejects POSIX-only paths in any project file. 97/97 on Linux and in a Windows-like run. Test file only — no pipeline change. |
 | **v17.19** | **Consistency pass — two display fixes, refreshed docs and tooltips.** The Performance sheet's *Trailing* column still used v15.0's +3 % / +7 % buckets, so a +9 % lock read "+7% locked" and +5 % read "+3% locked"; it now names the level the tracker actually locked (new G43, verified to fail on the old code). The shadow-exit table had a bare "Horizon" header — G9 had been failing since v17.7, hidden because the test read sources from a dev-sandbox path that does not exist elsewhere; the header now reads "Time Horizon". The suite now reads every source relative to the repo and is fully green on any machine. A second audit corrected three more texts that disagreed with the code — WATCHLIST is a POSITIONAL horizon (not LONG TERM), the P&L % tooltip's trailing tiers, and the Performance *SL* cell, which shows the original stop (the trailing level has its own column), not an "effective" one — guarded by new G44 (96/96). Glossary and tooltips that still described v15.0 targets, the old trailing tiers, Gemini credits or NSE's retired corp-info source were rewritten (text only). `pipeline_reference.html` replaces the v16.5 reference; CLAUDE.md, the funnel explainer, the NSE snapshot guide and the master prompt's pipeline section were updated; stale code comments corrected. The one-off KOVAI `db_restore_oneoff.yml` workflow was removed. |
 | **v17.18** | **AI summary column removed from the Full Dashboard.** Notes are generated only for Gold picks and open positions, so ~90 of ~95 rows showed an "[AI skipped …]" placeholder. The note stays on the Gold sheet and in the Performance sheet's AI Card column. Full Dashboard 127 → 126 columns; text columns aligned by name. G42. The one-time `v16_5_cleanup_false_kovai.py` was deleted. |
 | **v17.17** | **Dual-listed allowlist guarded at write time; nightly wipe retired.** The workflow's v12.1 "self-healing" step deleted the runtime allowlist every run (its 700-row threshold sat far below the ~2,200 genuinely dual-listed stocks) and the reconciler relearned it during the run — on BSE-down days the fallback then held only the ~230 hard-coded names. `allowlist_maintainer` now records only rows matched by ISIN on both exchanges, skips ETFs / funds / index products, refuses a run that looks like a cross-join (duplicate share > 1 % or dual share > 99 %), and removes fund rows stored earlier. The v12.1 and v16.5 KOVAI workflow steps were removed. G41. |
