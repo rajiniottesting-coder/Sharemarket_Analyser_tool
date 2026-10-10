@@ -87,7 +87,7 @@
 <body>
 <div class="wrap">
 <h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
-<div class="meta">v17.19 · 8 October 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
+<div class="meta">v17.20 · 10 October 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
 <div class="toc">
   <h3>Contents</h3>
   <ol start="0">
@@ -1240,9 +1240,13 @@
    📰   not informed: headlines neutral ×… · …
    📊 Market regime: BULLISH (Nifty X vs 20d-SMA Y, gap +Z%, tolerance -2.0%)
    📈 v14.1 outcome tracking: logged N Gold pick(s) …
+   🥇 Gold empty on a BULLISH day (Nifty -1.91% vs 20d-SMA, tolerance -2.0%) — 0 of 95 stocks passed all 15 gates.
+   🥇 Funnel: 95 stocks → Verdict = BUY: 17 → Score ≥ 70: 13 → MoS 15–100%: 4 → not spike-suppressed: 1 → ROE ≥ 10%: 0
+   🥇 Emptied by: ROE ≥ 10% — removed the last 1: PLASTIBLEN (ROE 9.5%)
+   🥇 One gate short: WEALTH (MoS +6.7%), GNFC (MoS +7.0%), …   ← 🥇 only when Gold is empty (v17.20)
 🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...
    💾 AI cards served from today's cache (…)        ← only on a same-day re-run</pre>
-<div class="callout">Zero Gold picks is normal on BEARISH days and on weak tapes — 15 strict gates. A snapshot older than 7 days means the Sunday fetch was missed: double-click <code>fetch_nse_now.bat</code>.</div>
+<div class="callout">Zero Gold picks is normal on BEARISH days and on weak tapes — 15 strict gates. When it happens, the 🥇 lines name the gate that emptied the sheet (v17.20); "BULLISH" only means Nifty is no more than 2 % below its 20-day SMA. A snapshot older than 7 days means the Sunday fetch was missed: double-click <code>fetch_nse_now.bat</code>.</div>
 </div>
 </div>
 
@@ -1264,7 +1268,7 @@
 <tr><td>Outcome tracking</td><td><code>track_outcomes.py::main</code>, <code>_walk_forward</code>, <code>_compute_shadow_stop</code> · <code>data_bridge</code> outcome helpers</td></tr>
 <tr><td>AI notes</td><td><code>ai/ai_analyst.py::get_ai_analysis</code> → <code>_generate_ai_analysis</code> · <code>_load_card_system_prompt</code></td></tr>
 <tr><td>Workbook · tooltips</td><td><code>reporting/excel_generator.py</code> (8 sheets) · <code>reporting/tooltip_formatter.py::TIPS</code></td></tr>
-<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 97 guards, all green on Linux and Windows (v17.19.1)</td></tr>
+<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 98 guards, all green on Linux and Windows (v17.20)</td></tr>
 </tbody></table>
 
 <h3>Key constants &amp; thresholds</h3>
@@ -1293,8 +1297,8 @@ Display thresholds (v10.16 Option B): PE / PB / PS / EV-EBITDA above 500 and PEG
 <h3>Quick-pick labels are separate from the verdict</h3>
 <p style="margin-top:0"><code>stock["verdict"]</code> (BUY / WATCHLIST / NEUTRAL / OVERVALUED / AVOID) and <code>stock["label"]</code> (DEEP VALUE / EARLY MOVER / …) come from different functions. The verdict drives colour and the Gold filter; the label is an archetype used for sorting and for the Performance breakdowns.</p>
 <div class="footer">
-NSE/BSE Stock Analyser · Pipeline reference · v17.19 (8 October 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
-Parts 1–4 are the v16.5 scoring deep-dives, re-checked against the code — the screening and scoring modules are unchanged since v16.4; only funnel counts and output facts were updated. Parts 0 and 5–8 are new and describe v17.0–v17.19: market-regime gate and 15-condition Gold filter (v17.0, v17.5.1), single regime-aware Target (v17.8.1), live trailing tiers (v17.0), continuation audit (v17.3), shadow stop (v17.7), news engine (v17.9/v17.11), company-LLM analyst notes with per-day cache (v17.10–v17.16), weekly NSE snapshot (v17.13), allowlist write-time guards (v17.17), Full Dashboard without the AI column (v17.18) and the Trailing-label fix (v17.19).
+NSE/BSE Stock Analyser · Pipeline reference · v17.20 (10 October 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
+Parts 1–4 are the v16.5 scoring deep-dives, re-checked against the code — the screening and scoring modules are unchanged since v16.4; only funnel counts and output facts were updated. Parts 0 and 5–8 are new and describe v17.0–v17.19: market-regime gate and 15-condition Gold filter (v17.0, v17.5.1), single regime-aware Target (v17.8.1), live trailing tiers (v17.0), continuation audit (v17.3), shadow stop (v17.7), news engine (v17.9/v17.11), company-LLM analyst notes with per-day cache (v17.10–v17.16), weekly NSE snapshot (v17.13), allowlist write-time guards (v17.17), Full Dashboard without the AI column (v17.18), the Trailing-label fix (v17.19) and the empty-Gold reason in the run log (v17.20).
 </div>
 </div>
 <script>

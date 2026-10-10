@@ -1,10 +1,10 @@
 # NSE / BSE Stock Analyser
 
-[![Tests](https://img.shields.io/badge/regression%20tests-97-brightgreen)](./test_v13_v14_consolidated.py)
+[![Tests](https://img.shields.io/badge/regression%20tests-98-brightgreen)](./test_v13_v14_consolidated.py)
 [![Python](https://img.shields.io/badge/python-3.11-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Pipeline](https://img.shields.io/badge/pipeline-daily%20cron-orange)](./.github/workflows/market_run.yml)
-[![Version](https://img.shields.io/badge/version-v17.19.1-informational)](#version-history)
+[![Version](https://img.shields.io/badge/version-v17.20-informational)](#version-history)
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
 > 5,000+ stocks → scored, regime-gated Excel dashboard → your inbox every trading morning.
@@ -34,7 +34,7 @@ Single-user personal research tool. No UI, no server to manage. Runs on GitHub A
 - **7 Fair-Value models** per stock — DCF, Graham, PE, PB, EV/EBITDA, DDM, PEG — weighted into a Composite Fair Value with a Margin-of-Safety gate and sector-alias normalisation.
 - **Composite score /100** from five sub-scores (fundamental 35 · technical 30 · early-entry 15 · sentiment 10 · safety 10), cap-adjusted verdicts, confidence dots (●●● / ●●○ / ●○○), and a distinct **OVERVALUED** verdict.
 - **Market-regime gate** — Gold picks are suppressed only when the Nifty is **more than 2% below** its 20-day SMA (a tolerance band, so early-recovery days are not mistaken for downtrends).
-- **15-condition Gold filter** — BUY verdict, score, MoS, storm, RSI, balance-sheet health, pledge, spike suppression, Altman Z, earnings quality, interest cover, ROE, PEG, 3-day momentum and sector cycle must *all* pass.
+- **15-condition Gold filter** — BUY verdict, score, MoS, storm, RSI, balance-sheet health, pledge, spike suppression, Altman Z, earnings quality, interest cover, ROE, PEG, 3-day momentum and sector cycle must *all* pass. When the sheet is empty, the run log names the gate that emptied it (v17.20).
 - **Regime-aware stop & target** — ATR-based stop-loss scaled by horizon, sector and the stock's own volatility regime; a single **Target = regime multiplier × SL** (1.3× calm · 1.5× normal · 1.8× volatile).
 - **News & catalyst intelligence** — recent headlines per stock are read by an LLM that must quote the headline behind every fact it reports (insider buy/sell, bulk deal, regulatory action, results tone). Evidence-less claims are dropped; no numbers are ever invented. Feeds the sentiment sub-score.
 - **Real NSE pledge / promoter data** — fetched weekly from a residential IP by a scheduled local job, committed as a validated, timestamped snapshot, and used by the cloud pipeline only when fresh (≤ 14 days).
@@ -57,7 +57,7 @@ Sharemarket_Analyser_tool/
 ├── fetch_nse_local.py            Runs on the OWNER'S machine: NSE pledge + shareholding → data/nse_snapshot.json → git push
 ├── fetch_nse_now.bat             One-click manual trigger for the above (identical to the scheduled run)
 ├── reset_performance_tracking.py Guarded one-shot wipe of outcome-tracking tables (manual dispatch only)
-├── test_v13_v14_consolidated.py  Regression suite (97 guards) — `python test_v13_v14_consolidated.py`
+├── test_v13_v14_consolidated.py  Regression suite (98 guards) — `python test_v13_v14_consolidated.py`
 ├── requirements.txt
 ├── .env                          (local only — never committed)
 │
@@ -389,6 +389,7 @@ Most recent first. Earlier entries are preserved as written at the time.
 
 | Version | Key change |
 |---|---|
+| **v17.20** | **Empty Gold sheet explained in the run log.** On 10-Oct-2026 the Gold sheet was empty on a BULLISH day and the log only said "logged 0 Gold pick(s)". The 15 Gold gates now live in one list (`_gold_gates()`), which the Gold filter uses unchanged; when the sheet is empty the log prints 🥇 lines with the gate-by-gate funnel, the gate that emptied it and the stocks that were one gate short with the failing value (on BEARISH days, the regime gate and how many stocks it held back). No gate, threshold or score changed — old and new filter agree on 324 comparisons incl. 22 real dashboards. New G46 (98/98, Linux and Windows-like). |
 | **v17.19.1** | **Test suite runs on Windows.** The suite's scratch DBs and workbooks used hard-coded `/tmp` paths, which do not exist on Windows, so 29 DB-backed tests failed there with "unable to open database file" (67/96) while passing on Linux. They now use the OS temp directory with unique names and lock-tolerant cleanup; new G45 rejects POSIX-only paths in any project file. 97/97 on Linux and in a Windows-like run. Test file only — no pipeline change. |
 | **v17.19** | **Consistency pass — two display fixes, refreshed docs and tooltips.** The Performance sheet's *Trailing* column still used v15.0's +3 % / +7 % buckets, so a +9 % lock read "+7% locked" and +5 % read "+3% locked"; it now names the level the tracker actually locked (new G43, verified to fail on the old code). The shadow-exit table had a bare "Horizon" header — G9 had been failing since v17.7, hidden because the test read sources from a dev-sandbox path that does not exist elsewhere; the header now reads "Time Horizon". The suite now reads every source relative to the repo and is fully green on any machine. A second audit corrected three more texts that disagreed with the code — WATCHLIST is a POSITIONAL horizon (not LONG TERM), the P&L % tooltip's trailing tiers, and the Performance *SL* cell, which shows the original stop (the trailing level has its own column), not an "effective" one — guarded by new G44 (96/96). Glossary and tooltips that still described v15.0 targets, the old trailing tiers, Gemini credits or NSE's retired corp-info source were rewritten (text only). `pipeline_reference.html` replaces the v16.5 reference; CLAUDE.md, the funnel explainer, the NSE snapshot guide and the master prompt's pipeline section were updated; stale code comments corrected. The one-off KOVAI `db_restore_oneoff.yml` workflow was removed. |
 | **v17.18** | **AI summary column removed from the Full Dashboard.** Notes are generated only for Gold picks and open positions, so ~90 of ~95 rows showed an "[AI skipped …]" placeholder. The note stays on the Gold sheet and in the Performance sheet's AI Card column. Full Dashboard 127 → 126 columns; text columns aligned by name. G42. The one-time `v16_5_cleanup_false_kovai.py` was deleted. |

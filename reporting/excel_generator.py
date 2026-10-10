@@ -3448,6 +3448,180 @@ class ExcelGeneratorV6:
             c=ws.cell(ri,4,_desc_str); c.fill=_f(bg); c.font=_ft(False,"475569",9); c.alignment=_al("left","top",True); c.data_type="s"
             c=ws.cell(ri,5,where); c.fill=_f(bg); c.font=_ft(False,NAVY,9); c.alignment=_al("center","top")
 
+    def _gold_gates(self):
+        """The 15 Gold gates, in filter order: a list of (key, label, mask).
+
+        v17.20: single source of truth for the Gold filter. _get_gold() ANDs
+        these masks; gold_funnel_summary() uses the same masks to explain an
+        empty (or short) Gold sheet. The gate expressions are unchanged from
+        v17.19.1 — only moved here so the filter and its explanation can never
+        disagree.
+
+        All 15 conditions must be true
+        (1–13 below, plus the v17.0 momentum and sector-cycle gates):
+
+         1. Verdict = BUY                 — system-confident, not WATCHLIST
+         2. Score >= 70                   — uniform Gold bar, not cap-adjusted
+         3. 15 <= MoS <= 100              — real upside, not phantom inflation
+         4. Storm Score >= 5              — defensively sound
+         5. RSI <= 70                     — not already overbought
+         6. BS Health Flag != ALERT       — no balance-sheet red flags
+         7. Pledge % <= 10                — Gold = clean, not just "not awful"
+         8. spike_suppressed == False     — Altman/Beneish/pledge all clear
+         9. Altman Z >= 1.8 OR "—"         — not in distress zone
+        10. Earn Quality != "LOW"         — no accounting concern
+        11. Int Coverage >= 1.5 OR "—"    — can service interest
+        12. ROE >= 10% OR "—"             — quality floor on return on capital
+        13. PEG <= 8 OR "—" OR negative   — quality floor on valuation/growth
+        14. 3-day ROC >= 0               — v17.0 Fix 2: momentum confirmation
+        15. Sector-cycle gate             — v17.0 Fix 3: bearish sectors suppressed
+
+        Fields populated as "—" (missing data) PASS each respective gate so
+        small caps without forensic / fundamental ratios aren't unfairly
+        excluded — the existing core gates already cover those cases.
+        """
+        _mos = self.df["mos_pct"]
+        _rsi = self.df.get("rsi", pd.Series([50]*len(self.df)))
+        _storm = self.df.get("storm_score", pd.Series([0]*len(self.df)))
+        _pledge = pd.to_numeric(self.df.get("pledge_pct",
+                                            pd.Series([0]*len(self.df))),
+                                errors="coerce").fillna(0)
+        _bs = self.df.get("bs_status", pd.Series([""]*len(self.df))) \
+                   .astype(str).str.upper()
+
+        # v10.11 new gates — tolerant of "—" (missing data passes)
+        _alt_raw = self.df.get("altman_z", pd.Series(["—"]*len(self.df)))
+        _alt_num = pd.to_numeric(_alt_raw, errors="coerce")
+        # Pass if Altman ≥ 1.8 OR is missing (NaN)
+        _alt_gate = (_alt_num >= 1.8) | _alt_num.isna()
+
+        _eq = self.df.get("earnings_quality",
+                          pd.Series(["—"]*len(self.df))).astype(str).str.upper()
+        # Pass if Earn Quality is NOT "LOW" (HIGH/MODERATE/— all pass)
+        _eq_gate = _eq != "LOW"
+
+        _ic_raw = self.df.get("int_coverage", pd.Series(["—"]*len(self.df)))
+        _ic_num = pd.to_numeric(_ic_raw, errors="coerce")
+        # Pass if Int Coverage ≥ 1.5 OR is missing
+        _ic_gate = (_ic_num >= 1.5) | _ic_num.isna()
+
+        # ────────────────────────────────────────────────────────────
+        # Quality Floor — two institutional gates on profitability +
+        # growth-vs-valuation.
+        #
+        #   ROE ≥ 10%   — Minimum return on shareholder capital. Below
+        #                 this, the company isn't generating enough
+        #                 return to qualify as a quality pick. Threshold
+        #                 calibrated against real picks: ITC (29%),
+        #                 KOVAI (19.7%), BSOFT (13.4%) all pass; the
+        #                 9.5%-ROE SONAMLTD case fails.
+        #
+        #   PEG ≤ 8.0   — Maximum price/earnings/growth ratio. Healthy
+        #                 PEG is < 1.5, reasonable is < 3, extremely
+        #                 high (>8) signals fundamental disconnect.
+        #                 Threshold deliberately permissive to catch
+        #                 outlier red flags (SONAMLTD 8.63, INDUSTOWER
+        #                 19.47) without rejecting borderline cases
+        #                 like BSOFT (PEG 6.36) which are legitimate.
+        #
+        # Both gates are permissive on missing data: stocks with
+        # ROE=None or PEG=None (typically small caps without ratios)
+        # PASS these gates rather than being rejected. The existing
+        # 11 gates (Altman / BS Health / Int Coverage) already handle
+        # those cases. Negative PEG (loss-making companies) also
+        # passes — the verdict / score gates already filter losers.
+        QUALITY_FLOOR_ROE_PCT = 10.0
+        QUALITY_FLOOR_PEG_MAX = 8.0
+        _roe_raw = self.df.get("roe", pd.Series(["—"]*len(self.df)))
+        _roe_num = pd.to_numeric(_roe_raw, errors="coerce")
+        # Pass if ROE ≥ 10% OR missing
+        _roe_gate = (_roe_num >= QUALITY_FLOOR_ROE_PCT) | _roe_num.isna()
+
+        _peg_raw = self.df.get("peg", pd.Series(["—"]*len(self.df)))
+        _peg_num = pd.to_numeric(_peg_raw, errors="coerce")
+        # Pass if PEG ≤ 8 OR missing OR ≤ 0 (loss-making, other gates handle)
+        _peg_gate = (
+            (_peg_num <= QUALITY_FLOOR_PEG_MAX) |
+            _peg_num.isna() |
+            (_peg_num <= 0)
+        )
+
+        # ── v17.0 Fix 2: Momentum confirmation gate ─────────────────────
+        # Require 3-day price momentum (ROC) > 0 — positive price direction
+        # over the last 3 trading days. Prevents picking fundamentally strong
+        # stocks that are actively declining (right company, wrong moment).
+        # Missing/zero data passes (new stocks without history not penalised).
+        _3d_roc = pd.to_numeric(
+            self.df.get("3d_roc", pd.Series([0.0]*len(self.df))),
+            errors="coerce"
+        ).fillna(0.0)
+        _momentum_gate = _3d_roc >= 0  # strictly: ≥ 0 allows flat, > 0 requires up
+
+        # ── v17.0 Fix 3: Sector-cycle gate ──────────────────────────────
+        # Suppress stocks from structurally underperforming sectors unless
+        # the individual stock is outperforming (positive 4-week momentum).
+        #
+        # Sectors that showed ≤33% hit rate in the Jul 2026 audit of 31
+        # closed positions: Consumer Defensive (0%), Industrials (20%),
+        # Technology (33%), Communication Services (0%).
+        #
+        # DUAL-CONVENTION HANDLING (important):
+        # The `sector` field can arrive in EITHER of two naming schemes
+        # depending on which enrichment path populated symbol_master:
+        #   • yfinance path  → broad GICS names: "Technology", "Industrials"
+        #   • NSE API path   → industry names:  "IT - Software", "FMCG"
+        # (backfill_history.py writes info["sector"] on one path and
+        #  info["industry"] on the other — see lines ~1524 and ~1752.)
+        # Matching only one scheme would let half the universe bypass this
+        # gate silently. We therefore match on BOTH exact names and
+        # case-insensitive substrings covering the NSE equivalents.
+        _WEAK_SECTORS_EXACT = {
+            # yfinance broad GICS sector names
+            "Consumer Defensive", "Industrials", "Technology",
+            "Communication Services",
+        }
+        # NSE / industry-style substrings that map to the same weak groups
+        _WEAK_SECTOR_PATTERNS = (
+            "IT - ", "IT-", "INFORMATION TECH", "SOFTWARE", "COMPUTER",
+            "FMCG", "CONSUMER GOODS", "PERSONAL PRODUCT", "TOBACCO",
+            "CAPITAL GOODS", "ENGINEERING", "INDUSTRIAL", "CONSTRUCTION",
+            "TELECOM", "MEDIA", "ENTERTAINMENT",
+        )
+        _sector_col = self.df.get("sector",
+                                  pd.Series(["General"]*len(self.df))).astype(str)
+        _sector_up  = _sector_col.str.upper()
+        _is_weak = (
+            _sector_col.isin(_WEAK_SECTORS_EXACT) |
+            _sector_up.apply(
+                lambda s: any(p in s for p in _WEAK_SECTOR_PATTERNS)
+            )
+        )
+        _4w_roc = pd.to_numeric(
+            self.df.get("4w_chg", pd.Series([0.0]*len(self.df))),
+            errors="coerce"
+        ).fillna(0.0)
+        # Pass if: NOT in a weak sector, OR the stock's own 4w momentum is
+        # positive (a weak-sector stock outperforming its peers is allowed).
+        _sector_gate = (~_is_weak) | (_4w_roc > 0)
+
+        return [
+            ("buy",    "Verdict = BUY",           self.df["verdict"] == "BUY"),
+            ("score",  "Score ≥ 70",              self.df["composite_score"] >= 70),
+            ("mos",    "MoS 15–100%",             (_mos >= 15) & (_mos <= 100)),
+            ("storm",  "Storm ≥ 5",               _storm >= 5),
+            ("rsi",    "RSI ≤ 70",                pd.to_numeric(_rsi, errors="coerce").fillna(50) <= 70),
+            ("bs",     "BS Health not ALERT",     ~_bs.str.contains("ALERT", na=False)),
+            ("pledge", "Pledge ≤ 10%",            _pledge <= 10),
+            ("spike",  "not spike-suppressed",    self.df["spike_suppressed"] == False),
+            ("altman", "Altman Z ≥ 1.8",          _alt_gate),        # not distressed
+            ("eq",     "Earn Quality not LOW",    _eq_gate),         # not accounting concern
+            ("intcov", "Int Coverage ≥ 1.5×",     _ic_gate),         # can service interest
+            ("roe",    "ROE ≥ 10%",               _roe_gate),        # quality floor: ROE ≥ 10% (or missing)
+            ("peg",    "PEG ≤ 8",                 _peg_gate),        # quality floor: PEG ≤ 8 (or missing/≤0)
+            ("roc3d",  "3-day ROC ≥ 0",           _momentum_gate),   # v17.0: 3-day price momentum ≥ 0
+            ("sector", "Sector cycle",            _sector_gate),     # v17.0: sector-cycle filter
+        ]
+
     def _get_gold(self):
         if self.df.empty: return pd.DataFrame()
         try:
@@ -3460,172 +3634,135 @@ class ExcelGeneratorV6:
             if self.market_regime == "BEARISH":
                 return pd.DataFrame()
 
-            # Strict Gold-tier filter — all 15 conditions must be true
-            # (1–13 below, plus the v17.0 momentum and sector-cycle gates):
-            #
-            #  1. Verdict = BUY                 — system-confident, not WATCHLIST
-            #  2. Score >= 70                   — uniform Gold bar, not cap-adjusted
-            #  3. 15 <= MoS <= 100              — real upside, not phantom inflation
-            #  4. Storm Score >= 5              — defensively sound
-            #  5. RSI <= 70                     — not already overbought
-            #  6. BS Health Flag != ALERT       — no balance-sheet red flags
-            #  7. Pledge % <= 10                — Gold = clean, not just "not awful"
-            #  8. spike_suppressed == False     — Altman/Beneish/pledge all clear
-            #  9. Altman Z >= 1.8 OR "—"         — not in distress zone
-            # 10. Earn Quality != "LOW"         — no accounting concern
-            # 11. Int Coverage >= 1.5 OR "—"    — can service interest
-            # 12. ROE >= 10% OR "—"             — quality floor on return on capital
-            # 13. PEG <= 8 OR "—" OR negative   — quality floor on valuation/growth
-            # 14. 3-day ROC >= 0               — v17.0 Fix 2: momentum confirmation
-            # 15. Sector-cycle gate             — v17.0 Fix 3: bearish sectors suppressed
-            #
-            # Fields populated as "—" (missing data) PASS each respective gate so
-            # small caps without forensic / fundamental ratios aren't unfairly
-            # excluded — the existing core gates already cover those cases.
-            _mos = self.df["mos_pct"]
-            _rsi = self.df.get("rsi", pd.Series([50]*len(self.df)))
-            _storm = self.df.get("storm_score", pd.Series([0]*len(self.df)))
-            _pledge = pd.to_numeric(self.df.get("pledge_pct",
-                                                pd.Series([0]*len(self.df))),
-                                    errors="coerce").fillna(0)
-            _bs = self.df.get("bs_status", pd.Series([""]*len(self.df))) \
-                       .astype(str).str.upper()
-
-            # v10.11 new gates — tolerant of "—" (missing data passes)
-            _alt_raw = self.df.get("altman_z", pd.Series(["—"]*len(self.df)))
-            _alt_num = pd.to_numeric(_alt_raw, errors="coerce")
-            # Pass if Altman ≥ 1.8 OR is missing (NaN)
-            _alt_gate = (_alt_num >= 1.8) | _alt_num.isna()
-
-            _eq = self.df.get("earnings_quality",
-                              pd.Series(["—"]*len(self.df))).astype(str).str.upper()
-            # Pass if Earn Quality is NOT "LOW" (HIGH/MODERATE/— all pass)
-            _eq_gate = _eq != "LOW"
-
-            _ic_raw = self.df.get("int_coverage", pd.Series(["—"]*len(self.df)))
-            _ic_num = pd.to_numeric(_ic_raw, errors="coerce")
-            # Pass if Int Coverage ≥ 1.5 OR is missing
-            _ic_gate = (_ic_num >= 1.5) | _ic_num.isna()
-
-            # ────────────────────────────────────────────────────────────
-            # Quality Floor — two institutional gates on profitability +
-            # growth-vs-valuation.
-            #
-            #   ROE ≥ 10%   — Minimum return on shareholder capital. Below
-            #                 this, the company isn't generating enough
-            #                 return to qualify as a quality pick. Threshold
-            #                 calibrated against real picks: ITC (29%),
-            #                 KOVAI (19.7%), BSOFT (13.4%) all pass; the
-            #                 9.5%-ROE SONAMLTD case fails.
-            #
-            #   PEG ≤ 8.0   — Maximum price/earnings/growth ratio. Healthy
-            #                 PEG is < 1.5, reasonable is < 3, extremely
-            #                 high (>8) signals fundamental disconnect.
-            #                 Threshold deliberately permissive to catch
-            #                 outlier red flags (SONAMLTD 8.63, INDUSTOWER
-            #                 19.47) without rejecting borderline cases
-            #                 like BSOFT (PEG 6.36) which are legitimate.
-            #
-            # Both gates are permissive on missing data: stocks with
-            # ROE=None or PEG=None (typically small caps without ratios)
-            # PASS these gates rather than being rejected. The existing
-            # 11 gates (Altman / BS Health / Int Coverage) already handle
-            # those cases. Negative PEG (loss-making companies) also
-            # passes — the verdict / score gates already filter losers.
-            QUALITY_FLOOR_ROE_PCT = 10.0
-            QUALITY_FLOOR_PEG_MAX = 8.0
-            _roe_raw = self.df.get("roe", pd.Series(["—"]*len(self.df)))
-            _roe_num = pd.to_numeric(_roe_raw, errors="coerce")
-            # Pass if ROE ≥ 10% OR missing
-            _roe_gate = (_roe_num >= QUALITY_FLOOR_ROE_PCT) | _roe_num.isna()
-
-            _peg_raw = self.df.get("peg", pd.Series(["—"]*len(self.df)))
-            _peg_num = pd.to_numeric(_peg_raw, errors="coerce")
-            # Pass if PEG ≤ 8 OR missing OR ≤ 0 (loss-making, other gates handle)
-            _peg_gate = (
-                (_peg_num <= QUALITY_FLOOR_PEG_MAX) |
-                _peg_num.isna() |
-                (_peg_num <= 0)
-            )
-
-            # ── v17.0 Fix 2: Momentum confirmation gate ─────────────────────
-            # Require 3-day price momentum (ROC) > 0 — positive price direction
-            # over the last 3 trading days. Prevents picking fundamentally strong
-            # stocks that are actively declining (right company, wrong moment).
-            # Missing/zero data passes (new stocks without history not penalised).
-            _3d_roc = pd.to_numeric(
-                self.df.get("3d_roc", pd.Series([0.0]*len(self.df))),
-                errors="coerce"
-            ).fillna(0.0)
-            _momentum_gate = _3d_roc >= 0  # strictly: ≥ 0 allows flat, > 0 requires up
-
-            # ── v17.0 Fix 3: Sector-cycle gate ──────────────────────────────
-            # Suppress stocks from structurally underperforming sectors unless
-            # the individual stock is outperforming (positive 4-week momentum).
-            #
-            # Sectors that showed ≤33% hit rate in the Jul 2026 audit of 31
-            # closed positions: Consumer Defensive (0%), Industrials (20%),
-            # Technology (33%), Communication Services (0%).
-            #
-            # DUAL-CONVENTION HANDLING (important):
-            # The `sector` field can arrive in EITHER of two naming schemes
-            # depending on which enrichment path populated symbol_master:
-            #   • yfinance path  → broad GICS names: "Technology", "Industrials"
-            #   • NSE API path   → industry names:  "IT - Software", "FMCG"
-            # (backfill_history.py writes info["sector"] on one path and
-            #  info["industry"] on the other — see lines ~1524 and ~1752.)
-            # Matching only one scheme would let half the universe bypass this
-            # gate silently. We therefore match on BOTH exact names and
-            # case-insensitive substrings covering the NSE equivalents.
-            _WEAK_SECTORS_EXACT = {
-                # yfinance broad GICS sector names
-                "Consumer Defensive", "Industrials", "Technology",
-                "Communication Services",
-            }
-            # NSE / industry-style substrings that map to the same weak groups
-            _WEAK_SECTOR_PATTERNS = (
-                "IT - ", "IT-", "INFORMATION TECH", "SOFTWARE", "COMPUTER",
-                "FMCG", "CONSUMER GOODS", "PERSONAL PRODUCT", "TOBACCO",
-                "CAPITAL GOODS", "ENGINEERING", "INDUSTRIAL", "CONSTRUCTION",
-                "TELECOM", "MEDIA", "ENTERTAINMENT",
-            )
-            _sector_col = self.df.get("sector",
-                                      pd.Series(["General"]*len(self.df))).astype(str)
-            _sector_up  = _sector_col.str.upper()
-            _is_weak = (
-                _sector_col.isin(_WEAK_SECTORS_EXACT) |
-                _sector_up.apply(
-                    lambda s: any(p in s for p in _WEAK_SECTOR_PATTERNS)
-                )
-            )
-            _4w_roc = pd.to_numeric(
-                self.df.get("4w_chg", pd.Series([0.0]*len(self.df))),
-                errors="coerce"
-            ).fillna(0.0)
-            # Pass if: NOT in a weak sector, OR the stock's own 4w momentum is
-            # positive (a weak-sector stock outperforming its peers is allowed).
-            _sector_gate = (~_is_weak) | (_4w_roc > 0)
-
-            mask = (
-                (self.df["verdict"] == "BUY") &
-                (self.df["composite_score"] >= 70) &
-                (_mos >= 15) & (_mos <= 100) &
-                (_storm >= 5) &
-                (pd.to_numeric(_rsi, errors="coerce").fillna(50) <= 70) &
-                (~_bs.str.contains("ALERT", na=False)) &
-                (_pledge <= 10) &
-                (self.df["spike_suppressed"] == False) &
-                _alt_gate &       # not distressed
-                _eq_gate &        # not accounting concern
-                _ic_gate &        # can service interest
-                _roe_gate &       # quality floor: ROE ≥ 10% (or missing)
-                _peg_gate &       # quality floor: PEG ≤ 8 (or missing/≤0)
-                _momentum_gate &  # v17.0: 3-day price momentum ≥ 0
-                _sector_gate      # v17.0: sector-cycle filter
-            )
+            # Strict Gold-tier filter — all 15 gates in _gold_gates() must pass.
+            mask = pd.Series(True, index=self.df.index)
+            for _key, _label, _gate in self._gold_gates():
+                mask = mask & _gate
             return self.df[mask].copy().reset_index(drop=True)
         except Exception as _ge:
             # v17.14: never fail silently — an error here empties the Gold sheet
             # AND the AI-card scope, and used to leave no trace in the log.
             print(f"   ⚠️  _get_gold() failed — Gold treated as empty: {type(_ge).__name__}: {_ge}")
             return pd.DataFrame()
+
+    # ── v17.20: why is the Gold sheet empty? ─────────────────────────────────
+    _GOLD_NEAR_MISS_SHOWN = 8
+
+    def _gold_fail_detail(self, key, row):
+        """Short text naming the value that failed gate `key` for one stock."""
+        def _n(k):
+            try:
+                v = float(row.get(k))
+                return None if v != v else v
+            except (TypeError, ValueError):
+                return None
+        def _f(k, fmt):
+            v = _n(k)
+            return format(v, fmt) if v is not None else str(row.get(k, "—"))
+        if key == "buy":    return f"verdict {row.get('verdict', '—')}"
+        if key == "score":  return f"score {_f('composite_score', '.1f')}"
+        if key == "mos":    return f"MoS {_f('mos_pct', '+.1f')}%"
+        if key == "storm":  return f"storm {_f('storm_score', 'g')}"
+        if key == "rsi":    return f"RSI {_f('rsi', '.1f')}"
+        if key == "bs":     return "BS ALERT"
+        if key == "pledge": return f"pledge {_f('pledge_pct', '.1f')}%"
+        if key == "spike":
+            _why = str(row.get("guard_reasons", "") or "").strip()
+            return f"spike-suppressed: {_why}" if _why else "spike-suppressed"
+        if key == "altman": return f"Altman Z {_f('altman_z', '.2f')}"
+        if key == "eq":     return "Earn Quality LOW"
+        if key == "intcov": return f"Int Cover {_f('int_coverage', '.2f')}"
+        if key == "roe":    return f"ROE {_f('roe', '.1f')}%"
+        if key == "peg":    return f"PEG {_f('peg', '.2f')}"
+        if key == "roc3d":  return f"3-day ROC {_f('3d_roc', '+.1f')}%"
+        if key == "sector":
+            return f"weak sector '{row.get('sector', '—')}', 4-wk {_f('4w_chg', '+.1f')}%"
+        return key
+
+    def gold_funnel_summary(self):
+        """Gate-by-gate account of today's Gold result. Read-only.
+
+        Returns a dict:
+          regime        market regime used by _get_gold()
+          n             stocks on the dashboard
+          gold          stocks on the Gold sheet (len of _get_gold())
+          funnel        [(label, removed, left)] in gate order, applied cumulatively
+          emptied_by    label of the gate that took the funnel to 0 (None if not empty)
+          last_out      [(symbol, detail)] removed by that gate
+          one_short     [(symbol, label, detail)] stocks failing exactly ONE gate
+          ungated       stocks passing all 15 stock gates (= Gold on a non-BEARISH day)
+        Uses the same masks as _get_gold(), so the two can never disagree.
+        """
+        out = {"regime": self.market_regime, "n": len(self.df), "gold": 0,
+               "funnel": [], "emptied_by": None, "last_out": [],
+               "one_short": [], "ungated": 0}
+        if self.df.empty:
+            return out
+        gates = self._gold_gates()
+        out["gold"] = len(self._get_gold())
+        alive = pd.Series(True, index=self.df.index)
+        fails = pd.Series(0, index=self.df.index)
+        for key, label, gate in gates:
+            gate = gate.fillna(False).astype(bool)
+            fails = fails + (~gate).astype(int)
+            before = alive
+            alive = alive & gate
+            removed = int(before.sum() - alive.sum())
+            out["funnel"].append((label, removed, int(alive.sum())))
+            if out["emptied_by"] is None and before.sum() > 0 and alive.sum() == 0:
+                out["emptied_by"] = label
+                for idx in self.df.index[before & ~gate]:
+                    row = self.df.loc[idx]
+                    out["last_out"].append((str(row.get("symbol", "?")),
+                                            self._gold_fail_detail(key, row)))
+        out["ungated"] = int(alive.sum())
+        for idx in self.df.index[fails == 1]:
+            row = self.df.loc[idx]
+            for key, label, gate in gates:
+                if not bool(gate.fillna(False).astype(bool).loc[idx]):
+                    out["one_short"].append((str(row.get("symbol", "?")), label,
+                                             self._gold_fail_detail(key, row)))
+                    break
+        return out
+
+    def gold_funnel_log_lines(self):
+        """Log lines explaining an EMPTY Gold sheet; [] when Gold has stocks.
+
+        BEARISH day: says the regime gate emptied it and how many stocks would
+        otherwise have qualified. Any other day: the funnel (only gates that
+        removed stocks), the gate that emptied it, and the stocks that were
+        one gate short, with the failing value.
+        """
+        s = self.gold_funnel_summary()
+        if s["n"] == 0 or s["gold"] > 0:
+            return []
+        gap = (self.market_stats or {}).get("nifty_gap_pct")
+        gap_txt = (f" (Nifty {gap:+.2f}% vs 20d-SMA, tolerance -2.0%)"
+                   if isinstance(gap, (int, float)) else "")
+        lines = []
+        if s["regime"] == "BEARISH":
+            lines.append(f"   🥇 Gold empty — BEARISH regime gate{gap_txt}. "
+                         + (f"{s['ungated']} stock(s) passed all 15 stock gates but were "
+                            f"held back by the regime gate." if s["ungated"] else
+                            "No stock passed all 15 stock gates either."))
+            return lines
+        lines.append(f"   🥇 Gold empty on a {s['regime']} day{gap_txt} — "
+                     f"0 of {s['n']} stocks passed all 15 gates.")
+        steps = [f"{label}: {left}" for label, removed, left in s["funnel"] if removed > 0]
+        lines.append(f"   🥇 Funnel: {s['n']} stocks → " + " → ".join(steps))
+        if s["emptied_by"] == "Verdict = BUY":
+            lines.append("   🥇 Emptied by: Verdict = BUY — no stock has a BUY verdict today.")
+        elif s["emptied_by"]:
+            shown = ", ".join(f"{sym} ({d})" for sym, d in s["last_out"][:self._GOLD_NEAR_MISS_SHOWN])
+            more = len(s["last_out"]) - self._GOLD_NEAR_MISS_SHOWN
+            lines.append(f"   🥇 Emptied by: {s['emptied_by']} — removed the last "
+                         f"{len(s['last_out'])}: {shown}"
+                         + (f" (+{more} more)" if more > 0 else ""))
+        if s["one_short"]:
+            shown = ", ".join(f"{sym} ({d})" for sym, _l, d in s["one_short"][:self._GOLD_NEAR_MISS_SHOWN])
+            more = len(s["one_short"]) - self._GOLD_NEAR_MISS_SHOWN
+            lines.append(f"   🥇 One gate short: {shown}"
+                         + (f" (+{more} more)" if more > 0 else ""))
+        else:
+            lines.append("   🥇 One gate short: none — every stock failed two or more gates.")
+        return lines

@@ -4063,9 +4063,12 @@ def test_g30_v16_2_gold_quality_floor_gate():
     )
 
     # ── Check 3: mask includes both new gates ──
-    mask_start = src_xl.find("mask = (")
-    assert mask_start > 0, "Couldn't find Gold gate mask"
-    mask_end = src_xl.find(")\n            return self.df[mask]", mask_start)
+    # v17.20: the gates live in ONE list returned by _gold_gates(); _get_gold()
+    # ANDs every entry (G46 checks that), so the list is the mask.
+    gates_def = src_xl.find("def _gold_gates(self):")
+    mask_start = src_xl.find("        return [\n", gates_def)
+    assert gates_def > 0 and mask_start > 0, "Couldn't find Gold gate mask"
+    mask_end = src_xl.find("\n        ]\n", mask_start)
     mask_block = src_xl[mask_start:mask_end]
     assert "_roe_gate" in mask_block, (
         "v16.2: Gold gate mask must include _roe_gate"
@@ -5889,6 +5892,127 @@ def test_g45_v17_19_1_suite_is_portable_no_posix_temp_paths():
             "paths, runs the same on Windows and Linux")
 
 
+def test_g46_v17_20_gold_empty_reason_logged():
+    """v17.20: when the Gold sheet is empty the run log must say why.
+
+    Owner question (10-Oct-2026): "why no stock in the Gold sheet even though
+    the regime is bullish?" The log only said "logged 0 Gold pick(s)". Now the
+    15 gates live in ONE list (ExcelGeneratorV6._gold_gates); _get_gold() ANDs
+    it and gold_funnel_log_lines() explains an empty result from the same masks.
+      A. every gate, both sides of its threshold: membership in _get_gold()
+         matches the spec, and a stock failing one gate is reported as
+         "one gate short" on exactly that gate
+      B. 15 gates in filter order; _get_gold() is built from _gold_gates()
+      C. log lines: none when Gold has stocks; BULLISH-empty names the gate
+         that emptied it, the stock and its value; BEARISH names the regime
+         gate; no BUY verdicts says so
+      D. master_funnel prints the lines after logging Gold picks and before
+         the Excel build, inside a try (diagnostic only)
+    """
+    import inspect
+    from reporting.excel_generator import ExcelGeneratorV6
+    base = {"company_name": "Test Co", "sector": "Healthcare", "verdict": "BUY",
+            "composite_score": 85.0, "mos_pct": 30.0, "storm_score": 7, "rsi": 55.0,
+            "bs_status": "HEALTHY", "pledge_pct": 0.0, "spike_suppressed": False,
+            "altman_z": 4.0, "earnings_quality": "HIGH", "int_coverage": 5.0,
+            "roe": 20.0, "peg": 1.2, "close": 100.0, "3d_roc": 2.5, "4w_chg": 8.0}
+    # (overrides, label of the gate that must reject it, or None = passes)
+    cases = [
+        ({}, None),
+        ({"verdict": "WATCHLIST"}, "Verdict = BUY"),
+        ({"composite_score": 69.99}, "Score \u2265 70"), ({"composite_score": 70.0}, None),
+        ({"mos_pct": 14.99}, "MoS 15\u2013100%"), ({"mos_pct": 15.0}, None),
+        ({"mos_pct": 100.0}, None), ({"mos_pct": 100.01}, "MoS 15\u2013100%"),
+        ({"storm_score": 4}, "Storm \u2265 5"), ({"storm_score": 5}, None),
+        ({"rsi": 70.01}, "RSI \u2264 70"), ({"rsi": 70.0}, None), ({"rsi": None}, None),
+        ({"bs_status": "ALERT"}, "BS Health not ALERT"), ({"bs_status": "WATCH"}, None),
+        ({"pledge_pct": 10.01}, "Pledge \u2264 10%"), ({"pledge_pct": 10.0}, None),
+        ({"pledge_pct": "\u2014"}, None),
+        ({"spike_suppressed": True, "guard_reasons": "Beneish M > -1.78"}, "not spike-suppressed"),
+        ({"altman_z": 1.79}, "Altman Z \u2265 1.8"), ({"altman_z": 1.8}, None), ({"altman_z": "\u2014"}, None),
+        ({"earnings_quality": "LOW"}, "Earn Quality not LOW"), ({"earnings_quality": "MODERATE"}, None),
+        ({"int_coverage": 1.49}, "Int Coverage \u2265 1.5\u00d7"), ({"int_coverage": "\u2014"}, None),
+        ({"roe": 9.99}, "ROE \u2265 10%"), ({"roe": 10.0}, None), ({"roe": "\u2014"}, None),
+        ({"peg": 8.01}, "PEG \u2264 8"), ({"peg": 8.0}, None), ({"peg": -3.0}, None),
+        ({"3d_roc": -0.01}, "3-day ROC \u2265 0"), ({"3d_roc": 0.0}, None),
+        ({"sector": "Technology", "4w_chg": -0.5}, "Sector cycle"),
+        ({"sector": "IT - Software", "4w_chg": 0.0}, "Sector cycle"),
+        ({"sector": "Technology", "4w_chg": 0.5}, None),
+        ({"sector": "Healthcare", "4w_chg": -5.0}, None),
+    ]
+    stocks = []
+    for i, (over, _exp) in enumerate(cases):
+        s = dict(base); s.update(over); s["symbol"] = f"C{i:02d}"; stocks.append(s)
+    gen = ExcelGeneratorV6(stocks, "20261009", run_time="10:00 IST",
+                           market_stats={"market_regime": "BULLISH"})
+    gold = set(gen._get_gold()["symbol"])
+    summ = gen.gold_funnel_summary()
+    short = {sym: label for sym, label, _d in summ["one_short"]}
+    for i, (over, exp) in enumerate(cases):
+        sym = f"C{i:02d}"
+        if exp is None:
+            assert sym in gold, f"A: {over} must pass every gate"
+        else:
+            assert sym not in gold, f"A: {over} must be rejected by '{exp}'"
+            assert short.get(sym) == exp, \
+                f"A: {over} reported as failing '{short.get(sym)}', expected '{exp}'"
+    assert summ["gold"] == len(gold) == summ["ungated"] == summ["funnel"][-1][2], \
+        "A: funnel / summary disagree with _get_gold()"
+
+    # B. one gate list, in filter order, used by _get_gold()
+    keys = [k for k, _l, _g in gen._gold_gates()]
+    assert keys == ["buy", "score", "mos", "storm", "rsi", "bs", "pledge", "spike",
+                    "altman", "eq", "intcov", "roe", "peg", "roc3d", "sector"], \
+        f"B: gate list changed: {keys}"
+    assert "_gold_gates()" in inspect.getsource(ExcelGeneratorV6._get_gold), \
+        "B: _get_gold() must be built from _gold_gates() (single source of truth)"
+
+    # C. log lines
+    assert gen.gold_funnel_log_lines() == [], "C: no reason lines when Gold has stocks"
+    emp = ExcelGeneratorV6(
+        [dict(base, symbol="ONLY", roe=9.5), dict(base, symbol="ALSO", **{"3d_roc": -1.2})],
+        "20261009", run_time="10:00 IST",
+        market_stats={"market_regime": "BULLISH", "nifty_gap_pct": -1.91})
+    txt = "\n".join(emp.gold_funnel_log_lines())
+    assert "Gold empty on a BULLISH day" in txt and "-1.91%" in txt, f"C: header: {txt}"
+    assert "Emptied by: 3-day ROC \u2265 0" in txt and "ALSO (3-day ROC -1.2%)" in txt, f"C: {txt}"
+    assert "ONLY (ROE 9.5%)" in txt, f"C: one-gate-short list: {txt}"
+    bear = ExcelGeneratorV6([dict(base, symbol="OKAY")], "20261009", run_time="10:00 IST",
+                            market_stats={"market_regime": "BEARISH", "nifty_gap_pct": -2.4})
+    btxt = "\n".join(bear.gold_funnel_log_lines())
+    assert "BEARISH regime gate" in btxt and "1 stock(s) passed all 15 stock gates" in btxt, \
+        f"C: bearish: {btxt}"
+    nobuy = ExcelGeneratorV6([dict(base, symbol="WAIT", verdict="WATCHLIST")], "20261009",
+                             run_time="10:00 IST", market_stats={"market_regime": "BULLISH"})
+    assert "no stock has a BUY verdict" in "\n".join(nobuy.gold_funnel_log_lines()), \
+        "C: no-BUY day must say so"
+
+    # D. wired into master_funnel: after Gold logging, before the Excel build
+    with open(_src_path('master_funnel.py'), encoding='utf-8') as f:
+        mf = f.read()
+    call = mf.find('excel_gen.gold_funnel_log_lines()')
+    logged = mf.find('outcome tracking: logged')
+    excel = mf.find('master_file, gold_file = excel_gen.generate_excel_reports()')
+    assert call > 0, "D: master_funnel never prints the Gold-empty reason"
+    assert logged < call < excel, \
+        f"D: wrong place (logged {logged}, reason {call}, excel {excel})"
+    import ast
+    _own_try = False
+    for node in ast.walk(ast.parse(mf)):
+        if not isinstance(node, ast.Try) or len(node.body) != 1:
+            continue
+        body_calls = [n for n in ast.walk(node.body[0]) if isinstance(n, ast.Attribute)
+                      and n.attr == 'gold_funnel_log_lines']
+        catches = any(isinstance(h.type, ast.Name) and h.type.id == 'Exception'
+                      for h in node.handlers)
+        if body_calls and catches:
+            _own_try = True
+    assert _own_try, \
+        "D: the reason log must sit in its own try/except Exception so it can never stop a run"
+    return ("\u2705 v17.20: empty Gold sheet explained in the log - same 15 gate "
+            "masks as _get_gold(), wired before the Excel build")
+
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -6168,6 +6292,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g43_v17_19_trailing_label_matches_tracker_tiers))
     v14_1_results.append(_run_one_test(test_g44_v17_19_user_text_matches_code))
     v14_1_results.append(_run_one_test(test_g45_v17_19_1_suite_is_portable_no_posix_temp_paths))
+    v14_1_results.append(_run_one_test(test_g46_v17_20_gold_empty_reason_logged))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

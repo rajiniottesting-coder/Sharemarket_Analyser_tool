@@ -1,17 +1,17 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v17.19.1 · October 2026
+## AI Context File · v17.20 · October 2026
 
 This file gives Claude (or any AI assistant) the project context needed to understand, debug or extend this codebase. **Read it first** before making any change.
 
 **How this file is organised**
-- **Part A — Current state (v17.19).** Authoritative description of how the system works today. Sections 1–14 and 16–21 are kept current; when anything in Part B disagrees with Part A, Part A wins.
-- **Part B — Version history, newest first.** Release notes as written at the time (v17.19 back to v10.0). Older entries describe the code *as it was*; many details there (Gemini, T1/T2/T3 targets, 7 sheets, 11 Gold gates, +5 % break-even …) have since been superseded.
+- **Part A — Current state (v17.20).** Authoritative description of how the system works today. Sections 1–14 and 16–21 are kept current; when anything in Part B disagrees with Part A, Part A wins.
+- **Part B — Version history, newest first.** Release notes as written at the time (v17.20 back to v10.0). Older entries describe the code *as it was*; many details there (Gemini, T1/T2/T3 targets, 7 sheets, 11 Gold gates, +5 % break-even …) have since been superseded.
 
 Companion documents: `readme.md` (user-facing overview + version table), `pipeline_reference.html` (visual end-to-end reference), `scoring_logic_3Stagefunnel_explained.md` (funnel + scoring walkthrough with worked examples), `data/README_NSE_SNAPSHOT.md` (local NSE fetch setup).
 
 ---
 
-# PART A — CURRENT STATE (v17.19)
+# PART A — CURRENT STATE (v17.20)
 
 ## 1. PROJECT PURPOSE
 
@@ -42,7 +42,7 @@ Sharemarket_Analyser_tool/
 ├── fetch_nse_local.py            OWNER'S MACHINE ONLY: NSE pledge + shareholding → data/nse_snapshot.json → git push
 ├── fetch_nse_now.bat             One-click manual trigger for the above
 ├── reset_performance_tracking.py Guarded wipe of the 3 outcome tables (workflow manual-dispatch only)
-├── test_v13_v14_consolidated.py  Regression suite — 97 guards, all green on Linux and Windows (v17.19.1)
+├── test_v13_v14_consolidated.py  Regression suite — 98 guards, all green on Linux and Windows (v17.20)
 ├── test_v11.0.2_full_withdummies.py  ⚠ NOT the deep ScoringEngine suite any more: overwritten on 16-May-2026
 │                                     (commit a09ba4c) with a stale copy of the consolidated suite (70/84 on
 │                                     current code). The real deep suite is in git history at d2f301a
@@ -173,6 +173,7 @@ Section 9/10  Split held-monitor rows into _held_monitor_map; prune v15.8 ETF le
               → verdict streaks + save latest_analysis_results → allowlist prune
               → v14 hook: log today's Gold picks (excel_gen._get_gold(), first appearance only;
                 re-appearances increment times_reappeared)
+              → v17.20 Gold-empty reason: excel_gen.gold_funnel_log_lines() (🥇 lines, only when Gold is empty)
               → track_outcomes.main(): live walk + continuation + shadow stop
 Section 7/8   DEFERRED AI cards (v17.14): scope = _get_gold() ∪ get_open_recommendations();
               held positions use their fully-enriched _held_monitor_map rows (v17.15);
@@ -411,7 +412,7 @@ Same annualization applied to Capex/Rev (capex is annual; uses `revenue` first, 
  5 RSI ≤ 70                   10 Earn Quality ≠ LOW         15 sector cycle OK            (v17.0)
 ```
 
-Sector cycle: weak sectors (yfinance "Consumer Defensive", "Industrials", "Technology", "Communication Services" + NSE-style patterns IT / FMCG / capital goods / telecom / media …) pass only if the stock's own 4-week change > 0. The same `_get_gold()` result feeds the Gold sheet, the outcome logger and the AI-card scope — one source of truth.
+Sector cycle: weak sectors (yfinance "Consumer Defensive", "Industrials", "Technology", "Communication Services" + NSE-style patterns IT / FMCG / capital goods / telecom / media …) pass only if the stock's own 4-week change > 0. The same `_get_gold()` result feeds the Gold sheet, the outcome logger and the AI-card scope — one source of truth. Since v17.20 the 15 gates are one ordered list, `_gold_gates()` → `(key, label, mask)`; `_get_gold()` ANDs it, and `gold_funnel_summary()` / `gold_funnel_log_lines()` explain an empty sheet from the same masks (log lines in §17).
 
 **Resilience watchlist** (`_refresh_resilience_watch`, v17.5/v17.5.1) — reference only, never a pick. On BEARISH days, stocks with own 3-day return ≥ 5 % (`_RW_MIN_ABS_RETURN`) **and** beating the Nifty's 3-day return are upserted into `gold_resilience_watch` (30-day retention, streak over the last 5 bearish days; shown when `streak_hits ≥ 2`). Retention pruning runs every day.
 
@@ -789,11 +790,15 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 📰   not informed: headlines neutral ×… · …
 📊 Market regime: BULLISH|BEARISH (Nifty X vs 20d-SMA Y, gap ±Z%, tolerance -2.0%)
 📈 v14.1 outcome tracking: logged N Gold pick(s) …
+🥇 Gold empty on a BULLISH day (Nifty -1.91% vs 20d-SMA, tolerance -2.0%) — 0 of 95 stocks passed all 15 gates.
+🥇 Funnel: 95 stocks → Verdict = BUY: 17 → Score ≥ 70: 13 → MoS 15–100%: 4 → not spike-suppressed: 1 → ROE ≥ 10%: 0
+🥇 Emptied by: ROE ≥ 10% — removed the last 1: PLASTIBLEN (ROE 9.5%)
+🥇 One gate short: WEALTH (MoS +6.7%), GNFC (MoS +7.0%), …     ← 🥇 lines only when Gold is empty (v17.20)
 🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...
 💾 AI cards served from today's cache (…)          ← same-day re-run
 ```
 
-Zero Gold picks is normal on BEARISH days and on weak tapes (15 strict gates). A snapshot older than 7 days means the Sunday fetch was missed — run `fetch_nse_now.bat`.
+Zero Gold picks is normal on BEARISH days and on weak tapes (15 strict gates); the 🥇 lines name the gate that emptied the sheet. "BULLISH" only means Nifty is no more than 2 % below its 20-day SMA, so it can sit on a falling tape — that is when the 3-day ROC gate tends to empty the sheet. A snapshot older than 7 days means the Sunday fetch was missed — run `fetch_nse_now.bat`.
 
 ### Older checks (still valid)
 
@@ -866,7 +871,8 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 | Sizing | `risk/correlation_aware_sizing.py` | risk-parity allocation + rationale |
 | Regime gate | `master_funnel.py` (Section 9/10) | `_REGIME_TOLERANCE_PCT`; `data_bridge.get_nifty_20d_sma()` |
 | Resilience watchlist | `master_funnel.py` | `_refresh_resilience_watch`; `data_bridge.*resilience_watch*` |
-| Gold filter | `reporting/excel_generator.py` | `ExcelGeneratorV6._get_gold()`; criteria text "ALL 15 must pass" |
+| Gold filter | `reporting/excel_generator.py` | `ExcelGeneratorV6._gold_gates()` (the 15 gates, one list) → `_get_gold()`; criteria text "ALL 15 must pass" |
+| Empty-Gold reason (v17.20) | `reporting/excel_generator.py` · `master_funnel.py` | `gold_funnel_summary()`, `gold_funnel_log_lines()`; printed after the Gold-logging line |
 | Outcome logging hook | `master_funnel.py` | "v14.0/v14.1 — OUTCOME TRACKING" before the Excel build |
 | Tracker | `track_outcomes.py` | `main()`, `_walk_forward()`, `_compute_shadow_stop()`, continuation pass |
 | Outcome DB helpers | `database/data_bridge.py` | `insert_gold_recommendation`, `get_open_recommendations`, `update_outcome`, `update_shadow_outcome`, `get_outcome_stats`, `get_continuation_stats` |
@@ -928,7 +934,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 - [ ] Review Target multipliers (1.3 / 1.5 / 1.8) once ~30 positions have closed under v17.8.1 rules.
 - [ ] Pledge Direction should start populating ~mid-December 2026 — confirm.
 - [ ] BSE SME delivery "File is not a zip file" — investigate.
-- [ ] Optional: per-gate Gold-funnel log line (how many stocks fail each of the 15 gates) to explain zero-Gold days.
+- [x] Per-gate Gold-funnel log line — done in v17.20 (🥇 lines when the Gold sheet is empty).
 - [ ] Optional: wire `LLM_MAX_TOKENS` / `LLM_REASONING_EFFORT` / `NEWS_MAX_TOKENS` into the workflow as repository Variables.
 - [ ] Restore the deep ScoringEngine suite: `git show d2f301a:test_v11.0.2_full_withdummies.py` — 524 pass / 18 fail on v17.19 code. Categorised from their messages (57.14/57.15 also read in code), all 18 look like assertion drift rather than production bugs: 8 allowlist tests vs the v17.17 ISIN-evidence guard, 2 Gemini-string checks (provider removed v17.10), 2 placeholder-format checks, 2 corp-info QoQ parser tests (endpoint replaced v17.13.3), and 4 technicals tests whose fixture reads the first `technical_indicators` row per symbol (historical ATR rows exist since v15.2). Update those assertions, then run both suites.
 - [ ] 0-vs-missing SQL `COALESCE` cleanup (deferred since v12.4).
@@ -952,12 +958,12 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 git pull origin main --rebase      # keep-alive bot and the weekly NSE snapshot commit to main
 git checkout -b fix/vXX-description
 # replace files
-python test_v13_v14_consolidated.py     # expect ALL green (97/97 at v17.19.1)
+python test_v13_v14_consolidated.py     # expect ALL green (98/98 at v17.20)
 git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PR → green check → merge
 ```
 
-**Test suite.** `test_v13_v14_consolidated.py` — 97 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
+**Test suite.** `test_v13_v14_consolidated.py` — 98 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
 
 **Hard lessons — do not repeat.**
 1. **Tests must be bidirectional.** Reintroduce the bug, confirm the test fails, restore, confirm it passes (G35 once passed while the bug shipped; G40's first draft too).
@@ -975,6 +981,23 @@ git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PART B — VERSION HISTORY (newest first)
 
 Entries from v17.3 downwards are preserved as written at the time. Where they describe behaviour that later changed, Part A is authoritative.
+
+### v17.20 — Empty Gold sheet explained in the run log · 10 Oct 2026
+
+**Why.** On the 10-Oct-2026 run (trading day 9-Oct) the Gold sheet was empty although the regime read BULLISH, and the log only said `logged 0 Gold pick(s)`. Finding the reason meant re-applying the 15 gates to the dashboard by hand. "BULLISH but empty" is common for two reasons: the label is BULLISH whenever Nifty is no more than 2 % below its 20-day SMA (25-Sep printed BULLISH at −1.91 %), and every stock still has to pass all 15 gates. Of the 12 non-BEARISH dashboards from 20-Jul to 25-Sep 2026, 4 had zero Gold: on 28-Aug, 2-Sep and 4-Sep every stock that passed the other 14 gates had a negative 3-day ROC (inferred — 3-day ROC is not a dashboard column); on 25-Sep nothing got past MoS / spike suppression / ROE.
+
+**Change.** The 15 gate expressions moved, unchanged, into one ordered list `ExcelGeneratorV6._gold_gates()` → `(key, label, mask)`; `_get_gold()` ANDs that list (the regime gate is still checked first). New `gold_funnel_summary()` and `gold_funnel_log_lines()` read the same masks, so the explanation can never disagree with the sheet. `master_funnel.py` prints the lines right after the Gold-logging line, inside its own `try/except Exception`; nothing is printed when Gold has stocks. Example (25-Sep data):
+
+```
+🥇 Gold empty on a BULLISH day (Nifty -1.91% vs 20d-SMA, tolerance -2.0%) — 0 of 95 stocks passed all 15 gates.
+🥇 Funnel: 95 stocks → Verdict = BUY: 17 → Score ≥ 70: 13 → MoS 15–100%: 4 → not spike-suppressed: 1 → ROE ≥ 10%: 0
+🥇 Emptied by: ROE ≥ 10% — removed the last 1: PLASTIBLEN (ROE 9.5%)
+🥇 One gate short: WEALTH (MoS +6.7%), INDRAMEDCO (spike-suppressed: Beneish M > -1.78), GNFC (MoS +7.0%), VBL (MoS -15.9%), PLASTIBLEN (ROE 9.5%)
+```
+
+On a BEARISH day one line names the regime gate and how many stocks it held back. No gate, threshold or score changed (the logic freeze until ~30-Oct-2026 holds).
+
+**Verification.** Old vs new `_get_gold()`: identical on 324 comparisons — a boundary grid of every gate (both regimes), 300 random 30-stock batches with mixed types and missing values, and the 22 real dashboards from Jul–Sep 2026 (stocks rebuilt from the Full Dashboard). New guard **G46** (every gate on both sides of its threshold, the gate reported as failing, 15 gates in order, the log text, wiring after Gold logging and before the Excel build inside its own try/except) fails on each of 11 mutations: score or PEG threshold moved, a gate dropped or reordered, `_get_gold()` skipping a gate, wrong detail text, lines suppressed, the call removed, moved after the Excel build, unwrapped or narrowed to `except KeyError`. G30 now reads the gate list instead of the old inline mask (still fails if `_roe_gate` is dropped or PEG moves). Suite **98/98** on Linux, in the Windows-like run and with the file-lock simulation; the changed files compile on Python 3.11 (the Actions runtime).
 
 ### v17.19.1 — Test suite runs on Windows · 8 Oct 2026
 
@@ -4173,4 +4196,4 @@ v17.3 does not improve returns and should not be read as if it does. What it cha
 
 ---
 
-*Last updated: 8 October 2026 · v17.19.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: 10 October 2026 · v17.20 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

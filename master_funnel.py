@@ -4059,6 +4059,18 @@ def run_master_pipeline():
             print(_msg)
         except Exception as _v14e:
             print(f"   ⚠️  v14.0 Gold logging skipped: {_v14e}")
+        # ── v17.20: say WHY the Gold sheet is empty ─────────────────────────
+        # Prints nothing when Gold has stocks. When it is empty: on a BEARISH
+        # day, the regime gate (and how many stocks it held back); on any other
+        # day, the gate-by-gate funnel, the gate that emptied it and the stocks
+        # that were one gate short, with the failing value. Uses the same gate
+        # masks as _get_gold() (excel_gen._gold_gates), so the explanation can
+        # never disagree with the sheet. Diagnostic only — never blocks the run.
+        try:
+            for _gl in excel_gen.gold_funnel_log_lines():
+                print(_gl)
+        except Exception as _gfe:
+            print(f"   ⚠️  Gold-empty reason not logged (non-fatal): {type(_gfe).__name__}: {_gfe}")
         # ─────────────────────────────────────────────────────────────────────
         # v14.1.3 — RUN OUTCOME TRACKER before Excel build
         # ─────────────────────────────────────────────────────────────────────
