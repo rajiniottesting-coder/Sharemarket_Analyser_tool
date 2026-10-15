@@ -1,17 +1,17 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v17.20 · October 2026
+## AI Context File · v17.20.1 · October 2026
 
 This file gives Claude (or any AI assistant) the project context needed to understand, debug or extend this codebase. **Read it first** before making any change.
 
 **How this file is organised**
-- **Part A — Current state (v17.20).** Authoritative description of how the system works today. Sections 1–14 and 16–21 are kept current; when anything in Part B disagrees with Part A, Part A wins.
-- **Part B — Version history, newest first.** Release notes as written at the time (v17.20 back to v10.0). Older entries describe the code *as it was*; many details there (Gemini, T1/T2/T3 targets, 7 sheets, 11 Gold gates, +5 % break-even …) have since been superseded.
+- **Part A — Current state (v17.20.1).** Authoritative description of how the system works today. Sections 1–14 and 16–21 are kept current; when anything in Part B disagrees with Part A, Part A wins.
+- **Part B — Version history, newest first.** Release notes as written at the time (v17.20.1 back to v10.0). Older entries describe the code *as it was*; many details there (Gemini, T1/T2/T3 targets, 7 sheets, 11 Gold gates, +5 % break-even …) have since been superseded.
 
 Companion documents: `readme.md` (user-facing overview + version table), `pipeline_reference.html` (visual end-to-end reference), `scoring_logic_3Stagefunnel_explained.md` (funnel + scoring walkthrough with worked examples), `data/README_NSE_SNAPSHOT.md` (local NSE fetch setup).
 
 ---
 
-# PART A — CURRENT STATE (v17.20)
+# PART A — CURRENT STATE (v17.20.1)
 
 ## 1. PROJECT PURPOSE
 
@@ -42,7 +42,7 @@ Sharemarket_Analyser_tool/
 ├── fetch_nse_local.py            OWNER'S MACHINE ONLY: NSE pledge + shareholding → data/nse_snapshot.json → git push
 ├── fetch_nse_now.bat             One-click manual trigger for the above
 ├── reset_performance_tracking.py Guarded wipe of the 3 outcome tables (workflow manual-dispatch only)
-├── test_v13_v14_consolidated.py  Regression suite — 98 guards, all green on Linux and Windows (v17.20)
+├── test_v13_v14_consolidated.py  Regression suite — 99 guards, all green on Linux and Windows (v17.20.1)
 ├── test_v11.0.2_full_withdummies.py  ⚠ NOT the deep ScoringEngine suite any more: overwritten on 16-May-2026
 │                                     (commit a09ba4c) with a stale copy of the consolidated suite (70/84 on
 │                                     current code). The real deep suite is in git history at d2f301a
@@ -536,10 +536,10 @@ NSE+BSE merge on **real 12-character ISINs only** (v12.1 — empty ISINs never j
 
 ### NSE pledge / shareholding — weekly local snapshot (v17.13.x)
 NSE answers a residential client (browser/XHR headers + warm-up cookies) but returns nothing to GitHub runners. So:
-- **Owner's laptop:** `fetch_nse_local.py --push` (Windows Task Scheduler, weekly — Sunday 20:00 per `data/README_NSE_SNAPSHOT.md` — with *run as soon as possible after a missed start*; manual `fetch_nse_now.bat`). Pledge: `/api/corporate-pledgedata` → `percSharesPledged`, `comName` mapped to symbol via the NIFTY 500 list (`_norm_name`). Shareholding: `/api/corporate-share-holdings-master?index=equities&symbol=` → `pr_and_prgrp` (promoter), `public_val`. Writes `data/nse_snapshot.json` (`fetched_at`, `pledge`, `shareholding`), then **commit → `pull --rebase --autostash` → push** with `GIT_TERMINAL_PROMPT=0` / `GCM_INTERACTIVE=Never` (v17.13.5; credentials cached once via Git Credential Manager). `--probe` dumps raw endpoint responses; `--dry-run` counts only. Parser imports isolate `sys.argv` (backfill_history reads argv at import).
+- **Owner's laptop:** `fetch_nse_local.py --push` (Windows Task Scheduler, weekly on a weekday — e.g. Wednesday 20:00 per `data/README_NSE_SNAPSHOT.md`, not Sunday — with *run as soon as possible after a missed start*; manual `fetch_nse_now.bat`). Pledge: `/api/corporate-pledgedata` → `percSharesPledged`, `comName` mapped to symbol via the NIFTY 500 list (`_norm_name`). Shareholding: `/api/corporate-share-holdings-master?index=equities&symbol=` → `pr_and_prgrp` (promoter), `public_val`. Writes `data/nse_snapshot.json` (`fetched_at`, `pledge`, `shareholding`), then **commit → `pull --rebase --autostash` → push** with `GIT_TERMINAL_PROMPT=0` / `GCM_INTERACTIVE=Never` (v17.13.5; credentials cached once via Git Credential Manager). `--probe` dumps raw endpoint responses; `--dry-run` counts only. Parser imports isolate `sys.argv` (backfill_history reads argv at import).
 - **Pipeline:** `ingestion/nse_snapshot.load_snapshot()` accepts the file only if present, schema-valid, non-empty and ≤ 14 days old (`NSE_SNAPSHOT_MAX_AGE_DAYS`); `apply_snapshot()` fills **blank** pledge / promoter / FII / DII only. Provenance (`_fetched_display` in IST, `_age_days`) → Full Dashboard row 2. Snapshot pledge is also written to `shareholding` history every run (v17.13.7) so Pledge Direction can populate after ~90 days (≈ mid-Dec 2026).
 - **Not available free:** DII % / DII QoQ (NSE exposes promoter vs public only; `corp-info` is retired). FII % on the dashboard is yfinance's institutional holding (FII+DII combined proxy). Never derive DII from the public bucket.
-- Weekly snapshot commits look like `chore(nse-snapshot): pledge 340 / shareholding 467 @ 2026-10-07`. One run (27-Sep-2026) got `pledge 0` — the fetcher still overwrites the file in that case (open item).
+- Weekly snapshot commits look like `chore(nse-snapshot): pledge 340 / shareholding 467 @ 2026-10-07`. Both Sunday runs so far (27-Sep, 11-Oct-2026) got an empty pledge list; every weekday/Saturday run got ~340. Since v17.20.1 the fetcher refuses a partial fetch: if pledge or shareholding comes back empty while the previous snapshot is still usable (the pipeline's own `load_snapshot()` rule) and has rows for it, the previous file is kept untouched and the script exits **3**. The kept file keeps its own `fetched_at`, so it still expires after 14 days. A stale or missing previous file still gets the partial snapshot. Exit codes: 0 ok/unchanged · 1 git failed · 2 nothing fetched · 3 partial fetch, previous kept.
 
 ---
 
@@ -752,7 +752,7 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 | Item | Why | Status |
 |---|---|---|
 | DII % / DII QoQ Δ | NSE's free endpoints expose promoter vs public only | `—`; never derived from the public bucket |
-| Pledge % | NSE blocks cloud runners | Weekly local snapshot (≤ 14 days); `—` when stale or when a weekly fetch returned 0 pledge rows |
+| Pledge % | NSE blocks cloud runners | Weekly local snapshot (≤ 14 days); `—` when stale, or when a fetch returned 0 pledge rows while the previous snapshot was already stale (v17.20.1 keeps a usable previous file) |
 | Pledge Direction | Needs ≥ 90 days of stored pledge history | Real history from 17-Sep-2026 → expected ~mid-Dec 2026 |
 | QoQ deltas (Pro / FII) | Need a stored prior-quarter value | `—` until history exists |
 | Order-book / tender columns (OB/Bill, Pipeline Vis, L1 Wins, L1 Est, New Mkt Entry) | No free structured source | Empty (red headers) |
@@ -798,7 +798,7 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 💾 AI cards served from today's cache (…)          ← same-day re-run
 ```
 
-Zero Gold picks is normal on BEARISH days and on weak tapes (15 strict gates); the 🥇 lines name the gate that emptied the sheet. "BULLISH" only means Nifty is no more than 2 % below its 20-day SMA, so it can sit on a falling tape — that is when the 3-day ROC gate tends to empty the sheet. A snapshot older than 7 days means the Sunday fetch was missed — run `fetch_nse_now.bat`.
+Zero Gold picks is normal on BEARISH days and on weak tapes (15 strict gates); the 🥇 lines name the gate that emptied the sheet. "BULLISH" only means Nifty is no more than 2 % below its 20-day SMA, so it can sit on a falling tape — that is when the 3-day ROC gate tends to empty the sheet. A snapshot older than 7 days means the weekly fetch was missed or kept the previous file (exit 3) — run `fetch_nse_now.bat` on a weekday.
 
 ### Older checks (still valid)
 
@@ -929,7 +929,8 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 ## 20. OPEN ITEMS / NEXT ACTIONS (October 2026)
 
 - [ ] Re-band the Trade Summary R:R colours for the single regime target (currently every row is red) — owner decision.
-- [ ] `fetch_nse_local.py`: do not overwrite the snapshot when a fetch returns 0 pledge rows but shareholding is fine (seen 27-Sep-2026) — the previous file keeps its own `fetched_at`, so it still expires after 14 days (no stale data is kept beyond the existing rule).
+- [x] `fetch_nse_local.py`: do not overwrite the snapshot when a fetch returns 0 pledge rows but shareholding is fine — done in v17.20.1 (exit 3, previous file kept; seen 27-Sep and 11-Oct-2026, both Sundays).
+- [ ] Owner: move the Task Scheduler trigger from Sunday to a weekday (e.g. Wednesday 20:00), and `git pull` the laptop checkout so the scheduled task runs the v17.20.1 fetcher.
 - [ ] Owner decision: the Performance *SL* cell shows the original stop; once a trailing stop is active the stop in force is the higher of SL and Trailing. Showing the effective stop in that cell would be a display change (text now describes the current behaviour).
 - [ ] Review Target multipliers (1.3 / 1.5 / 1.8) once ~30 positions have closed under v17.8.1 rules.
 - [ ] Pledge Direction should start populating ~mid-December 2026 — confirm.
@@ -958,12 +959,12 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 git pull origin main --rebase      # keep-alive bot and the weekly NSE snapshot commit to main
 git checkout -b fix/vXX-description
 # replace files
-python test_v13_v14_consolidated.py     # expect ALL green (98/98 at v17.20)
+python test_v13_v14_consolidated.py     # expect ALL green (99/99 at v17.20.1)
 git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PR → green check → merge
 ```
 
-**Test suite.** `test_v13_v14_consolidated.py` — 98 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
+**Test suite.** `test_v13_v14_consolidated.py` — 99 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. G47 (v17.20.1) checks that a partial NSE fetch keeps a usable previous snapshot (exit 3) and still writes over a stale or missing one. Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
 
 **Hard lessons — do not repeat.**
 1. **Tests must be bidirectional.** Reintroduce the bug, confirm the test fails, restore, confirm it passes (G35 once passed while the bug shipped; G40's first draft too).
@@ -981,6 +982,14 @@ git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PART B — VERSION HISTORY (newest first)
 
 Entries from v17.3 downwards are preserved as written at the time. Where they describe behaviour that later changed, Part A is authoritative.
+
+### v17.20.1 — A partial NSE fetch no longer wipes the pledge data · 15 Oct 2026
+
+**Why.** On 27-Sep and 11-Oct-2026 (both Sundays) NSE's `corporate-pledgedata` endpoint returned an empty list while shareholding worked (467 rows). `fetch_nse_local.py` only refused to write when *both* lists were empty, so it wrote `pledge {}` over ~340 good rows and pushed it; Pledge % was then blank for every stock until the next fetch. Every weekday/Saturday run so far (18-Sep, 19-Sep, 7-Oct, 15-Oct) returned 339–340 pledge rows. The owner re-ran the fetch on Thursday 15-Oct (commit `9c058ad`: pledge 340 / shareholding 467).
+
+**Change.** Before writing, the fetcher loads the previous snapshot with the pipeline's own rule (`ingestion.nse_snapshot.load_snapshot`: valid, has records, ≤ 14 days old). If this fetch returned an empty pledge or shareholding list and that usable previous snapshot has rows for it, the previous file is kept untouched and the script exits **3** (`fetch_nse_now.bat` explains it; Task Scheduler shows `0x3`). The kept file keeps its own `fetched_at`, so it still expires on schedule — nothing old is re-dated. A stale or missing previous file still gets the partial snapshot (fresh data for one section beats none). Docs now recommend a weekday trigger. No pipeline, scoring, SL or gate logic changed.
+
+**Verification.** New guard **G47**: pledge empty / shareholding empty with a usable previous file → exit 3 and the file byte-identical; stale previous → written; no previous → written; full fetch → written; both empty → exit 2. It fails on each of 5 mutations (guard removed, exit 0 instead of 3, only pledge checked, freshness ignored, `.bat` branch removed). `_load_usable_previous()` run from another working folder reads the real 15-Oct snapshot (340 / 467). Suite **99/99** on Linux, in the Windows-like run and with the file-lock simulation; the changed files compile on Python 3.11.
 
 ### v17.20 — Empty Gold sheet explained in the run log · 10 Oct 2026
 
@@ -4196,4 +4205,4 @@ v17.3 does not improve returns and should not be read as if it does. What it cha
 
 ---
 
-*Last updated: 10 October 2026 · v17.20 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: 15 October 2026 · v17.20.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

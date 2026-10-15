@@ -26,9 +26,11 @@ change quarterly):
     Program : python
     Args    : fetch_nse_local.py --push
     Start in: <repo folder>
-    Trigger : Weekly, e.g. Sunday 20:00, "Run only when user is logged on"
-              (the laptop must be ON; Task Scheduler does not wake a
-              sleeping machine by default).
+    Trigger : Weekly on a WEEKDAY, e.g. Wednesday 20:00, "Run only when user
+              is logged on" (the laptop must be ON; Task Scheduler does not
+              wake a sleeping machine by default). Not Sunday: NSE's pledge
+              list came back empty on both Sunday runs so far (27-Sep and
+              11-Oct-2026) while every weekday/Saturday run got ~340 rows.
 
 REUSE, NOT REIMPLEMENTATION
 Parsing is delegated to the pipeline's own functions
@@ -39,6 +41,10 @@ produced had NSE not blocked it. No second parser to drift.
 SAFETY
   · Never writes a snapshot with zero usable records — an empty file would
     be "valid" and silently blank every stock. Keeps the previous snapshot.
+  · v17.20.1: never lets a PARTIAL fetch wipe a section either. If pledge (or
+    shareholding) comes back empty while the previous snapshot is still
+    usable and has rows for it, the previous file is kept untouched (exit 3).
+    It keeps its own fetched_at, so it still expires after 14 days.
   · --push only commits when the file actually changed.
   · Any failure leaves the previous snapshot untouched.
 """
@@ -171,6 +177,29 @@ def _load_existing() -> dict:
         return {}
 
 
+def _load_usable_previous() -> dict:
+    """v17.20.1: the previous snapshot if the PIPELINE would still use it,
+    else {}. Uses the pipeline's own rule (ingestion.nse_snapshot.load_snapshot:
+    valid schema, some records, fetched_at <= 14 days old) so the fetcher and
+    the pipeline can never disagree about what "still usable" means. Its
+    one-line log is suppressed here; it describes the pipeline's view."""
+    try:
+        import io
+        import contextlib
+        from ingestion.nse_snapshot import load_snapshot
+        with contextlib.redirect_stdout(io.StringIO()):
+            return load_snapshot(SNAPSHOT_PATH, quiet=True) or {}
+    except Exception:
+        return {}
+
+
+def _sections_lost(new_snap: dict, prev_usable: dict) -> list:
+    """Sections this fetch returned EMPTY that the usable previous snapshot
+    still has rows for. Writing the new file would wipe them."""
+    return [name for name in ("pledge", "shareholding")
+            if not (new_snap.get(name) or {}) and (prev_usable.get(name) or {})]
+
+
 def _probe() -> int:
     """Diagnostic only. Shows, per endpoint, the exact HTTP status and the
     first 160 bytes of the body — so 403 (blocked) vs 404 (moved) vs 200-but-
@@ -267,6 +296,26 @@ def main():
         print("❌ No usable records from NSE — snapshot NOT written "
               "(previous snapshot kept). Are you on a residential IP?")
         return 2
+
+    # v17.20.1: a PARTIAL fetch must not wipe a section the previous snapshot
+    # still holds. On 27-Sep and 11-Oct-2026 (both Sundays) NSE returned an
+    # empty pledge list while shareholding worked; writing that file replaced
+    # ~340 good pledge rows with {} and blanked Pledge % for a week. If the
+    # previous snapshot is still usable and has rows for a section this fetch
+    # came back empty for, keep the previous file untouched. It keeps its own
+    # fetched_at, so it still expires on schedule - nothing old is re-dated.
+    # If the previous file is stale or missing, the partial snapshot is
+    # written as before (fresh data for one section beats none).
+    prev_usable = _load_usable_previous()
+    lost = _sections_lost(snap, prev_usable)
+    if lost:
+        print(f"⚠️  NSE returned no {' / '.join(lost)} records this run "
+              f"(pledge {n_pl}, shareholding {n_sh}) — snapshot NOT written; "
+              f"previous snapshot from {prev_usable.get('fetched_at')} kept "
+              f"(pledge {len(prev_usable.get('pledge') or {})}, shareholding "
+              f"{len(prev_usable.get('shareholding') or {})}). Run again later — "
+              f"NSE's pledge list has come back empty on Sundays.")
+        return 3
 
     if args.dry_run:
         print(f"✅ dry-run: would write {n_pl} pledge + {n_sh} shareholding records")
