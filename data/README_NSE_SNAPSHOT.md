@@ -38,7 +38,7 @@ Task Scheduler → **Create Task** (not "Basic Task" — you need the Settings t
 |---|---|---|
 | General | Name | `NSE snapshot fetch` |
 | General | Security | **Run only when user is logged on** |
-| Triggers | New… | **Weekly**, a **weekday** (e.g. Wednesday), **20:00** — not Sunday (see below) |
+| Triggers | New… | **Weekly**, **Sunday**, **09:33** (owner's choice — see below) |
 | Actions | Program | `python` |
 | Actions | Arguments | `fetch_nse_local.py --push` |
 | Actions | Start in | *your repo folder* (must be the repo root) |
@@ -50,11 +50,15 @@ Task Scheduler → **Create Task** (not "Basic Task" — you need the Settings t
 handles the laptop being off at the scheduled time: the moment the machine next
 boots and you log in, the task runs automatically. You don't have to remember.
 
-**Why not Sunday.** NSE's pledge list came back empty on both Sunday runs so
-far (27-Sep and 11-Oct-2026), while every weekday/Saturday run got ~340 rows.
-Since v17.20.1 such a run no longer wipes the previous pledge data — the
+**Sunday runs and `0x3`.** NSE's pledge list came back empty on both Sunday
+runs so far (27-Sep and 11-Oct-2026), while every weekday/Saturday run got ~340
+rows. Since v17.20.1 such a run no longer wipes the previous pledge data — the
 fetcher keeps the previous file and exits with code 3 (Task Scheduler shows
-*Last Run Result* `0x3`) — but a weekday run avoids the empty answer.
+*Last Run Result* `0x3`). The schedule stays on Sunday (owner decision,
+15-Oct-2026): if the Sunday run is missed or shows `0x3`, double-click
+`fetch_nse_now.bat` once during the week. The pipeline uses a snapshot for 14
+days after its own fetch, so one missed Sunday is covered; after two in a row
+Pledge % goes blank (shown as `—`) until the next good fetch.
 
 ## Manual trigger — any time
 
@@ -108,7 +112,7 @@ audit trail of how each stock's pledge/DII moved.
 | fetcher prints `No usable records` | NSE blocked *your* IP this moment | VPN off? retry in a few min |
 | fetcher: `git push failed` with an authentication hint | credentials not cached for unattended use | once: `git config --global credential.helper manager`, then one interactive `git push` |
 | fetcher: `git pull --rebase failed` | a real conflict with the remote | open the repo, resolve, `git push` — the snapshot commit is safe locally |
-| fetcher prints `NSE returned no pledge records this run … kept` (exit 3, `0x3` in Task Scheduler) | NSE answered one call (usually pledge, on Sundays) with an empty list; the previous snapshot is kept untouched (v17.20.1) | nothing breaks — double-click `fetch_nse_now.bat` on a weekday; the kept file still expires 14 days after its own fetch |
+| fetcher prints `NSE returned no pledge records this run … kept` (exit 3, `0x3` in Task Scheduler) | NSE answered one call (usually pledge, on Sundays) with an empty list; the previous snapshot is kept untouched (v17.20.1) | nothing breaks — double-click `fetch_nse_now.bat` once during the week; the kept file still expires 14 days after its own fetch |
 | commit message reads `pledge 0 / …` | an empty pledge list **and** the previous snapshot was already stale or missing, so the fresh shareholding was written alone | double-click `fetch_nse_now.bat` later; pledge shows `—` until a good fetch |
 
 How `--push` works (v17.13.5): it stages and commits **only** the snapshot,
