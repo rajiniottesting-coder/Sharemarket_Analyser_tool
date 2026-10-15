@@ -26,11 +26,13 @@ change quarterly):
     Program : python
     Args    : fetch_nse_local.py --push
     Start in: <repo folder>
-    Trigger : Weekly on a WEEKDAY, e.g. Wednesday 20:00, "Run only when user
-              is logged on" (the laptop must be ON; Task Scheduler does not
-              wake a sleeping machine by default). Not Sunday: NSE's pledge
-              list came back empty on both Sunday runs so far (27-Sep and
-              11-Oct-2026) while every weekday/Saturday run got ~340 rows.
+    Trigger : Weekly, Sunday 09:33 (owner's choice), "Run only when user is
+              logged on" (the laptop must be ON; Task Scheduler does not
+              wake a sleeping machine by default). NSE's pledge list came
+              back empty on both Sunday runs so far (27-Sep, 11-Oct-2026);
+              since v17.20.1 such a run keeps the previous file and exits 3
+              (Task Scheduler: 0x3). If the Sunday run is missed or shows
+              0x3, the owner runs fetch_nse_now.bat ad hoc during the week.
 
 REUSE, NOT REIMPLEMENTATION
 Parsing is delegated to the pipeline's own functions
