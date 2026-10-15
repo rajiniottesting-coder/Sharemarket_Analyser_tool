@@ -6013,6 +6013,88 @@ def test_g46_v17_20_gold_empty_reason_logged():
             "masks as _get_gold(), wired before the Excel build")
 
 
+def test_g47_v17_20_1_partial_nse_fetch_keeps_previous_snapshot():
+    """v17.20.1: a partial NSE fetch must not wipe a section of the snapshot.
+
+    On 27-Sep and 11-Oct-2026 (both Sundays) NSE returned an empty pledge list
+    while shareholding worked. fetch_nse_local.py wrote that file anyway, so
+    ~340 good pledge rows became {} and Pledge % was blank for a week.
+      A. previous usable + new pledge empty      -> exit 3, file untouched
+      B. previous usable + new shareholding empty -> exit 3, file untouched
+      C. previous STALE (> 14 d) + pledge empty   -> partial file written (exit 0)
+      D. no previous file + pledge empty          -> partial file written (exit 0)
+      E. both sections present                    -> written (exit 0)
+      F. both empty                               -> exit 2, file untouched (v17.13)
+      G. "usable" uses the pipeline's own rule (nse_snapshot.load_snapshot)
+      H. fetch_nse_now.bat explains exit code 3
+    """
+    import importlib.util, tempfile, json as _json, datetime as _d, contextlib, io
+    spec = importlib.util.spec_from_file_location('fnl_g47', _src_path('fetch_nse_local.py'))
+    fnl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fnl)
+    tmpdir = tempfile.mkdtemp(prefix='g47_')
+    path = os.path.join(tmpdir, 'nse_snapshot.json')
+    orig_path, orig_fetch, orig_argv = fnl.SNAPSHOT_PATH, fnl.fetch_snapshot, sys.argv
+
+    def _iso(days_ago):
+        return (_d.datetime.now().astimezone() - _d.timedelta(days=days_ago)).isoformat(timespec='seconds')
+
+    def _snap(n_pl, n_sh, days_ago=0):
+        return {"version": 1, "fetched_at": _iso(days_ago), "source": "g47",
+                "pledge": {f"P{i}": 1.5 for i in range(n_pl)},
+                "shareholding": {f"S{i}": {"promoter_pct": 50.0, "fii_pct": 0.0, "dii_pct": 0.0}
+                                 for i in range(n_sh)}}
+
+    def _run(prev, new):
+        if os.path.exists(path):
+            os.remove(path)
+        if prev is not None:
+            with open(path, 'w', encoding='utf-8') as fh:
+                _json.dump(prev, fh)
+        before = open(path, encoding='utf-8').read() if prev is not None else None
+        fnl.fetch_snapshot = lambda: new
+        sys.argv = ['fetch_nse_local.py']
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = fnl.main()
+        after = open(path, encoding='utf-8').read() if os.path.exists(path) else None
+        return rc, before, after, out.getvalue()
+
+    try:
+        fnl.SNAPSHOT_PATH = path
+        rc, b, a, log = _run(_snap(340, 467, 4), _snap(0, 467))
+        assert rc == 3 and a == b, f"A: empty pledge must keep the previous file (rc={rc})"
+        assert 'pledge' in log and 'kept' in log, f"A: log must say what was kept: {log[-200:]}"
+        rc, b, a, _ = _run(_snap(340, 467, 4), _snap(340, 0))
+        assert rc == 3 and a == b, f"B: empty shareholding must keep the previous file (rc={rc})"
+        rc, b, a, _ = _run(_snap(340, 467, 20), _snap(0, 467))
+        assert rc == 0 and a != b and _json.loads(a)["pledge"] == {} \
+            and len(_json.loads(a)["shareholding"]) == 467, \
+            f"C: stale previous must not block fresh partial data (rc={rc})"
+        rc, b, a, _ = _run(None, _snap(0, 467))
+        assert rc == 0 and a is not None and len(_json.loads(a)["shareholding"]) == 467, \
+            f"D: first run must write the partial snapshot (rc={rc})"
+        rc, b, a, _ = _run(_snap(340, 467, 4), _snap(338, 466))
+        assert rc == 0 and len(_json.loads(a)["pledge"]) == 338, f"E: full fetch must be written (rc={rc})"
+        rc, b, a, _ = _run(_snap(340, 467, 4), _snap(0, 0))
+        assert rc == 2 and a == b, f"F: empty fetch must keep the previous file (rc={rc})"
+    finally:
+        fnl.SNAPSHOT_PATH, fnl.fetch_snapshot, sys.argv = orig_path, orig_fetch, orig_argv
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            os.rmdir(tmpdir)
+        except OSError:
+            pass
+
+    src = open(_src_path('fetch_nse_local.py'), encoding='utf-8').read()
+    assert 'from ingestion.nse_snapshot import load_snapshot' in src, \
+        "G: 'usable previous' must use the pipeline's load_snapshot rule"
+    bat = open(_src_path('fetch_nse_now.bat'), encoding='utf-8').read()
+    assert '"%RC%"=="3"' in bat, "H: fetch_nse_now.bat must explain exit code 3"
+    return ("\u2705 v17.20.1: a partial NSE fetch keeps the previous snapshot "
+            "(exit 3); stale/missing previous still gets fresh partial data")
+
+
 def test_g11_tracker_invoked_from_master_funnel():
     """v14.1.3 regression test: master_funnel must invoke track_outcomes.main()
     automatically as part of every pipeline run.
@@ -6293,6 +6375,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g44_v17_19_user_text_matches_code))
     v14_1_results.append(_run_one_test(test_g45_v17_19_1_suite_is_portable_no_posix_temp_paths))
     v14_1_results.append(_run_one_test(test_g46_v17_20_gold_empty_reason_logged))
+    v14_1_results.append(_run_one_test(test_g47_v17_20_1_partial_nse_fetch_keeps_previous_snapshot))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
