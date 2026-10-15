@@ -87,7 +87,7 @@
 <body>
 <div class="wrap">
 <h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
-<div class="meta">v17.20 · 10 October 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
+<div class="meta">v17.20.1 · 15 October 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
 <div class="toc">
   <h3>Contents</h3>
   <ol start="0">
@@ -1163,7 +1163,7 @@
 <defs><marker id="arrH2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">NSE pledge / promoter — weekly local snapshot</text>
 <text class="ts" x="340" y="48" text-anchor="middle">NSE answers a home IP, not GitHub's runners (v17.13.x)</text>
-<g class="c-blue"><rect x="40.0" y="72" width="295.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="92" text-anchor="middle" dominant-baseline="central">Owner's laptop · weekly</text><text class="ts" x="187.5" y="114" text-anchor="middle" dominant-baseline="central">Task Scheduler, Sunday</text><text class="ts" x="187.5" y="134" text-anchor="middle" dominant-baseline="central">+ catch-up if missed</text><text class="ts" x="187.5" y="154" text-anchor="middle" dominant-baseline="central">fetch_nse_now.bat = manual</text></g>
+<g class="c-blue"><rect x="40.0" y="72" width="295.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="92" text-anchor="middle" dominant-baseline="central">Owner's laptop · weekly</text><text class="ts" x="187.5" y="114" text-anchor="middle" dominant-baseline="central">Task Scheduler, a weekday</text><text class="ts" x="187.5" y="134" text-anchor="middle" dominant-baseline="central">+ catch-up if missed</text><text class="ts" x="187.5" y="154" text-anchor="middle" dominant-baseline="central">fetch_nse_now.bat = manual</text></g>
 <g class="c-teal"><rect x="345.0" y="72" width="295.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="92" text-anchor="middle" dominant-baseline="central">GitHub Actions · daily</text><text class="ts" x="492.5" y="114" text-anchor="middle" dominant-baseline="central">live NSE calls → empty</text><text class="ts" x="492.5" y="134" text-anchor="middle" dominant-baseline="central">loads the snapshot</text><text class="ts" x="492.5" y="154" text-anchor="middle" dominant-baseline="central">validates it</text></g>
 <line x1="340" y1="172" x2="340" y2="184" class="arr" marker-end="url(#arrH2)"/>
 <g class="c-blue"><rect x="40.0" y="194" width="295.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="214" text-anchor="middle" dominant-baseline="central">fetch_nse_local.py --push</text><text class="ts" x="187.5" y="236" text-anchor="middle" dominant-baseline="central">pledge: percSharesPledged</text><text class="ts" x="187.5" y="256" text-anchor="middle" dominant-baseline="central">comName → symbol (NIFTY 500)</text><text class="ts" x="187.5" y="276" text-anchor="middle" dominant-baseline="central">promoter: pr_and_prgrp</text></g>
@@ -1246,7 +1246,7 @@
    🥇 One gate short: WEALTH (MoS +6.7%), GNFC (MoS +7.0%), …   ← 🥇 only when Gold is empty (v17.20)
 🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...
    💾 AI cards served from today's cache (…)        ← only on a same-day re-run</pre>
-<div class="callout">Zero Gold picks is normal on BEARISH days and on weak tapes — 15 strict gates. When it happens, the 🥇 lines name the gate that emptied the sheet (v17.20); "BULLISH" only means Nifty is no more than 2 % below its 20-day SMA. A snapshot older than 7 days means the Sunday fetch was missed: double-click <code>fetch_nse_now.bat</code>.</div>
+<div class="callout">Zero Gold picks is normal on BEARISH days and on weak tapes — 15 strict gates. When it happens, the 🥇 lines name the gate that emptied the sheet (v17.20); "BULLISH" only means Nifty is no more than 2 % below its 20-day SMA. A snapshot older than 7 days means the weekly fetch was missed, or it kept the previous file because NSE returned an empty pledge list (exit 3, v17.20.1): double-click <code>fetch_nse_now.bat</code> on a weekday.</div>
 </div>
 </div>
 
@@ -1268,7 +1268,7 @@
 <tr><td>Outcome tracking</td><td><code>track_outcomes.py::main</code>, <code>_walk_forward</code>, <code>_compute_shadow_stop</code> · <code>data_bridge</code> outcome helpers</td></tr>
 <tr><td>AI notes</td><td><code>ai/ai_analyst.py::get_ai_analysis</code> → <code>_generate_ai_analysis</code> · <code>_load_card_system_prompt</code></td></tr>
 <tr><td>Workbook · tooltips</td><td><code>reporting/excel_generator.py</code> (8 sheets) · <code>reporting/tooltip_formatter.py::TIPS</code></td></tr>
-<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 98 guards, all green on Linux and Windows (v17.20)</td></tr>
+<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 99 guards, all green on Linux and Windows (v17.20.1)</td></tr>
 </tbody></table>
 
 <h3>Key constants &amp; thresholds</h3>
@@ -1297,8 +1297,8 @@ Display thresholds (v10.16 Option B): PE / PB / PS / EV-EBITDA above 500 and PEG
 <h3>Quick-pick labels are separate from the verdict</h3>
 <p style="margin-top:0"><code>stock["verdict"]</code> (BUY / WATCHLIST / NEUTRAL / OVERVALUED / AVOID) and <code>stock["label"]</code> (DEEP VALUE / EARLY MOVER / …) come from different functions. The verdict drives colour and the Gold filter; the label is an archetype used for sorting and for the Performance breakdowns.</p>
 <div class="footer">
-NSE/BSE Stock Analyser · Pipeline reference · v17.20 (10 October 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
-Parts 1–4 are the v16.5 scoring deep-dives, re-checked against the code — the screening and scoring modules are unchanged since v16.4; only funnel counts and output facts were updated. Parts 0 and 5–8 are new and describe v17.0–v17.19: market-regime gate and 15-condition Gold filter (v17.0, v17.5.1), single regime-aware Target (v17.8.1), live trailing tiers (v17.0), continuation audit (v17.3), shadow stop (v17.7), news engine (v17.9/v17.11), company-LLM analyst notes with per-day cache (v17.10–v17.16), weekly NSE snapshot (v17.13), allowlist write-time guards (v17.17), Full Dashboard without the AI column (v17.18), the Trailing-label fix (v17.19) and the empty-Gold reason in the run log (v17.20).
+NSE/BSE Stock Analyser · Pipeline reference · v17.20.1 (15 October 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
+Parts 1–4 are the v16.5 scoring deep-dives, re-checked against the code — the screening and scoring modules are unchanged since v16.4; only funnel counts and output facts were updated. Parts 0 and 5–8 are new and describe v17.0–v17.20.1: market-regime gate and 15-condition Gold filter (v17.0, v17.5.1), single regime-aware Target (v17.8.1), live trailing tiers (v17.0), continuation audit (v17.3), shadow stop (v17.7), news engine (v17.9/v17.11), company-LLM analyst notes with per-day cache (v17.10–v17.16), weekly NSE snapshot (v17.13), allowlist write-time guards (v17.17), Full Dashboard without the AI column (v17.18), the Trailing-label fix (v17.19), the empty-Gold reason in the run log (v17.20) and the NSE fetcher keeping the previous snapshot on a partial fetch (v17.20.1).
 </div>
 </div>
 <script>
