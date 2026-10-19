@@ -1,342 +1,342 @@
 {
- "fetched_at": "2026-10-15T20:35:09+05:30",
+ "fetched_at": "2026-10-19T18:32:21+05:30",
  "pledge": {
-  "360ONE": 1.46,
-  "AADHARHFC": 2.37,
-  "AARTIIND": 6.95,
-  "ABB": 0.54,
+  "360ONE": 1.45,
+  "AADHARHFC": 2.36,
+  "AARTIIND": 6.88,
+  "ABB": 0.55,
   "ABCAPITAL": 1.04,
-  "ABREL": 4.44,
-  "ACC": 2.0,
-  "ACE": 3.64,
-  "ADANIENSOL": 0.76,
+  "ABREL": 4.4,
+  "ACC": 1.99,
+  "ACE": 3.66,
+  "ADANIENSOL": 0.75,
   "ADANIENT": 1.59,
   "ADANIGREEN": 1.14,
   "ADANIPORTS": 0.75,
   "ADANIPOWER": 2.34,
-  "AEGISLOG": 1.55,
+  "AEGISLOG": 1.61,
   "AFCONS": 52.69,
-  "AIAENG": 0.37,
-  "AMBUJACEM": 1.68,
-  "ANANDRATHI": 20.99,
-  "ANANTRAJ": 9.55,
-  "ANURAS": 43.28,
-  "APARINDS": 1.18,
-  "APLAPOLLO": 6.39,
+  "AIAENG": 0.38,
+  "AMBUJACEM": 1.7,
+  "ANANDRATHI": 20.95,
+  "ANANTRAJ": 9.29,
+  "ANURAS": 43.48,
+  "APARINDS": 1.19,
+  "APLAPOLLO": 6.4,
   "APOLLOHOSP": 1.24,
   "APOLLOTYRE": 0.58,
-  "ARE&M": 3.93,
+  "ARE&M": 3.89,
   "ASAHIINDIA": 4.88,
   "ASHOKLEY": 21.83,
   "ASIANPAINT": 6.26,
   "ASTERDM": 36.67,
-  "ASTRAL": 0.8,
-  "ATUL": 4.22,
-  "AUBANK": 2.02,
+  "ASTRAL": 0.82,
+  "ATUL": 4.21,
+  "AUBANK": 2.03,
   "AUROPHARMA": 7.32,
-  "AVANTIFEED": 2.56,
-  "AXISBANK": 1.34,
-  "AZAD": 4.16,
+  "AVANTIFEED": 2.58,
+  "AXISBANK": 1.33,
+  "AZAD": 4.34,
   "BAJAJ-AUTO": 0.87,
   "BAJAJFINSV": 1.02,
   "BAJAJHLDNG": 1.22,
   "BAJFINANCE": 1.03,
-  "BALKRISIND": 0.61,
-  "BALRAMCHIN": 2.26,
-  "BANKBARODA": 1.17,
-  "BANKINDIA": 1.28,
-  "BATAINDIA": 2.73,
-  "BBOX": 5.54,
-  "BEL": 1.61,
-  "BEML": 3.4,
+  "BALKRISIND": 0.6,
+  "BALRAMCHIN": 2.33,
+  "BANKBARODA": 1.21,
+  "BANKINDIA": 1.33,
+  "BATAINDIA": 2.68,
+  "BBOX": 5.57,
+  "BEL": 1.6,
+  "BEML": 3.42,
   "BHARATFORG": 0.73,
-  "BHARTIARTL": 0.66,
-  "BHEL": 2.11,
-  "BIOCON": 1.78,
-  "BLS": 5.35,
-  "BLUESTARCO": 0.9,
-  "BOSCHLTD": 0.45,
-  "BPCL": 0.66,
-  "BRIGADE": 0.68,
+  "BHARTIARTL": 0.63,
+  "BHEL": 2.18,
+  "BIOCON": 1.75,
+  "BLS": 5.39,
+  "BLUESTARCO": 0.91,
+  "BOSCHLTD": 0.44,
+  "BPCL": 0.65,
+  "BRIGADE": 0.69,
   "BRITANNIA": 0.9,
-  "BSOFT": 5.27,
-  "CANBK": 2.38,
-  "CANFINHOME": 8.09,
-  "CAPLIPOINT": 2.59,
-  "CARBORUNIV": 2.05,
-  "CASTROLIND": 4.07,
+  "BSOFT": 5.08,
+  "CANBK": 2.46,
+  "CANFINHOME": 8.11,
+  "CAPLIPOINT": 2.56,
+  "CARBORUNIV": 2.06,
+  "CASTROLIND": 3.91,
   "CEATLTD": 2.02,
-  "CEMPRO": 3.04,
-  "CENTRALBK": 1.26,
-  "CESC": 2.28,
-  "CGCL": 3.85,
+  "CEMPRO": 3.34,
+  "CENTRALBK": 1.27,
+  "CESC": 2.27,
+  "CGCL": 3.86,
   "CGPOWER": 2.4,
-  "CHAMBLFERT": 15.98,
-  "CHENNPETRO": 2.16,
-  "CHOICEIN": 23.39,
-  "CHOLAFIN": 0.63,
+  "CHAMBLFERT": 16.63,
+  "CHENNPETRO": 2.33,
+  "CHOICEIN": 23.38,
+  "CHOLAFIN": 0.64,
   "CHOLAHLDNG": 0.92,
   "CIEINDIA": 1.15,
   "CIPLA": 0.91,
   "CLEAN": 3.03,
-  "CLEANMAX": 6.53,
-  "COALINDIA": 0.99,
-  "COFORGE": 0.74,
-  "COHANCE": 55.82,
+  "CLEANMAX": 6.56,
+  "COALINDIA": 0.98,
+  "COFORGE": 0.76,
+  "COHANCE": 55.77,
   "COLPAL": 1.33,
-  "CONCOR": 1.37,
+  "CONCOR": 1.36,
   "COROMANDEL": 0.43,
   "CRISIL": 0.65,
-  "CROMPTON": 2.85,
-  "CUB": 1.45,
-  "CUMMINSIND": 0.81,
-  "CUPID": 13.41,
-  "CYIENT": 1.55,
-  "DABUR": 0.69,
+  "CROMPTON": 2.75,
+  "CUB": 1.46,
+  "CUMMINSIND": 0.84,
+  "CUPID": 13.54,
+  "CYIENT": 1.53,
+  "DABUR": 0.68,
   "DALBHARAT": 2.52,
-  "DEEPAKNTR": 2.99,
+  "DEEPAKNTR": 3.01,
   "DEVYANI": 2.36,
-  "DIVISLAB": 1.44,
+  "DIVISLAB": 1.46,
   "DIXON": 2.13,
   "DLF": 0.86,
-  "DMART": 1.13,
-  "DRREDDY": 0.64,
-  "ECLERX": 0.97,
-  "EICHERMOT": 0.56,
-  "EIHOTEL": 0.95,
-  "ELECON": 4.46,
-  "ELGIEQUIP": 4.25,
-  "EMAMILTD": 12.37,
+  "DMART": 1.14,
+  "DRREDDY": 0.65,
+  "ECLERX": 0.99,
+  "EICHERMOT": 0.55,
+  "EIHOTEL": 0.97,
+  "ELECON": 4.41,
+  "ELGIEQUIP": 4.26,
+  "EMAMILTD": 12.38,
   "EMCURE": 0.48,
-  "ENGINERSIN": 3.99,
-  "ESCORTS": 1.64,
-  "EXIDEIND": 1.97,
-  "FINCABLES": 1.98,
+  "ENGINERSIN": 4.05,
+  "ESCORTS": 1.63,
+  "EXIDEIND": 1.94,
+  "FINCABLES": 1.99,
   "FIVESTAR": 2.15,
   "FLUOROCHEM": 8.09,
-  "FORTIS": 1.26,
-  "FRACTAL": 2.33,
-  "FSL": 1.39,
-  "GABRIEL": 1.25,
-  "GAIL": 0.75,
+  "FORTIS": 1.27,
+  "FRACTAL": 2.35,
+  "FSL": 1.4,
+  "GABRIEL": 1.24,
+  "GAIL": 0.74,
   "GALLANTT": 2.82,
-  "GILLETTE": 3.26,
+  "GILLETTE": 3.27,
   "GLAXO": 0.68,
   "GLENMARK": 1.27,
-  "GMDCLTD": 6.13,
-  "GMRAIRPORT": 11.86,
-  "GODFRYPHLP": 2.39,
+  "GMDCLTD": 6.19,
+  "GMRAIRPORT": 11.85,
+  "GODFRYPHLP": 2.44,
   "GODREJCP": 0.45,
-  "GODREJIND": 0.46,
-  "GODREJPROP": 1.15,
-  "GRANULES": 7.93,
-  "GRAPHITE": 2.38,
-  "GRASIM": 3.02,
-  "GRAVITA": 4.15,
-  "GROWW": 1.45,
-  "GVT&D": 0.75,
-  "HAVELLS": 0.73,
-  "HBLENGINE": 7.1,
-  "HCLTECH": 0.32,
-  "HDFCBANK": 2.34,
-  "HEGAM": 3.36,
-  "HEROMOTOCO": 0.66,
-  "HFCL": 9.68,
-  "HINDALCO": 1.28,
-  "HINDCOPPER": 5.6,
-  "HINDPETRO": 1.66,
+  "GODREJIND": 0.47,
+  "GODREJPROP": 1.14,
+  "GRANULES": 8.0,
+  "GRAPHITE": 2.5,
+  "GRASIM": 3.01,
+  "GRAVITA": 4.12,
+  "GROWW": 1.39,
+  "GVT&D": 0.76,
+  "HAVELLS": 0.74,
+  "HBLENGINE": 6.67,
+  "HCLTECH": 0.31,
+  "HDFCBANK": 2.31,
+  "HEGAM": 3.47,
+  "HEROMOTOCO": 0.65,
+  "HFCL": 9.7,
+  "HINDALCO": 1.26,
+  "HINDCOPPER": 5.67,
+  "HINDPETRO": 1.61,
   "HINDUNILVR": 0.59,
   "HINDZINC": 3.21,
-  "HONASA": 2.26,
+  "HONASA": 2.29,
   "HONAUT": 1.17,
-  "HSCL": 13.31,
-  "ICICIBANK": 1.1,
-  "IDBI": 0.89,
-  "IDEA": 4.08,
-  "IFCI": 4.29,
+  "HSCL": 13.37,
+  "ICICIBANK": 1.08,
+  "IDBI": 1.1,
+  "IDEA": 4.09,
+  "IFCI": 4.26,
   "IGL": 1.24,
   "IIFL": 4.73,
-  "INDIANB": 0.32,
-  "INDUSINDBK": 10.13,
+  "INDIANB": 0.31,
+  "INDUSINDBK": 10.17,
   "INDUSTOWER": 1.66,
-  "INFY": 1.22,
-  "INOXWIND": 10.41,
+  "INFY": 1.15,
+  "INOXWIND": 10.46,
   "IOB": 0.41,
   "IOC": 0.89,
   "IPCALAB": 0.49,
-  "IRB": 2.49,
+  "IRB": 2.5,
   "ITC": 2.0,
   "ITI": 0.36,
-  "JBMA": 4.86,
-  "JINDALSAW": 2.88,
+  "JBMA": 4.88,
+  "JINDALSAW": 2.83,
   "JINDALSTEL": 6.85,
   "JKTYRE": 2.72,
-  "JMFINANCIL": 3.49,
-  "JPPOWER": 31.58,
-  "JSL": 1.16,
-  "JSWCEMENT": 1.47,
-  "JSWENERGY": 12.62,
-  "JSWSTEEL": 7.66,
+  "JMFINANCIL": 3.47,
+  "JPPOWER": 31.52,
+  "JSL": 1.14,
+  "JSWCEMENT": 1.46,
+  "JSWENERGY": 12.61,
+  "JSWSTEEL": 7.71,
   "JUBLFOOD": 1.39,
   "JUBLINGREA": 6.53,
-  "JWL": 4.13,
-  "JYOTICNC": 10.99,
-  "KAJARIACER": 2.32,
-  "KALYANKJIL": 16.8,
-  "KARURVYSYA": 2.74,
-  "KEC": 4.2,
-  "KEI": 1.71,
-  "KIMS": 13.75,
-  "KIRLOSBROS": 1.31,
-  "KOTAKBANK": 0.64,
+  "JWL": 4.16,
+  "JYOTICNC": 11.04,
+  "KAJARIACER": 2.36,
+  "KALYANKJIL": 16.81,
+  "KARURVYSYA": 2.72,
+  "KEC": 4.25,
+  "KEI": 1.69,
+  "KIMS": 13.76,
+  "KIRLOSBROS": 1.32,
+  "KOTAKBANK": 0.63,
   "KPIL": 9.79,
-  "KPITTECH": 4.05,
+  "KPITTECH": 3.93,
   "KPRMILL": 1.3,
-  "KSB": 1.8,
-  "LAURUSLABS": 6.39,
-  "LEMONTREE": 4.15,
-  "LICHSGFIN": 2.66,
-  "LINDEINDIA": 3.44,
-  "LLOYDSME": 19.17,
-  "LODHA": 0.24,
+  "KSB": 1.81,
+  "LAURUSLABS": 6.32,
+  "LEMONTREE": 4.1,
+  "LICHSGFIN": 2.73,
+  "LINDEINDIA": 3.49,
+  "LLOYDSME": 19.2,
+  "LODHA": 0.26,
   "LT": 1.76,
-  "LTF": 1.23,
+  "LTF": 1.25,
   "LTFOODS": 4.3,
   "LUPIN": 0.58,
-  "M&M": 0.85,
-  "M&MFIN": 0.61,
-  "MAHABANK": 0.92,
-  "MANAPPURAM": 3.73,
+  "M&M": 0.84,
+  "M&MFIN": 0.62,
+  "MAHABANK": 0.95,
+  "MANAPPURAM": 3.75,
   "MARICO": 1.47,
   "MARUTI": 0.57,
-  "MAXHEALTH": 1.17,
-  "MFSL": 1.01,
-  "MMTC": 1.42,
+  "MAXHEALTH": 1.19,
+  "MFSL": 1.04,
+  "MMTC": 1.43,
   "MOTHERSON": 2.44,
-  "MOTILALOFS": 2.78,
-  "MPHASIS": 30.9,
+  "MOTILALOFS": 2.77,
+  "MPHASIS": 30.89,
   "MRF": 1.13,
-  "MSUMI": 1.45,
-  "MTARTECH": 2.19,
-  "MUTHOOTFIN": 0.54,
-  "NAM-INDIA": 1.13,
-  "NATCOPHARM": 3.64,
-  "NATIONALUM": 2.1,
-  "NAUKRI": 0.53,
+  "MSUMI": 1.44,
+  "MTARTECH": 2.22,
+  "MUTHOOTFIN": 0.57,
+  "NAM-INDIA": 1.12,
+  "NATCOPHARM": 3.65,
+  "NATIONALUM": 2.09,
+  "NAUKRI": 0.52,
   "NAVA": 6.24,
-  "NAVINFLUOR": 2.65,
-  "NBCC": 4.64,
+  "NAVINFLUOR": 2.63,
+  "NBCC": 4.67,
   "NCC": 8.55,
-  "NEULANDLAB": 8.82,
-  "NHPC": 1.06,
+  "NEULANDLAB": 8.84,
+  "NHPC": 1.07,
   "NLCINDIA": 2.31,
-  "NMDC": 2.89,
+  "NMDC": 2.87,
   "NTPC": 0.57,
-  "NUVAMA": 36.23,
+  "NUVAMA": 36.25,
   "OBEROIRLTY": 0.5,
   "OFSS": 0.51,
-  "OIL": 0.52,
-  "OLAELEC": 8.99,
-  "OLECTRA": 11.6,
-  "ONESOURCE": 15.86,
+  "OIL": 0.53,
+  "OLAELEC": 9.11,
+  "OLECTRA": 11.62,
+  "ONESOURCE": 15.85,
   "ONGC": 0.44,
-  "PAGEIND": 0.74,
+  "PAGEIND": 0.73,
   "PARADEEP": 8.35,
-  "PATANJALI": 6.57,
-  "PCBL": 5.3,
-  "PERSISTENT": 0.83,
-  "PETRONET": 0.7,
-  "PFC": 2.43,
+  "PATANJALI": 6.55,
+  "PCBL": 5.33,
+  "PERSISTENT": 0.85,
+  "PETRONET": 0.69,
+  "PFC": 2.44,
   "PFOCUS": 3.74,
-  "PGEL": 4.86,
+  "PGEL": 4.81,
   "PIDILITIND": 0.75,
-  "PIIND": 1.43,
+  "PIIND": 1.44,
   "PNB": 1.29,
-  "POLYCAB": 1.23,
-  "POLYMED": 3.67,
-  "POONAWALLA": 3.26,
+  "POLYCAB": 1.24,
+  "POLYMED": 4.0,
+  "POONAWALLA": 3.21,
   "POWERGRID": 0.45,
-  "PRESTIGE": 0.35,
-  "PRIVISCL": 7.92,
-  "PTCIL": 4.19,
-  "PVRINOX": 5.42,
+  "PRESTIGE": 0.33,
+  "PRIVISCL": 8.01,
+  "PTCIL": 4.2,
+  "PVRINOX": 5.4,
   "RADICO": 2.86,
-  "RAMCOCEM": 3.76,
-  "RECLTD": 2.24,
-  "REDINGTON": 1.16,
-  "RELIANCE": 1.41,
-  "RHIM": 2.23,
-  "RKFORGE": 14.5,
-  "RPOWER": 7.64,
+  "RAMCOCEM": 3.79,
+  "RECLTD": 2.26,
+  "REDINGTON": 1.18,
+  "RELIANCE": 1.4,
+  "RHIM": 2.12,
+  "RKFORGE": 14.51,
+  "RPOWER": 7.62,
   "SAGILITY": 1.91,
-  "SAIL": 2.99,
-  "SAILIFE": 1.22,
-  "SAMMAANCAP": 19.98,
-  "SBIN": 0.91,
+  "SAIL": 3.0,
+  "SAILIFE": 1.2,
+  "SAMMAANCAP": 20.15,
+  "SBIN": 0.9,
   "SCHAEFFLER": 0.38,
-  "SCHNEIDER": 1.19,
-  "SCI": 6.22,
-  "SHREECEM": 0.29,
-  "SHRIRAMFIN": 0.6,
-  "SHYAMMETL": 5.31,
+  "SCHNEIDER": 1.17,
+  "SCI": 6.28,
+  "SHREECEM": 0.3,
+  "SHRIRAMFIN": 0.63,
+  "SHYAMMETL": 5.32,
   "SIEMENS": 0.45,
-  "SJVN": 1.73,
-  "SOBHA": 1.2,
+  "SJVN": 1.74,
+  "SOBHA": 1.21,
   "SOLARINDS": 4.05,
-  "SONACOMS": 1.0,
+  "SONACOMS": 1.02,
   "SRF": 0.95,
-  "STLTECH": 1.87,
+  "STLTECH": 1.85,
   "SUNDARMFIN": 0.9,
   "SUNPHARMA": 2.2,
-  "SUNTV": 1.19,
-  "SUPREMEIND": 1.5,
-  "SUZLON": 6.97,
-  "SWANCORP": 32.8,
-  "TARIL": 18.17,
-  "TATACHEM": 4.32,
+  "SUNTV": 1.2,
+  "SUPREMEIND": 1.49,
+  "SUZLON": 6.96,
+  "SWANCORP": 32.82,
+  "TARIL": 18.6,
+  "TATACHEM": 4.34,
   "TATACOMM": 1.12,
-  "TATACONSUM": 1.84,
-  "TATAELXSI": 3.98,
-  "TATAINVEST": 1.82,
-  "TATAPOWER": 2.28,
-  "TATASTEEL": 1.89,
-  "TCS": 0.48,
-  "TDPOWERSYS": 3.17,
-  "TECHM": 0.51,
-  "THANGAMAYL": 2.08,
+  "TATACONSUM": 1.82,
+  "TATAELXSI": 3.76,
+  "TATAINVEST": 1.83,
+  "TATAPOWER": 2.26,
+  "TATASTEEL": 1.87,
+  "TCS": 0.45,
+  "TDPOWERSYS": 3.36,
+  "TECHM": 0.46,
+  "THANGAMAYL": 2.04,
   "THERMAX": 0.57,
-  "TIINDIA": 0.73,
+  "TIINDIA": 0.74,
   "TIMKEN": 0.75,
   "TITAGARH": 5.44,
   "TITAN": 1.09,
-  "TMPV": 2.43,
+  "TMPV": 2.42,
   "TORNTPHARM": 0.46,
   "TORNTPOWER": 0.42,
-  "TRENT": 1.53,
-  "TRIDENT": 2.17,
+  "TRENT": 1.54,
+  "TRIDENT": 2.18,
   "TRITURBINE": 0.78,
   "TTML": 2.47,
-  "TVSMOTOR": 1.51,
+  "TVSMOTOR": 1.5,
   "UBL": 9.37,
   "UCOBANK": 0.85,
   "ULTRACEMCO": 0.59,
   "UNIONBANK": 0.53,
-  "UNITDSPR": 4.91,
-  "UNOMINDA": 0.61,
+  "UNITDSPR": 4.89,
+  "UNOMINDA": 0.62,
   "UPL": 1.32,
-  "USHAMART": 7.0,
-  "VBL": 1.06,
-  "VEDL": 2.56,
+  "USHAMART": 7.02,
+  "VBL": 1.07,
+  "VEDL": 2.6,
   "VIJAYA": 1.4,
   "VOLTAS": 1.02,
-  "VTL": 1.62,
-  "WELCORP": 6.33,
-  "WELSPUNLIV": 1.56,
-  "WHIRLPOOL": 2.33,
-  "WIPRO": 0.66,
-  "WOCKPHARMA": 12.97,
-  "YESBANK": 13.6,
-  "ZEEL": 27.33,
+  "VTL": 1.63,
+  "WELCORP": 6.35,
+  "WELSPUNLIV": 1.58,
+  "WHIRLPOOL": 2.38,
+  "WIPRO": 0.6,
+  "WOCKPHARMA": 13.11,
+  "YESBANK": 13.53,
+  "ZEEL": 27.07,
   "ZENTEC": 4.31,
   "ZFCVINDIA": 0.87,
   "ZYDUSLIFE": 0.57,
@@ -581,7 +581,7 @@
   "AUBANK": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 22.74
+   "promoter_pct": 22.67
   },
   "AUROPHARMA": {
    "dii_pct": 0.0,
@@ -616,7 +616,7 @@
   "BAJAJFINSV": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 58.71
+   "promoter_pct": 58.65
   },
   "BAJAJHFL": {
    "dii_pct": 0.0,
@@ -646,7 +646,7 @@
   "BANDHANBNK": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 37.54
+   "promoter_pct": 37.0
   },
   "BANKBARODA": {
    "dii_pct": 0.0,
@@ -886,7 +886,7 @@
   "COCHINSHIP": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 67.91
+   "promoter_pct": 63.33
   },
   "COHANCE": {
    "dii_pct": 0.0,
@@ -906,7 +906,7 @@
   "CONCORDBIO": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 44.08
+   "promoter_pct": 44.09
   },
   "COROMANDEL": {
    "dii_pct": 0.0,
@@ -941,7 +941,7 @@
   "CUPID": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 46.24
+   "promoter_pct": 47.69
   },
   "CYIENT": {
    "dii_pct": 0.0,
@@ -951,7 +951,7 @@
   "DABUR": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 66.24
+   "promoter_pct": 66.25
   },
   "DALBHARAT": {
    "dii_pct": 0.0,
@@ -1046,7 +1046,7 @@
   "EMCURE": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 77.83
+   "promoter_pct": 77.82
   },
   "EMMVEE": {
    "dii_pct": 0.0,
@@ -1111,7 +1111,7 @@
   "FRACTAL": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 16.97
+   "promoter_pct": 16.81
   },
   "FSL": {
    "dii_pct": 0.0,
@@ -1151,7 +1151,7 @@
   "GLAND": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 51.77
+   "promoter_pct": 45.75
   },
   "GLAXO": {
    "dii_pct": 0.0,
@@ -1186,7 +1186,7 @@
   "GODREJIND": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 74.64
+   "promoter_pct": 74.63
   },
   "GODREJPROP": {
    "dii_pct": 0.0,
@@ -1196,7 +1196,7 @@
   "GPIL": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 63.18
+   "promoter_pct": 63.17
   },
   "GRANULES": {
    "dii_pct": 0.0,
@@ -1211,7 +1211,7 @@
   "GRASIM": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 43.74
+   "promoter_pct": 45.2
   },
   "GRAVITA": {
    "dii_pct": 0.0,
@@ -1261,7 +1261,7 @@
   "HDFCLIFE": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 50.54
+   "promoter_pct": 50.53
   },
   "HEGAM": {
    "dii_pct": 0.0,
@@ -1271,7 +1271,7 @@
   "HEROMOTOCO": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 34.73
+   "promoter_pct": 34.72
   },
   "HEXT": {
    "dii_pct": 0.0,
@@ -1291,7 +1291,7 @@
   "HINDCOPPER": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 66.14
+   "promoter_pct": 60.14
   },
   "HINDPETRO": {
    "dii_pct": 0.0,
@@ -1346,7 +1346,7 @@
   "ICICIGI": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 51.22
+   "promoter_pct": 51.28
   },
   "ICICIPRULI": {
    "dii_pct": 0.0,
@@ -1431,7 +1431,7 @@
   "INOXINDIA": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 74.86
+   "promoter_pct": 74.73
   },
   "INOXWIND": {
    "dii_pct": 0.0,
@@ -1461,7 +1461,7 @@
   "IRB": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 30.81
+   "promoter_pct": 31.18
   },
   "IRCON": {
    "dii_pct": 0.0,
@@ -1586,7 +1586,7 @@
   "KAJARIACER": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 47.69
+   "promoter_pct": 46.74
   },
   "KALYANKJIL": {
    "dii_pct": 0.0,
@@ -1601,7 +1601,7 @@
   "KAYNES": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 53.46
+   "promoter_pct": 53.31
   },
   "KEC": {
    "dii_pct": 0.0,
@@ -1661,7 +1661,7 @@
   "LALPATHLAB": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 53.19
+   "promoter_pct": 52.93
   },
   "LAURUSLABS": {
    "dii_pct": 0.0,
@@ -1706,7 +1706,7 @@
   "LODHA": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 70.31
+   "promoter_pct": 70.29
   },
   "LTF": {
    "dii_pct": 0.0,
@@ -1731,7 +1731,7 @@
   "LUPIN": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 46.85
+   "promoter_pct": 46.84
   },
   "MAHABANK": {
    "dii_pct": 0.0,
@@ -1746,7 +1746,7 @@
   "MANKIND": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 72.63
+   "promoter_pct": 72.62
   },
   "MARICO": {
    "dii_pct": 0.0,
@@ -1806,7 +1806,7 @@
   "MOTILALOFS": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 67.2
+   "promoter_pct": 66.71
   },
   "MPHASIS": {
    "dii_pct": 0.0,
@@ -1846,7 +1846,7 @@
   "NATCOPHARM": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 49.42
+   "promoter_pct": 49.39
   },
   "NATIONALUM": {
    "dii_pct": 0.0,
@@ -1886,7 +1886,7 @@
   "NETWEB": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 66.98
+   "promoter_pct": 64.16
   },
   "NEULANDLAB": {
    "dii_pct": 0.0,
@@ -2021,7 +2021,7 @@
   "PFOCUS": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 60.73
+   "promoter_pct": 60.55
   },
   "PGEL": {
    "dii_pct": 0.0,
@@ -2036,7 +2036,7 @@
   "PIDILITIND": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 69.24
+   "promoter_pct": 69.18
   },
   "PIIND": {
    "dii_pct": 0.0,
@@ -2056,7 +2056,7 @@
   "PNBHOUSING": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 28.03
+   "promoter_pct": 28.01
   },
   "POLYCAB": {
    "dii_pct": 0.0,
@@ -2106,7 +2106,7 @@
   "PTCIL": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 59.72
+   "promoter_pct": 56.46
   },
   "PVRINOX": {
    "dii_pct": 0.0,
@@ -2176,12 +2176,12 @@
   "RRKABEL": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 61.38
+   "promoter_pct": 59.32
   },
   "RUBICON": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 59.76
+   "promoter_pct": 51.25
   },
   "RVNL": {
    "dii_pct": 0.0,
@@ -2306,7 +2306,7 @@
   "STARHEALTH": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 58.01
+   "promoter_pct": 58.0
   },
   "STLTECH": {
    "dii_pct": 0.0,
@@ -2356,7 +2356,7 @@
   "SYRMA": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 42.28
+   "promoter_pct": 41.63
   },
   "TARIL": {
    "dii_pct": 0.0,
@@ -2376,7 +2376,7 @@
   "TATACOMM": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 58.86
+   "promoter_pct": 58.85
   },
   "TATACONSUM": {
    "dii_pct": 0.0,
@@ -2386,7 +2386,7 @@
   "TATAELXSI": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 43.9
+   "promoter_pct": 43.89
   },
   "TATAINVEST": {
    "dii_pct": 0.0,
@@ -2421,7 +2421,7 @@
   "TDPOWERSYS": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 27.16
+   "promoter_pct": 26.51
   },
   "TECHM": {
    "dii_pct": 0.0,
@@ -2441,12 +2441,12 @@
   "TEJASNET": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 53.33
+   "promoter_pct": 53.28
   },
   "TENNIND": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 74.79
+   "promoter_pct": 59.79
   },
   "THANGAMAYL": {
    "dii_pct": 0.0,
@@ -2646,7 +2646,7 @@
   "WOCKPHARMA": {
    "dii_pct": 0.0,
    "fii_pct": 0.0,
-   "promoter_pct": 49.08
+   "promoter_pct": 49.32
   },
   "ZEEL": {
    "dii_pct": 0.0,
