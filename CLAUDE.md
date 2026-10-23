@@ -103,7 +103,7 @@ Sharemarket_Analyser_tool/
 
 ---
 
-## 3. DATABASE SCHEMA (SQLite — `market_data.db`, ~700 MB)
+## 3. DATABASE SCHEMA (SQLite — `market_data.db`, ~730 MB)
 
 Created by `backfill_history.py::init_all_tables()` (full set on cold start), `database/data_bridge.py::initialize_v7_tables()` (pipeline tables + idempotent `ALTER TABLE ADD COLUMN` migrations) and the defensive startup block in `master_funnel.py`. **The DB is never committed** — it lives only as the Actions artifact `market-data-db` (30-day retention). Any schema change must be an idempotent migration that runs inside the pipeline.
 
@@ -922,7 +922,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 23. **Write `market_stats[...]` only after `market_stats = {…}` exists** (v17.11.1, G40).
 24. **Performance-sheet widths via `_set_min_width()` only** (G35); **Full Dashboard alignment by column name** (`_FULL_LEFT_ALIGNED`).
 25. **Allowlist writes only from ISIN-matched runs** — keep `record_dual_listed_observations()`'s guards (G41); do not reintroduce a nightly wipe.
-26. **`market_data.db` cannot be committed** (≈ 700 MB artifact). Schema changes = idempotent migrations inside the pipeline.
+26. **`market_data.db` cannot be committed** (≈ 730 MB artifact). Schema changes = idempotent migrations inside the pipeline.
 
 ---
 
