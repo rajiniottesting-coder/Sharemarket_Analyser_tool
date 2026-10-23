@@ -18,7 +18,7 @@ Companion documents: `readme.md` (user-facing overview + version table), `pipeli
 A fully automated, cloud-hosted daily pipeline that:
 
 1. Downloads NSE + BSE market data every trading morning (GitHub Actions cron 23:00 UTC = 04:30 IST, Tue–Sat IST, processing the previous trading day)
-2. Screens ~5,200 stocks through a 3-stage funnel → 100 candidates (plus any open positions that fell out of the top 100)
+2. Refreshes technicals for the ~6,200 symbols that traded in the past 7 days, then screens ~5,200 stocks (NSE + BSE, a dual-listed stock counted once) through a 3-stage funnel → 100 candidates (plus any open positions that fell out of the top 100)
 3. Runs fundamental, technical, forensic, valuation and **news-sentiment** analysis on them
 4. Gates Gold picks on the **market regime** and a **15-condition** filter, sets a regime-aware **stop-loss + single Target** and a risk-parity position size
 5. **Logs every Gold pick and tracks its real outcome** (live trailing stop, shadow stop, continuation audit, risk-adjusted metrics)
@@ -199,7 +199,7 @@ On exception  error email (is_error=True)
 
 ## 5. SCREENING FUNNEL
 
-Typical daily counts (production logs of 18, 25 and 26 Sep 2026): **~5,200 → ~1,900 → ~1,600 → 100** — the universe is the NSE + BSE consolidation with a dual-listed stock counted once (24-Sep: NSE 2,664 + BSE 4,999 = 7,663 raw rows → 5,234 stocks); Stage 1 1,859–1,993, Stage 2 1,509–1,696, e.g. `Universe: 5234 → Stage1: 1993 → Stage2: 1696 → Stage3: 100`. Stage 1's biggest drops are low delivery (~2,400) and penny stocks (~630).
+Typical daily counts (production run logs, 28-Aug to 22-Oct 2026): **~5,200 → ~1,900 → ~1,600 → 100** — the universe is the NSE + BSE consolidation with a dual-listed stock counted once (22-Oct: NSE 2,694 + BSE 5,047 = 7,741 raw rows → 5,270 stocks); universe 5,154–5,270, Stage 1 1,838–1,997, Stage 2 1,509–1,696, e.g. `Universe: 5270 → Stage1: 1838 → Stage2: 1522 → Stage3: 100`. Stage 1's biggest drops are low delivery (2,302–2,543 — every BSE-only stock that passes the earlier volume / circuit / penny / suspended checks lands here while the BSE delivery file is missing, see §16) and penny stocks (618–648). Section 1.5's technical refresh covers more symbols than the funnel: every `daily_prices` symbol that traded in the past 7 days (6,097–6,253); its "N+ inactive/delisted skipped" figure is 8,711 − N, a hard-coded constant, not a count.
 
 ### Stage 1 — `screening/pre_screener.py::stage_1_filter` (V0–V9 hard drops)
 
@@ -528,11 +528,11 @@ Old formula had `c > st_up = BUY` which was inverted → always NEUTRAL. Fixed.
 C1 weekday · C2 NSE holiday (three-state; unknown calendar = fail-closed) · C3 NSE bhav HEAD with one 30-second retry · C4 BSE — always PASS (download attempted at runtime) · C5 — skipped (no watchlist requirement). Prints `✅ GATE APPROVED: Processing data for …`; master_funnel then prints `✅ Gate passed. Processing trading day: …`. The real data-integrity check (`check_data_integrity`, NSE frame ≥ 500 rows) runs after the download.
 
 ### BSE downloads
-One `bse` package client per run; `_bse_bhav()` cascades `bse` → `cloudscraper` → `curl_cffi` (v12.0). BSE-down days fall back to NSE-only mode. Known noise: the BSE SME delivery file sometimes arrives as "File is not a zip file" (logged as `BSE-Deliv ⚠️`; NSE delivery % is used).
+One `bse` package client per run; `_bse_bhav()` cascades `bse` → `cloudscraper` → `curl_cffi` (v12.0). BSE-down days fall back to NSE-only mode. Known gap: on every run in the logs checked (28-Aug, 16-Sep, 24-Sep, 22-Oct-2026) the BSE delivery file is missing (`BSE-Deliv ⚠️`) and `download_bse_sme_bhavcopy` fails with "File is not a zip file" (the SME stream is skipped). Dual-listed stocks use NSE delivery %; BSE-only stocks get delivery 0 (the reconciler fills missing values with 0) and Stage 1 V3 drops them — see §16 and §20.
 
 ### Reconciler + dual-listed allowlist — `ingestion/reconciler.py`, `ingestion/allowlist_maintainer.py`
 NSE+BSE merge on **real 12-character ISINs only** (v12.1 — empty ISINs never join). `df.attrs["dual_match_method"]` records how the merge was made (`isin` / `symbol` / `allowlist_fallback` / `bse_only`). On BSE-down days the effective allowlist = the 233 hard-coded `DUAL_LISTED_ALLOWLIST` names ∪ `dual_listed_runtime`. In the merged frame `final_symbol` prefers the NSE ticker and `final_close` the NSE close.
-`record_dual_listed_observations()` (called from `save_to_database`) writes only when the run used the ISIN merge, only for rows present on both exchanges, skips ETF / fund / index products (`_is_fund_or_index`), refuses a cross-join-looking run (`_MAX_DUP_SHARE = 0.01`, `_MAX_DUAL_SHARE = 0.99`) and self-cleans stored fund rows (v17.17). `prune_runtime_allowlist()` drops entries unseen for 30 days. Typical log: recorder stored ~2,100, removed ~90 ETF rows on first run.
+`record_dual_listed_observations()` (called from `save_to_database`) writes only when the run used the ISIN merge, only for rows present on both exchanges, skips ETF / fund / index products (`_is_fund_or_index`), refuses a cross-join-looking run (`_MAX_DUP_SHARE = 0.01`, `_MAX_DUAL_SHARE = 0.99`) and self-cleans stored fund rows (v17.17). `prune_runtime_allowlist()` drops entries unseen for 30 days. 22-Oct log: 2,157 dual-listed seen on both exchanges (ISIN) · 2 new · 2,247 stored · 89 ETF/fund/index skipped.
 
 ### NSE pledge / shareholding — weekly local snapshot (v17.13.x)
 NSE answers a residential client (browser/XHR headers + warm-up cookies) but returns nothing to GitHub runners. So:
@@ -766,7 +766,7 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 | Daily OHLC only | No intraday data | Same-bar SL+target ties resolve to SL |
 | 0-vs-missing ambiguity in some SQL `COALESCE(…, 0)` reads | Architectural | Deferred since v12.4 |
 | Altman Z capped at 10 | X4 unit mismatch on some large caps | By design (v12.5) |
-| BSE SME delivery file | BSE sometimes serves a non-zip response | Logged `BSE-Deliv ⚠️`; NSE delivery % used |
+| BSE delivery + BSE SME files | Both fail on every run checked (`BSE-Deliv ⚠️`; BSE SME "File is not a zip file") | Dual-listed stocks use NSE delivery %; BSE-only stocks get delivery 0 and are dropped at Stage 1 V3, so the top 100 comes from NSE-listed stocks in practice (open item, §20) |
 | Scheduled-run timing | GitHub queues scheduled workflows | Delivery ~05:00–09:30 IST |
 | Piotroski F /9 | No free source for true year-on-year comparisons | Proxy from available data |
 | Alert Log Prev Score / Score Δ | Needs yesterday's `latest_analysis_results` | Blank on the first run after a fresh DB |
@@ -782,7 +782,7 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 ✅ GATE APPROVED: Processing data for …            /  ✅ Gate passed. Processing trading day: …
 ✅ C5 PASS: NSE OK — N rows …
 🔗 Allowlist recorder: N dual-listed seen on both exchanges (ISIN) · k new · M stored
-   Universe: 5,2xx → Stage1: ~1,9xx → Stage2: ~1,6xx → Stage3: 100
+   Universe: 5,1xx–5,2xx → Stage1: 1,8xx–1,9xx → Stage2: 1,5xx–1,6xx → Stage3: 100
 ✅ NSE snapshot: N pledge + M shareholding records, Xd old (≤ 14d) — used as fallback for blanks
 📌 NSE snapshot applied to blanks: pledge N · DII 0 · FII N · promoter N
 📰 News sentiment: LIVE (feeds score) · model=… · N stocks
@@ -934,7 +934,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 - [ ] Owner decision: the Performance *SL* cell shows the original stop; once a trailing stop is active the stop in force is the higher of SL and Trailing. Showing the effective stop in that cell would be a display change (text now describes the current behaviour).
 - [ ] Review Target multipliers (1.3 / 1.5 / 1.8) once ~30 positions have closed under v17.8.1 rules.
 - [ ] Pledge Direction should start populating ~mid-December 2026 — confirm.
-- [ ] BSE SME delivery "File is not a zip file" — investigate.
+- [ ] BSE delivery file missing and BSE SME download failing on every run checked → BSE-only stocks get delivery 0 and always drop at Stage 1 V3. After the logic freeze: treat missing delivery as unknown (Stage 1 V3 and Stage 2 HD2 both read it) or find a working BSE delivery source. Also fix the Section 1.5 log's "N+ inactive/delisted skipped", which is 8,711 − N from a hard-coded constant.
 - [x] Per-gate Gold-funnel log line — done in v17.20 (🥇 lines when the Gold sheet is empty).
 - [ ] Optional: wire `LLM_MAX_TOKENS` / `LLM_REASONING_EFFORT` / `NEWS_MAX_TOKENS` into the workflow as repository Variables.
 - [ ] Restore the deep ScoringEngine suite: `git show d2f301a:test_v11.0.2_full_withdummies.py` — 524 pass / 18 fail on v17.19 code. Categorised from their messages (57.14/57.15 also read in code), all 18 look like assertion drift rather than production bugs: 8 allowlist tests vs the v17.17 ISIN-evidence guard, 2 Gemini-string checks (provider removed v17.10), 2 placeholder-format checks, 2 corp-info QoQ parser tests (endpoint replaced v17.13.3), and 4 technicals tests whose fixture reads the first `technical_indicators` row per symbol (historical ATR rows exist since v15.2). Update those assertions, then run both suites.
