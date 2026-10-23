@@ -9,7 +9,7 @@
 > **Fully automated · Daily pre-market intelligence for Indian equities**
 > ~5,200 NSE/BSE stocks → scored Excel dashboard with regime-gated Gold picks → your inbox every trading morning.
 
-A cloud-hosted, zero-intervention research engine for the Indian markets. It harvests NSE and BSE data overnight, funnels every stock traded that day (~5,200, a company listed on both exchanges counted once) down to the top 100 through a three-stage screener, runs fundamental, technical, forensic and news-sentiment analysis on each, writes AI investor notes for Gold picks and open positions, holds back Gold picks when the market regime turns bearish, tracks every Gold pick's real outcome, and emails a colour-coded Excel dashboard — every trading morning.
+A cloud-hosted, zero-intervention research engine for the Indian markets. It harvests NSE and BSE data overnight, refreshes technical indicators for the ~6,200 NSE/BSE ticker symbols active in the past week, funnels every stock traded that day (~5,200, a company listed on both exchanges counted once) down to the top 100 through a three-stage screener, runs fundamental, technical, forensic and news-sentiment analysis on each, writes AI investor notes for Gold picks and open positions, holds back Gold picks when the market regime turns bearish, tracks every Gold pick's real outcome, and emails a colour-coded Excel dashboard — every trading morning.
 
 Single-user personal research tool. No UI, no server to manage. Runs on GitHub Actions + Gmail + any OpenAI-compatible LLM endpoint, with one small scheduled job on the owner's machine for exchange data NSE will not serve to cloud runners.
 
@@ -30,7 +30,7 @@ Single-user personal research tool. No UI, no server to manage. Runs on GitHub A
 
 ## Highlights
 
-- **Three-stage funnel** — ~5,200 stocks (NSE + BSE consolidated, a dual-listed company counted once; ~7,600 raw exchange rows) → ~1,900 (Stage 1 eligibility: ETFs, penny stocks, low delivery, circuits) → ~1,600 (Stage 2 quality ≥ 15/35) → **100 candidates** (Stage 3 priority ranker + overrides + cap diversification). Typical counts from recent runs.
+- **Three-stage funnel** — ~5,200 stocks (NSE + BSE consolidated, a dual-listed company counted once; ~7,600 raw exchange rows) → ~1,900 (Stage 1 eligibility: ETFs, penny stocks, low delivery, circuits) → ~1,600 (Stage 2 quality ≥ 15/35) → **100 candidates** (Stage 3 priority ranker + overrides + cap diversification). Typical counts from the run logs of 28-Aug to 22-Oct-2026 (22-Oct: 5,270 → 1,838 → 1,522 → 100). BSE-only stocks currently drop at Stage 1 — see Known limitations.
 - **7 Fair-Value models** per stock — DCF, Graham, PE, PB, EV/EBITDA, DDM, PEG — weighted into a Composite Fair Value with a Margin-of-Safety gate and sector-alias normalisation.
 - **Composite score /100** from five sub-scores (fundamental 35 · technical 30 · early-entry 15 · sentiment 10 · safety 10), cap-adjusted verdicts, confidence dots (●●● / ●●○ / ●○○), and a distinct **OVERVALUED** verdict.
 - **Market-regime gate** — Gold picks are suppressed only when the Nifty is **more than 2% below** its 20-day SMA (a tolerance band, so early-recovery days are not mistaken for downtrends).
@@ -247,6 +247,7 @@ Section 1       Harvest — NSE bhav + delivery + BSE + SME + F&O
 Section 3J/K    Bulk deals + SAST insider trades (downloaded to DB)
 Section 1.2–1.4 Gap detection → DB sync (+ dual-listed allowlist recorder) → gap-fill
 Section 1.5     Technicals refreshed with today's prices
+                (~6,200 symbols that traded in the past 7 days)
 Section 0       Three-stage funnel   ~5,200 → ~1,900 → ~1,600 → 100
                 + open positions outside the top 100 (held monitoring)
 Section 3       Per-stock overlays — valuation, forensics, capital allocation,
@@ -379,6 +380,7 @@ Verdicts are cap-aware; thresholds live in `analysis/scoring_engine.py`.
 | Trade Summary R:R colours | The bands (green ≥ 3, amber ≥ 2) predate the v17.8 single target, whose R:R is ~1.3–1.8 by construction | Every pick currently shows red; re-banding is an open decision |
 | Earnings-week SL widening | No free, reliable earnings-date source for Indian stocks | Built in, never fires |
 | Weekly NSE fetch returning 0 pledge rows | NSE sometimes answers the pledge call with nothing while shareholding works — so far on both Sunday runs (27-Sep, 11-Oct-2026), never on a weekday | Since v17.20.1 the fetcher keeps the previous snapshot when it is still usable and exits 3; that file still expires 14 days after its own fetch. If Task Scheduler shows `0x3`, run `fetch_nse_now.bat` ad hoc during the week |
+| BSE delivery and BSE SME files | Both downloads fail on every run in the logs checked (trading days 28-Aug, 16-Sep, 24-Sep and 22-Oct-2026): `BSE-Deliv ⚠️` and `BSE SME download failed: File is not a zip file` | Dual-listed stocks use NSE delivery %. BSE-only stocks get delivery 0 and are dropped at Stage 1 (delivery < 40 %), so in practice the top 100 comes from NSE-listed stocks. Open item — the fix (treat missing delivery as unknown, or another BSE delivery source) changes Stage 1, so it waits for the logic review |
 | Scheduled-run timing | GitHub queues scheduled workflows | Delivery time varies |
 
 ---

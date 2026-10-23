@@ -43,7 +43,7 @@ Every morning, the pipeline has to decide which 100 stocks (out of ~5,200 traded
 ```
 ~5,200 stocks (≈ 7,600 raw NSE + BSE bhav rows; a dual-listed stock counted once)
       ↓  Stage 1: structural hygiene filter
-~1,900 tradeable candidates          (run logs 18/25/26 Sep 2026: 1,859–1,993)
+~1,900 tradeable candidates          (run logs 28-Aug to 22-Oct 2026: 1,838–1,997)
       ↓  Stage 2: tradeable-quality score /35
 ~1,600 quality-passing stocks        (same logs: 1,509–1,696)
       ↓  Stage 3: priority ranker + 5 overrides + cap mix
