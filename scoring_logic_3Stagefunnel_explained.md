@@ -41,7 +41,7 @@ Read it top-to-bottom and you'll understand the entire decision chain.
 Every morning, the pipeline has to decide which 100 stocks (out of ~5,200 traded on NSE+BSE) deserve the full treatment — yfinance fundamentals, forensics, technicals, news sentiment, scoring (and, for Gold picks and open positions, LLM investor notes). That decision is made in **three cascading stages**, from cheapest filter to most selective.
 
 ```
-~5,200 raw bhav rows
+~5,200 stocks (≈ 7,600 raw NSE + BSE bhav rows; a dual-listed stock counted once)
       ↓  Stage 1: structural hygiene filter
 ~1,900 tradeable candidates          (run logs 18/25/26 Sep 2026: 1,859–1,993)
       ↓  Stage 2: tradeable-quality score /35
