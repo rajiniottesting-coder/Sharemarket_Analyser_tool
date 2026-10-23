@@ -208,7 +208,7 @@ Without LLM credentials the pipeline still runs end to end: news sentiment is sk
 **Manual run options:** *Actions → NSE_BSE_Daily_Pipeline → Run workflow*. Leave `reset_performance` blank for a normal run. Typing `RESET-PERFORMANCE` wipes `gold_recommendations`, `gold_outcomes` and `gold_continuation` before the run — irreversible, and it can never fire on the schedule.
 
 **Persistence:**
-- `market_data.db` (SQLite, ~700 MB) lives only as the workflow artifact `market-data-db` (30-day retention), downloaded at the start of each run and re-uploaded at the end. It is never committed — any schema change must run as a workflow step.
+- `market_data.db` (SQLite, ~730 MB after the daily VACUUM) lives only as the workflow artifact `market-data-db` (30-day retention), downloaded at the start of each run and re-uploaded at the end. It is never committed — any schema change must run as a workflow step.
 - The AI card cache (`downloads/ai_cache/`) is persisted between runs with `actions/cache`; it expires itself by date.
 
 **Keep-alive:** `keep_alive.yml` runs Wednesday and Sunday 10:00 UTC and commits a timestamp so GitHub does not disable the scheduled pipeline after 60 days of inactivity. Because it commits to `main`, pull with `git pull --rebase` before pushing.
