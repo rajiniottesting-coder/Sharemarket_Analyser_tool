@@ -7,9 +7,9 @@
 [![Version](https://img.shields.io/badge/version-v17.20.1-informational)](#version-history)
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
-> 5,000+ stocks → scored, regime-gated Excel dashboard → your inbox every trading morning.
+> ~5,200 NSE/BSE stocks → scored Excel dashboard with regime-gated Gold picks → your inbox every trading morning.
 
-A cloud-hosted, zero-intervention research engine for the Indian markets. It harvests NSE and BSE data overnight, funnels 5,000+ stocks down to the top 100 through a three-stage screener, runs fundamental, technical, forensic, news-sentiment and AI analysis on each, gates every buy candidate against the market regime, tracks every pick's real outcome, and emails a colour-coded Excel dashboard — every trading morning.
+A cloud-hosted, zero-intervention research engine for the Indian markets. It harvests NSE and BSE data overnight, funnels every stock traded that day (~5,200, a company listed on both exchanges counted once) down to the top 100 through a three-stage screener, runs fundamental, technical, forensic and news-sentiment analysis on each, writes AI investor notes for Gold picks and open positions, holds back Gold picks when the market regime turns bearish, tracks every Gold pick's real outcome, and emails a colour-coded Excel dashboard — every trading morning.
 
 Single-user personal research tool. No UI, no server to manage. Runs on GitHub Actions + Gmail + any OpenAI-compatible LLM endpoint, with one small scheduled job on the owner's machine for exchange data NSE will not serve to cloud runners.
 
@@ -30,19 +30,19 @@ Single-user personal research tool. No UI, no server to manage. Runs on GitHub A
 
 ## Highlights
 
-- **Three-stage funnel** — ~5,200 raw rows → ~1,900 (Stage 1 eligibility: ETFs, penny stocks, low delivery, circuits) → ~1,600 (Stage 2 quality ≥ 15/35) → **100 candidates** (Stage 3 priority ranker + overrides + cap diversification). Typical counts from recent runs.
+- **Three-stage funnel** — ~5,200 stocks (NSE + BSE consolidated, a dual-listed company counted once; ~7,600 raw exchange rows) → ~1,900 (Stage 1 eligibility: ETFs, penny stocks, low delivery, circuits) → ~1,600 (Stage 2 quality ≥ 15/35) → **100 candidates** (Stage 3 priority ranker + overrides + cap diversification). Typical counts from recent runs.
 - **7 Fair-Value models** per stock — DCF, Graham, PE, PB, EV/EBITDA, DDM, PEG — weighted into a Composite Fair Value with a Margin-of-Safety gate and sector-alias normalisation.
 - **Composite score /100** from five sub-scores (fundamental 35 · technical 30 · early-entry 15 · sentiment 10 · safety 10), cap-adjusted verdicts, confidence dots (●●● / ●●○ / ●○○), and a distinct **OVERVALUED** verdict.
 - **Market-regime gate** — Gold picks are suppressed only when the Nifty is **more than 2% below** its 20-day SMA (a tolerance band, so early-recovery days are not mistaken for downtrends).
 - **15-condition Gold filter** — BUY verdict, score, MoS, storm, RSI, balance-sheet health, pledge, spike suppression, Altman Z, earnings quality, interest cover, ROE, PEG, 3-day momentum and sector cycle must *all* pass. When the sheet is empty, the run log names the gate that emptied it (v17.20).
 - **Regime-aware stop & target** — ATR-based stop-loss scaled by horizon, sector and the stock's own volatility regime; a single **Target = regime multiplier × SL** (1.3× calm · 1.5× normal · 1.8× volatile).
-- **News & catalyst intelligence** — recent headlines per stock are read by an LLM that must quote the headline behind every fact it reports (insider buy/sell, bulk deal, regulatory action, results tone). Evidence-less claims are dropped; no numbers are ever invented. Feeds the sentiment sub-score.
+- **News & catalyst intelligence** — recent headlines per stock are read by an LLM that returns a sentiment verdict, a catalyst, a risk and results tone. Insider buy/sell, bulk-deal and regulatory flags are kept only when the model quotes the headline behind them (enforced in code); the prompt also forbids any number that does not appear in a headline. Feeds the sentiment sub-score.
 - **Real NSE pledge / promoter data** — fetched weekly from a residential IP by a scheduled local job, committed as a validated, timestamped snapshot, and used by the cloud pipeline only when fresh (≤ 14 days).
 - **Outcome tracking** — every Gold pick is logged with entry / SL / Target and walked forward daily until it hits target, stop, trailing stop or expiry. The 🎯 Performance sheet reports hit rates, speed, breakdowns, risk-adjusted returns, continuation after exit, and a survivorship audit.
 - **Shadow trailing stop** — a regime-aware Chandelier stop runs in parallel with the live exit, purely observationally, so a better exit rule can be adopted on evidence rather than intuition.
 - **Bearish-regime resilience watchlist** — on bearish days, stocks up ≥ 5% that are outperforming the Nifty are logged (reference only, never auto-bought) so strength is not lost while Gold is suppressed.
 - **AI investor cards** — narrative cards for Gold picks and currently-held positions only, cached per day so same-day re-runs cost nothing.
-- **Forensic guards** — Altman Z, Beneish M, promoter pledge, Piotroski F /9, BS Health — suppress alerts on distressed names.
+- **Forensic guards** — pledge > 20 %, Altman Z < 1.81 or Beneish M > −1.78 suppress spike alerts; Altman Z, BS Health, pledge and earnings quality are also Gold gates; Piotroski F /9 (approximated from free data) feeds the safety sub-score.
 - **Gate-checked execution** — weekday, NSE holiday calendar (fail-closed) and NSE bhav availability are checked before anything runs; the downloaded data must then pass an integrity check, and missed trading days are gap-filled before analysis.
 
 ---
@@ -190,7 +190,7 @@ Without LLM credentials the pipeline still runs end to end: news sentiment is sk
 
 ## Deployment — GitHub Actions
 
-**`.github/workflows/market_run.yml`** — cron `0 23 * * 1-5` → 23:00 UTC Mon–Fri = **04:30 IST Tue–Sat**, processing the previous trading day. GitHub frequently queues scheduled runs; delivery has ranged from ~05:00 to ~09:30 IST. A full run takes ~12 minutes.
+**`.github/workflows/market_run.yml`** — cron `0 23 * * 1-5` → 23:00 UTC Mon–Fri = **04:30 IST Tue–Sat**, processing the previous trading day. GitHub frequently queues scheduled runs; delivery has ranged from ~05:00 to ~09:30 IST. A full run takes 10–15 minutes.
 
 **Secrets** (Settings → Secrets and variables → Actions → *Secrets*):
 
@@ -208,7 +208,7 @@ Without LLM credentials the pipeline still runs end to end: news sentiment is sk
 **Manual run options:** *Actions → NSE_BSE_Daily_Pipeline → Run workflow*. Leave `reset_performance` blank for a normal run. Typing `RESET-PERFORMANCE` wipes `gold_recommendations`, `gold_outcomes` and `gold_continuation` before the run — irreversible, and it can never fire on the schedule.
 
 **Persistence:**
-- `market_data.db` (SQLite, ~650 MB) lives only as the workflow artifact `market-data-db` (30-day retention), downloaded at the start of each run and re-uploaded at the end. It is never committed — any schema change must run as a workflow step.
+- `market_data.db` (SQLite, ~700 MB) lives only as the workflow artifact `market-data-db` (30-day retention), downloaded at the start of each run and re-uploaded at the end. It is never committed — any schema change must run as a workflow step.
 - The AI card cache (`downloads/ai_cache/`) is persisted between runs with `actions/cache`; it expires itself by date.
 
 **Keep-alive:** `keep_alive.yml` runs Wednesday and Sunday 10:00 UTC and commits a timestamp so GitHub does not disable the scheduled pipeline after 60 days of inactivity. Because it commits to `main`, pull with `git pull --rebase` before pushing.
@@ -342,12 +342,12 @@ Verdicts are cap-aware; thresholds live in `analysis/scoring_engine.py`.
 
 ## Excel output — 8 sheets
 
-1. **📊 Full Dashboard** — 100 stocks × 126 columns. Row 2 states the header colour legend and the NSE snapshot's fetch time and age. AI analyst notes are not on this sheet — they appear on the Gold sheet and, for open positions, in the Performance sheet's AI Card column. News columns include Key Catalyst, News Sentiment, Primary Risk, *Insider (news)*, *Bulk Deal* and *Reg Flag*. Red headers mark the few columns that genuinely have no free source.
+1. **📊 Full Dashboard** — up to 100 stocks × 126 columns (fewer when ETF/fund leakers are pruned). Row 2 states the header colour legend and the NSE snapshot's fetch time and age. AI analyst notes are not on this sheet — they appear on the Gold sheet and, for open positions, in the Performance sheet's AI Card column. News columns include Key Catalyst, News Sentiment, Primary Risk, *Insider (news)*, *Bulk Deal* and *Reg Flag*. Red headers mark the few columns that genuinely have no free source.
 2. **⭐ Gold – Early Movers** — the 15-condition filter; row 2 shows the criteria and, on bearish days, the suppression notice. Below it, the **Bearish-Regime Standouts** watchlist (or a greyed *Recent Resilience* strip on bullish days).
 3. **📊 Trade Summary** — Entry range / Stop Loss / Target / R:R / horizon / risk level for Gold picks.
 4. **🔔 Alert Log** — today's score vs yesterday's with an action label (`SCORE DEGRADED` fires only on a genuine ≥ 3-point drop; weak-but-stable names show `LOW SCORE`).
 5. **📱 Delivery Preview** — WhatsApp / email text preview.
-6. **🎯 Performance** — in sheet order: headline metrics (Target hit / SL / Expired / Trail SL), speed metrics, diagnostic breakdowns (score band · archetype · sector · horizon), closed positions, risk-adjusted returns (Sharpe · Sortino · Calmar · drawdown duration), open positions (effective SL, Target, trailing-lock state, regime, suggested allocation, Score Band, Archetype, Sector and an **AI Card** per held stock), missed-runup diagnostic, continuation audit, shadow exit comparison and survivorship audit. A banner warns until 30 positions have closed.
+6. **🎯 Performance** — in sheet order: headline metrics (Target hit / SL / Expired / Trail SL), speed metrics, diagnostic breakdowns (score band · archetype · sector · horizon), closed positions, risk-adjusted returns (Sharpe · Sortino · Calmar · drawdown duration), open positions (original SL, Target, trailing-lock state, regime, suggested allocation, Score Band, Archetype, Sector and an **AI Card** per held stock), missed-runup diagnostic, continuation audit, shadow exit comparison and survivorship audit. A banner warns until 30 positions have closed.
 7. **📖 Glossary** — column definitions.
 8. **📖 Tooltip Reference** — every header tooltip in one place.
 
@@ -374,7 +374,7 @@ Verdicts are cap-aware; thresholds live in `analysis/scoring_engine.py`.
 | Order-book / tender data (OB/Bill, Pipeline Vis, L1 Wins, L1 Est, New Mkt Entry) | No free structured source | Remain empty |
 | SEBI Flags | No free structured source | Empty; the *Reg Flag* news column catches regulatory actions that make headlines |
 | Current / Quick ratio, some CAGRs | yfinance coverage gaps for Indian stocks | Partial coverage |
-| News sentiment | LLM judgement is non-deterministic | Temperature 0, JSON schema, ≥ 0.6 confidence floor, evidence required, raw output retained |
+| News sentiment | LLM judgement is non-deterministic | Temperature 0, JSON schema, ≥ 0.6 confidence floor, a quoted headline required for insider / bulk-deal / regulatory flags, raw output retained |
 | Target multipliers (1.3 / 1.5 / 1.8) | Starting estimates, not yet validated | Review after ~30 closed positions |
 | Trade Summary R:R colours | The bands (green ≥ 3, amber ≥ 2) predate the v17.8 single target, whose R:R is ~1.3–1.8 by construction | Every pick currently shows red; re-banding is an open decision |
 | Earnings-week SL widening | No free, reliable earnings-date source for Indian stocks | Built in, never fires |

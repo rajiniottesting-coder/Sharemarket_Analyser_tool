@@ -103,7 +103,7 @@ Sharemarket_Analyser_tool/
 
 ---
 
-## 3. DATABASE SCHEMA (SQLite — `market_data.db`, ~650 MB)
+## 3. DATABASE SCHEMA (SQLite — `market_data.db`, ~700 MB)
 
 Created by `backfill_history.py::init_all_tables()` (full set on cold start), `database/data_bridge.py::initialize_v7_tables()` (pipeline tables + idempotent `ALTER TABLE ADD COLUMN` migrations) and the defensive startup block in `master_funnel.py`. **The DB is never committed** — it lives only as the Actions artifact `market-data-db` (30-day retention). Any schema change must be an idempotent migration that runs inside the pipeline.
 
@@ -199,7 +199,7 @@ On exception  error email (is_error=True)
 
 ## 5. SCREENING FUNNEL
 
-Typical daily counts (production logs of 18, 25 and 26 Sep 2026): **~5,200 → ~1,900 → ~1,600 → 100** — Stage 1 1,859–1,993, Stage 2 1,509–1,696, e.g. `Universe: 5234 → Stage1: 1993 → Stage2: 1696 → Stage3: 100`. Stage 1's biggest drops are low delivery (~2,400) and penny stocks (~630).
+Typical daily counts (production logs of 18, 25 and 26 Sep 2026): **~5,200 → ~1,900 → ~1,600 → 100** — the universe is the NSE + BSE consolidation with a dual-listed stock counted once (24-Sep: NSE 2,664 + BSE 4,999 = 7,663 raw rows → 5,234 stocks); Stage 1 1,859–1,993, Stage 2 1,509–1,696, e.g. `Universe: 5234 → Stage1: 1993 → Stage2: 1696 → Stage3: 100`. Stage 1's biggest drops are low delivery (~2,400) and penny stocks (~630).
 
 ### Stage 1 — `screening/pre_screener.py::stage_1_filter` (V0–V9 hard drops)
 
@@ -548,7 +548,7 @@ NSE answers a residential client (browser/XHR headers + warm-up cookies) but ret
 Gemini and the `google-genai` SDK were removed in v17.10. Both modules call `{OPENAI_API_BASE}/chat/completions` over plain HTTPS with `OPENAI_API_KEY` and `LLM_MODEL`. Without credentials everything else runs; news is skipped (sentiment weight redistributes) and cards show a placeholder. The endpoint is a **reasoning model**: hidden reasoning tokens count against `max_tokens`.
 
 ### News & catalyst sentiment — `analysis/news_sentiment.py` (Section 5A.6)
-Google News RSS, up to 15 headlines from the last 14 days (`NEWS_MAX_HEADLINES`, `NEWS_LOOKBACK_DAYS`) → LLM at temperature 0 with a strict JSON schema, `max_tokens` 3,000 (`NEWS_MAX_TOKENS`), optional `LLM_REASONING_EFFORT`. Verdicts below confidence 0.6 become NEUTRAL. Live mode sets `news_sentiment` (POSITIVE +4 / NEGATIVE −5 in the sentiment sub-score; an informed verdict switches the composite to canonical weights), `key_catalyst`, `primary_risk`. v17.11 evidenced facts — each must quote its headline or is dropped, no numbers invented: `news_insider` (a news-evidenced BUY may raise `insider_buy_alert` NO → YES, never lowers a SAST YES), `news_bulk_deal`, `regulatory_flag`, results tone. `NEWS_SENTIMENT_SHADOW=1` logs without touching scores; `NEWS_SENTIMENT_ENABLED=0` disables. Logs: `📰 News sentiment: N/M stocks got an informed signal` and `📰   not informed: headlines neutral ×K · …`.
+Google News RSS, up to 15 headlines from the last 14 days (`NEWS_MAX_HEADLINES`, `NEWS_LOOKBACK_DAYS`) → LLM at temperature 0 with a strict JSON schema, `max_tokens` 3,000 (`NEWS_MAX_TOKENS`), optional `LLM_REASONING_EFFORT`. Verdicts below confidence 0.6 become NEUTRAL. Live mode sets `news_sentiment` (POSITIVE +4 / NEGATIVE −5 in the sentiment sub-score; an informed verdict switches the composite to canonical weights), `key_catalyst`, `primary_risk`. v17.11 evidenced facts: `news_insider` (a news-evidenced BUY may raise `insider_buy_alert` NO → YES, never lowers a SAST YES), `news_bulk_deal` and `regulatory_flag` are dropped unless the model quotes the headline (enforced in code); results tone, catalyst and risk carry no evidence field; the prompt forbids numbers not in a headline (a prompt rule, not code-enforced). `NEWS_SENTIMENT_SHADOW=1` logs without touching scores; `NEWS_SENTIMENT_ENABLED=0` disables. Logs: `📰 News sentiment: N/M stocks got an informed signal` and `📰   not informed: headlines neutral ×K · …`.
 
 ### Investor notes (Block H) — `ai/ai_analyst.py`
 - **Scope** (v17.10/v17.14): `excel_gen._get_gold()` ∪ `get_open_recommendations()` — nothing else. Generated after logging + tracker, just before the Excel build. Held positions outside the top 100 use their fully enriched `_held_monitor_map` row (v17.15).
@@ -922,7 +922,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 23. **Write `market_stats[...]` only after `market_stats = {…}` exists** (v17.11.1, G40).
 24. **Performance-sheet widths via `_set_min_width()` only** (G35); **Full Dashboard alignment by column name** (`_FULL_LEFT_ALIGNED`).
 25. **Allowlist writes only from ISIN-matched runs** — keep `record_dual_listed_observations()`'s guards (G41); do not reintroduce a nightly wipe.
-26. **`market_data.db` cannot be committed** (≈ 650 MB artifact). Schema changes = idempotent migrations inside the pipeline.
+26. **`market_data.db` cannot be committed** (≈ 700 MB artifact). Schema changes = idempotent migrations inside the pipeline.
 
 ---
 
@@ -4205,4 +4205,4 @@ v17.3 does not improve returns and should not be read as if it does. What it cha
 
 ---
 
-*Last updated: 15 October 2026 · v17.20.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: 23 October 2026 · v17.20.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
