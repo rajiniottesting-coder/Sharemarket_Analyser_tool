@@ -1,5 +1,5 @@
 """
-risk/correlation_aware_sizing.py — v15.4
+risk/correlation_aware_sizing.py — v15.4 (sector exposure from logged allocations since v17.21)
 
 INSTITUTIONAL VOLATILITY-ADJUSTED POSITION SIZING (RISK PARITY)
 ══════════════════════════════════════════════════════════════════════════
@@ -69,29 +69,54 @@ CAP_RISK_MULTIPLIER = {
 
 
 def _load_open_positions() -> List[Dict]:
-    """Returns list of currently-open positions from gold_outcomes."""
+    """Returns list of currently-open positions from gold_outcomes.
+
+    v17.21: also returns the allocation logged with each position
+    (gold_recommendations.suggested_alloc_pct, v15.7) so sector exposure uses
+    what was actually suggested — re-deriving it from the SL distance counted
+    INDIAMART (logged at 1.0%) as 12.6% on 19-Oct-2026. Falls back to the
+    pre-v15.7 query on an old schema."""
+    queries = (
+        """
+        SELECT r.symbol, r.cap_category, r.sector,
+               r.cmp_at_recommendation, r.stop_loss, r.suggested_alloc_pct
+        FROM gold_recommendations r
+        INNER JOIN gold_outcomes o ON r.symbol = o.symbol
+          AND r.recommendation_date = o.recommendation_date
+        WHERE o.outcome_type = 'OPEN'
+        """,
+        """
+        SELECT r.symbol, r.cap_category, r.sector,
+               r.cmp_at_recommendation, r.stop_loss, NULL
+        FROM gold_recommendations r
+        INNER JOIN gold_outcomes o ON r.symbol = o.symbol
+          AND r.recommendation_date = o.recommendation_date
+        WHERE o.outcome_type = 'OPEN'
+        """,
+    )
     try:
         conn = sqlite3.connect(DB_PATH)
         try:
-            cur = conn.execute("""
-                SELECT r.symbol, r.cap_category, r.sector,
-                       r.cmp_at_recommendation, r.stop_loss
-                FROM gold_recommendations r
-                INNER JOIN gold_outcomes o ON r.symbol = o.symbol
-                  AND r.recommendation_date = o.recommendation_date
-                WHERE o.outcome_type = 'OPEN'
-            """)
-            return [
-                {
-                    'symbol': r[0],
-                    'cap_category': r[1] or '',
-                    'sector': r[2] or '',
-                    'cmp_at_rec': float(r[3] or 0),
-                    'sl': float(r[4] or 0),
-                }
-                for r in cur.fetchall()
-            ]
-        except sqlite3.OperationalError:
+            for q in queries:
+                try:
+                    rows = conn.execute(q).fetchall()
+                except sqlite3.OperationalError:
+                    continue
+                out = []
+                for r in rows:
+                    try:
+                        _alloc = float(r[5]) if r[5] not in (None, "", "—") else 0.0
+                    except (TypeError, ValueError):
+                        _alloc = 0.0
+                    out.append({
+                        'symbol': r[0],
+                        'cap_category': r[1] or '',
+                        'sector': r[2] or '',
+                        'cmp_at_rec': float(r[3] or 0),
+                        'sl': float(r[4] or 0),
+                        'alloc_pct': _alloc,
+                    })
+                return out
             return []
         finally:
             conn.close()
@@ -99,18 +124,28 @@ def _load_open_positions() -> List[Dict]:
         return []
 
 
-def _current_sector_exposure(open_positions: List[Dict]) -> Dict[str, float]:
+def _current_sector_exposure(open_positions: List[Dict],
+                             exclude_symbol: Optional[str] = None) -> Dict[str, float]:
     """
-    Returns {sector: estimated portfolio exposure %} based on current OPEN
-    positions, computed by re-deriving each position's risk-parity allocation
-    from its SL distance.
+    Returns {sector: portfolio exposure %} of the current OPEN positions.
+
+    v17.21: uses each position's LOGGED allocation (alloc_pct) when present;
+    otherwise (legacy rows) re-derives the risk-parity allocation from the SL
+    distance as before. `exclude_symbol` leaves the candidate's own open
+    position out — a stock re-appearing in Gold must not count against itself.
     """
     sector_exposure: Dict[str, float] = {}
+    _excl = (exclude_symbol or '').strip().upper()
     for pos in open_positions:
         sec = pos['sector'].strip()
         if not sec:
             continue
-        if pos['cmp_at_rec'] > 0 and pos['sl'] > 0:
+        if _excl and str(pos.get('symbol', '')).strip().upper() == _excl:
+            continue
+        _logged = float(pos.get('alloc_pct', 0) or 0)
+        if _logged > 0:
+            alloc_est = _logged
+        elif pos['cmp_at_rec'] > 0 and pos['sl'] > 0:
             sl_pct = abs((pos['sl'] - pos['cmp_at_rec']) / pos['cmp_at_rec'] * 100.0)
             if sl_pct > 0:
                 alloc_est = DEFAULT_RISK_BUDGET_PCT / sl_pct * 100.0
@@ -131,6 +166,7 @@ def compute_suggested_allocation(
     sl_pct: Optional[float] = None,
     risk_budget_pct: float = DEFAULT_RISK_BUDGET_PCT,
     open_positions: Optional[List[Dict]] = None,
+    candidate_symbol: Optional[str] = None,
 ) -> Tuple[float, str]:
     """
     Compute the volatility-adjusted (risk-parity) suggested allocation.
@@ -142,6 +178,8 @@ def compute_suggested_allocation(
                 None, falls back to FALLBACK_ALLOCATION_PCT.
         risk_budget_pct: % portfolio risk per position (default 1%)
         open_positions: pre-loaded list (perf: avoid DB hit)
+        candidate_symbol: v17.21 — the candidate's own open position (if
+                it is already held) is left out of its sector exposure
 
     Returns:
         (allocation_pct, rationale_string)
@@ -188,7 +226,8 @@ def compute_suggested_allocation(
     #   - cap_adjusted_alloc (16.16%) > headroom (15.0%) → "sector cap" branch fired
     #   - final_alloc became 15.0% — but only because MAX_ALLOCATION_PCT was also 15%
     #   - The TRUE binding constraint was MAX_ALLOCATION, not sector cap
-    sector_exposures = _current_sector_exposure(open_positions)
+    sector_exposures = _current_sector_exposure(open_positions,
+                                                exclude_symbol=candidate_symbol)
     current_sector_pct = sector_exposures.get(sector_norm, 0.0)
     headroom_in_sector = max(0.0, MAX_SECTOR_EXPOSURE_PCT - current_sector_pct)
 
@@ -246,4 +285,5 @@ def compute_for_stock_dict(
         sl_pct=sl_pct,
         risk_budget_pct=risk_budget_pct,
         open_positions=open_positions,
+        candidate_symbol=stock.get('symbol', ''),
     )

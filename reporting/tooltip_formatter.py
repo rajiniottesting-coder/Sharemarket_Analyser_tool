@@ -794,8 +794,11 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "Examples: NET CASH COMPANY | HIGH D/E 2.5× | NEGATIVE FCF | HIGH PLEDGE"),
 
     # ── Trade plan ──────────────────────────────────────────────────────────
-    "Entry Range (₹)": ("Ideal buy zone = CMP ± 0.5 × ATR",
-                         "Avoid chasing if CMP moves significantly above upper bound."),
+    "Entry Range (₹)": ("Buy zone = CMP −2% to +1%",
+                         "Avoid chasing if CMP moves significantly above upper bound.\n"
+                         "For a stock you already hold (an open Gold position), all\n"
+                         "trade-plan columns show the levels logged on the day it was\n"
+                         "recommended — the ones the tracker uses (v17.21)."),
     "Stop Loss (₹)": ("Multi-factor SL — exit if CMP closes below this level",
                        "SL % = ATR-14 % × (horizon multiplier + sector tier) × regime.\n"
                        "  horizon: SHORT 2.5× · POSITIONAL 3.5× · LONG 5×\n"
@@ -805,13 +808,16 @@ TIPS: Dict[str, Tuple[str, str]] = {
                        "SHORT TERM never wider than 7%. Frozen at log time.\n"
                        "Trailing stop (outcome tracker): peak ≥ +15% locks +5%,\n"
                        "≥ +20% → +9%, ≥ +25% → +12%; break-even only after a\n"
-                       "≥ +12% peak AND 10 days held. Never risk >2–3% of portfolio."),
+                       "≥ +12% peak AND 10 days held. Never risk >2–3% of portfolio.\n"
+                       "A gap below the stop fills at the open (loss > SL %).\n"
+                       "Held stocks show the stop logged at recommendation time."),
     "Target (₹)": ("Single price target = regime multiplier × SL distance",
                      "Target % = 1.3 × SL % in a calm regime, 1.5 × normal,\n"
                      "1.8 × volatile (the stock's ATR-14 vs its 252-day average),\n"
                      "with a +50% sanity ceiling. Fair value and horizon caps no\n"
                      "longer set the target. The multipliers are starting values —\n"
-                     "review them once ~30 picks have closed."),
+                     "review them once ~30 picks have closed.\n"
+                     "Held stocks show the Target logged at recommendation time."),
     "Time Horizon": ("How long the system claims to hold this pick",
                      "Time-horizon classification at recommendation time, set by the\n"
                      "pipeline based on verdict + spike + supertrend + MACD signals:\n"
@@ -841,8 +847,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                           "  • risk_budget default = 1.0% (lose ≤1% portfolio if SL fires)\n"
                           "  • × cap-category multiplier (LARGE 1.0, MID 1.0,\n"
                           "    SMALL 0.85, MICRO 0.70) — illiquidity premium\n"
-                          "  • Hard sector exposure cap at 30% (SEBI-RIA norm)\n"
-                          "  • Safety clamps: [1%, 15%]\n"
+                          "  • Hard sector exposure cap at 30% (SEBI-RIA norm), counted\n"
+                          "    from the allocations logged with the open positions\n"
+                          "    (v17.21) — a pick's own open position is left out, and\n"
+                          "    Gold picks are re-sized at log time so same-day picks\n"
+                          "    in one sector share the headroom\n"
+                          "  • Safety clamps: [1%, 15%] — a full sector still gets the\n"
+                          "    1% minimum\n"
+                          "  • A stock already held shows its logged allocation\n"
                           "EXAMPLES (1% risk budget):\n"
                           "  LARGE Bank, SL=-6%  → 1%/6%=16.7% → clamped to 15.0%\n"
                           "  LARGE IT,   SL=-8%  → 1%/8%=12.5%\n"
@@ -862,6 +874,8 @@ TIPS: Dict[str, Tuple[str, str]] = {
                          "      → 30% sector exposure cap forced a tighter size\n"
                          "  'clamped to Y%'\n"
                          "      → safety clamp (above 15% or below 1%) fired\n"
+                         "  'Held since YYYY-MM-DD — tracked levels · …'\n"
+                         "      → already an open position; logged sizing shown\n"
                          "If SL is unavailable (rare), shows 'Fallback: 3.0%'."),
     "R:R Ratio": ("Reward ÷ risk — set by the regime multiplier",
                   "R:R = (Target − Entry mid) / (Entry mid − SL).\n"

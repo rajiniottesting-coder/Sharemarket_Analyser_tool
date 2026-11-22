@@ -662,7 +662,8 @@ GLOSSARY_DATA = [
      "position_size = risk_budget / |SL_pct| × cap_multiplier. "
      "Default risk_budget = 1% (lose ≤1% portfolio if SL fires). "
      "Cap multipliers: LARGE 1.0, MID 1.0, SMALL 0.85, MICRO 0.70. "
-     "Hard sector exposure cap at 30%. Clamped to [1%, 15%]. "
+     "Hard sector exposure cap at 30%, counted from the allocations logged with the open positions (v17.21; the pick's own open position excluded; same-day Gold picks re-sized at log time so they share the headroom). "
+     "Clamped to [1%, 15%] — a full sector still gets the 1% minimum. "
      "Examples (1% budget): LARGE+SL6% → 15% capped, MID+SL10% → 10%, "
      "SMALL+SL15% → 5.7%. INVARIANT: every position contributes ~1% "
      "portfolio risk regardless of stock volatility — the institutional "
@@ -671,7 +672,7 @@ GLOSSARY_DATA = [
      "v15.5: Human-readable breakdown of how Suggested Alloc % was computed. "
      "Shows the formula step-by-step: 'Risk parity: 1.0% / X% = Y%' + "
      "any cap-category multiplier (LARGE×1.0 / SMALL×0.85 / MICRO×0.70) + "
-     "any sector exposure cap or safety clamp adjustments. "
+     "any sector exposure cap or safety clamp adjustments. A held stock reads 'Held since <date> — tracked levels' followed by the sizing logged that day. "
      "Lets you audit the sizing decision without re-computing manually.","All sheets"),
     ("ANALYSIS SUMMARY","View Analysis Summary","150–250 word AI note with exact ₹ figures, catalysts, risks","Gold sheet · Performance (AI Card)"),
 
@@ -931,8 +932,8 @@ GLOSSARY_DATA = [
 
     # ── TRADE PLAN ────────────────────────────────────────────────────────────
     ("TRADE PLAN","Entry Range (₹)",
-     "Suggested entry price band: Low–High in ₹. "
-     "Based on CMP ± 1.5% to account for intraday spread. "
+     "Suggested entry price band: Low–High in ₹ = CMP −2% to +1%. "
+     "For a stock already held, every trade-plan column shows the levels logged when it was recommended (the ones the tracker uses). "
      "Use limit orders within this range for best execution.","All sheets"),
     ("TRADE PLAN","Stop Loss (₹)",
      "Mandatory stop loss price. Exit the trade if CMP closes below this on a daily basis. "
