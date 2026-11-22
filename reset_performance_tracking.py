@@ -9,6 +9,14 @@ restarts from scratch under current logic:
     gold_outcomes          — one row per pick, walked forward by the tracker
     gold_continuation      — v17.3 post-T1 shadow walk
 
+v17.21 — PREFER A RULE VERSION OVER A RESET
+Since v17.21 every pick carries gold_recommendations.rule_version and the
+Performance sheet breaks results down BY RULE VERSION. When a rule changes,
+bump GOLD_RULE_VERSION in master_funnel.py instead of running this script:
+old and new rules are then compared side by side and no open pick loses its
+outcome. (The 31-Aug and 17-Sep-2026 resets deleted 26 open picks that were
+never measured.) Keep this script for genuinely corrupt data only.
+
 Nothing else is touched. daily_prices, symbol_master, fundamental_metrics,
 technical_indicators, shareholding and every other table are left alone —
 price history is what MAKES tracking possible and must survive the reset.

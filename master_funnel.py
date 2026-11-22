@@ -553,6 +553,14 @@ _V14_6_TARGET_RR_BY_REGIME = {
 _V14_6_TARGET_RR_DEFAULT = 1.5   # fallback if regime_label is unrecognised
 _V14_6_TARGET_SANITY_CEILING_PCT = 50.0   # v17.8.1: guard vs broken-ATR only
 
+# v17.21: version of the Gold gates + trade-plan rules stamped on every logged
+# pick (gold_recommendations.rule_version). When a rule that changes WHICH
+# stocks are picked or HOW they are traded changes, bump this instead of
+# running reset_performance_tracking.py — the Performance sheet then shows
+# old and new rules side by side (BY RULE VERSION). Two resets (31-Aug and
+# 17-Sep-2026) deleted 26 open picks whose outcomes were never measured.
+GOLD_RULE_VERSION = "v17.21"
+
 # v14.7: Regime detection thresholds (ratio of current ATR to baseline ATR)
 _V14_7_REGIME_HIGH_THRESHOLD = 1.20  # current > 1.20× baseline → high-vol regime
 _V14_7_REGIME_LOW_THRESHOLD  = 0.80  # current < 0.80× baseline → low-vol regime
@@ -4194,6 +4202,7 @@ def run_master_pipeline():
                     # without re-querying or re-computing.
                     "suggested_alloc_pct":   _alloc_v,   # v17.21: log-time sizing
                     "alloc_rationale":       _why_v,
+                    "rule_version":          GOLD_RULE_VERSION,   # v17.21
                 }
                 if insert_gold_recommendation(_rec):
                     _logged += 1

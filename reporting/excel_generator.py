@@ -1144,6 +1144,9 @@ GLOSSARY_DATA = [
     ("PERFORMANCE","Approaching Expiry Warning",
      "⚠ flag (last column of Open Positions table) and pale-yellow row highlight when Days Left ≤ 14. Surfaces positions nearing the hard cutoff so you can decide whether to manually exit at current P&L or accept the EXPIRED outcome. "
      "End-of-table summary line counts how many positions are approaching expiry — useful at-a-glance metric for daily review.","🎯 Performance"),
+    ("PERFORMANCE","BY RULE VERSION breakdown",
+     "Hit rate per version of the Gold / trade-plan rules that produced each pick (rule_version, stamped at log time since v17.21; earlier rows show 'before v17.21'). "
+     "A rule change bumps the version instead of wiping the outcome tables, so old and new rules can be compared on the same sheet. Wait for ~30 closed picks per version before comparing.","🎯 Performance"),
     ("PERFORMANCE","BY TIME HORIZON breakdown",
      "Fourth diagnostic table in the Performance sheet (after Score Band, Quick Pick Archetype, Sector). Shows hit rate / SL rate / expired count per Horizon class. "
      "Answers: 'are SHORT TERM picks actually winning in their stated 30-day window? are LONG TERM picks really earning their 270 days of patience?' If SHORT TERM has lower hit rate than POSITIONAL despite stricter triggers, "
@@ -2676,6 +2679,16 @@ class ExcelGeneratorV6:
             if not _closed.empty:
                 _closed["_horizon_clean"] = _closed["time_horizon"].fillna("—").astype(str).replace("", "—")
             next_row = _build_breakdown_table(next_row, "BY TIME HORIZON", "_horizon_clean")
+        # v17.21: 5th breakdown — by rule version (gold_recommendations.
+        # rule_version). Rule changes bump the version instead of wiping the
+        # outcome tables, so this table compares old and new rules directly.
+        # Rows logged before v17.21 carry '' and group as "before v17.21".
+        if "rule_version" in _df_all.columns:
+            _rv = lambda col: col.fillna("").astype(str).str.strip().replace("", "before v17.21")
+            _df_all["_rule_version"] = _rv(_df_all["rule_version"])
+            if not _closed.empty and "rule_version" in _closed.columns:
+                _closed["_rule_version"] = _rv(_closed["rule_version"])
+                next_row = _build_breakdown_table(next_row, "BY RULE VERSION", "_rule_version")
 
         # ── Section 4: CLOSED POSITIONS (v14.5) ───────────────────────────
         # Chronological detail log of every closed pick (SL_HIT/T1_HIT/T2_HIT/

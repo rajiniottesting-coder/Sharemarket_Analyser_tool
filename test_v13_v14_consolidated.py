@@ -1406,7 +1406,9 @@ def test_g4_3_full_data_renders_all_sections():
         wb = load_workbook(_tmp(master))
         ws = wb["🎯 Performance"]
         # Look for each section header somewhere in the sheet
-        all_text = ' '.join(str(ws.cell(r, 1).value or '') for r in range(1, 80))
+        # v17.21: scan the whole sheet — BY RULE VERSION adds rows above
+        # OPEN POSITIONS, which pushed it past the old 80-row window.
+        all_text = ' '.join(str(ws.cell(r, 1).value or '') for r in range(1, ws.max_row + 1))
         assert "HEADLINE" in all_text, "Missing HEADLINE section"
         assert "SPEED" in all_text, "Missing SPEED section"
         assert "DIAGNOSTIC" in all_text, "Missing DIAGNOSTIC section"
@@ -6660,6 +6662,51 @@ def test_g52_v17_21_report_display_fixes():
     assert '_CARD_FORMAT_VERSION = "v17.16-compact-prompt"' not in ai, "F: card cache key not bumped"
     return "✅ v17.21: Trade Summary columns, previous-date compare on re-runs, Δ/preview/title, S2/R2, P/E, AI target (A–F)"
 
+def test_g53_v17_21_rule_version_instead_of_resets():
+    """v17.21: every logged pick carries the rule version, and the Performance
+    sheet compares versions — so a rule change no longer needs a reset (the
+    31-Aug and 17-Sep-2026 resets deleted 26 open picks).
+      A. insert stores rule_version; a legacy insert stores ''
+      B. BY RULE VERSION table groups '' as "before v17.21"
+      C. master_funnel stamps GOLD_RULE_VERSION on every logged pick
+    """
+    import os
+    from openpyxl import load_workbook
+    from reporting.excel_generator import ExcelGeneratorV6
+    test_db, original = _setup_temp_db('g53')
+    try:
+        from database.data_bridge import (initialize_v7_tables, insert_gold_recommendation,
+                                          update_outcome)
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        base = {'cmp_at_recommendation': 100, 'stop_loss': 93, 't1': 110, 't2': 120, 't3': 130,
+                'composite_score': 80, 'sector': 'IT', 'time_horizon': 'POSITIONAL'}
+        insert_gold_recommendation(dict(base, symbol='OLD', recommendation_date='2026-09-01'))
+        insert_gold_recommendation(dict(base, symbol='NEW', recommendation_date='2026-11-02',
+                                        rule_version='v17.21'))
+        for sym, rd, typ, px in (('OLD', '2026-09-01', 'SL_HIT', 93), ('NEW', '2026-11-02', 'T1_HIT', 110)):
+            update_outcome(sym, rd, typ, outcome_date=rd, outcome_price=px, days_to_outcome=5,
+                           current_price=px, current_pnl_pct=px - 100)
+        conn = sqlite3.connect("market_data.db")
+        got = dict(conn.execute("SELECT symbol, rule_version FROM gold_recommendations").fetchall())
+        conn.close()
+        assert got == {'OLD': '', 'NEW': 'v17.21'}, f"A: {got}"
+        os.chdir(_TMP)
+        gen = ExcelGeneratorV6([{'symbol': 'Z', 'close': 100, 'composite_score': 50}],
+                               '20261120', run_time='10:00 IST', prev_scores={}, gap_days=0)
+        master, _ = gen.generate_excel_reports()
+        ws = load_workbook(_tmp(master))["🎯 Performance"]
+        cells = {(c.row, c.column): c.value for row in ws.iter_rows() for c in row if c.value is not None}
+        hdr = next((r for (r, c), v in cells.items() if v == "BY RULE VERSION"), None)
+        assert hdr is not None, "B: BY RULE VERSION table missing"
+        groups = {cells.get((hdr + 2 + k, 1)): cells.get((hdr + 2 + k, 7)) for k in range(2)}
+        assert groups == {'before v17.21': '0.0%', 'v17.21': '100.0%'}, f"B: {groups}"
+    finally:
+        _restore(original, test_db)
+    mf = open(_src_path('master_funnel.py'), encoding='utf-8').read()
+    assert 'GOLD_RULE_VERSION = "v17.21"' in mf, "C: GOLD_RULE_VERSION missing"
+    assert '"rule_version":          GOLD_RULE_VERSION' in mf, "C: logged picks are not stamped"
+    return "✅ v17.21: rule_version stored, BY RULE VERSION compares versions, picks stamped (A–C)"
+
 
 # ════════════════════════════════════════════════════════════════════════
 # RUN
@@ -6855,6 +6902,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g50_v17_21_performance_sheet_metrics_read_the_db_correctly))
     v14_1_results.append(_run_one_test(test_g51_v17_21_sizing_counts_logged_allocations_and_held_levels_shown))
     v14_1_results.append(_run_one_test(test_g52_v17_21_report_display_fixes))
+    v14_1_results.append(_run_one_test(test_g53_v17_21_rule_version_instead_of_resets))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
