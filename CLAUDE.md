@@ -1,17 +1,17 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v17.20.1 · October 2026
+## AI Context File · v17.21 · November 2026
 
 This file gives Claude (or any AI assistant) the project context needed to understand, debug or extend this codebase. **Read it first** before making any change.
 
 **How this file is organised**
-- **Part A — Current state (v17.20.1).** Authoritative description of how the system works today. Sections 1–14 and 16–21 are kept current; when anything in Part B disagrees with Part A, Part A wins.
-- **Part B — Version history, newest first.** Release notes as written at the time (v17.20.1 back to v10.0). Older entries describe the code *as it was*; many details there (Gemini, T1/T2/T3 targets, 7 sheets, 11 Gold gates, +5 % break-even …) have since been superseded.
+- **Part A — Current state (v17.21).** Authoritative description of how the system works today. Sections 1–14 and 16–21 are kept current; when anything in Part B disagrees with Part A, Part A wins.
+- **Part B — Version history, newest first.** Release notes as written at the time (v17.21 back to v10.0). Older entries describe the code *as it was*; many details there (Gemini, T1/T2/T3 targets, 7 sheets, 11 Gold gates, +5 % break-even …) have since been superseded.
 
 Companion documents: `readme.md` (user-facing overview + version table), `pipeline_reference.html` (visual end-to-end reference), `scoring_logic_3Stagefunnel_explained.md` (funnel + scoring walkthrough with worked examples), `data/README_NSE_SNAPSHOT.md` (local NSE fetch setup).
 
 ---
 
-# PART A — CURRENT STATE (v17.20.1)
+# PART A — CURRENT STATE (v17.21)
 
 ## 1. PROJECT PURPOSE
 
@@ -38,11 +38,13 @@ Plus one small job on the owner's Windows laptop: a weekly NSE pledge/promoter f
 Sharemarket_Analyser_tool/
 ├── master_funnel.py              ~4,370 lines — pipeline orchestrator (Sections 0–13)
 ├── backfill_history.py           400-day backfill + yfinance / NSE fundamentals & shareholding enrichment
-├── track_outcomes.py             Gold-pick outcome tracker + continuation walk + shadow stop (auto-invoked)
+├── track_outcomes.py             Gold-pick outcome tracker + continuation walk + shadow stop (auto-invoked);
+│                                 one-time v17.21 exit-model restatement of closed rows
 ├── fetch_nse_local.py            OWNER'S MACHINE ONLY: NSE pledge + shareholding → data/nse_snapshot.json → git push
 ├── fetch_nse_now.bat             One-click manual trigger for the above
-├── reset_performance_tracking.py Guarded wipe of the 3 outcome tables (workflow manual-dispatch only)
-├── test_v13_v14_consolidated.py  Regression suite — 99 guards, all green on Linux and Windows (v17.20.1)
+├── reset_performance_tracking.py Guarded wipe of the 3 outcome tables (workflow manual-dispatch only;
+│                                 since v17.21 bump GOLD_RULE_VERSION instead for a rule change)
+├── test_v13_v14_consolidated.py  Regression suite — 106 guards, all green on Linux and Windows (v17.21)
 ├── test_v11.0.2_full_withdummies.py  ⚠ NOT the deep ScoringEngine suite any more: overwritten on 16-May-2026
 │                                     (commit a09ba4c) with a stale copy of the consolidated suite (70/84 on
 │                                     current code). The real deep suite is in git history at d2f301a
@@ -78,6 +80,9 @@ Sharemarket_Analyser_tool/
 │   └── intel_fetcher.py          Legacy (query strings only)
 ├── risk/correlation_aware_sizing.py   v15.4/v15.5 risk-parity sizing
 ├── backtest/walk_forward.py           Offline hit-rate report (refuses calibration below N=30)
+├── backtest/replay_picks.py           v17.21 — re-walks every Gold pick with the live exit model and
+│                                      scores 4 pre-set entry rules (R1 trend · R2 regime · R3 cooldown · R4 MoS cap)
+├── backtest/picks_2026H2.csv          v17.21 — 49 picks (20-Jul → 15-Oct-2026) rebuilt from the dashboards
 ├── database/
 │   ├── data_bridge.py            Schema + migrations + every query helper (outcome, continuation, shadow, resilience…)
 │   ├── database_manager.py       Connection management
@@ -98,6 +103,7 @@ Sharemarket_Analyser_tool/
 ├── scripts/seed_holidays.py
 └── .github/workflows/
     ├── market_run.yml            Daily pipeline (12 steps — see §13)
+    ├── replay.yml                v17.21 manual: download the DB artifact, run backtest/replay_picks.py, upload "replay-results"
     └── keep_alive.yml            Wed + Sun 10:00 UTC timestamp commit (resets GitHub's 60-day inactivity clock)
 ```
 
@@ -116,13 +122,13 @@ Created by `backfill_history.py::init_all_tables()` (full set on cold start), `d
 | `shareholding_history` | Per-date shareholding history (QoQ baseline) |
 | `technical_indicators` | RSI, MACD, Supertrend, ADX, Stoch, MFI, OBV, VWAP, S1/S2/R1/R2, `atr_14` (full history since v15.2) |
 | `weekly_momentum` · `delivery_stats` · `fo_participant_data` · `bulk_deals` · `insider_trades` | as named |
-| `latest_analysis_results` | Yesterday's scores (Alert Log Δ, Stage 3 O4/O5) + verdict streak counters (v11.0.2) |
+| `latest_analysis_results` | Latest scores per symbol (Stage 3 O4/O5) + verdict streak counters (v11.0.2) + `prev_*` = the state on the previous trading date (v17.21: `prev_date`, `prev_composite_score`, `prev_verdict`, `prev_avoid_quarters`, `prev_recovery_quarters`) — the Alert Log Δ and the streak update read `prev_*`, so a second run on the same date compares with the day before. Saved with an UPSERT (never INSERT OR REPLACE, which would wipe `prev_*`) |
 | `v7_intelligence` · `watchlist` · `run_stats` · `market_holidays` | as named |
 | `dual_listed_runtime` | Runtime dual-listed allowlist (v11.0.2; write-time guarded v17.17) |
 | `failed_yfinance_lookups` | 30-day cache of yfinance 404s (v12.8) |
 | `pipeline_migrations` | One-time migration markers (e.g. v12.0.1 allowlist purge) |
-| `gold_recommendations` | **Append-only** log of every Gold pick: entry range, SL, `t1` (= the Target), dormant `t2`/`t3`, CFV, MoS, score, archetype, `time_horizon`, `expiry_days/expiry_date`, `times_reappeared`, audit fields (`original_stop_loss`, `atr_at_rec`, `regime_at_rec`, `next_earnings_date`), `suggested_alloc_pct`, `alloc_rationale` |
-| `gold_outcomes` | One row per recommendation (PK `(symbol, recommendation_date)`): `outcome_type` ∈ {OPEN, T1_HIT, T2_HIT, T3_HIT, SL_HIT, TRAIL_SL, EXPIRED}, outcome date/price, max runup/drawdown, current price/P&L, trailing stop (`trailing_sl_pct`, `trailing_sl_price`, `peak_price_seen`), DD duration, `shadow_*` columns (v17.7) |
+| `gold_recommendations` | **Append-only** log of every Gold pick: entry range, SL, `t1` (= the Target), dormant `t2`/`t3`, CFV, MoS, score, archetype, `time_horizon`, `expiry_days/expiry_date`, `times_reappeared`, audit fields (`original_stop_loss`, `atr_at_rec`, `regime_at_rec`, `next_earnings_date`), `suggested_alloc_pct`, `alloc_rationale`, `rule_version` (v17.21 — `GOLD_RULE_VERSION` at log time; '' before v17.21) |
+| `gold_outcomes` | One row per recommendation (PK `(symbol, recommendation_date)`): `outcome_type` ∈ {OPEN, T1_HIT, T2_HIT, T3_HIT, SL_HIT, TRAIL_SL, EXPIRED}, outcome date/price, max runup/drawdown, current price/P&L, trailing stop (`trailing_sl_pct`, `trailing_sl_price`, `peak_price_seen`), DD duration, `shadow_*` columns (v17.7; `shadow_status` ∈ {OPEN, TRAIL_SL, SL_HIT, EXPIRED} since v17.21) |
 | `gold_continuation` | v17.3 post-T1 shadow walk to each position's own expiry (T2/T3 reach, peak/trough, SL break). Never writes `gold_outcomes` |
 | `gold_resilience_watch` | v17.5 bearish-regime standouts (reference only; never feeds Gold or the tracker) |
 
@@ -170,11 +176,16 @@ Section 7/8   (placeholder — cards are generated later, v17.14)
 Section 9/10  Split held-monitor rows into _held_monitor_map; prune v15.8 ETF leakers
               market_stats (+ nse_snapshot provenance) → market-regime gate (Nifty vs 20d SMA, 2% band)
               → resilience watchlist refresh (bearish days) → ExcelGeneratorV6 constructed
-              → verdict streaks + save latest_analysis_results → allowlist prune
+              → roll_previous_day_state (v17.21) → load_previous_day_scores (Alert Log Δ)
+              → verdict streaks (run_date) + save latest_analysis_results (UPSERT) → allowlist prune
               → v14 hook: log today's Gold picks (excel_gen._get_gold(), first appearance only;
-                re-appearances increment times_reappeared)
+                re-appearances increment times_reappeared); v17.21: each pick re-sized at log
+                time (_alloc_for_log) and stamped with GOLD_RULE_VERSION
+              → v17.21 _apply_tracked_levels: held stocks show their logged entry / SL / Target /
+                horizon / allocation on every sheet and in the AI-card inputs
               → v17.20 Gold-empty reason: excel_gen.gold_funnel_log_lines() (🥇 lines, only when Gold is empty)
-              → track_outcomes.main(): live walk + continuation + shadow stop
+              → track_outcomes.main(): (one-time v17.21 restatement) + live walk + shadow pass
+                over every non-final shadow row + continuation
 Section 7/8   DEFERRED AI cards (v17.14): scope = _get_gold() ∪ get_open_recommendations();
               held positions use their fully-enriched _held_monitor_map rows (v17.15);
               notes synced into the Excel frame by symbol; held cards → market_stats["held_cards"]
@@ -190,7 +201,7 @@ On exception  error email (is_error=True)
 - `composite_score` and `verdict` are set by `ScoringEngine.calculate_composite_score()`; `horizon` and `risk_level` must run after it.
 - News sentiment (5A.6) must run **before** Section 6 so it can move the sentiment sub-score.
 - The snapshot fallback (5A.3b) runs **before** 5A.4 so QoQ and the spike guard see filled values.
-- `latest_analysis_results` must be **read before** today's scores are saved (Alert Log Δ, O4/O5).
+- `latest_analysis_results` must be **read before** today's scores are saved (Alert Log Δ, O4/O5), and `roll_previous_day_state()` must run before the streak update and the save (v17.21).
 - The v14 logging hook and the tracker must run **before** `generate_excel_reports()` (v14.1.2 / v14.1.3, guards G10/G11) so today's picks and fresh P&L appear in today's Performance sheet.
 - AI cards run **after** the tracker so their scope is the same Gold result the tracker logged (v17.14). Anything written into `market_stats` must happen **after** `market_stats = {…}` is created (v17.11.1, guard G40).
 - Held-monitor rows must be removed before anything renders or saves the top-100 view.
@@ -381,8 +392,8 @@ Same annualization applied to Capex/Rev (capex is annual; uses `revenue` first, 
 |---|---|---|
 | 1 | 📊 Full Dashboard | Top-100 × **126 columns** in 18 bands: IDENTITY 7 · SCORES 5 · PRICE & MARKET 7 · WEEKLY CHANGE % 4 · FAIR VALUE 12 · VALUATION 7 · PROFITABILITY 10 · GROWTH 10 · FIN HEALTH 10 · CAP ALLOC 3 · SHAREHOLDING 9 · QUALITY SCORES 4 · PIPELINE / OB 5 · EARLY DETECTION 3 · TECHNICAL 14 · BALANCE SHEET 2 · TRADE PLAN 7 (Entry · SL · Target · Horizon · Risk · Suggested Alloc % · Sizing Rationale) · NEWS & RISK 7 (Key Catalyst · News Sentiment · Primary Risk · SEBI Flags · Insider (news) · Bulk Deal · Reg Flag). No AI column since v17.18. Row 2: header-colour legend + `Pledge/Promoter data as of DD-Mon-YYYY HH:MM IST (Nd old)` |
 | 2 | ⭐ Gold – Early Movers | 41 columns in 11 bands (incl. the AI Analysis Summary). Row 2 lists the 15 criteria + count + bearish-regime notice. Below: **Bearish-Regime Standouts** (v17.5) or a greyed *Recent Resilience* strip on bullish days |
-| 3 | 📊 Trade Summary | Entry range · SL · Target · R:R · horizon · risk. R:R colours (≥ 3 green, ≥ 2 amber, else red) predate the single target — with R:R ≈ 1.3–1.8 every row is red (open item) |
-| 4 | 🔔 Alert Log | Alert type: `⬇ SCORE DEGRADED` only on a real ≥ 3-pt drop (v17.2), `⚠ LOW SCORE` (< 30, no drop), `🔔 SPIKE FIRED`, `⭐ EARLY MOVER DETECTED`. Action: REVIEW FOR EXIT — SCORE FALLING · REVIEW FOR EXIT · CONSIDER ENTRY (BUY, MoS > 10, score ≥ 65) · MONITOR FOR ENTRY · STRONG STOCK — WAIT FOR PULLBACK (OVERVALUED) · SCORE IMPROVING / DECLINING (WATCHLIST ±3) · VOLUME ALERT · EARLY MOVER — ACCUMULATE · MONITOR CLOSELY |
+| 3 | 📊 Trade Summary | Entry range · SL · Target · R:R · horizon · risk — one value per header (v17.21; T2/T3 values had shifted R:R, horizon and risk one-two columns right since v17.8.1). R:R colours (≥ 3 green, ≥ 2 amber, else red) predate the single target — with R:R ≈ 1.3–1.8 every row is red (open item) |
+| 4 | 🔔 Alert Log | Prev Score = the previous trading date (v17.21 — not an earlier run on the same date); Δ that rounds to 0 prints "0". Alert type: `⬇ SCORE DEGRADED` only on a real ≥ 3-pt drop (v17.2), `⚠ LOW SCORE` (< 30, no drop), `🔔 SPIKE FIRED`, `⭐ EARLY MOVER DETECTED`. Action: REVIEW FOR EXIT — SCORE FALLING · REVIEW FOR EXIT · CONSIDER ENTRY (BUY, MoS > 10, score ≥ 65) · MONITOR FOR ENTRY · STRONG STOCK — WAIT FOR PULLBACK (OVERVALUED) · SCORE IMPROVING / DECLINING (WATCHLIST ±3) · VOLUME ALERT · EARLY MOVER — ACCUMULATE · MONITOR CLOSELY |
 | 5 | 📱 Delivery Preview | WhatsApp / email text |
 | 6 | 🎯 Performance | See §9C |
 | 7 | 📖 Glossary | `GLOSSARY_DATA` (~196 rows) |
@@ -435,9 +446,9 @@ Target % = _V14_6_TARGET_RR_BY_REGIME[regime] × SL %   (low 1.3 · neutral/norm
 T2 / T3  = Target × 1.35, × 1.35² (dormant; ordering enforced)
 ```
 
-Owner decision (v17.8.1): no fair-value anchoring, no horizon caps; the multipliers are starting values to review after ~30 closed positions. Levels are **frozen at log time** — re-appearances never change them.
+Owner decision (v17.8.1): no fair-value anchoring, no horizon caps; the multipliers are starting values to review after ~30 closed positions. Levels are **frozen at log time** — re-appearances never change them. Since v17.21 a stock that is already held is SHOWN with those frozen levels (and its logged allocation, rationale "Held since <date> — tracked levels · …") on every sheet, not with levels re-computed from today's price.
 
-**Sizing** (`risk/correlation_aware_sizing.py`, v15.4/v15.5/v15.7): `alloc = 1.0 % risk budget / |SL %|` × cap multiplier (LARGE/MID 1.0 · SMALL 0.85 · MICRO 0.70), 30 % sector cap, clamped [1 %, 15 %]. Shown as Suggested Alloc % + Sizing Rationale; "sector cap" text only when the sector headroom is the binding constraint (v15.7).
+**Sizing** (`risk/correlation_aware_sizing.py`, v15.4/v15.5/v15.7): `alloc = 1.0 % risk budget / |SL %|` × cap multiplier (LARGE/MID 1.0 · SMALL 0.85 · MICRO 0.70), 30 % sector cap, clamped [1 %, 15 %]. Shown as Suggested Alloc % + Sizing Rationale; "sector cap" text only when the sector headroom is the binding constraint (v15.7). v17.21: sector exposure is the sum of the allocations LOGGED with the open positions (legacy rows re-derived from SL), the candidate's own open position is excluded, and each Gold pick is re-sized at log time (`master_funnel._alloc_for_log`) so same-day picks in one sector share the headroom. The 1 % minimum still applies when a sector is full.
 
 ---
 
@@ -445,15 +456,19 @@ Owner decision (v17.8.1): no fair-value anchoring, no horizon caps; the multipli
 
 **Logging** (master_funnel v14 hook, before the Excel build): every stock in `_get_gold()` is inserted into `gold_recommendations` + an OPEN `gold_outcomes` row — **first appearance only** (`has_open_recommendation`); re-appearances bump `times_reappeared` once per day. `insert_gold_recommendation` returns False on a PK collision (v14.3). Horizon → `expiry_days`: SHORT 30 · POSITIONAL 90 · LONG 270 (`horizon_to_expiry_days`); the stock dict key is `horizon` (v14.1 / v17.1 fixes — never `time_horizon` on the stock dict).
 
-**Walk** (`track_outcomes._walk_forward`, auto-invoked): daily NSE bars from the day after the recommendation; first event wins; SL beats target on same-bar ties; T3 > T2 > T1 on one bar; EXPIRED at the horizon cutoff (hard). Effective SL = max(original, trailing). Trailing tiers (v16.5 → v17.0): peak ≥ 25 % → lock +12 % · ≥ 20 % → +9 % · ≥ 15 % → +5 % · ≥ 12 % **and** ≥ 10 days held → break-even · otherwise none. Trailing updates at the end of each bar (no look-ahead, G17). A stop hit on the trailing level is **TRAIL_SL** (excluded from SL rate); on the original level **SL_HIT**.
+**Walk** (`track_outcomes._walk_forward`, auto-invoked): daily NSE bars from the day after the recommendation; first event wins; SL beats target on same-bar ties; one live Target — T1_HIT (v17.21; T2/T3 are never exits, only the continuation audit reads them); EXPIRED at the horizon cutoff (hard). Fill model (v17.21, `_fill_price`): a stop fills at the stop, or at the open when the bar opens below it; the Target fills at the Target, or at the open when the bar opens above it. A one-time restatement (`pipeline_migrations` id `v17_21_exit_model`) re-walked every closed SL_HIT / TRAIL_SL / T1/T2/T3_HIT row with this model, rewriting a row only when the re-walk closes it on the same date (SUNTV, booked T2_HIT +14.2 %, becomes T1_HIT at the ₹541.67 Target = +10.5 % — or at its 30-Sep open if it opened above the Target). Effective SL = max(original, trailing). Trailing tiers (v16.5 → v17.0): peak ≥ 25 % → lock +12 % · ≥ 20 % → +9 % · ≥ 15 % → +5 % · ≥ 12 % **and** ≥ 10 days held → break-even · otherwise none. Trailing updates at the end of each bar (no look-ahead, G17). A stop hit on the trailing level is **TRAIL_SL** (excluded from SL rate); on the original level **SL_HIT**.
 
 **Continuation** (v17.3, `gold_continuation`): for each T1_HIT, a shadow walk from the next day to the position's own expiry (T2/T3 reach, peak/trough vs T1, broke original SL). Read-only w.r.t. `gold_outcomes` (G37).
 
-**Shadow stop** (v17.7): Chandelier stop = peak − N × Wilder-ATR × regime adj (N = 2.5 / 3.0 / 3.5 by horizon), ratchet-up only, no look-ahead; writes `shadow_*` columns only (G39).
+**Shadow stop** (v17.7): Chandelier stop = peak − N × Wilder-ATR × regime adj (N = 2.5 / 3.0 / 3.5 by horizon), ratchet-up only, no look-ahead; writes `shadow_*` columns only (G39). v17.21: ATR seeded from 60 calendar days of pre-entry bars (armed from day 1), stop in force = max(original stop, trail) → TRAIL_SL or SL_HIT, gap fills at the open, EXPIRED at the horizon end; walked every run for every row whose shadow is not final (`get_shadow_candidates`), so it no longer freezes when the live trade closes (G49).
 
-**Performance sheet sections, in order:** title + sample-size banner (< 30 closed = preliminary) · HEADLINE (Total / Closed / Open / Hit rate (T1+) / SL rate; tiles TARGET HIT · SL HIT · EXPIRED · TRAIL SL) · SPEED (avg days → Target / SL) · DIAGNOSTIC BREAKDOWNS (score band · archetype · sector · time horizon) · CLOSED POSITIONS (15 cols incl. Score Band / Archetype / Sector, v17.4) · RISK-ADJUSTED RETURNS (Sharpe / Sortino / Calmar, rf 6.5 %, DD duration, v16.0) · OPEN POSITIONS (SL, Target, Trailing — label = level actually locked (v17.19), Regime, Suggested Alloc, Sizing Rationale, Score Band, Archetype, Sector, **AI Card**; pale-yellow ⚠ when ≤ 14 days left) · EXPIRED MISSED-RUNUP diagnostic (≥ 3 expired) · CONTINUATION AUDIT · SHADOW EXIT COMPARISON · SURVIVORSHIP AUDIT (open positions vs today's universe).
+**Performance sheet sections, in order:** title + sample-size banner (< 30 closed = preliminary) · HEADLINE (Total / Closed / Open / Hit rate (T1+) / SL rate; tiles TARGET HIT · SL HIT · EXPIRED · TRAIL SL) · SPEED (avg days → Target / SL) · DIAGNOSTIC BREAKDOWNS (score band · archetype · sector · time horizon · rule version, v17.21) · CLOSED POSITIONS (15 cols incl. Score Band / Archetype / Sector, v17.4) · RISK-ADJUSTED RETURNS (Sharpe / Sortino / Calmar, rf 6.5 %, DD duration, v16.0) · OPEN POSITIONS (SL, Target, Trailing — label = level actually locked (v17.19), Regime, Suggested Alloc, Sizing Rationale, Score Band, Archetype, Sector, **AI Card**; pale-yellow ⚠ when ≤ 14 days left) · EXPIRED MISSED-RUNUP diagnostic (≥ 3 expired) · CONTINUATION AUDIT · SHADOW EXIT COMPARISON · SURVIVORSHIP AUDIT (open positions vs today's universe).
 
-`reset_performance_tracking.py` (workflow input `RESET-PERFORMANCE`, manual dispatch only) wipes the three outcome tables — irreversible.
+`reset_performance_tracking.py` (workflow input `RESET-PERFORMANCE`, manual dispatch only) wipes the three outcome tables — irreversible. Since v17.21 a rule change bumps `GOLD_RULE_VERSION` (master_funnel) instead: every pick carries `rule_version` and BY RULE VERSION compares the versions. The 31-Aug and 17-Sep-2026 resets deleted 26 open picks.
+
+**Replay** (v17.21, `backtest/replay_picks.py`, workflow `replay.yml`, manual): re-walks every pick in `backtest/picks_2026H2.csv` + `gold_recommendations` with `_walk_forward`, adds pick-date-only features and scores R1 trend (close > 50-day average and 63-day return > Nifty), R2 regime (Nifty ≥ its 20-day average), R3 cooldown (no SL exit on the symbol in the previous 28 days), R4 MoS cap (not MoS > 60 % on LARGE/MID). Read-only; results artifact `replay-results`.
+
+Performance metrics (v17.21): AVG DAYS → TARGET counts T1 + T2 + T3 rows; DD Recovery Rate keeps a stored 0 (`_flag01`; `int(x or 1)` showed 100 %).
 
 ---
 
@@ -555,7 +570,8 @@ Google News RSS, up to 15 headlines from the last 14 days (`NEWS_MAX_HEADLINES`,
 - **Prompt** (v17.16): `_load_card_system_prompt()` extracts **SYSTEM ROLE** (up to `SECTION 1A`) and **BLOCK H — ANALYSIS SUMMARY** (up to `LIST VIEW sort`) from the master prompt (~2 KB) and adds "write ONLY Block H notes". Falls back to the full prompt if the headings are renamed — don't rename them.
 - **Batches** of 4; each note delimited `=== CARD: SYMBOL ===` and parsed by symbol (`_mark_batch`, `_parse_marked`); missing notes retried one stock at a time (`_recover_missing`); `_cards_complete` gates caching. `LLM_CARD_MAX_TOKENS` = `LLM_MAX_TOKENS` env (default 16,000).
 - **Errors** (`_llm_complete`): raises with the real cause — error body, no `choices`, empty content (with `finish_reason` / usage); records `_LAST_CALL`. A missing/invalid key stops after the first failure (v17.6).
-- **Cache** (v17.12): `downloads/ai_cache/` (git-ignored), one file per day, key = date + sha1(symbol | score | label | entry | SL | target | horizon | `_CARD_FORMAT_VERSION="v17.16-compact-prompt"`). Same-day re-runs make zero calls; failed/partial output is never cached; `AI_CACHE=0` bypasses. Persisted across Actions runs by `actions/cache` (`key: ai-cache-${{ github.run_id }}`, `restore-keys: ai-cache-`). Bump `_CARD_FORMAT_VERSION` when the card format changes.
+- **Cache** (v17.12): `downloads/ai_cache/` (git-ignored), one file per day, key = date + sha1(symbol | score | label | entry | SL | target | horizon | `_CARD_FORMAT_VERSION="v17.21-single-target"`). Same-day re-runs make zero calls; failed/partial output is never cached; `AI_CACHE=0` bypasses. Persisted across Actions runs by `actions/cache` (`key: ai-cache-${{ github.run_id }}`, `restore-keys: ai-cache-`). Bump `_CARD_FORMAT_VERSION` when the card format changes.
+- **Card input** (v17.21): the trade plan line sends Entry · SL · Target only (it still sent T2/T3, and notes said "rather than targeting T3"); held stocks use their logged levels.
 - **Where notes appear:** Gold sheet *Analysis Summary*; Performance sheet *AI Card* for every open position. Not on the Full Dashboard (v17.18).
 
 ---
@@ -564,6 +580,9 @@ Google News RSS, up to 15 headlines from the last 14 days (`NEWS_MAX_HEADLINES`,
 
 ### `.github/workflows/market_run.yml` (12 steps)
 `0 23 * * 1-5` + `workflow_dispatch` (input `reset_performance`). Steps: Checkout · Python 3.11 · Install deps · **Restore AI card cache** · **Restore `market_data.db`** (`dawidd6/action-download-artifact@v6`, `if_no_artifact_found: ignore`) · Show DB state · **Auto-backfill** (`backfill_history.py 400` when `daily_prices` < 50,000 rows) · **v17.3 performance reset** (only when the input equals `RESET-PERFORMANCE`; dry run then `--commit --confirm`) · **Execute `python master_funnel.py || true`** · Delete previous DB artifact (REST API with `GITHUB_TOKEN`) · Upload `market-data-db` (30-day retention, `overwrite: true`) · Show DB state after. The v12.1 allowlist-wipe and v16.5 KOVAI steps were removed in v17.17.
+
+### `replay.yml` (v17.21, manual)
+`workflow_dispatch` (input `exit_mode` logged | uniform). Checkout · Python 3.11 · deps · download `market-data-db` from `market_run.yml` (`if_no_artifact_found: fail`) · `backtest/replay_picks.py` · upload `replay-results` (CSV + summary, 30 days). Never uploads or changes the DB.
 
 **Secrets:** `OPENAI_API_KEY`, `OPENAI_API_BASE`, `LLM_MODEL`, `SENDER_EMAIL`, `SENDER_APP_PASSWORD`, `USER_EMAIL_ID`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` (optional), `KEEPALIVE_PAT`. **Variables:** `NEWS_SENTIMENT_SHADOW`, `AI_CACHE` (optional). `LLM_MAX_TOKENS`, `LLM_REASONING_EFFORT`, `NEWS_MAX_TOKENS` are not wired into the workflow — defaults apply on Actions.
 
@@ -680,7 +699,7 @@ PE_SCORING_NEUTRAL_CUTOFF = 500      # v10.16: fundamental_score treats pe_num
 # AI batching (ai/ai_analyst.py)
 AI_BATCH_SIZE            = 4         # v17.16 (was 12)
 LLM_CARD_MAX_TOKENS      = 16000     # env LLM_MAX_TOKENS (v17.16)
-_CARD_FORMAT_VERSION     = "v17.16-compact-prompt"   # part of the per-day cache key
+_CARD_FORMAT_VERSION     = "v17.21-single-target"    # part of the per-day cache key
 AVOID_SKIP_AI            = True      # v10.13 — AVOID verdict → placeholder (moot since v17.10 scope)
 
 # News (analysis/news_sentiment.py)
@@ -726,6 +745,8 @@ EXPIRY_DAYS              = {SHORT TERM 30, POSITIONAL 90, LONG TERM 270}; DEFAUL
 TRAIL tiers              = peak ≥25% → +12% · ≥20% → +9% · ≥15% → +5% · ≥12% & ≥10 days → break-even
 _TRAIL_BREAKEVEN_THRESHOLD = 12.0 · _TRAIL_MIN_HOLDING_DAYS = 10    # v17.0
 _SHADOW_N_BY_HORIZON     = {SHORT 2.5, POSITIONAL 3.0, LONG 3.5}; regime 1.20/0.80 → ×1.10/×0.90
+_SHADOW_ATR_LOOKBACK_DAYS = 60       # v17.21: pre-entry calendar days that seed the shadow ATR
+GOLD_RULE_VERSION        = "v17.21"  # v17.21 (master_funnel): stamped on every logged pick
 RISK_FREE_RATE           = 6.5% (India 91-day T-bill) for Sharpe / Sortino
 SAMPLE_SIZE_BANNER       = 30 closed positions
 
@@ -761,6 +782,7 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 | News sentiment | LLM judgement is non-deterministic | Temperature 0, JSON schema, ≥ 0.6 confidence, evidence required |
 | Target multipliers 1.3 / 1.5 / 1.8 | Starting estimates | Review after ~30 closed positions |
 | Trade Summary R:R colours | Bands (≥ 3 green, ≥ 2 amber) predate the single target | Every row red today; re-banding is an open decision |
+| Sector cap vs 1 % minimum | The 1 % minimum allocation is applied after the 30 % sector cap | A full sector still gets 1 % per new pick (by design; v17.21 makes same-day picks see each other) |
 | Earnings-week SL widening | No reliable free earnings calendar | Built in, never fires |
 | NIFTY 50 not in `daily_prices` | Index not ingested | Regime gate uses `get_nifty_20d_sma()` (DB first, yfinance `^NSEI` fallback); the text report's mood/VIX render `—` |
 | Daily OHLC only | No intraday data | Same-bar SL+target ties resolve to SL |
@@ -769,7 +791,7 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 | BSE delivery + BSE SME files | Both fail on every run checked (`BSE-Deliv ⚠️`; BSE SME "File is not a zip file") | Dual-listed stocks use NSE delivery %; BSE-only stocks get delivery 0 and are dropped at Stage 1 V3, so the top 100 comes from NSE-listed stocks in practice (open item, §20) |
 | Scheduled-run timing | GitHub queues scheduled workflows | Delivery ~05:00–09:30 IST |
 | Piotroski F /9 | No free source for true year-on-year comparisons | Proxy from available data |
-| Alert Log Prev Score / Score Δ | Needs yesterday's `latest_analysis_results` | Blank on the first run after a fresh DB |
+| Alert Log Prev Score / Score Δ | Needs the previous trading date's `prev_*` row | Blank on the first run after a fresh DB, and for a symbol first seen today |
 | BSE downloads from cloud runners | Cloudflare / Akamai block cloud IPs | `bse` package → cloudscraper → curl_cffi cascade; NSE-only mode + allowlist fallback when all fail |
 
 ---
@@ -794,6 +816,9 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 🥇 Funnel: 95 stocks → Verdict = BUY: 17 → Score ≥ 70: 13 → MoS 15–100%: 4 → not spike-suppressed: 1 → ROE ≥ 10%: 0
 🥇 Emptied by: ROE ≥ 10% — removed the last 1: PLASTIBLEN (ROE 9.5%)
 🥇 One gate short: WEALTH (MoS +6.7%), GNFC (MoS +7.0%), …     ← 🥇 lines only when Gold is empty (v17.20)
+📌 v17.21: N held stock(s) shown with their tracked entry / SL / Target / allocation
+v17.21 exit-model restatement: checked N  ·  changed k  ·  kept m      ← first run after v17.21 only
+SHADOW STOP — walked N  ·  final k
 🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...
 💾 AI cards served from today's cache (…)          ← same-day re-run
 ```
@@ -874,8 +899,10 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 | Gold filter | `reporting/excel_generator.py` | `ExcelGeneratorV6._gold_gates()` (the 15 gates, one list) → `_get_gold()`; criteria text "ALL 15 must pass" |
 | Empty-Gold reason (v17.20) | `reporting/excel_generator.py` · `master_funnel.py` | `gold_funnel_summary()`, `gold_funnel_log_lines()`; printed after the Gold-logging line |
 | Outcome logging hook | `master_funnel.py` | "v14.0/v14.1 — OUTCOME TRACKING" before the Excel build |
-| Tracker | `track_outcomes.py` | `main()`, `_walk_forward()`, `_compute_shadow_stop()`, continuation pass |
-| Outcome DB helpers | `database/data_bridge.py` | `insert_gold_recommendation`, `get_open_recommendations`, `update_outcome`, `update_shadow_outcome`, `get_outcome_stats`, `get_continuation_stats` |
+| Tracker | `track_outcomes.py` | `main()`, `_walk_forward()`, `_fill_price()`, `_compute_shadow_stop()`, `_restate_closed_outcomes()`, `_run_shadow_pass()`, continuation pass |
+| Replay | `backtest/replay_picks.py` | `load_picks`, `walk`, `features`, `apply_rules`, `summarize`; picks in `backtest/picks_2026H2.csv` |
+| Held-stock levels / log-time sizing | `master_funnel.py` | `_apply_tracked_levels()`, `_alloc_for_log()`, `GOLD_RULE_VERSION` |
+| Outcome DB helpers | `database/data_bridge.py` | `insert_gold_recommendation`, `get_open_recommendations`, `get_open_recommendation_levels`, `get_closed_recommendations`, `get_shadow_candidates`, `update_outcome`, `update_shadow_outcome`, `get_outcome_stats`, `get_continuation_stats`, `migration_applied` / `mark_migration` |
 | AI notes | `ai/ai_analyst.py` | `get_ai_analysis` (cache wrapper) → `_generate_ai_analysis`; `_llm_complete`; `_load_card_system_prompt` |
 | Deferred card block | `master_funnel.py` | "[Section 7/8 — deferred, v17.14]" |
 | Excel workbook | `reporting/excel_generator.py` | `ExcelGeneratorV6.generate_excel_reports()`; `_full_sheet`, `_gold_ws`, `_alert_log`, `_performance_sheet` |
@@ -886,7 +913,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 | Local NSE fetch | `fetch_nse_local.py` | `--dry-run`, `--push`, `--probe` |
 | Holiday calendar | `ingestion/holiday_calendar.py` | `ensure_holiday_calendar_fresh()` — NSE API + `market_holidays` cache |
 | NSE / BSE downloaders | `ingestion/harvester.py` | `download_nse_bhavcopy`, `download_nse_delivery`, `download_nse_sme_bhavcopy`, `download_bse_bhavcopy`, `download_bse_delivery`, `download_bse_sme_bhavcopy`, `download_nse_fo_participant_data` |
-| Core DB helpers | `database/data_bridge.py` | `save_to_database`, `get_symbol_history`, `get_20d_avg_vol` / `get_20d_avg_vol_batch`, `load_latest_analysis_results`, `get_prior_analysis_map`, `get_today_consolidated_data` (feeds `command_parser`), `get_historical_quarter_data` (QoQ baseline) |
+| Core DB helpers | `database/data_bridge.py` | `save_to_database`, `get_symbol_history`, `get_20d_avg_vol` / `get_20d_avg_vol_batch`, `load_latest_analysis_results`, `roll_previous_day_state` / `load_previous_day_scores` (v17.21), `get_prior_analysis_map(run_date)`, `get_today_consolidated_data` (feeds `command_parser`), `get_historical_quarter_data` (QoQ baseline) |
 | Market helpers | `database/data_bridge.py` | `get_nifty_20d_sma` (regime gate), `get_nifty_200_sma`, `get_nifty_52w_high_from_db`, `get_latest_fii_net_cash` |
 | Continuation helpers (write `gold_continuation` only) | `database/data_bridge.py` | `get_t1_hits_needing_continuation`, `get_continuation_tracking`, `upsert_continuation` |
 | Forensics | `analysis/forensics_engine.py` | `fetch_forensic_inputs`, `calculate_altman_z`, `calculate_beneish_m` |
@@ -905,7 +932,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 6. **DCF guards are non-negotiable** — WACC floor 10%, M1 cap 4× CMP, composite CFV cap 3× CMP.
 7. **`run_time` not hardcoded times** — all time-sensitive strings in excel_generator use `self.run_time`.
 8. **Backfill runs on GitHub Actions** — yfinance rate limits apply. CR second pass capped at 100/run.
-9. **Load `latest_analysis_results` BEFORE saving today's scores** — otherwise Alert Log's Score Δ is always 0.
+9. **Load `latest_analysis_results` BEFORE saving today's scores** — otherwise Alert Log's Score Δ is always 0. Since v17.21: `roll_previous_day_state()` first, read `prev_*`, and save with the UPSERT — never `INSERT OR REPLACE` (it wipes `prev_*`).
 10. **Gate check C4 (BSE URL HEAD) is intentionally ignored** — cloud IPs can't reach it. BSE routes through `bse` pip package.
 11. **Do not quote song lyrics, poems, or paid articles in AI cards** — master prompt enforces paraphrase-only output.
 12. **OVERVALUED is NOT the same as WATCHLIST** — keep verdict categories distinct.
@@ -923,10 +950,16 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 24. **Performance-sheet widths via `_set_min_width()` only** (G35); **Full Dashboard alignment by column name** (`_FULL_LEFT_ALIGNED`).
 25. **Allowlist writes only from ISIN-matched runs** — keep `record_dual_listed_observations()`'s guards (G41); do not reintroduce a nightly wipe.
 26. **`market_data.db` cannot be committed** (≈ 730 MB artifact). Schema changes = idempotent migrations inside the pipeline.
+27. **One live Target.** The tracker exits at T1 only and fills at the open on gaps (`_fill_price`); do not reintroduce T2/T3 exits (G48).
+28. **Rule change → bump `GOLD_RULE_VERSION`, do not reset** the outcome tables (G53).
 
 ---
 
-## 20. OPEN ITEMS / NEXT ACTIONS (October 2026)
+## 20. OPEN ITEMS / NEXT ACTIONS (November 2026)
+
+- [ ] **v17.21 follow-up — run the "Gold_Pick_Replay" workflow** (Actions → Gold_Pick_Replay → Run, `exit_mode` logged, then uniform) and review `replay_results_summary.md`. Adopt an entry rule (R1 trend / R2 regime / R3 cooldown / R4 MoS cap) only if it improves BOTH win rate and mean P&L while keeping enough picks; switch it on under a new `GOLD_RULE_VERSION`, never with a reset. Evidence so far (19-Oct-2026, 49 picks, 12 closed): 10 SL_HIT · 1 TRAIL_SL · 1 target; all 10 stop-outs were DEEP VALUE; median best gain before the stop +2.4 %; DEEP VALUE 35 picks mean −1.7 % vs others 14 picks +1.5 % (one-sided p ≈ 0.03 with several splits looked at — a lead, not proof).
+- [ ] After the first v17.21 run: check the log for `v17.21 exit-model restatement: checked … changed …` (SUNTV expected T2_HIT → T1_HIT) and that the Performance sheet shows SUNTV at the Target (+10.5 %) or at its 30-Sep open if that was higher.
+- [ ] NSE snapshot: only 19-Oct and 10-Nov-2026 commits in five weeks; the 10-Nov file is accepted up to the 25-Nov run. Both Sunday fetches that returned data had an empty pledge list (exit 3 since v17.20.1); weekday/Saturday fetches had ~340 — consider moving the task to Saturday (owner decision).
 
 - [ ] Re-band the Trade Summary R:R colours for the single regime target (currently every row is red) — owner decision.
 - [x] `fetch_nse_local.py`: do not overwrite the snapshot when a fetch returns 0 pledge rows but shareholding is fine — done in v17.20.1 (exit 3, previous file kept; seen 27-Sep and 11-Oct-2026, both Sundays).
@@ -959,12 +992,12 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 git pull origin main --rebase      # keep-alive bot and the weekly NSE snapshot commit to main
 git checkout -b fix/vXX-description
 # replace files
-python test_v13_v14_consolidated.py     # expect ALL green (99/99 at v17.20.1)
+python test_v13_v14_consolidated.py     # expect ALL green (106/106 at v17.21)
 git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PR → green check → merge
 ```
 
-**Test suite.** `test_v13_v14_consolidated.py` — 99 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. G47 (v17.20.1) checks that a partial NSE fetch keeps a usable previous snapshot (exit 3) and still writes over a stale or missing one. Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
+**Test suite.** `test_v13_v14_consolidated.py` — 106 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. G47 (v17.20.1) checks that a partial NSE fetch keeps a usable previous snapshot (exit 3) and still writes over a stale or missing one. G48–G54 (v17.21): single Target + gap fills + restatement, shadow stop, Performance metrics, sizing + held levels, report display, rule_version, replay tool — each was mutation-checked (every reverted fix makes its guard fail; run mutants with bytecode caching off, since a same-size edit can survive in a stale .pyc). Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
 
 **Hard lessons — do not repeat.**
 1. **Tests must be bidirectional.** Reintroduce the bug, confirm the test fails, restore, confirm it passes (G35 once passed while the bug shipped; G40's first draft too).
@@ -982,6 +1015,14 @@ git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PART B — VERSION HISTORY (newest first)
 
 Entries from v17.3 downwards are preserved as written at the time. Where they describe behaviour that later changed, Part A is authoritative.
+
+### v17.21 — Performance numbers a trader could actually have got · 22 Nov 2026
+
+**Why.** The 19-Oct-2026 dashboard audit (code unchanged since) found the Performance sheet over- and under-stating results, and several report pages showing the wrong value: (1) the tracker still booked T2/T3 although T1 has been the only Target since v17.8.1 — SUNTV +14.2 % at the hidden T2 instead of +10.5 %; (2) every exit was booked at the level, never at a gap open (SHREERAMA −17.6 % low on day 1, booked −7.0 %); (3) DD Recovery Rate showed 100 % (`int(x or 1)` turned 0 into 1); (4) AVG DAYS → TARGET counted T1 rows only ("—" next to TARGET HIT = 1); (5) the shadow stop was unarmed for 14 trading days, ignored the original stop and froze when the live trade closed; (6) same-day picks in one sector were sized against the same pre-log exposure (Consumer Cyclical 40.9 % vs the 30 % cap), INDIAMART's logged 1.0 % was counted as 12.6 %, and a held stock counted against itself; (7) held stocks were shown with levels re-computed from today's price (MARUTI SL ₹10,612 / 1 % vs tracked ₹10,494 / 15 %); (8) Trade Summary values sat one-two columns right of their headers since v17.8.1; (9) a same-date re-run compared with that morning's run (BENARAS −15 / KINGFA −5 alerts lost) and could advance an AVOID streak twice; (10) AI cards still received T2/T3; (11) Support 2 above the CMP on 12 stocks, P/E 500 on LOTUSEYE, "SPIKE ALERTS: 0" next to 11 alerts, "+0"/"−0" deltas, a stale "v6.2" title. Separately, two resets had deleted 26 open picks, leaving 6 closed picks — too few to judge the strategy.
+
+**Change.** Tracker: single Target, `_fill_price` open-price fills, one-time restatement (`v17_21_exit_model`; same-date rows only, never re-opened). Shadow stop: pre-entry ATR seed, max(original stop, trail), EXPIRED, walked for every non-final row. Performance: `_avg_days(*outcomes)`, `_flag01`, shadow table Rec Date + NEUTRAL/HIGH/LOW wording, BY RULE VERSION. Sizing: logged allocations, own position excluded, `_alloc_for_log` at log time; `_apply_tracked_levels` for held stocks. Report: Trade Summary one value per header; `latest_analysis_results.prev_*` + `roll_previous_day_state` / `load_previous_day_scores` / `get_prior_analysis_map(run_date)` and an UPSERT save; AI card sends the Target only (`_CARD_FORMAT_VERSION = "v17.21-single-target"`); S2/R2 broken → "—"; symbol_master P/E ≥ 500 → "—" (raw kept as pe_num, scoring unchanged); preview spike count; Δ "0"; title. Tracking: `gold_recommendations.rule_version` + `GOLD_RULE_VERSION`; reset script and workflow text point to it. Backtest: `backtest/replay_picks.py`, `backtest/picks_2026H2.csv` (49 picks), manual workflow `replay.yml`. Tooltips and glossary updated for every changed rule (Outcome, Outcome Price, Days to Outcome, AVG DAYS → TARGET, shadow columns, Entry Range — was "CMP ± 0.5 × ATR", code is −2 % / +1 % — Stop Loss, Target, Suggested Alloc %, Sizing Rationale, Public Float, Support 2, Resist 1/2, BY RULE VERSION, DD Recovery Rate, Shadow Exit Comparison).
+
+**Verification.** New guards G48–G54 (single Target / gap fills / restatement; shadow; Performance metrics; sizing + held levels; report display incl. a morning run + same-date re-run + next day using the pipeline's own save SQL; rule_version; replay tool). Every guard was mutation-checked with bytecode caching off: 40 mutants (G48 5 · G49 6 · G50 4 · G51 7 · G52 9 · G53 3 · G54 6), each makes its guard fail for the intended reason. Intended expectation changes: G3_3 (T1_HIT @ Target), G13 (AVG DAYS → TARGET 30.8 days), G25 (P/E assignment form), G4_3 (scan the whole sheet). Suite **106/106** on Linux and in the Windows-like run. Not verified here: a pipeline run on the real DB (artifacts are not reachable from this environment) — the first v17.21 run's log shows the restatement line, and the replay needs the "Gold_Pick_Replay" workflow.
 
 ### v17.20.1 — A partial NSE fetch no longer wipes the pledge data · 15 Oct 2026
 
@@ -4205,4 +4246,4 @@ v17.3 does not improve returns and should not be read as if it does. What it cha
 
 ---
 
-*Last updated: 23 October 2026 · v17.20.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: 22 November 2026 · v17.21 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

@@ -87,7 +87,7 @@
 <body>
 <div class="wrap">
 <h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
-<div class="meta">v17.20.1 · 15 October 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
+<div class="meta">v17.21 · 22 November 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
 <div class="toc">
   <h3>Contents</h3>
   <ol start="0">
@@ -135,7 +135,7 @@
 <line x1="340" y1="826" x2="340" y2="838" class="arr" marker-end="url(#arrE0)"/>
 <g class="c-amber"><rect x="40.0" y="848" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="868" text-anchor="middle" dominant-baseline="central">DECIDE · Section 9/10</text><text class="ts" x="340" y="890" text-anchor="middle" dominant-baseline="central">market-regime gate · resilience watchlist · save scores · log Gold picks</text></g>
 <line x1="340" y1="908" x2="340" y2="920" class="arr" marker-end="url(#arrE0)"/>
-<g class="c-teal"><rect x="40.0" y="930" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="950" text-anchor="middle" dominant-baseline="central">TRACK · track_outcomes.main()</text><text class="ts" x="340" y="972" text-anchor="middle" dominant-baseline="central">walk every open pick · live trailing stop · shadow stop · continuation audit</text></g>
+<g class="c-teal"><rect x="40.0" y="930" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="950" text-anchor="middle" dominant-baseline="central">TRACK · track_outcomes.main()</text><text class="ts" x="340" y="972" text-anchor="middle" dominant-baseline="central">walk every open pick · live trailing stop · shadow stop · continuation audit · rule version</text></g>
 <line x1="340" y1="990" x2="340" y2="1002" class="arr" marker-end="url(#arrE0)"/>
 <g class="c-pink"><rect x="40.0" y="1012" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1032" text-anchor="middle" dominant-baseline="central">AI NOTES · Section 7/8 (deferred)</text><text class="ts" x="340" y="1054" text-anchor="middle" dominant-baseline="central">Block H notes for Gold picks + open positions only · per-day cache</text></g>
 <line x1="340" y1="1072" x2="340" y2="1084" class="arr" marker-end="url(#arrE0)"/>
@@ -1019,7 +1019,7 @@
 <line x1="340" y1="152" x2="340" y2="164" class="arr" marker-end="url(#arrF3)"/>
 <g class="c-gray"><rect x="40.0" y="174" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="194" text-anchor="middle" dominant-baseline="central">T2 / T3 — dormant</text><text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">Target × 1.35 and × 1.35² · kept for older rows and the continuation audit</text></g>
 <line x1="340" y1="234" x2="340" y2="246" class="arr" marker-end="url(#arrF3)"/>
-<g class="c-teal"><rect x="40.0" y="256" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="276" text-anchor="middle" dominant-baseline="central">Suggested Alloc % = 1.0 % risk budget ÷ SL %</text><text class="ts" x="340" y="298" text-anchor="middle" dominant-baseline="central">× cap multiplier LARGE / MID 1.0 · SMALL 0.85 · MICRO 0.70</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">30 % sector cap · clamped 1 % – 15 % · every position risks ≈ 1 % of capital</text></g>
+<g class="c-teal"><rect x="40.0" y="256" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="276" text-anchor="middle" dominant-baseline="central">Suggested Alloc % = 1.0 % risk budget ÷ SL %</text><text class="ts" x="340" y="298" text-anchor="middle" dominant-baseline="central">× cap multiplier LARGE / MID 1.0 · SMALL 0.85 · MICRO 0.70</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">30 % sector cap from logged allocations, same-day picks counted (v17.21) · clamped 1 % – 15 %</text></g>
 </svg>
 <table class="tbl" aria-label="Worked examples computed with the live functions">
 <thead><tr><th>Worked example (computed by the real functions)</th><th>A · POSITIONAL MID</th><th>B · SHORT TERM SMALL</th><th>C · LONG TERM LARGE</th></tr></thead>
@@ -1056,7 +1056,7 @@
 <line x1="340" y1="152" x2="340" y2="164" class="arr" marker-end="url(#arrG0)"/>
 <g class="c-gray"><rect x="40.0" y="174" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="194" text-anchor="middle" dominant-baseline="central">EXPIRY by horizon</text><text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">SHORT TERM 30 days · POSITIONAL 90 · LONG TERM 270 (hard cutoff)</text></g>
 <line x1="340" y1="234" x2="340" y2="246" class="arr" marker-end="url(#arrG0)"/>
-<g class="c-blue"><rect x="40.0" y="256" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="276" text-anchor="middle" dominant-baseline="central">WALK · daily NSE bars from the next day</text><text class="ts" x="340" y="298" text-anchor="middle" dominant-baseline="central">same bar: SL beats target · T3 &gt; T2 &gt; T1 · first event wins</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">effective SL = max(original SL, trailing SL)</text></g>
+<g class="c-blue"><rect x="40.0" y="256" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="276" text-anchor="middle" dominant-baseline="central">WALK · daily NSE bars from the next day</text><text class="ts" x="340" y="298" text-anchor="middle" dominant-baseline="central">same bar: SL beats target · one Target (v17.21) · gap fills at the open · first event wins</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">effective SL = max(original SL, trailing SL)</text></g>
 <line x1="340" y1="336" x2="340" y2="348" class="arr" marker-end="url(#arrG0)"/>
 <g class="c-teal"><rect x="40.0" y="358" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="378" text-anchor="middle" dominant-baseline="central">T1_HIT</text><text class="ts" x="136.65" y="400" text-anchor="middle" dominant-baseline="central">the Target</text></g>
 <g class="c-pink"><rect x="243.3" y="358" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="378" text-anchor="middle" dominant-baseline="central">SL_HIT</text><text class="ts" x="339.95" y="400" text-anchor="middle" dominant-baseline="central">original stop</text><text class="ts" x="339.95" y="420" text-anchor="middle" dominant-baseline="central">a real loss</text></g>
@@ -1089,7 +1089,7 @@
 <svg viewBox="0 0 680 230" role="img" aria-label="diagram">
 <defs><marker id="arrG2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">Observational layers — never change a live outcome</text>
-<text class="ts" x="340" y="48" text-anchor="middle">continuation v17.3 · shadow stop v17.7</text>
+<text class="ts" x="340" y="48" text-anchor="middle">continuation v17.3 · shadow stop v17.7 (v17.21: armed from day 1, floored at the original stop, walked to its own end)</text>
 <g class="c-purple"><rect x="40.0" y="72" width="295.0" height="140" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="92" text-anchor="middle" dominant-baseline="central">Continuation audit</text><text class="ts" x="187.5" y="114" text-anchor="middle" dominant-baseline="central">after each T1_HIT, walk on to</text><text class="ts" x="187.5" y="134" text-anchor="middle" dominant-baseline="central">the pick's own expiry</text><text class="ts" x="187.5" y="154" text-anchor="middle" dominant-baseline="central">T2 / T3 reach · peak / trough</text><text class="ts" x="187.5" y="174" text-anchor="middle" dominant-baseline="central">broke original SL?</text><text class="ts" x="187.5" y="194" text-anchor="middle" dominant-baseline="central">→ gold_continuation (G37)</text></g>
 <g class="c-purple"><rect x="345.0" y="72" width="295.0" height="140" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="92" text-anchor="middle" dominant-baseline="central">Shadow trailing stop</text><text class="ts" x="492.5" y="114" text-anchor="middle" dominant-baseline="central">Chandelier: peak − N × ATR × regime</text><text class="ts" x="492.5" y="134" text-anchor="middle" dominant-baseline="central">N = 2.5 / 3.0 / 3.5 by horizon</text><text class="ts" x="492.5" y="154" text-anchor="middle" dominant-baseline="central">ratchet up · no look-ahead</text><text class="ts" x="492.5" y="174" text-anchor="middle" dominant-baseline="central">real vs shadow P&amp;L compared</text><text class="ts" x="492.5" y="194" text-anchor="middle" dominant-baseline="central">→ shadow_* columns (G39)</text></g>
 </svg>
@@ -1100,7 +1100,7 @@
 <tr><td>1</td><td>Title + sample-size banner</td><td>Preliminary until 30 positions have closed</td></tr>
 <tr><td>2</td><td>Headline metrics</td><td>Total · Closed · Open · Hit rate · SL rate · tiles TARGET HIT / SL HIT / EXPIRED / TRAIL SL</td></tr>
 <tr><td>3</td><td>Speed metrics</td><td>Average days to Target and to SL</td></tr>
-<tr><td>4</td><td>Diagnostic breakdowns</td><td>Hit rate by score band, archetype, sector, time horizon</td></tr>
+<tr><td>4</td><td>Diagnostic breakdowns</td><td>Hit rate by score band, archetype, sector, time horizon, rule version (v17.21)</td></tr>
 <tr><td>5</td><td>Closed positions (15 columns)</td><td>Every realised outcome, newest first, with Score Band / Archetype / Sector</td></tr>
 <tr><td>6</td><td>Risk-adjusted returns</td><td>Sharpe · Sortino · Calmar (risk-free 6.5 %) · drawdown duration</td></tr>
 <tr><td>7</td><td>Open positions</td><td>SL (the original stop, frozen at log time), Target, Trailing (level locked so far — the tracker exits on the higher of the two), Regime, Suggested Alloc, AI Card; ⚠ when ≤ 14 days left</td></tr>
@@ -1190,8 +1190,8 @@
 <thead><tr><th>#</th><th>Sheet</th><th>Contents</th></tr></thead><tbody>
 <tr><td>1</td><td>📊 Full Dashboard</td><td>Top 100 × 126 columns in 18 bands. Row 2: header-colour legend and <em>Pledge/Promoter data as of … IST (Nd old)</em>. Red header = no free source and &lt; 30 % populated.</td></tr>
 <tr><td>2</td><td>⭐ Gold – Early Movers</td><td>41 columns incl. the AI Analysis Summary; row 2 lists the 15 criteria and any bearish-regime notice; resilience strip below.</td></tr>
-<tr><td>3</td><td>📊 Trade Summary</td><td>Entry range · SL · Target · R:R · horizon · risk for Gold picks.</td></tr>
-<tr><td>4</td><td>🔔 Alert Log</td><td>Score vs yesterday: ⬇ SCORE DEGRADED only on a real ≥ 3-point drop; ⚠ LOW SCORE for weak-but-stable; action label per row.</td></tr>
+<tr><td>3</td><td>📊 Trade Summary</td><td>Entry range · SL · Target · R:R · horizon · risk for Gold picks — one value per header (v17.21).</td></tr>
+<tr><td>4</td><td>🔔 Alert Log</td><td>Score vs the previous trading date (also on a same-day re-run, v17.21): ⬇ SCORE DEGRADED only on a real ≥ 3-point drop; ⚠ LOW SCORE for weak-but-stable; action label per row.</td></tr>
 <tr><td>5</td><td>📱 Delivery Preview</td><td>WhatsApp / email text.</td></tr>
 <tr><td>6</td><td>🎯 Performance</td><td>11 sections — see Part 6.</td></tr>
 <tr><td>7</td><td>📖 Glossary</td><td>~196 column definitions.</td></tr>
@@ -1265,10 +1265,10 @@
 <tr><td>Position size</td><td><code>risk/correlation_aware_sizing.py::compute_suggested_allocation</code></td></tr>
 <tr><td>Regime gate · resilience</td><td><code>master_funnel.py</code> Section 9/10 · <code>_refresh_resilience_watch</code> · <code>data_bridge.get_nifty_20d_sma</code></td></tr>
 <tr><td>Gold filter</td><td><code>reporting/excel_generator.py::ExcelGeneratorV6._get_gold</code></td></tr>
-<tr><td>Outcome tracking</td><td><code>track_outcomes.py::main</code>, <code>_walk_forward</code>, <code>_compute_shadow_stop</code> · <code>data_bridge</code> outcome helpers</td></tr>
+<tr><td>Outcome tracking</td><td><code>track_outcomes.py::main</code>, <code>_walk_forward</code>, <code>_fill_price</code>, <code>_compute_shadow_stop</code>, <code>_restate_closed_outcomes</code> · <code>data_bridge</code> outcome helpers · replay: <code>backtest/replay_picks.py</code> (workflow <code>replay.yml</code>)</td></tr>
 <tr><td>AI notes</td><td><code>ai/ai_analyst.py::get_ai_analysis</code> → <code>_generate_ai_analysis</code> · <code>_load_card_system_prompt</code></td></tr>
 <tr><td>Workbook · tooltips</td><td><code>reporting/excel_generator.py</code> (8 sheets) · <code>reporting/tooltip_formatter.py::TIPS</code></td></tr>
-<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 99 guards, all green on Linux and Windows (v17.20.1)</td></tr>
+<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 106 guards, all green on Linux and Windows (v17.21)</td></tr>
 </tbody></table>
 
 <h3>Key constants &amp; thresholds</h3>
@@ -1297,8 +1297,8 @@ Display thresholds (v10.16 Option B): PE / PB / PS / EV-EBITDA above 500 and PEG
 <h3>Quick-pick labels are separate from the verdict</h3>
 <p style="margin-top:0"><code>stock["verdict"]</code> (BUY / WATCHLIST / NEUTRAL / OVERVALUED / AVOID) and <code>stock["label"]</code> (DEEP VALUE / EARLY MOVER / …) come from different functions. The verdict drives colour and the Gold filter; the label is an archetype used for sorting and for the Performance breakdowns.</p>
 <div class="footer">
-NSE/BSE Stock Analyser · Pipeline reference · v17.20.1 (15 October 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
-Parts 1–4 are the v16.5 scoring deep-dives, re-checked against the code — the screening and scoring modules are unchanged since v16.4; only funnel counts and output facts were updated. Parts 0 and 5–8 are new and describe v17.0–v17.20.1: market-regime gate and 15-condition Gold filter (v17.0, v17.5.1), single regime-aware Target (v17.8.1), live trailing tiers (v17.0), continuation audit (v17.3), shadow stop (v17.7), news engine (v17.9/v17.11), company-LLM analyst notes with per-day cache (v17.10–v17.16), weekly NSE snapshot (v17.13), allowlist write-time guards (v17.17), Full Dashboard without the AI column (v17.18), the Trailing-label fix (v17.19), the empty-Gold reason in the run log (v17.20) and the NSE fetcher keeping the previous snapshot on a partial fetch (v17.20.1).
+NSE/BSE Stock Analyser · Pipeline reference · v17.21 (22 November 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
+Parts 1–4 are the v16.5 scoring deep-dives, re-checked against the code — the screening and scoring modules are unchanged since v16.4; only funnel counts and output facts were updated. Parts 0 and 5–8 are new and describe v17.0–v17.20.1: market-regime gate and 15-condition Gold filter (v17.0, v17.5.1), single regime-aware Target (v17.8.1), live trailing tiers (v17.0), continuation audit (v17.3), shadow stop (v17.7), news engine (v17.9/v17.11), company-LLM analyst notes with per-day cache (v17.10–v17.16), weekly NSE snapshot (v17.13), allowlist write-time guards (v17.17), Full Dashboard without the AI column (v17.18), the Trailing-label fix (v17.19), the empty-Gold reason in the run log (v17.20) the NSE fetcher keeping the previous snapshot on a partial fetch (v17.20.1), and v17.21: one live Target with open-price fills and a one-time restatement, the shadow stop armed from day 1 and walked to its own end, sizing from logged allocations with held stocks shown at their tracked levels, previous-trading-date comparisons, rule-version tagging instead of resets, and the pick replay tool.
 </div>
 </div>
 <script>
