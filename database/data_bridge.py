@@ -315,6 +315,12 @@ def initialize_v7_tables(conn):
         # alongside running P&L without needing to re-compute every refresh.
         ("gold_recommendations", "suggested_alloc_pct REAL DEFAULT 0"),
         ("gold_recommendations", "alloc_rationale TEXT DEFAULT ''"),
+        # v17.21 — which version of the Gold / trade-plan rules produced the
+        # pick. Rows logged before v17.21 keep ''. A rule change bumps
+        # GOLD_RULE_VERSION in master_funnel instead of wiping the outcome
+        # tables, so old and new rules can be compared on the Performance
+        # sheet (BY RULE VERSION).
+        ("gold_recommendations", "rule_version TEXT DEFAULT ''"),
         # ────────────────────────────────────────────────────────────────
         # v16.0 — Max DD Duration tracking (Item 2 of v16.0)
         # ────────────────────────────────────────────────────────────────
@@ -1746,8 +1752,8 @@ def insert_gold_recommendation(rec: dict) -> bool:
                  quick_pick_label, verdict, time_horizon, predicted_rr,
                  expiry_days, expiry_date, times_reappeared,
                  original_stop_loss, atr_at_rec, regime_at_rec, next_earnings_date,
-                 suggested_alloc_pct, alloc_rationale)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 suggested_alloc_pct, alloc_rationale, rule_version)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 rec.get("recommendation_date", ""),
                 rec.get("symbol", ""),
@@ -1780,6 +1786,8 @@ def insert_gold_recommendation(rec: dict) -> bool:
                 # v15.7: risk-parity sizing frozen at log time
                 float(rec.get("suggested_alloc_pct", 0) or 0),
                 str(rec.get("alloc_rationale", "") or ""),
+                # v17.21: rule version that produced the pick
+                str(rec.get("rule_version", "") or ""),
             ))
             # v14.3: capture rowcount BEFORE the second INSERT overwrites it
             inserted = (c.rowcount == 1)

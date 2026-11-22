@@ -1158,6 +1158,12 @@ TIPS: Dict[str, Tuple[str, str]] = {
                          "if SHORT TERM has lower hit rate than POSITIONAL\n"
                          "despite being stricter (high spike count required),\n"
                          "the SHORT TERM trigger may need recalibration."),
+    "BY RULE VERSION": ("Hit rate per version of the Gold / trade-plan rules",
+                        "Each pick is stamped with the rule version that\n"
+                        "produced it (v17.21+; earlier picks = 'before v17.21').\n"
+                        "A rule change bumps the version instead of resetting\n"
+                        "the tracker, so old and new rules are compared here.\n"
+                        "Wait for ~30 closed picks per version."),
     # ────────────────────────────────────────────────────────────────────
     # v14.4: SL/T1/T2/T3 columns in OPEN POSITIONS
     # Each cell shows "₹price (±X.X%)" — distance is from current_price

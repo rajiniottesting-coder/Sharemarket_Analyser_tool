@@ -9,7 +9,8 @@ on:
         description: >-
           DANGER - type RESET-PERFORMANCE to wipe gold_recommendations,
           gold_outcomes and gold_continuation. IRREVERSIBLE. Leave blank
-          for a normal run.
+          for a normal run. For a rule change, bump GOLD_RULE_VERSION in
+          master_funnel.py instead (v17.21).
         required: false
         default: ''
 
