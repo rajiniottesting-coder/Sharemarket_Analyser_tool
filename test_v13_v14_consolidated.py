@@ -1204,7 +1204,9 @@ def test_g3_2_sl_wins_over_target_on_same_day():
     return "✅ SL beats target on same-day ties (daily-bar convention)"
 
 def test_g3_3_highest_target_wins_on_single_day():
-    """If a day's high ≥ T3, mark T3_HIT (not T1)."""
+    """v17.21: one live Target. A bar that opens below the Target and runs
+    through the dormant T2/T3 books T1_HIT at the Target (was T3_HIT before
+    v17.21, which over-stated the exit). Name kept for history."""
     test_db, original = _setup_temp_db('g3_3')
     try:
         from database.data_bridge import initialize_v7_tables
@@ -1219,10 +1221,11 @@ def test_g3_3_highest_target_wins_on_single_day():
         conn = sqlite3.connect("market_data.db")
         df = pd.read_sql("SELECT * FROM gold_outcomes WHERE symbol='C'", conn)
         conn.close()
-        assert df['outcome_type'].iloc[0] == 'T3_HIT'
+        assert df['outcome_type'].iloc[0] == 'T1_HIT', df['outcome_type'].iloc[0]
+        assert abs(float(df['outcome_price'].iloc[0]) - 110.0) < 0.01, df['outcome_price'].iloc[0]
     finally:
         _restore(original, test_db)
-    return "✅ Highest target wins on a single-day jump"
+    return "✅ A jump through hidden T2/T3 books the single Target (v17.21)"
 
 def test_g3_4_expired_after_90_days_no_event():
     test_db, original = _setup_temp_db('g3_4')
@@ -6188,6 +6191,195 @@ def test_g9_column_name_consistency_time_horizon_everywhere():
 
 
 # ════════════════════════════════════════════════════════════════════════
+# v17.21 — Performance numbers that match what a trader could have done
+# ════════════════════════════════════════════════════════════════════════
+
+def test_g48_v17_21_single_target_gap_fills_and_restatement():
+    """v17.21: the live walk books ONE Target and fills at the open on gaps;
+    closed rows are restated once with that model.
+
+    Found on the 19-Oct-2026 dashboard: SUNTV was booked at the hidden T2
+    (+14.2%) although the live Target was +10.5%, and SHREERAMA fell to
+    -17.6% on its first bar but was booked at the stop (-7.0%).
+      A. bar opens below the Target and runs through T2/T3 -> T1_HIT @ Target
+      B. bar OPENS above the Target                         -> T1_HIT @ open
+      C. bar OPENS below the stop                           -> SL_HIT @ open
+      D. bar opens above the stop and trades through it     -> SL_HIT @ stop
+      E. restatement: closed T2_HIT @ T2 -> T1_HIT @ Target, same date;
+         marker written; a second run changes nothing
+      F. restatement never re-opens a row and keeps rows it cannot re-walk
+         or whose re-walk lands on a different day
+    """
+    test_db, original = _setup_temp_db('g48')
+    try:
+        from database.data_bridge import (initialize_v7_tables, update_outcome,
+                                          migration_applied)
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        import importlib, track_outcomes as to
+        importlib.reload(to)
+        flat = lambda a, b: [(d, 100, 102, 98, 100) for d in range(a, b)]
+        # A — opens 100 (< Target 110), high 132 through T2 120 / T3 130
+        _seed_recommendation_and_prices('GA', '2026-01-01', 100, 93, 110, 120, 130,
+            flat(1, 3) + [(3, 100, 132, 99, 128)] + flat(4, 10))
+        # B — gap up: opens 115 above the Target 110
+        _seed_recommendation_and_prices('GB', '2026-01-01', 100, 93, 110, 120, 130,
+            flat(1, 3) + [(3, 115, 118, 114, 116)] + flat(4, 10))
+        # C — gap down: opens 88 below the stop 93
+        _seed_recommendation_and_prices('GC', '2026-01-01', 100, 93, 110, 120, 130,
+            flat(1, 3) + [(3, 88, 89, 85, 86)] + flat(4, 10))
+        # D — opens 96, trades down through the stop 93
+        _seed_recommendation_and_prices('GD', '2026-01-01', 100, 93, 110, 120, 130,
+            flat(1, 3) + [(3, 96, 97, 90, 91)] + flat(4, 10))
+        # E — already CLOSED as T2_HIT @ 120 by the pre-v17.21 walk
+        _seed_recommendation_and_prices('GE', '2026-01-01', 100, 93, 110, 120, 130,
+            flat(1, 3) + [(3, 101, 125, 100, 124)] + flat(4, 10))
+        update_outcome('GE', '2026-01-01', 'T2_HIT', outcome_date='2026-01-04',
+                       outcome_price=120, days_to_outcome=3, current_price=120,
+                       current_pnl_pct=20.0)
+        # F — closed SL_HIT but no price rows at all: must be kept as is
+        from database.data_bridge import insert_gold_recommendation
+        insert_gold_recommendation({'recommendation_date': '2026-01-01', 'symbol': 'GF',
+                                    'cmp_at_recommendation': 100, 'stop_loss': 93,
+                                    't1': 110, 't2': 120, 't3': 130})
+        update_outcome('GF', '2026-01-01', 'SL_HIT', outcome_date='2026-01-05',
+                       outcome_price=93, days_to_outcome=4, current_price=93,
+                       current_pnl_pct=-7.0)
+
+        # F2 — closed T1_HIT on 2026-01-08, but the stored prices now show a
+        # stop on 2026-01-04: a different event day is NOT rewritten.
+        _seed_recommendation_and_prices('GG', '2026-01-01', 100, 93, 110, 120, 130,
+            flat(1, 3) + [(3, 95, 96, 90, 91)] + flat(4, 10))
+        update_outcome('GG', '2026-01-01', 'T1_HIT', outcome_date='2026-01-08',
+                       outcome_price=110, days_to_outcome=7, current_price=110,
+                       current_pnl_pct=10.0)
+
+        assert not migration_applied('v17_21_exit_model')
+        to.main()
+        conn = sqlite3.connect("market_data.db")
+        got = {r[0]: (r[1], round(float(r[2] or 0), 2), str(r[3])[:10]) for r in conn.execute(
+            "SELECT symbol, outcome_type, outcome_price, outcome_date FROM gold_outcomes")}
+        conn.close()
+        assert got['GA'][:2] == ('T1_HIT', 110.0), f"A: {got['GA']} (want T1_HIT @ 110)"
+        assert got['GB'][:2] == ('T1_HIT', 115.0), f"B: {got['GB']} (want T1_HIT @ open 115)"
+        assert got['GC'][:2] == ('SL_HIT', 88.0), f"C: {got['GC']} (want SL_HIT @ open 88)"
+        assert got['GD'][:2] == ('SL_HIT', 93.0), f"D: {got['GD']} (want SL_HIT @ stop 93)"
+        assert got['GE'] == ('T1_HIT', 110.0, '2026-01-04'), f"E: {got['GE']} (want T1_HIT @ 110 on 2026-01-04)"
+        assert got['GF'] == ('SL_HIT', 93.0, '2026-01-05'), f"F: {got['GF']} must be kept"
+        assert got['GG'] == ('T1_HIT', 110.0, '2026-01-08'), f"F2: {got['GG']} — a different event day must be kept"
+        assert migration_applied('v17_21_exit_model'), "E: migration marker not written"
+
+        # E (second run) — the restatement is one-time; nothing changes
+        update_outcome('GE', '2026-01-01', 'T2_HIT', outcome_date='2026-01-04',
+                       outcome_price=120, days_to_outcome=3, current_price=120,
+                       current_pnl_pct=20.0)
+        to.main()
+        conn = sqlite3.connect("market_data.db")
+        ge = conn.execute("SELECT outcome_type FROM gold_outcomes WHERE symbol='GE'").fetchone()[0]
+        conn.close()
+        assert ge == 'T2_HIT', "E: restatement ran twice — the marker is not respected"
+
+        # Static: the live walk must not book T2/T3 any more.
+        src = open(_src_path('track_outcomes.py'), encoding='utf-8').read()
+        wf = src[src.find("def _walk_forward"):src.find("\ndef ", src.find("def _walk_forward") + 10)]
+        assert '"T2_HIT"' not in wf and '"T3_HIT"' not in wf, \
+            "_walk_forward still returns T2_HIT/T3_HIT"
+        assert '_fill_price(effective_sl, op, "stop")' in wf, "stop fill ignores the open"
+        assert '_fill_price(t1, op, "target")' in wf, "target fill ignores the open"
+    finally:
+        _restore(original, test_db)
+    return "✅ v17.21: single Target, open-price fills, one-time restatement (A–F)"
+
+def test_g49_v17_21_shadow_stop_armed_floored_and_walked_to_its_end():
+    """v17.21: the shadow stop is a like-for-like alternative exit.
+
+    19-Oct-2026 dashboard: NATIONALUM / APLLTD / SHREERAMA / SUNTV showed
+    shadow "OPEN" forever and LUPIN showed OPEN with a stop of ₹2,014.59 while
+    the price was ₹1,939 — the shadow used only post-entry bars (unarmed for
+    14 trading days), ignored the original stop, and froze when the live
+    trade closed.
+      A. pre-entry bars arm the trail from day 1  -> TRAIL_SL on day 2
+      B. no ATR yet, gap below the original stop  -> SL_HIT at the open
+      C. live trade closes at the Target; the shadow keeps walking on the
+         next run and exits later as TRAIL_SL
+      D. no stop inside the horizon               -> EXPIRED at the last close
+      E. final shadow rows are not re-walked
+    """
+    test_db, original = _setup_temp_db('g49')
+    try:
+        from database.data_bridge import (initialize_v7_tables, insert_gold_recommendation,
+                                          get_shadow_candidates)
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        import importlib, track_outcomes as to
+        importlib.reload(to)
+
+        def seed(sym, rec_date, bars, horizon='', expiry=90):
+            insert_gold_recommendation({'recommendation_date': rec_date, 'symbol': sym,
+                                        'cmp_at_recommendation': 100, 'stop_loss': 93,
+                                        't1': 110, 't2': 120, 't3': 130,
+                                        'time_horizon': horizon, 'expiry_days': expiry})
+            rd = datetime.strptime(rec_date, "%Y-%m-%d").date()
+            conn = sqlite3.connect("market_data.db")
+            conn.executemany("INSERT INTO daily_prices (symbol,date,exchange,open,high,low,close,volume) "
+                             "VALUES (?,?,?,?,?,?,?,?)",
+                             [(sym, (rd + timedelta(days=d)).strftime("%Y-%m-%d"), 'NSE', o, h, l, c, 1000)
+                              for d, o, h, l, c in bars])
+            conn.commit(); conn.close()
+
+        pre = [(d, 100, 101, 99, 100) for d in range(-30, 1)]      # ATR ≈ 2 before entry
+        rec = lambda s, h='', e=90: {'symbol': s, 'recommendation_date': '2026-02-01',
+                                     'cmp_at_recommendation': 100, 'stop_loss': 93,
+                                     't1': 110, 'time_horizon': h, 'expiry_days': e}
+        # A
+        seed('SA', '2026-02-01', pre + [(1, 100, 104, 99.5, 103), (2, 99, 99.5, 95, 96),
+                                         (3, 96, 97, 95, 96)])
+        a = to._compute_shadow_stop(rec('SA'))
+        assert a.get('shadow_status') == 'TRAIL_SL', f"A: {a}"
+        assert a.get('shadow_exit_date') == '2026-02-03', f"A: exit date {a.get('shadow_exit_date')}"
+        assert 93 < a['shadow_exit_price'] < 99, f"A: exit price {a['shadow_exit_price']}"
+        # B
+        seed('SB', '2026-02-01', [(1, 100, 101, 99, 100), (2, 90, 91, 88, 89)])
+        b = to._compute_shadow_stop(rec('SB'))
+        assert b.get('shadow_status') == 'SL_HIT', f"B: {b}"
+        assert abs(b['shadow_exit_price'] - 90.0) < 0.01, f"B: exit price {b['shadow_exit_price']} (want open 90)"
+        # C — run 1: data to day 2 (live T1_HIT on day 2, shadow still open)
+        seed('SC', '2026-02-01', pre + [(1, 100, 103, 99, 102), (2, 102, 111, 101, 110)])
+        to.main()
+        conn = sqlite3.connect("market_data.db")
+        live, sh1 = conn.execute("SELECT outcome_type, shadow_status FROM gold_outcomes "
+                                 "WHERE symbol='SC'").fetchone()
+        conn.execute("INSERT INTO daily_prices (symbol,date,exchange,open,high,low,close,volume) "
+                     "VALUES ('SC','2026-02-04','NSE',108,108.5,102,103,1000)")
+        conn.commit(); conn.close()
+        assert live == 'T1_HIT' and sh1 == 'OPEN', f"C run 1: live={live} shadow={sh1}"
+        to.main()                                  # run 2: the live row is closed
+        conn = sqlite3.connect("market_data.db")
+        sh2, shd = conn.execute("SELECT shadow_status, shadow_exit_date FROM gold_outcomes "
+                                "WHERE symbol='SC'").fetchone()
+        conn.close()
+        assert sh2 == 'TRAIL_SL' and shd == '2026-02-04', \
+            f"C: shadow froze when the live trade closed ({sh2}, {shd})"
+        # D
+        seed('SD', '2026-02-01', [(d, 100, 101, 99, 100) for d in range(1, 41)],
+             horizon='SHORT TERM', expiry=30)
+        d_ = to._compute_shadow_stop(rec('SD', 'SHORT TERM', 30))
+        assert d_.get('shadow_status') == 'EXPIRED', f"D: {d_}"
+        assert d_.get('shadow_exit_date') == '2026-03-03', f"D: {d_.get('shadow_exit_date')}"
+        # E
+        to.main()
+        pending = {r['symbol'] for r in get_shadow_candidates()}
+        assert 'SD' not in pending and 'SC' not in pending, f"E: final rows re-walked: {pending}"
+        # Static: ratchet + floor + lookback stay in the code.
+        src = open(_src_path('track_outcomes.py'), encoding='utf-8').read()
+        cs = src[src.find("def _compute_shadow_stop"):src.find("\ndef ", src.find("def _compute_shadow_stop") + 10)]
+        assert "if candidate > shadow_stop:" in cs
+        assert "stop_now = max(orig_sl, shadow_stop)" in cs, "original-stop floor missing"
+        assert "lookback_days=_SHADOW_ATR_LOOKBACK_DAYS" in cs, "pre-entry ATR seeding missing"
+    finally:
+        _restore(original, test_db)
+    return "✅ v17.21: shadow stop armed from entry, floored at the original stop, walked to its own end (A–E)"
+
+
+# ════════════════════════════════════════════════════════════════════════
 # RUN
 # ════════════════════════════════════════════════════════════════════════
 
@@ -6376,6 +6568,8 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g45_v17_19_1_suite_is_portable_no_posix_temp_paths))
     v14_1_results.append(_run_one_test(test_g46_v17_20_gold_empty_reason_logged))
     v14_1_results.append(_run_one_test(test_g47_v17_20_1_partial_nse_fetch_keeps_previous_snapshot))
+    v14_1_results.append(_run_one_test(test_g48_v17_21_single_target_gap_fills_and_restatement))
+    v14_1_results.append(_run_one_test(test_g49_v17_21_shadow_stop_armed_floored_and_walked_to_its_end))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

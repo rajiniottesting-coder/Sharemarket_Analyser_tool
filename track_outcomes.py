@@ -8,16 +8,26 @@ the first event that fires:
     TRAIL_SL — daily low ≤ TRAILING stop after a favourable run
                (break-even / locked-profit exit; NOT a thesis failure —
                tracked separately so it doesn't pollute SL-rate stats)
-    T3_HIT   — daily high ≥ T3
-    T2_HIT   — daily high ≥ T2 (and not yet T3)
-    T1_HIT   — daily high ≥ T1 (and not yet T2)
+    T1_HIT   — daily high ≥ the Target (T1, the single live target)
     EXPIRED  — the horizon window passed with no event
                (expiry_days per pick: SHORT TERM 30 / POSITIONAL 90 /
                LONG TERM 270; legacy rows without it use 90)
 
 Since v17.8.1 T1 is the single live Target (regime multiplier × SL). T2/T3
-are dormant spacing levels (T1×1.35, T2×1.35); T2_HIT/T3_HIT can only fire
-when one bar gaps through them.
+are dormant spacing levels kept for the continuation audit only. v17.21: the
+live walk no longer exits at T2/T3 — a bar that runs through them books the
+Target, as a single sell order at the Target would. T2_HIT / T3_HIT rows can
+still exist from before v17.21 and are restated once (see below).
+
+v17.21 fill model (daily bars, no intraday data):
+    stop   — fills at the stop level, or at the OPEN when the bar opens
+             below the stop (gap down)
+    target — fills at the Target, or at the OPEN when the bar opens above
+             the Target (gap up)
+A one-time restatement (pipeline_migrations 'v17_21_exit_model') re-walks
+every closed SL_HIT / TRAIL_SL / T1/T2/T3_HIT row with this model. It only
+rewrites a row when the re-walk closes it on the SAME date; a row never
+re-opens.
 
 v17.0 trailing-stop recalibration: break-even threshold raised +10%→+12%
 AND minimum 10-day holding gate before break-even activates (prevents
@@ -28,7 +38,7 @@ peak ≥12% AND days_held≥10→break-even, else→no trailing (original SL onl
 Design rules (locked in v14_state.md):
     - First-event-wins: tracker stops at the first day a target/SL fires
     - SL beats target on same-day ties (we use daily OHLC; can't tell intraday order)
-    - Target priority on a single day: T3 > T2 > T1 (highest target wins)
+    - One live Target (v17.21; before that T3 > T2 > T1 on one bar)
     - Tracks max_drawdown_pct + max_runup_pct along the way for diagnostics
     - Updates current_price + current_pnl_pct + last_checked_date for OPEN rows
       so the dashboard can show "where is each open position right now?"
@@ -38,7 +48,10 @@ Also, each run (observational only — never alters gold_outcomes' outcome):
           expiry and records T2/T3 reach, peak/trough, SL break
           (gold_continuation table)
     v17.7 shadow stop — a regime-aware Chandelier trailing stop computed
-          alongside the live walk (shadow_* columns), for comparison only
+          alongside the live walk (shadow_* columns), for comparison only.
+          v17.21: armed from the first bar (ATR seeded from pre-entry
+          bars), floored at the original stop, and walked to its OWN end
+          (TRAIL_SL / SL_HIT / EXPIRED) even after the live trade closed.
 
 Invoked automatically by master_funnel.py (v14.1.3) after the day's Gold
 picks are logged and before the Excel is built. It can also be run by hand:
@@ -66,6 +79,11 @@ from database.data_bridge import (
     upsert_continuation,
     # v17.7 — shadow trailing stop (observational; writes only shadow_* cols)
     update_shadow_outcome,
+    # v17.21 — exit-model restatement + shadow pass over every position
+    get_closed_recommendations,
+    get_shadow_candidates,
+    migration_applied,
+    mark_migration,
 )
 
 # ─── Config ───────────────────────────────────────────────────────────
@@ -79,25 +97,37 @@ DB_PATH             = "market_data.db"
 EXCHANGE            = "NSE"   # match the rest of the pipeline (v12.7+ filter)
 
 
-def _load_price_history(symbol: str, start_date: str) -> pd.DataFrame:
-    """Load daily OHLC for `symbol` on/after `start_date` (YYYY-MM-DD).
+def _load_price_history(symbol: str, start_date: str,
+                        lookback_days: int = 0) -> pd.DataFrame:
+    """Load daily OHLC for `symbol` AFTER `start_date` (YYYY-MM-DD).
     Filters exchange='NSE' to match the rest of the pipeline (v12.7 fix).
     Returns DataFrame with columns: date, open, high, low, close.
-    Sorted by date ascending. Empty DataFrame on any error."""
+    Sorted by date ascending. Empty DataFrame on any error.
+
+    v17.21: lookback_days > 0 also returns the bars of the `lookback_days`
+    calendar days up to and including `start_date` — the shadow stop uses
+    them to seed ATR so it is armed from the first bar after entry. The live
+    walk always calls with lookback_days=0 (unchanged behaviour)."""
     try:
+        if lookback_days and lookback_days > 0:
+            _from = (datetime.strptime(start_date, "%Y-%m-%d")
+                     - timedelta(days=int(lookback_days))).strftime("%Y-%m-%d")
+            _op, _bound = ">=", _from
+        else:
+            _op, _bound = ">", start_date
         conn = sqlite3.connect(DB_PATH)
         try:
             df = pd.read_sql_query(
-                """
+                f"""
                 SELECT date, open, high, low, close
                 FROM daily_prices
                 WHERE symbol = ?
                   AND exchange = ?
-                  AND date > ?
+                  AND date {_op} ?
                 ORDER BY date ASC
                 """,
                 conn,
-                params=(symbol, EXCHANGE, start_date),
+                params=(symbol, EXCHANGE, _bound),
             )
             return df
         finally:
@@ -105,6 +135,30 @@ def _load_price_history(symbol: str, start_date: str) -> pd.DataFrame:
     except Exception as e:
         print(f"   ⚠️  _load_price_history({symbol}): {e}")
         return pd.DataFrame()
+
+
+def _fill_price(level: float, open_price, side: str) -> float:
+    """v17.21: the price an order at `level` fills at on one daily bar.
+
+    side='stop'   — sell-stop. If the bar OPENS below the stop (gap down),
+                    the order fills at the open, not at the stop level.
+    side='target' — sell-limit at the Target. If the bar OPENS above the
+                    Target (gap up), it fills at the open.
+    A missing / non-positive open falls back to the level (old behaviour).
+    Before v17.21 every exit was booked at the level itself, which overstated
+    gap-down stops (e.g. a stock opening 10% under its stop was recorded at
+    the stop)."""
+    try:
+        o = float(open_price or 0)
+    except (TypeError, ValueError):
+        o = 0.0
+    if o <= 0:
+        return float(level)
+    if side == "stop" and o < level:
+        return o
+    if side == "target" and o > level:
+        return o
+    return float(level)
 
 
 # =============================================================================
@@ -130,6 +184,12 @@ _SHADOW_ADJ_HIGH    = 1.10   # high regime -> widen trail 10%
 _SHADOW_ADJ_LOW     = 0.90   # low regime  -> tighten trail 10%
 _SHADOW_ATR_PERIOD  = 14
 _SHADOW_BASELINE    = 60
+# v17.21: pre-entry calendar days loaded to seed ATR (≈ 40 trading bars, more
+# than the 14 Wilder needs), so the trailing stop is armed from the first bar
+# after entry instead of only after 14 post-entry bars.
+_SHADOW_ATR_LOOKBACK_DAYS = 60
+# v17.21: a shadow row in one of these states is final and is not re-walked.
+_SHADOW_FINAL = ("TRAIL_SL", "SL_HIT", "EXPIRED")
 
 
 def _wilder_atr(highs, lows, closes, period=_SHADOW_ATR_PERIOD):
@@ -161,26 +221,46 @@ def _compute_shadow_stop(rec: dict) -> dict:
 
     Returns a dict of shadow_* fields for update_shadow_outcome(), or {} on any
     problem. NEVER writes anything, NEVER touches live logic. See contract above.
+
+    v17.21 changes (so the comparison with the live exit is like-for-like):
+      · ARMED FROM ENTRY — ATR is seeded from up to _SHADOW_ATR_LOOKBACK_DAYS of
+        pre-entry bars; before v17.21 only post-entry bars were used, so the
+        trailing stop did not exist for the first 14 trading days and a trade
+        that closed inside that window had no shadow exit at all.
+      · ORIGINAL STOP FLOOR — the stop in force is max(original stop, trail),
+        as in the live walk. An exit on the original level is SL_HIT; an exit
+        on the trail (above the original stop) is TRAIL_SL.
+      · OWN END — the shadow is walked to its own exit or to the horizon
+        expiry (EXPIRED at the last close inside the window), regardless of
+        how the live trade ended. The caller keeps re-walking it until then.
+      · FILL — a gap below the stop fills at the open (_fill_price).
     """
     try:
         sym      = rec["symbol"]
         rec_date = rec["recommendation_date"]
         cmp_rec  = float(rec.get("cmp_at_recommendation", 0) or 0)
+        orig_sl  = float(rec.get("stop_loss", 0) or 0)
         horizon  = str(rec.get("time_horizon", "") or "")
         expiry_days = int(rec.get("expiry_days") or DEFAULT_EXPIRY_DAYS)
         if expiry_days <= 0:
             expiry_days = DEFAULT_EXPIRY_DAYS
         if cmp_rec <= 0:
             return {}
+        if orig_sl >= cmp_rec:
+            orig_sl = 0.0          # corrupt level — fall back to trail only
 
-        prices = _load_price_history(sym, rec_date)
+        prices = _load_price_history(sym, rec_date,
+                                     lookback_days=_SHADOW_ATR_LOOKBACK_DAYS)
         if prices is None or prices.empty:
             return {}
 
         rec_d = datetime.strptime(rec_date, "%Y-%m-%d").date()
-        highs, lows, closes, dates = [], [], [], []
+        opens, highs, lows, closes, dates = [], [], [], [], []
+        first_post = None          # index of the first bar AFTER the entry date
+        expired = False
         for _, row in prices.iterrows():
             try:
+                op = float(row.get("open", 0) or 0)
                 hi = float(row.get("high", 0) or 0)
                 lo = float(row.get("low", 0) or 0)
                 cl = float(row.get("close", 0) or 0)
@@ -194,35 +274,44 @@ def _compute_shadow_stop(rec: dict) -> dict:
             except ValueError:
                 continue
             if (d_obj - rec_d).days > expiry_days:
+                expired = True     # a bar past the horizon exists → window over
                 break
-            highs.append(hi); lows.append(lo); closes.append(cl); dates.append(d_str)
+            if d_obj > rec_d and first_post is None:
+                first_post = len(closes)
+            opens.append(op); highs.append(hi); lows.append(lo)
+            closes.append(cl); dates.append(d_str)
 
-        if not closes:
-            return {}
+        if first_post is None:
+            return {}              # no bar after the entry date yet
 
         atr_series = _wilder_atr(highs, lows, closes)
         N = _SHADOW_N_BY_HORIZON.get(horizon.upper(), _SHADOW_N_DEFAULT)
 
         peak = cmp_rec
-        shadow_stop = 0.0          # 0 = not yet armed
+        shadow_stop = 0.0          # trailing (Chandelier) level; 0 = not armed
         shadow_regime = "normal"
+        last_close = cmp_rec
 
-        for i in range(len(closes)):
+        for i in range(first_post, len(closes)):
             hi = highs[i]; lo = lows[i]
 
-            # SL CHECK FIRST against the stop ratcheted at the PRIOR bar
-            # (no look-ahead), only once armed above 0.
-            if shadow_stop > 0 and lo > 0 and lo <= shadow_stop:
+            # STOP CHECK FIRST against the level in force at the PRIOR bar
+            # (no look-ahead): max(original stop, trail).
+            stop_now = max(orig_sl, shadow_stop)
+            if stop_now > 0 and lo > 0 and lo <= stop_now:
+                fill = _fill_price(stop_now, opens[i], "stop")
+                status = "TRAIL_SL" if shadow_stop > orig_sl else "SL_HIT"
                 return {
                     "shadow_peak_price": round(peak, 2),
-                    "shadow_stop_price": round(shadow_stop, 2),
+                    "shadow_stop_price": round(stop_now, 2),
                     "shadow_regime":     shadow_regime,
-                    "shadow_status":     "TRAIL_SL",
-                    "shadow_exit_price": round(shadow_stop, 2),
+                    "shadow_status":     status,
+                    "shadow_exit_price": round(fill, 2),
                     "shadow_exit_date":  dates[i],
-                    "shadow_pnl_pct":    round((shadow_stop - cmp_rec) / cmp_rec * 100, 2),
+                    "shadow_pnl_pct":    round((fill - cmp_rec) / cmp_rec * 100, 2),
                 }
 
+            last_close = closes[i]
             # ratchet the peak with today
             if hi > peak:
                 peak = hi
@@ -247,10 +336,24 @@ def _compute_shadow_stop(rec: dict) -> dict:
             if candidate > shadow_stop:        # ratchet UP only
                 shadow_stop = candidate
 
+        stop_now = max(orig_sl, shadow_stop)
+        if expired:
+            # Horizon passed without a stop: EXPIRED at the last close inside
+            # the window — mirrors the live walk's hard cutoff.
+            return {
+                "shadow_peak_price": round(peak, 2),
+                "shadow_stop_price": round(stop_now, 2) if stop_now > 0 else 0.0,
+                "shadow_regime":     shadow_regime,
+                "shadow_status":     "EXPIRED",
+                "shadow_exit_price": round(last_close, 2),
+                "shadow_exit_date":  (rec_d + timedelta(days=expiry_days)).strftime("%Y-%m-%d"),
+                "shadow_pnl_pct":    round((last_close - cmp_rec) / cmp_rec * 100, 2),
+            }
+
         # No shadow exit — still open. Report live watch state.
         return {
             "shadow_peak_price": round(peak, 2),
-            "shadow_stop_price": round(shadow_stop, 2) if shadow_stop > 0 else 0.0,
+            "shadow_stop_price": round(stop_now, 2) if stop_now > 0 else 0.0,
             "shadow_regime":     shadow_regime,
             "shadow_status":     "OPEN",
             "shadow_exit_price": 0.0,
@@ -273,15 +376,15 @@ def _walk_forward(rec: dict) -> dict:
     Falls back to DEFAULT_EXPIRY_DAYS (90) if missing — preserves v14.0
     behavior for legacy rows.
 
-    If no SL/T1/T2/T3 hit and within expiry window → outcome_type stays OPEN
+    If no SL / Target hit and within expiry window → outcome_type stays OPEN
     but tracking metrics are refreshed."""
     sym       = rec["symbol"]
     rec_date  = rec["recommendation_date"]   # YYYY-MM-DD
     cmp_rec   = float(rec.get("cmp_at_recommendation", 0) or 0)
     sl        = float(rec.get("stop_loss", 0) or 0)
-    t1        = float(rec.get("t1", 0) or 0)
-    t2        = float(rec.get("t2", 0) or 0)
-    t3        = float(rec.get("t3", 0) or 0)
+    t1        = float(rec.get("t1", 0) or 0)   # the single live Target
+    # (t2 / t3 are dormant since v17.8.1 and are not exits since v17.21 —
+    #  only the continuation audit reads them.)
     # v14.1: per-rec expiry window
     expiry_days = int(rec.get("expiry_days") or DEFAULT_EXPIRY_DAYS)
     if expiry_days <= 0:
@@ -425,6 +528,7 @@ def _walk_forward(rec: dict) -> dict:
                 "dd_recovered":     dd_recovered,
             }
 
+        op  = float(row.get("open", 0) or 0)    # v17.21: gap fills
         hi  = float(row.get("high", 0) or 0)
         lo  = float(row.get("low",  0) or 0)
         cl  = float(row.get("close", 0) or 0)
@@ -502,15 +606,17 @@ def _walk_forward(rec: dict) -> dict:
                 effective_sl == trailing_sl_price
             )
             _exit_type = "TRAIL_SL" if _is_trailing_exit else "SL_HIT"
+            # v17.21: a bar that OPENS below the stop fills at the open.
+            _fill = round(_fill_price(effective_sl, op, "stop"), 2)
             return {
                 "outcome_type": _exit_type,
                 "outcome_date": d_str,
-                "outcome_price": effective_sl,
+                "outcome_price": _fill,
                 "days_to_outcome": days_in,
                 "max_drawdown_pct": round(max_drawdown_pct, 2),
                 "max_runup_pct":   round(max_runup_pct, 2),
-                "current_price":   effective_sl,
-                "current_pnl_pct": round((effective_sl - cmp_rec) / cmp_rec * 100, 2),
+                "current_price":   _fill,
+                "current_pnl_pct": round((_fill - cmp_rec) / cmp_rec * 100, 2),
                 "last_checked_date": today.strftime("%Y-%m-%d"),
                 # v15.0: persist trailing snapshot
                 "trailing_sl_pct":   trailing_sl_pct,
@@ -520,19 +626,24 @@ def _walk_forward(rec: dict) -> dict:
                 "dd_duration_days": max_dd_duration_days,
                 "dd_recovered":     dd_recovered,
             }
-        # Target hit: highest target wins on a single day
-        if hi > 0:
-            if t3 > 0 and hi >= t3:
-                return {
-                    "outcome_type": "T3_HIT",
-                    "outcome_date": d_str,
-                    "outcome_price": t3,
-                    "days_to_outcome": days_in,
-                    "max_drawdown_pct": round(max_drawdown_pct, 2),
-                    "max_runup_pct":   round(max_runup_pct, 2),
-                    "current_price":   t3,
-                    "current_pnl_pct": round((t3 - cmp_rec) / cmp_rec * 100, 2),
-                    "last_checked_date": today.strftime("%Y-%m-%d"),
+        # Target hit — v17.21: ONE live Target (T1). Before v17.21 the walk
+        # tested T3, then T2, then T1 and booked the highest level a bar
+        # touched; with a single sell order at the Target that over-stated
+        # every gap-through win (SUNTV 30-Sep-2026: booked at T2 +14.2%, the
+        # Target was +10.5%). T2/T3 stay in the DB for the continuation audit.
+        # A bar that OPENS above the Target fills at the open (gap up).
+        if hi > 0 and t1 > 0 and hi >= t1:
+            _tfill = round(_fill_price(t1, op, "target"), 2)
+            return {
+                "outcome_type": "T1_HIT",
+                "outcome_date": d_str,
+                "outcome_price": _tfill,
+                "days_to_outcome": days_in,
+                "max_drawdown_pct": round(max_drawdown_pct, 2),
+                "max_runup_pct":   round(max_runup_pct, 2),
+                "current_price":   _tfill,
+                "current_pnl_pct": round((_tfill - cmp_rec) / cmp_rec * 100, 2),
+                "last_checked_date": today.strftime("%Y-%m-%d"),
                 # v15.0: trailing-stop snapshot
                 "trailing_sl_pct":   trailing_sl_pct,
                 "trailing_sl_price": trailing_sl_price,
@@ -540,45 +651,7 @@ def _walk_forward(rec: dict) -> dict:
                 # v16.0: DD-duration metrics (Item 2)
                 "dd_duration_days": max_dd_duration_days,
                 "dd_recovered":     dd_recovered,
-                }
-            if t2 > 0 and hi >= t2:
-                return {
-                    "outcome_type": "T2_HIT",
-                    "outcome_date": d_str,
-                    "outcome_price": t2,
-                    "days_to_outcome": days_in,
-                    "max_drawdown_pct": round(max_drawdown_pct, 2),
-                    "max_runup_pct":   round(max_runup_pct, 2),
-                    "current_price":   t2,
-                    "current_pnl_pct": round((t2 - cmp_rec) / cmp_rec * 100, 2),
-                    "last_checked_date": today.strftime("%Y-%m-%d"),
-                # v15.0: trailing-stop snapshot
-                "trailing_sl_pct":   trailing_sl_pct,
-                "trailing_sl_price": trailing_sl_price,
-                "peak_price_seen":   peak_price_seen,
-                # v16.0: DD-duration metrics (Item 2)
-                "dd_duration_days": max_dd_duration_days,
-                "dd_recovered":     dd_recovered,
-                }
-            if t1 > 0 and hi >= t1:
-                return {
-                    "outcome_type": "T1_HIT",
-                    "outcome_date": d_str,
-                    "outcome_price": t1,
-                    "days_to_outcome": days_in,
-                    "max_drawdown_pct": round(max_drawdown_pct, 2),
-                    "max_runup_pct":   round(max_runup_pct, 2),
-                    "current_price":   t1,
-                    "current_pnl_pct": round((t1 - cmp_rec) / cmp_rec * 100, 2),
-                    "last_checked_date": today.strftime("%Y-%m-%d"),
-                    # v15.0: trailing-stop snapshot
-                    "trailing_sl_pct":   trailing_sl_pct,
-                    "trailing_sl_price": trailing_sl_price,
-                    "peak_price_seen":   peak_price_seen,
-                    # v16.0: DD-duration metrics (Item 2)
-                    "dd_duration_days": max_dd_duration_days,
-                    "dd_recovered":     dd_recovered,
-                }
+            }
 
         # v15.0: Trailing-SL update at END of bar (after event checks).
         # This guarantees no look-ahead bias — today's high cannot tighten
@@ -868,27 +941,122 @@ def run_continuation_tracking() -> dict:
     return summary
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# v17.21 — ONE-TIME RESTATEMENT + SHADOW PASS
+# ═════════════════════════════════════════════════════════════════════════
+_EXIT_MODEL_MIGRATION = "v17_21_exit_model"
+_RESTATE_TYPES = ("SL_HIT", "TRAIL_SL", "T1_HIT", "T2_HIT", "T3_HIT")
+
+
+def _restate_closed_outcomes() -> dict:
+    """v17.21: re-walk every closed SL_HIT / TRAIL_SL / T1/T2/T3_HIT row once
+    with the current exit model (single Target, open-price fills).
+
+    SAFETY: a row is rewritten only when the re-walk closes it on the SAME
+    outcome_date it already has — the event day cannot move and a closed row
+    is never re-opened. Anything else (missing prices, missing levels) keeps
+    the stored outcome and is reported. EXPIRED rows are untouched (their
+    exit is the last close, which the model change does not affect).
+    Returns {"checked", "changed", "kept"}."""
+    out = {"checked": 0, "changed": 0, "kept": 0}
+    for rec in get_closed_recommendations(_RESTATE_TYPES):
+        out["checked"] += 1
+        try:
+            r = _walk_forward(rec)
+        except Exception as _e:
+            out["kept"] += 1
+            print(f"   ⚠️  restatement skipped for {rec.get('symbol')}: {_e}")
+            continue
+        old_type  = str(rec.get("outcome_type", "") or "")
+        old_date  = str(rec.get("outcome_date", "") or "")[:10]
+        old_price = float(rec.get("outcome_price", 0) or 0)
+        if (r.get("outcome_type") not in _RESTATE_TYPES
+                or str(r.get("outcome_date", ""))[:10] != old_date):
+            out["kept"] += 1
+            print(f"   ⏸  restatement kept {rec['symbol']} {rec['recommendation_date']} "
+                  f"as {old_type} (re-walk gave {r.get('outcome_type')} "
+                  f"on {r.get('outcome_date') or '—'})")
+            continue
+        if r["outcome_type"] == old_type and abs(float(r["outcome_price"]) - old_price) < 0.005:
+            continue
+        update_outcome(
+            symbol=rec["symbol"], recommendation_date=rec["recommendation_date"],
+            outcome_type=r["outcome_type"], outcome_date=r["outcome_date"],
+            outcome_price=r["outcome_price"], days_to_outcome=r["days_to_outcome"],
+            max_drawdown_pct=r["max_drawdown_pct"], max_runup_pct=r["max_runup_pct"],
+            current_price=r["current_price"], current_pnl_pct=r["current_pnl_pct"],
+            last_checked_date=r["last_checked_date"],
+            trailing_sl_pct=r.get("trailing_sl_pct", 0) or 0,
+            trailing_sl_price=r.get("trailing_sl_price", 0) or 0,
+            peak_price_seen=r.get("peak_price_seen", 0) or 0,
+            dd_duration_days=r.get("dd_duration_days", 0) or 0,
+            dd_recovered=r.get("dd_recovered", 1) or 0,
+        )
+        out["changed"] += 1
+        print(f"   ✏️  restated {rec['symbol']:<12} {rec['recommendation_date']}  "
+              f"{old_type} @ ₹{old_price:.2f}  →  {r['outcome_type']} @ ₹{r['outcome_price']:.2f}  "
+              f"(P&L {r['current_pnl_pct']:+.2f}%)")
+    return out
+
+
+def _run_shadow_pass(include_final: bool = False) -> dict:
+    """v17.21: compute the shadow stop for every position whose shadow is not
+    final yet — open AND closed live trades alike — so the shadow reaches its
+    own end. include_final=True recomputes every row (used once by the
+    v17.21 migration so rows written by the old shadow logic are redone).
+    Observational only: writes shadow_* columns via update_shadow_outcome."""
+    out = {"walked": 0, "final": 0}
+    for rec in get_shadow_candidates(include_final=include_final):
+        try:
+            _sh = _compute_shadow_stop(rec)
+            if not _sh:
+                continue
+            update_shadow_outcome(
+                symbol=rec["symbol"], recommendation_date=rec["recommendation_date"],
+                shadow_peak_price=_sh.get("shadow_peak_price", 0),
+                shadow_stop_price=_sh.get("shadow_stop_price", 0),
+                shadow_regime=_sh.get("shadow_regime", ""),
+                shadow_status=_sh.get("shadow_status", "OPEN"),
+                shadow_exit_price=_sh.get("shadow_exit_price", 0),
+                shadow_exit_date=_sh.get("shadow_exit_date", ""),
+                shadow_pnl_pct=_sh.get("shadow_pnl_pct", 0),
+            )
+            out["walked"] += 1
+            if _sh.get("shadow_status") in _SHADOW_FINAL:
+                out["final"] += 1
+        except Exception as _she:
+            print(f"   ⚠️  shadow skipped for {rec.get('symbol','?')} (non-fatal): {_she}")
+    return out
+
+
 def main():
     """Walk every OPEN recommendation forward and update outcomes."""
     print("=" * 70)
     print("v14.1 OUTCOME TRACKER — checking open recommendations")
     print("=" * 70)
-    opens = get_open_recommendations()
-    if not opens:
-        print("No open recommendations to track.")
-        # v17.3: closed positions can still have live continuation runways
-        # (a T1 hit on day 5 of 90 has 85 days left to walk), so the shadow
-        # walk must run even when the OPEN pool is empty.
-        _c = run_continuation_tracking()
-        if _c["seeded"] or _c["walked"]:
-            print(f"Continuation: seeded {_c['seeded']}  ·  walked {_c['walked']}")
-        return 0
 
-    counts = {"SL_HIT": 0, "T1_HIT": 0, "T2_HIT": 0, "T3_HIT": 0,
+    # v17.21: one-time restatement of closed rows with the current exit
+    # model, BEFORE continuation seeding (a T2_HIT restated to T1_HIT becomes
+    # eligible for the continuation audit in the same run).
+    _first_v1721_run = not migration_applied(_EXIT_MODEL_MIGRATION)
+    if _first_v1721_run:
+        try:
+            _rs = _restate_closed_outcomes()
+            print(f"v17.21 exit-model restatement: checked {_rs['checked']}  ·  "
+                  f"changed {_rs['changed']}  ·  kept {_rs['kept']}")
+        except Exception as _rse:
+            print(f"   ⚠️  v17.21 restatement failed (non-fatal, will retry next run): {_rse}")
+            _first_v1721_run = False   # do not mark — retry next run
+
+    opens = get_open_recommendations()
+    counts = {"SL_HIT": 0, "TRAIL_SL": 0, "T1_HIT": 0, "T2_HIT": 0, "T3_HIT": 0,
               "EXPIRED": 0, "OPEN": 0, "ERROR": 0}
     approaching_expiry = 0   # v14.1: track stocks within 14 days of expiry
-    print(f"Found {len(opens)} open recommendation(s). Walking forward...")
-    print()
+    if not opens:
+        print("No open recommendations to track.")
+    else:
+        print(f"Found {len(opens)} open recommendation(s). Walking forward...")
+        print()
     for rec in opens:
         sym = rec["symbol"]
         rec_date = rec["recommendation_date"]
@@ -916,25 +1084,6 @@ def main():
                 dd_duration_days=r.get("dd_duration_days", 0) or 0,
                 dd_recovered=r.get("dd_recovered", 1) or 0,
             )
-            # v17.7: SHADOW regime-aware trailing stop — OBSERVATIONAL ONLY.
-            # Computed AFTER the live update above, writes ONLY shadow_* columns
-            # via update_shadow_outcome(). Fully wrapped: any shadow failure is
-            # non-fatal and can never affect the live tracker result.
-            try:
-                _sh = _compute_shadow_stop(rec)
-                if _sh:
-                    update_shadow_outcome(
-                        symbol=sym, recommendation_date=rec_date,
-                        shadow_peak_price=_sh.get("shadow_peak_price", 0),
-                        shadow_stop_price=_sh.get("shadow_stop_price", 0),
-                        shadow_regime=_sh.get("shadow_regime", ""),
-                        shadow_status=_sh.get("shadow_status", "OPEN"),
-                        shadow_exit_price=_sh.get("shadow_exit_price", 0),
-                        shadow_exit_date=_sh.get("shadow_exit_date", ""),
-                        shadow_pnl_pct=_sh.get("shadow_pnl_pct", 0),
-                    )
-            except Exception as _she:
-                print(f"   ⚠️  shadow skipped for {sym} (non-fatal): {_she}")
             counts[r["outcome_type"]] = counts.get(r["outcome_type"], 0) + 1
             tag = r["outcome_type"]
             if r["outcome_type"] != "OPEN":
@@ -950,6 +1099,7 @@ def main():
                     days_held = (datetime.now().date() - rec_dt).days
                     days_left = max(0, expiry_d - days_held)
                 except (ValueError, TypeError):
+                    days_held = 0
                     days_left = expiry_d
                 warning = ""
                 if days_left <= 14:
@@ -965,28 +1115,40 @@ def main():
             counts["ERROR"] += 1
             print(f"   ⚠️  ERROR on {sym}: {e}")
 
-    print()
-    print("=" * 70)
-    print("Summary: " + "  ".join(f"{k}={v}" for k, v in counts.items() if v > 0))
-    # v17.3 FIX: TRAIL_SL was omitted from this sum, so a run that closed
-    # positions via trailing stop under-reported "Closed this run" on the
-    # console. The DB and the Excel were always correct — this was a
-    # display-only defect introduced when TRAIL_SL was split out of SL_HIT
-    # in v16.5. counts.get() is used because TRAIL_SL is not pre-seeded in
-    # the counts dict initialiser.
-    closed = (counts["SL_HIT"] + counts.get("TRAIL_SL", 0) + counts["T1_HIT"]
-              + counts["T2_HIT"] + counts["T3_HIT"] + counts["EXPIRED"])
-    print(f"Closed this run: {closed}  ·  Still open: {counts['OPEN']}", end="")
-    if approaching_expiry > 0:
-        print(f"  ·  ⚠ {approaching_expiry} approaching expiry (≤14d)")
-    else:
+    if opens:
         print()
-    print("=" * 70)
+        print("=" * 70)
+        print("Summary: " + "  ".join(f"{k}={v}" for k, v in counts.items() if v > 0))
+        # v17.3 FIX: TRAIL_SL counted (v17.21: pre-seeded in counts).
+        closed = (counts["SL_HIT"] + counts["TRAIL_SL"] + counts["T1_HIT"]
+                  + counts["T2_HIT"] + counts["T3_HIT"] + counts["EXPIRED"])
+        print(f"Closed this run: {closed}  ·  Still open: {counts['OPEN']}", end="")
+        if approaching_expiry > 0:
+            print(f"  ·  ⚠ {approaching_expiry} approaching expiry (≤14d)")
+        else:
+            print()
+        print("=" * 70)
+
+    # ── v17.7 / v17.21: shadow stop — OBSERVATIONAL ONLY ──────────────────
+    # Runs AFTER the live updates, for every position whose shadow is not
+    # final (open and closed live trades). Writes ONLY shadow_* columns; any
+    # failure is non-fatal and cannot change the live result.
+    try:
+        _sp = _run_shadow_pass(include_final=_first_v1721_run)
+        if _sp["walked"]:
+            print(f"SHADOW STOP — walked {_sp['walked']}  ·  final {_sp['final']}")
+    except Exception as _spe:
+        print(f"   ⚠️  shadow pass skipped (non-fatal): {_spe}")
+
+    if _first_v1721_run:
+        mark_migration(_EXIT_MODEL_MIGRATION)
 
     # ── v17.3: continuation shadow walk ───────────────────────────────────
     # Runs LAST, after every outcome is committed. Observational only —
     # gold_outcomes is not touched, and a failure here cannot change the
-    # tracker's return code.
+    # tracker's return code. Closed positions can still have a live runway
+    # (a T1 hit on day 5 of 90 has 85 days left), so it runs even when the
+    # OPEN pool is empty.
     _c = run_continuation_tracking()
     if _c["seeded"] or _c["walked"]:
         print(f"CONTINUATION AUDIT — seeded {_c['seeded']}  ·  walked {_c['walked']}  ·  "
