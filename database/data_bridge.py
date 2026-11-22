@@ -131,7 +131,16 @@ def initialize_v7_tables(conn):
     # v11.0.2: Backward-compat ALTER for DBs created before streak columns existed.
     # SQLite ADD COLUMN is idempotent if we catch the OperationalError.
     for col_def in ("consecutive_avoid_quarters INTEGER DEFAULT 0",
-                    "consecutive_recovery_quarters INTEGER DEFAULT 0"):
+                    "consecutive_recovery_quarters INTEGER DEFAULT 0",
+                    # v17.21: the state as of the PREVIOUS trading date, so a
+                    # second run on the same date compares against the day
+                    # before, not against that morning's run (see
+                    # roll_previous_day_state).
+                    "prev_date TEXT DEFAULT ''",
+                    "prev_composite_score REAL",
+                    "prev_verdict TEXT DEFAULT ''",
+                    "prev_avoid_quarters INTEGER DEFAULT 0",
+                    "prev_recovery_quarters INTEGER DEFAULT 0"):
         try:
             c.execute(f"ALTER TABLE latest_analysis_results ADD COLUMN {col_def}")
         except sqlite3.OperationalError:
@@ -1418,7 +1427,63 @@ def load_latest_analysis_results() -> list:
         return []
 
 
-def get_prior_analysis_map() -> dict:
+def roll_previous_day_state(run_date: str) -> int:
+    """v17.21: copy each row's current state into prev_* — for rows from an
+    EARLIER trading date only. Rows already saved for `run_date` (a second
+    run on the same date) keep the prev_* they got on the first run.
+
+    Before v17.21 a re-run on the same date read that morning's scores as
+    "previous": on 19-Oct-2026 the AI re-run lost BENARAS −15 and KINGFA −5
+    SCORE DEGRADED alerts, and an AVOID stock's streak could advance twice in
+    one day. Must run BEFORE the verdict-streak update and today's save.
+    Idempotent. Returns rows rolled (0 on any error)."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            cur = conn.execute("""
+                UPDATE latest_analysis_results
+                   SET prev_date              = date,
+                       prev_composite_score   = composite_score,
+                       prev_verdict           = verdict,
+                       prev_avoid_quarters    = consecutive_avoid_quarters,
+                       prev_recovery_quarters = consecutive_recovery_quarters
+                 WHERE COALESCE(date, '') <> ?
+            """, (run_date,))
+            conn.commit()
+            return cur.rowcount or 0
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  roll_previous_day_state: {e}")
+        return 0
+
+
+def load_previous_day_scores(run_date: str) -> dict:
+    """v17.21: {symbol: composite score on the latest EARLIER trading date}.
+    Reads prev_* (filled by roll_previous_day_state). Symbols without an
+    earlier date are absent, so the Alert Log shows '—' for them. {} on error."""
+    out = {}
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            rows = conn.execute("""
+                SELECT symbol, prev_composite_score FROM latest_analysis_results
+                 WHERE COALESCE(prev_date, '') <> '' AND prev_date < ?
+                   AND prev_composite_score IS NOT NULL
+            """, (run_date,)).fetchall()
+        finally:
+            conn.close()
+        for sym, sc in rows:
+            try:
+                out[str(sym)] = float(sc)
+            except (TypeError, ValueError):
+                pass
+    except Exception as e:
+        print(f"   ⚠️  load_previous_day_scores: {e}")
+    return out
+
+
+def get_prior_analysis_map(run_date: str = None) -> dict:
     """
     v10.13: Returns dict {symbol: {last_score, last_verdict, date, days_since,
                                     consecutive_avoid_quarters,
@@ -1440,18 +1505,25 @@ def get_prior_analysis_map() -> dict:
     out = {}
     try:
         conn = sqlite3.connect("market_data.db")
-        # Tolerant SELECT — older DBs may not have streak columns; treat missing as 0.
-        try:
-            df = pd.read_sql(
-                "SELECT symbol, date, composite_score, verdict, "
-                "       consecutive_avoid_quarters, consecutive_recovery_quarters "
-                "FROM latest_analysis_results", conn,
-            )
-        except Exception:
-            df = pd.read_sql(
-                "SELECT symbol, date, composite_score, verdict "
-                "FROM latest_analysis_results", conn,
-            )
+        # Tolerant SELECT — older DBs may not have streak columns; treat missing
+        # as 0. v17.21: prev_* columns first (same-day re-run view).
+        _cols_try = (
+            "symbol, date, composite_score, verdict, "
+            "consecutive_avoid_quarters, consecutive_recovery_quarters, "
+            "prev_date, prev_composite_score, prev_verdict, "
+            "prev_avoid_quarters, prev_recovery_quarters",
+            "symbol, date, composite_score, verdict, "
+            "consecutive_avoid_quarters, consecutive_recovery_quarters",
+            "symbol, date, composite_score, verdict",
+        )
+        df = None
+        for _i, _cols in enumerate(_cols_try):
+            try:
+                df = pd.read_sql(f"SELECT {_cols} FROM latest_analysis_results", conn)
+                break
+            except Exception:
+                if _i == len(_cols_try) - 1:
+                    raise
         conn.close()
     except Exception:
         return out
@@ -1464,6 +1536,18 @@ def get_prior_analysis_map() -> dict:
         sym = str(row.get("symbol", "") or "").strip()
         if not sym:
             continue
+        # v17.21: with run_date given, a row already saved for run_date (a
+        # second run on the same date) is read as its PREVIOUS-date state.
+        if run_date and str(row.get("date") or "")[:10] == run_date:
+            _pd_raw = str(row.get("prev_date") or "")[:10]
+            if not _pd_raw or _pd_raw == "nan":
+                continue      # first seen today — no earlier state
+            row = row.copy()
+            row["date"] = _pd_raw
+            row["composite_score"] = row.get("prev_composite_score")
+            row["verdict"] = row.get("prev_verdict")
+            row["consecutive_avoid_quarters"] = row.get("prev_avoid_quarters")
+            row["consecutive_recovery_quarters"] = row.get("prev_recovery_quarters")
         try:
             score = float(row.get("composite_score") or 0)
         except (ValueError, TypeError):
@@ -1499,7 +1583,7 @@ def get_prior_analysis_map() -> dict:
     return out
 
 
-def update_verdict_streaks(stocks_today: list) -> dict:
+def update_verdict_streaks(stocks_today: list, run_date: str = None) -> dict:
     """
     v11.0.2: For each stock analysed today, advance or reset its verdict-streak
     counters based on the previous run's values vs today's verdict and score.
@@ -1532,7 +1616,9 @@ def update_verdict_streaks(stocks_today: list) -> dict:
     if not stocks_today:
         return {}
 
-    prior = get_prior_analysis_map()
+    # v17.21: run_date makes a same-date re-run start from the previous
+    # trading date's streaks instead of advancing them a second time.
+    prior = get_prior_analysis_map(run_date=run_date)
     new_streaks = {}
 
     for stk in stocks_today:

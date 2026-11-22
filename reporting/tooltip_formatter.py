@@ -637,8 +637,12 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "  <−0.3%: DII distribution → −3.\n"
                   "Display: '—' — DII % has no free source (see DII %), so\n"
                   "the quarterly change cannot be computed."),
-    "Public Float %": (">50% good liquidity | <20% manipulation risk",
-                       "<20%: Volatile, easier to manipulate."),
+    "Public Float %": ("% held outside promoter AND institutions",
+                       "= 100 − Promoter % − institutional holding (yfinance,\n"
+                       "FII + DII combined). NOT the exchange 'free float', which\n"
+                       "also counts institutions: a large cap with heavy FII/DII\n"
+                       "ownership shows a low value here without any manipulation\n"
+                       "risk. Read it together with Promoter % and FII %."),
 
     # ── Forensics ───────────────────────────────────────────────────────────
     "Piotroski F /9": ("≥7 strong · ≤3 weak",
@@ -772,9 +776,12 @@ TIPS: Dict[str, Tuple[str, str]] = {
                       "v12.4: excludes the last 20 days so a fresh\n"
                       "breakdown to a new low doesn't make S1 == S2.\n"
                       "Falls back to '—' for stocks with < 80 days\n"
-                      "of price history."),
-    "Resist 1 (₹)": ("First resistance = Target 1",
-                     "20-day rolling high. Breakout with volume = bullish."),
+                      "of price history, and (v17.21) when the price has\n"
+                      "already fallen BELOW it — a broken floor is not support."),
+    "Resist 1 (₹)": ("First resistance — 20-day high",
+                     "20-day rolling high. Breakout with volume = bullish.\n"
+                     "Not the Target: since v17.8.1 the Target is a multiple\n"
+                     "of the stop distance."),
     "Resist 2 (₹)": ("Major supply ceiling — prior 52-week high",
                      "Highest price in the 252 trading days BEFORE the\n"
                      "most recent 20 — i.e., the prior major ceiling.\n"
@@ -783,7 +790,8 @@ TIPS: Dict[str, Tuple[str, str]] = {
                      "(the v10.9 logic collapsed for 87.9 % of rows\n"
                      "when the 52-week max landed inside the last 20 d).\n"
                      "Falls back to '—' for stocks with < 80 days\n"
-                     "of price history."),
+                     "of price history, and (v17.21) when the price is\n"
+                     "already ABOVE it — a cleared ceiling is not resistance."),
 
     # ── Balance sheet health ────────────────────────────────────────────────
     "BS Health Flag": ("HEALTHY = safe | WATCH = monitor | ALERT = danger",
