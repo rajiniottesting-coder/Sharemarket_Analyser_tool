@@ -1768,6 +1768,38 @@ _REC_WALK_COLUMNS = """
 """
 
 
+def get_open_recommendation_levels() -> list:
+    """v17.21: the trade plan frozen for every OPEN recommendation — entry
+    range, stop, Target (and dormant T2/T3), horizon and the allocation logged
+    with it. Used to show a stock that is already held with the levels the
+    tracker actually uses, instead of the levels re-computed from today's
+    price. Falls back to the pre-v15.7 columns on an old schema. READ-ONLY."""
+    _base = """
+        SELECT r.symbol, r.recommendation_date, r.entry_low, r.entry_high,
+               r.stop_loss, r.t1, r.t2, r.t3, r.time_horizon{extra}
+        FROM gold_recommendations r
+        INNER JOIN gold_outcomes o
+          ON r.symbol = o.symbol
+          AND r.recommendation_date = o.recommendation_date
+        WHERE o.outcome_type = 'OPEN'
+        ORDER BY r.recommendation_date ASC
+    """
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            try:
+                df = pd.read_sql_query(_base.format(
+                    extra=", r.suggested_alloc_pct, r.alloc_rationale"), conn)
+            except Exception:
+                df = pd.read_sql_query(_base.format(extra=""), conn)
+            return df.to_dict("records")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  get_open_recommendation_levels: {e}")
+        return []
+
+
 def get_closed_recommendations(outcome_types) -> list:
     """v17.21: closed recommendations of the given outcome types, with the
     same columns get_open_recommendations() returns plus outcome_date /

@@ -716,6 +716,93 @@ def _compute_sl_t_v14_6(cmp_price, atr_14, cfv, cap_category, sector,
     }
 
 
+def _alloc_for_log(stock: dict, open_positions=None):
+    """v17.21: size a Gold pick at LOG time, against the open positions as
+    they are at that moment (the day's earlier picks are already inserted).
+
+    Section 6 sizes every stock against the open positions as they were
+    BEFORE today's picks were logged, so two picks in one sector on the same
+    day were each given the full sector headroom: on 14-Oct-2026 CANTABIL
+    (14.3%) and HEROMOTOCO (11.6%) joined MARUTI (15.0%) and Consumer
+    Cyclical reached 40.9% against the 30% cap.
+    Returns (alloc_pct, rationale) or (None, None) when the SL is unusable."""
+    try:
+        cmp_ = float(stock.get("close", 0) or 0)
+        sl_ = float(stock.get("stop_loss", 0) or 0)
+    except (TypeError, ValueError):
+        return None, None
+    if cmp_ <= 0 or not (0 < sl_ < cmp_):
+        return None, None
+    from risk.correlation_aware_sizing import compute_for_stock_dict
+    return compute_for_stock_dict(stock, sl_pct=(cmp_ - sl_) / cmp_ * 100.0,
+                                  open_positions=open_positions)
+
+
+def _apply_tracked_levels(df, stocks, open_levels, today_iso: str) -> int:
+    """v17.21: a stock that is already held (an OPEN recommendation logged
+    BEFORE today) shows the trade plan the tracker uses — entry range, stop,
+    Target, horizon and logged allocation — on every sheet, instead of levels
+    re-computed from today's price. Levels are frozen at log time (rule 19),
+    so the re-computed ones were never the ones being tracked: on
+    19-Oct-2026 the Gold sheet showed MARUTI with SL ₹10,612 / Target ₹12,769
+    / 1% while the tracked trade had SL ₹10,494 / Target ₹12,221 / 15%.
+
+    Updates the DataFrame `df` (ExcelGeneratorV6.df) and the matching dicts in
+    `stocks` in place. Returns the number of symbols updated. Gold gates read
+    none of these fields, so the Gold result cannot change."""
+    if df is None or getattr(df, "empty", True) or not open_levels:
+        return 0
+    held = {}
+    for r in open_levels:
+        sym = str(r.get("symbol", "") or "").strip()
+        if sym and str(r.get("recommendation_date", ""))[:10] < today_iso:
+            held[sym] = r
+    if not held or "symbol" not in df.columns:
+        return 0
+
+    def _f(v):
+        try:
+            x = float(v)
+            return x if x == x else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    by_sym = {}
+    for s in (stocks or []):
+        by_sym.setdefault(str(s.get("symbol", "") or "").strip(), []).append(s)
+    changed = 0
+    for idx in df.index:
+        sym = str(df.at[idx, "symbol"] or "").strip()
+        r = held.get(sym)
+        if r is None:
+            continue
+        upd = {}
+        lo, hi = _f(r.get("entry_low")), _f(r.get("entry_high"))
+        if lo > 0 and hi > 0:
+            upd["entry_range"] = f"{round(lo, 1)}–{round(hi, 1)}"
+        for k in ("stop_loss", "t1", "t2", "t3"):
+            if _f(r.get(k)) > 0:
+                upd[k] = round(_f(r.get(k)), 2)
+        if str(r.get("time_horizon", "") or "").strip():
+            upd["horizon"] = str(r["time_horizon"]).strip()
+        _alloc = _f(r.get("suggested_alloc_pct"))
+        if _alloc > 0:
+            upd["suggested_alloc_pct"] = round(_alloc, 1)
+        _why = str(r.get("alloc_rationale", "") or "").strip()
+        _since = str(r.get("recommendation_date", ""))[:10]
+        upd["alloc_rationale"] = (f"Held since {_since} — tracked levels"
+                                  + (f" · {_why}" if _why and _why != "—" else ""))
+        upd["held_since"] = _since
+        for k, v in upd.items():
+            if k not in df.columns:
+                df[k] = None
+            df.at[idx, k] = v
+        for s in by_sym.get(sym, []):
+            s.update(upd)
+        changed += 1
+    return changed
+
+
 def run_master_pipeline():
     cleanup_temp_files()
 
@@ -4003,6 +4090,24 @@ def run_master_pipeline():
                     _expiry_date_v = (_rec_dt + _td_v14(days=_expiry_days_v)).strftime("%Y-%m-%d")
                 except (ValueError, TypeError):
                     _expiry_date_v = ""
+                # v17.21: size at LOG time against the positions open NOW
+                # (today's earlier picks are already inserted), and show the
+                # same number on every sheet.
+                _alloc_v = _num(_grow.get("suggested_alloc_pct", 0))
+                _why_v = str(_grow.get("alloc_rationale", "") or "")
+                try:
+                    _a_new, _w_new = _alloc_for_log(dict(_grow))
+                    if _a_new is not None:
+                        _alloc_v, _why_v = float(_a_new), str(_w_new)
+                        for _ix in excel_gen.df.index[excel_gen.df["symbol"] == _sym_g]:
+                            excel_gen.df.at[_ix, "suggested_alloc_pct"] = _alloc_v
+                            excel_gen.df.at[_ix, "alloc_rationale"] = _why_v
+                        for _st in final_100_list:
+                            if str(_st.get("symbol", "")).strip() == _sym_g:
+                                _st["suggested_alloc_pct"] = _alloc_v
+                                _st["alloc_rationale"] = _why_v
+                except Exception as _rze:
+                    print(f"   ⚠️  v17.21 log-time sizing kept Section-6 value for {_sym_g}: {_rze}")
                 # Insert
                 _rec = {
                     "recommendation_date":   _today_iso,
@@ -4041,8 +4146,8 @@ def run_master_pipeline():
                     # SL/T computation block. Freezing them at INSERT time
                     # means the Performance sheet can render them later
                     # without re-querying or re-computing.
-                    "suggested_alloc_pct":   _num(_grow.get("suggested_alloc_pct", 0)),
-                    "alloc_rationale":       str(_grow.get("alloc_rationale", "") or ""),
+                    "suggested_alloc_pct":   _alloc_v,   # v17.21: log-time sizing
+                    "alloc_rationale":       _why_v,
                 }
                 if insert_gold_recommendation(_rec):
                     _logged += 1
@@ -4059,6 +4164,22 @@ def run_master_pipeline():
             print(_msg)
         except Exception as _v14e:
             print(f"   ⚠️  v14.0 Gold logging skipped: {_v14e}")
+        # ── v17.21: stocks already held show the levels being tracked ───────
+        # Entry / SL / Target / horizon / allocation of every OPEN position
+        # logged before today replace the values re-computed from today's
+        # price, on all sheets and in the AI-card inputs (levels are frozen at
+        # log time — rule 19). Gold gates do not read these fields.
+        try:
+            from database.data_bridge import get_open_recommendation_levels
+            _held_stocks = list(final_100_list) + list(_held_monitor_map.values())
+            _n_held = _apply_tracked_levels(excel_gen.df, _held_stocks,
+                                            get_open_recommendation_levels(),
+                                            target_date.strftime("%Y-%m-%d"))
+            if _n_held:
+                print(f"   📌 v17.21: {_n_held} held stock(s) shown with their tracked "
+                      f"entry / SL / Target / allocation")
+        except Exception as _tle:
+            print(f"   ⚠️  v17.21 tracked-levels display skipped (non-fatal): {_tle}")
         # ── v17.20: say WHY the Gold sheet is empty ─────────────────────────
         # Prints nothing when Gold has stocks. When it is empty: on a BEARISH
         # day, the regime gate (and how many stocks it held back); on any other

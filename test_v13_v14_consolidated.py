@@ -6450,6 +6450,108 @@ def test_g50_v17_21_performance_sheet_metrics_read_the_db_correctly():
         _restore(original, test_db)
     return "✅ v17.21: target speed, DD recovery and the shadow table read the DB correctly (A–D)"
 
+def test_g51_v17_21_sizing_counts_logged_allocations_and_held_levels_shown():
+    """v17.21: position sizing and held-stock trade plans.
+
+    19-Oct-2026: Consumer Cyclical held 40.9% against the 30% cap (two picks
+    logged on 14-Oct were each sized against the same pre-log exposure);
+    INDIAMART, logged at 1.0%, was counted as 12.6%; MARUTI (held since
+    13-Oct) was counted against itself and the Gold sheet showed fresh levels
+    (SL 10,612 / 1%) instead of the tracked ones (SL 10,494 / 15%).
+      A. exposure uses the LOGGED allocation; legacy rows are re-derived
+      B. the candidate's own open position is excluded
+      C. sizing at log time sees the day's earlier picks -> cap respected
+         (the 1% minimum allocation still applies when a sector is full)
+      D. _apply_tracked_levels: held rows get the tracked plan; today's
+         picks and other fields are untouched
+      E. the hook sizes before the insert and applies tracked levels before
+         the tracker / Excel build
+    """
+    import pandas as _pd
+    from risk.correlation_aware_sizing import (_current_sector_exposure,
+                                               compute_suggested_allocation)
+    from master_funnel import _alloc_for_log, _apply_tracked_levels
+    opens = [
+        {'symbol': 'MARUTI', 'sector': 'Consumer Cyclical', 'cap_category': 'LARGE CAP',
+         'cmp_at_rec': 11245, 'sl': 10494.45, 'alloc_pct': 15.0},
+        {'symbol': 'INDIAMART', 'sector': 'Consumer Cyclical', 'cap_category': 'MID CAP',
+         'cmp_at_rec': 1629.2, 'sl': 1500.33, 'alloc_pct': 1.0},
+        {'symbol': 'OLD', 'sector': 'Energy', 'cap_category': 'LARGE CAP',
+         'cmp_at_rec': 100, 'sl': 92.5, 'alloc_pct': 0.0},           # legacy: re-derived
+    ]
+    exp = _current_sector_exposure(opens)
+    assert abs(exp['Consumer Cyclical'] - 16.0) < 1e-6, f"A: {exp}"
+    assert abs(exp['Energy'] - 13.33) < 0.01, f"A legacy: {exp}"
+    exp_x = _current_sector_exposure(opens, exclude_symbol='MARUTI')
+    assert abs(exp_x['Consumer Cyclical'] - 1.0) < 1e-6, f"B: {exp_x}"
+    a, why = compute_suggested_allocation('Consumer Cyclical', 'LARGE CAP', sl_pct=7.5,
+                                          open_positions=opens, candidate_symbol='MARUTI')
+    assert a == 13.3 and 'sector cap' not in why, f"B: {a} {why}"
+
+    test_db, original = _setup_temp_db('g51')
+    try:
+        from database.data_bridge import (initialize_v7_tables, insert_gold_recommendation,
+                                          get_open_recommendation_levels)
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        insert_gold_recommendation({'recommendation_date': '2026-10-13', 'symbol': 'MARUTI',
+            'sector': 'Consumer Cyclical', 'cap_category': 'LARGE CAP',
+            'cmp_at_recommendation': 11245, 'entry_low': 11020.1, 'entry_high': 11357.5,
+            'stop_loss': 10494.45, 't1': 12220.72, 't2': 13000, 't3': 14000,
+            'time_horizon': 'POSITIONAL', 'suggested_alloc_pct': 15.0,
+            'alloc_rationale': 'Risk parity: 1.0% / 6.7% = 14.99%'})
+        # C — two same-day picks in the same sector, logged one after the other
+        p1 = {'symbol': 'CANTABIL', 'sector': 'Consumer Cyclical', 'cap_category': 'LARGE CAP',
+              'close': 247.38, 'stop_loss': 230.06}
+        a1, _ = _alloc_for_log(p1)
+        insert_gold_recommendation({'recommendation_date': '2026-10-14', 'symbol': 'CANTABIL',
+            'sector': 'Consumer Cyclical', 'cap_category': 'LARGE CAP',
+            'cmp_at_recommendation': 247.38, 'stop_loss': 230.06, 't1': 269.89,
+            'suggested_alloc_pct': a1})
+        p2 = {'symbol': 'HEROMOTOCO', 'sector': 'Consumer Cyclical', 'cap_category': 'LARGE CAP',
+              'close': 5019.5, 'stop_loss': 4586.65}
+        a2, w2 = _alloc_for_log(p2)
+        # The second pick sees the first: headroom 30 − 15 − 14.3 = 0.7%, so it
+        # gets the 1% minimum (unchanged floor) instead of 11.6% (pre-v17.21).
+        assert a1 == 14.3 and a2 == 1.0 and 'sector cap: 29.3% used' in w2, f"C: {a1} {a2} {w2}"
+        assert 15.0 + a1 + a2 <= 30.0 + 1.0, f"C: sector total {15.0 + a1 + a2} (pre-v17.21: 40.9)"
+
+        # D — held MARUTI vs today's new pick
+        levels = get_open_recommendation_levels()
+        df = _pd.DataFrame([
+            {'symbol': 'MARUTI', 'composite_score': 81.8, 'stop_loss': 10612.28, 't1': 12769.07,
+             'entry_range': '11245.5–11589.8', 'horizon': 'POSITIONAL',
+             'suggested_alloc_pct': 1.0, 'alloc_rationale': 'sector cap'},
+            {'symbol': 'NEWPICK', 'composite_score': 75.0, 'stop_loss': 90.0, 't1': 115.0,
+             'entry_range': '98.0–101.0', 'horizon': 'SHORT TERM',
+             'suggested_alloc_pct': 14.3, 'alloc_rationale': 'Risk parity'}])
+        stocks = [dict(r) for r in df.to_dict('records')]
+        levels.append({'symbol': 'NEWPICK', 'recommendation_date': '2026-10-19', 'stop_loss': 1,
+                       't1': 2, 'entry_low': 1, 'entry_high': 2})
+        n = _apply_tracked_levels(df, stocks, levels, '2026-10-19')
+        m = df[df.symbol == 'MARUTI'].iloc[0]
+        assert n == 1, f"D: updated {n} rows (want 1)"
+        assert (m.stop_loss, m.t1, m.suggested_alloc_pct) == (10494.45, 12220.72, 15.0), f"D: {dict(m)}"
+        assert m.entry_range == '11020.1–11357.5' and m.held_since == '2026-10-13', f"D: {dict(m)}"
+        assert m.alloc_rationale.startswith('Held since 2026-10-13 — tracked levels'), m.alloc_rationale
+        assert m.composite_score == 81.8, "D: non-plan fields must not change"
+        assert stocks[0]['stop_loss'] == 10494.45, "D: stock dicts not updated"
+        assert df[df.symbol == 'NEWPICK'].iloc[0].stop_loss == 90.0, "D: today's pick must keep its levels"
+    finally:
+        _restore(original, test_db)
+
+    # E — static wiring in master_funnel
+    src = open(_src_path('master_funnel.py'), encoding='utf-8').read()
+    hook = src.find("v14.0/v14.1 — OUTCOME TRACKING")
+    i_alloc = src.find("_alloc_for_log(dict(_grow))", hook)
+    i_insert = src.find("if insert_gold_recommendation(_rec):", hook)
+    i_held = src.find("_n_held = _apply_tracked_levels(excel_gen.df", hook)
+    i_tracker = src.find("_tracker_main()", hook)
+    i_excel = src.find("excel_gen.generate_excel_reports()", hook)
+    assert -1 < i_alloc < i_insert, "E: log-time sizing must run before the insert"
+    assert i_insert < i_held < i_tracker, "E: tracked levels must be applied after logging, before the tracker"
+    assert i_held < i_excel, "E: tracked levels must be applied before the Excel build"
+    return "✅ v17.21: logged allocations, own position excluded, same-day cap respected, held stocks show tracked levels (A–E)"
+
 
 # ════════════════════════════════════════════════════════════════════════
 # RUN
@@ -6643,6 +6745,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g48_v17_21_single_target_gap_fills_and_restatement))
     v14_1_results.append(_run_one_test(test_g49_v17_21_shadow_stop_armed_floored_and_walked_to_its_end))
     v14_1_results.append(_run_one_test(test_g50_v17_21_performance_sheet_metrics_read_the_db_correctly))
+    v14_1_results.append(_run_one_test(test_g51_v17_21_sizing_counts_logged_allocations_and_held_levels_shown))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
