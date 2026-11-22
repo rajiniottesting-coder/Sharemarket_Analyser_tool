@@ -2135,7 +2135,9 @@ def test_g13_performance_sheet_value_correctness_audit():
         # === SPEED METRICS ===
         sp = find_row("SPEED METRICS")
         # v17.8.1: single Target — speed is TARGET(1), SL(2); T2/T3 removed.
-        assert cv(sp+2, 1) == "20.0 days", f"AVG TARGET = {cv(sp+2,1)!r}"
+        # v17.21: TARGET speed counts the same rows as the TARGET HIT tile:
+        # (10×20 + 5×35 + 3×60) / 18 = 555 / 18 = 30.83 days (was 20.0, T1 only).
+        assert cv(sp+2, 1) == "30.8 days", f"AVG TARGET = {cv(sp+2,1)!r}"
         assert cv(sp+2, 2) == "10.0 days", f"AVG SL = {cv(sp+2,2)!r}"
 
         # === MISSED RUNUP DIAGNOSTIC ===
@@ -6378,6 +6380,76 @@ def test_g49_v17_21_shadow_stop_armed_floored_and_walked_to_its_end():
         _restore(original, test_db)
     return "✅ v17.21: shadow stop armed from entry, floored at the original stop, walked to its own end (A–E)"
 
+def test_g50_v17_21_performance_sheet_metrics_read_the_db_correctly():
+    """v17.21: three Performance-sheet numbers disagreed with the DB.
+
+    19-Oct-2026: AVG DAYS → TARGET showed "—" while TARGET HIT showed 1 (the
+    win was a T2_HIT row); DD Recovery Rate showed 100% with 5 of 6 closed
+    picks stopped out (`int(x or 1)` turned every stored 0 into 1); the
+    shadow table had no Rec Date (two LUPIN rows looked identical) and used
+    'normal' where the OPEN table says NEUTRAL.
+      A. AVG DAYS → TARGET counts T1/T2/T3 rows  -> "7.0 days"
+      B. dd_recovered = 0 stays 0               -> recovery 25.0%, not 100%
+      C. shadow table shows Rec Date and NEUTRAL
+      D. _flag01 keeps 0, maps None/NaN/'' to the default
+    """
+    import os
+    from reporting.excel_generator import ExcelGeneratorV6, _flag01
+    from openpyxl import load_workbook
+    assert _flag01(0) == 0 and _flag01(1) == 1 and _flag01(None) == 1
+    assert _flag01(float('nan')) == 1 and _flag01('') == 1 and _flag01('0', default=1) == 0
+    test_db, original = _setup_temp_db('g50')
+    try:
+        from database.data_bridge import (initialize_v7_tables, insert_gold_recommendation,
+                                          update_outcome, update_shadow_outcome)
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        rows = [('TW', '2026-01-01', 'T2_HIT', 7, 120, 1), ('SL1', '2026-01-02', 'SL_HIT', 9, 93, 0),
+                ('SL2', '2026-01-03', 'SL_HIT', 4, 93, 0), ('DUP', '2026-01-04', 'SL_HIT', 5, 93, 0)]
+        for sym, rd, typ, days, px, rec_flag in rows:
+            insert_gold_recommendation({'recommendation_date': rd, 'symbol': sym,
+                                        'cmp_at_recommendation': 100, 'stop_loss': 93,
+                                        't1': 110, 't2': 120, 't3': 130, 'composite_score': 80,
+                                        'time_horizon': 'POSITIONAL', 'sector': 'IT'})
+            od = (datetime.strptime(rd, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
+            update_outcome(sym, rd, typ, outcome_date=od, outcome_price=px, days_to_outcome=days,
+                           current_price=px, current_pnl_pct=px - 100, dd_duration_days=3,
+                           dd_recovered=rec_flag)
+        insert_gold_recommendation({'recommendation_date': '2026-01-20', 'symbol': 'DUP',
+                                    'cmp_at_recommendation': 100, 'stop_loss': 93, 't1': 110,
+                                    't2': 120, 't3': 130, 'composite_score': 80,
+                                    'time_horizon': 'POSITIONAL', 'sector': 'IT'})
+        update_shadow_outcome('SL1', '2026-01-02', shadow_peak_price=103, shadow_stop_price=97,
+                              shadow_regime='normal', shadow_status='TRAIL_SL',
+                              shadow_exit_price=97, shadow_exit_date='2026-01-06', shadow_pnl_pct=-3)
+        os.chdir(_TMP)
+        gen = ExcelGeneratorV6([{'symbol': 'Z', 'verdict': 'NEUTRAL', 'composite_score': 50,
+                                 'close': 100, 'cfv': 100, 'mos_pct': 0, 'sector': 'T',
+                                 'cap_category': 'MID', 'company_name': 'Z'}],
+                               '20260601', run_time='10:00 IST', prev_scores={}, gap_days=0)
+        master, _ = gen.generate_excel_reports()
+        ws = load_workbook(_tmp(master))["🎯 Performance"]
+        cells = {(c.row, c.column): c.value for row in ws.iter_rows() for c in row if c.value is not None}
+        def below(label):
+            for (r, c), v in cells.items():
+                if str(v).startswith(label):
+                    return cells.get((r + 1, c))
+        def right(label):
+            for (r, c), v in cells.items():
+                if str(v).startswith(label):
+                    return cells.get((r, c + 1))
+        assert below("AVG DAYS → TARGET") == "7.0 days", f"A: {below('AVG DAYS → TARGET')}"
+        assert str(right("DD Recovery Rate")).startswith("25.0"), \
+            f"B: DD Recovery Rate = {right('DD Recovery Rate')} (1 of 4 recovered → 25.0%)"
+        hdr_row = next(r for (r, c), v in cells.items() if str(v).startswith("Real Outcome"))
+        hdr = [str(cells.get((hdr_row, c), "")) for c in range(1, 12)]
+        assert hdr[1].startswith("Rec Date"), f"C: shadow header {hdr}"
+        sl1 = next(r for (r, c), v in cells.items() if v == "SL1" and r > hdr_row)
+        assert cells.get((sl1, 2)) == "2026-01-02" and cells.get((sl1, 10)) == "NEUTRAL", \
+            f"C: SL1 row {[cells.get((sl1, c)) for c in range(1, 11)]}"
+    finally:
+        _restore(original, test_db)
+    return "✅ v17.21: target speed, DD recovery and the shadow table read the DB correctly (A–D)"
+
 
 # ════════════════════════════════════════════════════════════════════════
 # RUN
@@ -6570,6 +6642,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g47_v17_20_1_partial_nse_fetch_keeps_previous_snapshot))
     v14_1_results.append(_run_one_test(test_g48_v17_21_single_target_gap_fills_and_restatement))
     v14_1_results.append(_run_one_test(test_g49_v17_21_shadow_stop_armed_floored_and_walked_to_its_end))
+    v14_1_results.append(_run_one_test(test_g50_v17_21_performance_sheet_metrics_read_the_db_correctly))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

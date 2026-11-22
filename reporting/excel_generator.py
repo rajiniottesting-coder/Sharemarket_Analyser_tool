@@ -1112,7 +1112,7 @@ GLOSSARY_DATA = [
      "Count of closed picks that reached the end of their horizon window (SHORT TERM 30 / POSITIONAL 90 / LONG TERM 270 days) without hitting the Target or a stop. Bucketed separately because they're neither wins nor losses — "
      "the stock simply drifted sideways. High Expired rate suggests targets may be too ambitious for the chosen time horizon.","🎯 Performance"),
     ("PERFORMANCE","Avg Days → Target / SL",
-     "Mean calendar days from recommendation_date to the event firing. Useful for setting realistic expectations: if Avg Days→Target is 20, plan to hold positions ~3 weeks. "
+     "Mean calendar days from recommendation_date to the event firing (Target = every row the TARGET HIT tile counts). Useful for setting realistic expectations: if Avg Days→Target is 20, plan to hold positions ~3 weeks. "
      "Long Avg→SL (>30d) suggests gradual drift after entry; short Avg→SL (<10d) suggests entries on weak setups.","🎯 Performance"),
     ("PERFORMANCE","Max Runup %",
      "Highest unrealized gain reached during the tracking period. Computed as max((daily_high - cmp_at_recommendation) / cmp × 100) across the walk. "
@@ -1177,6 +1177,13 @@ GLOSSARY_DATA = [
      "v15.0 audit columns logged with each recommendation. regime_at_rec: 'high' (current 14-day ATR ≥ 1.20× 252-day baseline → SL widened 10%), 'low' (≤ 0.80× → SL tightened 10%), or 'neutral'. atr_at_rec: ATR-14 as % of CMP at log time (debug/audit value). "
      "Sector tier comes from a 5-tier static map: very-high (+0.6: Realty/Sugar/Aviation/Real Estate), high (+0.3: Metals/PSU Bank/Coal/Power/etc), neutral (0: default for sectors not in map), low (-0.2: Banking/IT-Services/Auto/Chemicals), very-low (-0.35: FMCG/Pharma/Healthcare/Utilities/etc). "
      "Volume-confirmed support: support1 (20-day low from technicals) only used as SL floor when vol_ratio (today's vol / 50-day avg) ≥ 1.20, filtering out random lows with no buying conviction.","🎯 Performance"),
+    ("PERFORMANCE","Shadow Exit Comparison",
+     "Observational test of an alternative exit: a regime-aware Chandelier trailing stop (peak − N × ATR, N 2.5 / 3.0 / 3.5 for SHORT / POSITIONAL / LONG, ±10% by volatility regime), never below the original stop. "
+     "Since v17.21 it is armed from the first day (ATR seeded from pre-entry prices), fills at the open on a gap, and keeps walking after the live trade closes until its own exit: TRAIL_SL, SL_HIT or EXPIRED. "
+     "Difference = shadow P&L − real P&L, shown once both have closed. It never changes a real outcome.","🎯 Performance"),
+    ("PERFORMANCE","DD Recovery Rate",
+     "Share of closed picks whose longest close-below-entry stretch ended back above entry before the exit. A pick stopped out while still under water counts as not recovered "
+     "(before v17.21 a display bug showed every pick as recovered).","🎯 Performance"),
 ]
 
 GRP_COLORS = {
@@ -1625,6 +1632,20 @@ def _patch_tooltip_vml(xlsx_path):
     finally:
         import shutil as _sh
         _sh.rmtree(tmpdir, ignore_errors=True)
+
+
+def _flag01(value, default=1):
+    """v17.21: read a 0/1 DB flag. None / NaN / '' → default; 0 stays 0.
+    (`int(value or 1)` turns a stored 0 into 1.)"""
+    try:
+        if value is None or value == "":
+            return default
+        f = float(value)
+        if f != f:          # NaN
+            return default
+        return 1 if f >= 0.5 else 0
+    except (TypeError, ValueError):
+        return default
 
 
 class ExcelGeneratorV6:
@@ -2547,13 +2568,16 @@ class ExcelGeneratorV6:
         c.fill = _f("B45309"); c.font = _ft(True,WHITE,11); c.alignment = _al("left")
         ws.row_dimensions[13].height = 22
 
-        def _avg_days(outcome):
-            sub = _df_all[_df_all["outcome_type"] == outcome]
+        def _avg_days(*outcomes):
+            sub = _df_all[_df_all["outcome_type"].isin(outcomes)]
             if sub.empty: return "—"
             return f"{sub['days_to_outcome'].mean():.1f} days"
 
         # v17.8.1: single-Target — T2/T3 speed boxes removed, reflowed to 1-2.
-        _metric(14, 1, "AVG DAYS → TARGET", _avg_days("T1_HIT"))
+        # v17.21: AVG DAYS → TARGET counts the same rows as the TARGET HIT tile
+        # (T1 + legacy T2/T3). It counted T1_HIT only, so on 19-Oct-2026 it
+        # showed "—" while TARGET HIT showed 1 (SUNTV, a T2_HIT row).
+        _metric(14, 1, "AVG DAYS → TARGET", _avg_days("T1_HIT", "T2_HIT", "T3_HIT"))
         _metric(14, 2, "AVG DAYS → SL", _avg_days("SL_HIT"),
                 value_fill="FEE2E2", label_fill="FECACA", val_color="991B1B")
 
@@ -2807,7 +2831,11 @@ class ExcelGeneratorV6:
                     "max_drawdown_pct": float(_row.get("max_drawdown_pct", 0) or 0),
                     "outcome_type": str(_row.get("outcome_type", "") or ""),
                     "dd_duration_days": int(_row.get("dd_duration_days", 0) or 0),
-                    "dd_recovered": int(_row.get("dd_recovered", 1) or 1),
+                    # v17.21: a stored 0 (still underwater at close) must
+                    # stay 0. `int(x or 1)` turned every 0 into 1, so the
+                    # sheet showed a 100% DD Recovery Rate with 5 of 6 closed
+                    # picks stopped out (19-Oct-2026).
+                    "dd_recovered": _flag01(_row.get("dd_recovered"), default=1),
                 })
             _metrics = compute_risk_metrics(_rm_closed)
             _dd_summary = summarize_dd_duration(_rm_closed)
@@ -3292,9 +3320,14 @@ class ExcelGeneratorV6:
             ws.row_dimensions[next_row].height = 22
             next_row += 1
 
-            _sh_cols = [("Symbol",14),("Time Horizon",15),("Real Outcome",15),
+            # v17.21: Rec Date added (a symbol can be tracked twice — LUPIN
+            # and HEROMOTOCO each had a closed and an open row on 19-Oct-2026).
+            _sh_cols = [("Symbol",14),("Rec Date",12),("Time Horizon",15),("Real Outcome",15),
                         ("Real P&L %",12),("Shadow Outcome",16),("Shadow P&L %",13),
                         ("Difference",12),("Cur. Shadow Stop",16),("Regime",10)]
+            # v17.21: same regime words as the OPEN POSITIONS table.
+            _sh_regime_word = {"normal": "NEUTRAL", "neutral": "NEUTRAL",
+                               "high": "HIGH", "low": "LOW"}
             for ci,(h,w) in enumerate(_sh_cols,1):
                 cc = ws.cell(next_row,ci,h)
                 cc.fill=_f("7D3C98"); cc.font=_ft(True,WHITE,9); cc.alignment=_al()
@@ -3325,6 +3358,7 @@ class ExcelGeneratorV6:
                 _bg = "FFFFFF" if next_row%2 else "F4ECF7"
                 vals=[
                     str(sr.get("symbol","")),
+                    str(sr.get("recommendation_date","") or "—")[:10],
                     str(sr.get("time_horizon","") or "—"),
                     str(sr.get("outcome_type","") or "OPEN"),
                     f"{_real_pnl:+.1f}%" if _real_closed else "—",
@@ -3332,13 +3366,14 @@ class ExcelGeneratorV6:
                     f"{_sh_pnl:+.1f}%" if _sh_closed else "—",
                     _diff_str,
                     f"\u20b9{float(sr.get('shadow_stop_price',0) or 0):.2f}" if float(sr.get('shadow_stop_price',0) or 0)>0 else "—",
-                    str(sr.get("shadow_regime","") or "—"),
+                    _sh_regime_word.get(str(sr.get("shadow_regime","") or "").lower(),
+                                        str(sr.get("shadow_regime","") or "—")),
                 ]
                 for ci,v in enumerate(vals,1):
                     cc=ws.cell(next_row,ci,v)
                     cc.fill=_f(_bg); cc.font=_ft(False,"1A1A1A",9); cc.alignment=_al()
                     # colour the Difference cell
-                    if ci==7 and _diff_str!="—":
+                    if ci==8 and _diff_str!="—":
                         _d=float(_diff_str.replace("pp","").replace("+",""))
                         cc.font=_ft(True,"1E8449" if _d>0 else "C0392B",9)
                 ws.row_dimensions[next_row].height=16
@@ -3349,8 +3384,9 @@ class ExcelGeneratorV6:
             if _closed>0:
                 _msg=(f"  Across {_closed} closed pick(s): shadow beat live in {_beats}, "
                       f"worse in {_worse}, tie in {_closed-_beats-_worse}. "
-                      f"Open rows show the live ratcheting stop \u2014 watch it climb before closes accumulate. "
-                      f"Shadow exits classify as TRAIL_SL (protected exit), never a target hit.")
+                      f"The shadow keeps walking after the live trade closes, until its own exit. "
+                      f"Shadow outcomes: TRAIL_SL (trailing stop above the original stop), SL_HIT "
+                      f"(original stop), EXPIRED (horizon end) \u2014 never a target hit.")
             else:
                 _msg=("  No closed picks yet \u2014 open rows show the live 'current shadow stop' "
                       "ratcheting up as each position rises. Comparison fills in as positions close.")
