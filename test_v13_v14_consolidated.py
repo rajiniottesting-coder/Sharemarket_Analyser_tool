@@ -6707,6 +6707,100 @@ def test_g53_v17_21_rule_version_instead_of_resets():
     assert '"rule_version":          GOLD_RULE_VERSION' in mf, "C: logged picks are not stamped"
     return "✅ v17.21: rule_version stored, BY RULE VERSION compares versions, picks stamped (A–C)"
 
+def test_g54_v17_21_replay_tool_walks_picks_with_the_live_exit_model():
+    """v17.21: backtest/replay_picks.py re-walks every Gold pick (dashboard CSV +
+    gold_recommendations) with the live tracker and scores four entry rules
+    fixed in advance.
+      A. outcomes come from track_outcomes._walk_forward (T1_HIT / SL_HIT, gap fill)
+      B. a DB row wins over a CSV row for the same (symbol, date)
+      C. R1 trend / R2 regime from pick-date data only; R3 cooldown flags a
+         re-pick within 28 days of an SL exit; R4 drops MoS > 60% on LARGE/MID
+      D. CSV + Markdown summary written; the tracker's DB_PATH is restored
+      E. the shipped picks CSV has 49 rows with entry / stop for every pick
+      F. replay.yml restores the daily DB artifact and uploads the results
+    """
+    import os, tempfile, pandas as _pd
+    from datetime import date as _date
+    import importlib, track_outcomes as to
+    importlib.reload(to)
+    from backtest import replay_picks as rp
+    importlib.reload(rp)
+    tmpd = tempfile.mkdtemp()
+    db = os.path.join(tmpd, 'replay_test.db')
+    csv = os.path.join(tmpd, 'picks.csv')
+    out = os.path.join(tmpd, 'replay_results.csv')
+    try:
+        from database.data_bridge import initialize_v7_tables
+        _c = sqlite3.connect(db); initialize_v7_tables(_c); _c.close()
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE IF NOT EXISTS gold_recommendations_dummy (x INT)")
+        base = _date(2026, 3, 2)
+        rows = []
+        for i in range(-90, 0):                    # pre-pick history
+            d = (base + timedelta(days=i)).strftime("%Y-%m-%d")
+            rows.append(('UP', d, 'NSE', 80 + i * 0.2 + 20, 0, 0, 80 + i * 0.2 + 20))   # rising to ~100
+            rows.append(('DN', d, 'NSE', 130 - (i + 90) * 0.3, 0, 0, 130 - (i + 90) * 0.3))  # falling to ~103
+        rows = [(s, d, e, o, o + 1, o - 1, c) for s, d, e, o, _, _, c in rows]
+        def bar(s, off, o, h, l, c):
+            rows.append((s, (base + timedelta(days=off)).strftime("%Y-%m-%d"), 'NSE', o, h, l, c))
+        bar('UP', 1, 100, 101, 99, 100); bar('UP', 2, 100, 112, 99.5, 111)       # Target 110 → T1_HIT
+        bar('DN', 1, 100, 101, 99, 100); bar('DN', 2, 90, 91, 88, 89)             # gap below stop 93 → SL @ 90
+        for off in range(10, 16):
+            bar('DN', off, 100, 101, 99, 100)
+        conn.executemany("INSERT INTO daily_prices (symbol,date,exchange,open,high,low,close,volume) "
+                         "VALUES (?,?,?,?,?,?,?,1000)", rows)
+        # DB row for UP with a different stop — must win over the CSV row
+        conn.execute("INSERT INTO gold_recommendations (recommendation_date, symbol, "
+                     "cmp_at_recommendation, stop_loss, t1, t2, t3, time_horizon, quick_pick_label, "
+                     "composite_score, sector, cap_category, mos_pct) "
+                     "VALUES ('2026-03-02','UP',100,94,110,120,130,'POSITIONAL','WATCHLIST',80,'IT','LARGE CAP',20)")
+        conn.commit(); conn.close()
+        _pd.DataFrame([
+            dict(symbol='UP', recommendation_date='2026-03-02', cmp_at_recommendation=100, stop_loss=93,
+                 t1=110, time_horizon='POSITIONAL', quick_pick_label='WATCHLIST', composite_score=80,
+                 sector='IT', cap_category='LARGE CAP', mos_pct=20, source='csv'),
+            dict(symbol='DN', recommendation_date='2026-03-02', cmp_at_recommendation=100, stop_loss=93,
+                 t1=110, time_horizon='POSITIONAL', quick_pick_label='DEEP VALUE', composite_score=80,
+                 sector='IT', cap_category='LARGE CAP', mos_pct=85, source='csv'),
+            dict(symbol='DN', recommendation_date='2026-03-12', cmp_at_recommendation=100, stop_loss=93,
+                 t1=110, time_horizon='POSITIONAL', quick_pick_label='DEEP VALUE', composite_score=80,
+                 sector='IT', cap_category='MID CAP', mos_pct=40, source='csv'),
+        ]).to_csv(csv, index=False)
+        assert rp.main(['--picks', csv, '--db', db, '--out', out, '--no-nifty']) == 0
+        r = _pd.read_csv(out)
+        key = {(a, b): x for a, b, x in zip(r.symbol, r.recommendation_date, r.to_dict('records'))}
+        up, dn1, dn2 = key[('UP', '2026-03-02')], key[('DN', '2026-03-02')], key[('DN', '2026-03-12')]
+        assert (up['outcome'], up['exit_or_last_price']) == ('T1_HIT', 110.0), f"A: {up['outcome']} {up['exit_or_last_price']}"
+        assert (dn1['outcome'], dn1['exit_or_last_price']) == ('SL_HIT', 90.0), f"A: {dn1['outcome']} {dn1['exit_or_last_price']}"
+        assert up['stop_loss'] == 94 and up['origin'] == 'db', f"B: {up['stop_loss']} {up['origin']}"
+        assert bool(dn2['R3_cooldown']) is False and bool(dn1['R3_cooldown']) is True, "C: R3 cooldown"
+        assert bool(dn1['R4_mos_cap']) is False and bool(up['R4_mos_cap']) is True, "C: R4 MoS cap"
+        assert _pd.isna(up['R1_trend']) and _pd.isna(up['R2_regime']), "C: R1/R2 must be n/a without Nifty"
+        # R1 / R2 with a Nifty series (pick-date data only)
+        nifty = _pd.Series([100.0] * 70, index=[(base + timedelta(days=i - 69)).strftime("%Y-%m-%d") for i in range(70)])
+        c2 = sqlite3.connect(db)
+        f_up = rp.features(c2, {'symbol': 'UP', 'recommendation_date': '2026-03-02'}, nifty)
+        f_dn = rp.features(c2, {'symbol': 'DN', 'recommendation_date': '2026-03-02'}, nifty)
+        c2.close()
+        assert f_up['close_vs_sma50_pct'] > 0 and f_up['rs_63d_pp'] > 0, f"C: UP {f_up}"
+        # no look-ahead: last close before the pick 99.8 vs 63 bars earlier 87.2
+        assert f_up['ret_63d_pct'] == 14.45, f"C: UP 63-day return {f_up['ret_63d_pct']} (want 14.45)"
+        assert f_dn['close_vs_sma50_pct'] < 0 and f_dn['rs_63d_pp'] < 0, f"C: DN {f_dn}"
+        assert f_up['nifty_vs_sma20_pct'] == 0.0, f"C: {f_up}"
+        assert os.path.exists(os.path.splitext(out)[0] + '_summary.md'), "D: summary missing"
+        assert to.DB_PATH == 'market_data.db', f"D: tracker DB_PATH left at {to.DB_PATH}"
+    finally:
+        import shutil; shutil.rmtree(tmpd, ignore_errors=True)
+    picks = _pd.read_csv(_src_path('backtest/picks_2026H2.csv'))
+    assert len(picks) == 49 and picks['stop_loss'].notna().all() and picks['cmp_at_recommendation'].notna().all(), \
+        f"E: {len(picks)} rows, stops missing {int(picks['stop_loss'].isna().sum())}"
+    wf = open(_src_path('.github/workflows/replay.yml'), encoding='utf-8').read()
+    for need in ('workflow_dispatch', 'name: market-data-db', 'workflow: market_run.yml',
+                 'backtest/replay_picks.py', 'actions/upload-artifact'):
+        assert need in wf, f"F: replay.yml missing {need!r}"
+    assert 'market_data.db' not in wf.split('upload-artifact')[1], "F: the DB must not be re-uploaded by the replay"
+    return "✅ v17.21: replay tool — live exit model, DB rows win, R1–R4 from pick-date data, outputs, workflow (A–F)"
+
 
 # ════════════════════════════════════════════════════════════════════════
 # RUN
@@ -6903,6 +6997,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g51_v17_21_sizing_counts_logged_allocations_and_held_levels_shown))
     v14_1_results.append(_run_one_test(test_g52_v17_21_report_display_fixes))
     v14_1_results.append(_run_one_test(test_g53_v17_21_rule_version_instead_of_resets))
+    v14_1_results.append(_run_one_test(test_g54_v17_21_replay_tool_walks_picks_with_the_live_exit_model))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

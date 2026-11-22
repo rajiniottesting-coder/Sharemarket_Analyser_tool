@@ -1,0 +1,67 @@
+name: Gold_Pick_Replay
+
+# v17.21 — manual only. Re-walks every Gold pick (backtest/picks_2026H2.csv +
+# gold_recommendations) on the prices in the latest market_data.db artifact
+# with the live exit model, and scores four entry rules fixed in advance
+# (trend, market regime, re-entry cooldown, MoS cap). READ-ONLY: it downloads
+# the DB artifact, never uploads or changes it, and never touches the daily
+# pipeline. Results: artifact "replay-results" (CSV + Markdown summary).
+on:
+  workflow_dispatch:
+    inputs:
+      exit_mode:
+        description: >-
+          logged = each pick's own stop and Target (default);
+          uniform = logged stop, Target = 1.5 x stop distance for every pick
+        required: false
+        default: 'logged'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download market_data.db from the daily pipeline
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: market_run.yml
+          name: market-data-db
+          path: .
+          if_no_artifact_found: fail
+
+      - name: Replay Gold picks
+        run: |
+          MODE="${{ github.event.inputs.exit_mode }}"
+          if [ "$MODE" != "uniform" ]; then MODE="logged"; fi
+          python3 backtest/replay_picks.py \
+            --picks backtest/picks_2026H2.csv \
+            --db market_data.db \
+            --exit "$MODE" \
+            --out replay_results.csv
+
+      - name: Upload replay results
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-results
+          path: |
+            replay_results.csv
+            replay_results_summary.md
+          retention-days: 30
