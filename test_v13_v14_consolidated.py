@@ -3508,7 +3508,9 @@ def test_g25_v15_8_1_eps_mcap_parsing_reachable():
     assert 'stock["mcap_cr"] = float(_mcap_m.group(1))' in src, (
         "v15.8.1: mcap_cr assignment line missing"
     )
-    assert 'stock["pe"]      = float(_pe_m.group(1))' in src, (
+    # v17.21: the P/E is parsed into _pe_sm and assigned only below the 500
+    # display clamp (otherwise "—"); the assignment must still be reachable.
+    assert '_pe_sm = float(_pe_m.group(1))' in src and 'stock["pe"]  = _pe_sm' in src, (
         "v15.8.1: pe assignment line missing"
     )
 
@@ -6484,9 +6486,19 @@ def test_g51_v17_21_sizing_counts_logged_allocations_and_held_levels_shown():
     assert abs(exp['Energy'] - 13.33) < 0.01, f"A legacy: {exp}"
     exp_x = _current_sector_exposure(opens, exclude_symbol='MARUTI')
     assert abs(exp_x['Consumer Cyclical'] - 1.0) < 1e-6, f"B: {exp_x}"
+    # With CANTABIL (14.3) also open, MARUTI's own 15% decides whether the
+    # 30% cap binds: excluded → 15.3% used, 13.3% fits; counted → 30.3%, full.
+    opens2 = opens + [{'symbol': 'CANTABIL', 'sector': 'Consumer Cyclical',
+                       'cap_category': 'LARGE CAP', 'cmp_at_rec': 247.38, 'sl': 230.06,
+                       'alloc_pct': 14.3}]
     a, why = compute_suggested_allocation('Consumer Cyclical', 'LARGE CAP', sl_pct=7.5,
-                                          open_positions=opens, candidate_symbol='MARUTI')
+                                          open_positions=opens2, candidate_symbol='MARUTI')
     assert a == 13.3 and 'sector cap' not in why, f"B: {a} {why}"
+    from risk.correlation_aware_sizing import compute_for_stock_dict
+    a_d, why_d = compute_for_stock_dict({'symbol': 'MARUTI', 'sector': 'Consumer Cyclical',
+                                         'cap_category': 'LARGE CAP'}, sl_pct=7.5,
+                                        open_positions=opens2)
+    assert a_d == 13.3 and 'sector cap' not in why_d, f"B (stock-dict wrapper): {a_d} {why_d}"
 
     test_db, original = _setup_temp_db('g51')
     try:
@@ -6551,6 +6563,102 @@ def test_g51_v17_21_sizing_counts_logged_allocations_and_held_levels_shown():
     assert i_insert < i_held < i_tracker, "E: tracked levels must be applied after logging, before the tracker"
     assert i_held < i_excel, "E: tracked levels must be applied before the Excel build"
     return "✅ v17.21: logged allocations, own position excluded, same-day cap respected, held stocks show tracked levels (A–E)"
+
+def test_g52_v17_21_report_display_fixes():
+    """v17.21: report pages that showed the wrong thing (19-Oct-2026).
+      A. Trade Summary: one value per header (R:R under 'R:R Ratio', horizon
+         and risk under theirs; no hidden T2/T3)
+      B. a second run on the same date compares with the PREVIOUS date
+         (BENARAS 100 → 85 alert was lost), keeps prev_* through the save,
+         and does not advance an AVOID streak twice
+      C. Score Δ rounding to 0 prints "0" (not "+0"/"-0")
+      D. Delivery Preview SPIKE ALERTS counts stocks with a spike today
+      E. Support 2 above / Resist 2 below the CMP render "—"; P/E at the 500
+         clamp renders "—"; Full Dashboard title has no stale "v6.2"
+      F. AI card input carries the single Target only; card cache key bumped
+    """
+    import os, openpyxl, pandas as _pd
+    from reporting.excel_generator import ExcelGeneratorV6
+
+    # A
+    gold = _pd.DataFrame([{'symbol': 'MARUTI', 'company_name': 'Maruti', 'close': 11475.0,
+                           'cfv': 16484.14, 'mos_pct': 43.65, '2w_chg': -0.49, '4w_chg': -5.19,
+                           '8w_chg': -16.9, 'entry_range': '11245.5–11589.8',
+                           'stop_loss': 10612.28, 't1': 12769.07, 't2': 13222.0, 't3': 13833.45,
+                           'horizon': 'POSITIONAL', 'risk_level': 'LOW'}])
+    gen = ExcelGeneratorV6([{'symbol': 'X', 'close': 10, 'composite_score': 79.0, 'spike_count': 3},
+                            {'symbol': 'Y', 'close': 10, 'composite_score': 50, 'spike_count': 0},
+                            {'symbol': 'Z', 'close': 10, 'composite_score': 50, 'spike_count': 1}],
+                           '20261019', run_time='10:41 IST', prev_scores={'X': 79.4, 'Z': 51.6})
+    gen._get_gold = lambda: gold
+    wb = openpyxl.Workbook()
+    gen._trade_summary(wb)
+    ws = wb["📊 Trade Summary"]
+    hdr = {ws.cell(2, c).value.replace(' ⓘ', '') if ws.cell(2, c).value else None: c for c in range(1, 20)}
+    row = {h: ws.cell(3, c).value for h, c in hdr.items() if h}
+    assert row['Target (₹)'] == 12769.07, f"A: {row}"
+    assert row['R:R Ratio'] == 1.68, f"A: R:R cell = {row['R:R Ratio']}"
+    assert row['Time Horizon'] == 'POSITIONAL' and row['Risk Level'] == 'LOW', f"A: {row}"
+    assert all(ws.cell(3, c).value in (None, '') for c in range(15, 20)), \
+        f"A: values beyond the last header: {[ws.cell(3, c).value for c in range(15, 20)]}"
+
+    # C + D
+    gen._alert_log(wb)
+    al = wb["🔔 Alert Log"]
+    deltas = {al.cell(r, 3).value: al.cell(r, 8).value for r in range(3, al.max_row + 1) if al.cell(r, 3).value}
+    assert deltas.get('X') == '0', f"C: X delta {deltas.get('X')!r} (79.4 → 79)"
+    assert deltas.get('Z') == '-2', f"C: Z delta {deltas.get('Z')!r} (51.6 → 50)"
+    assert gen._spike_alert_count() == 2, f"D: {gen._spike_alert_count()}"
+    eg = open(_src_path('reporting/excel_generator.py'), encoding='utf-8').read()
+    assert "SPIKE ALERTS: {self._spike_alert_count()}" in eg, "D: preview not wired to the count"
+    assert "FULL RESEARCH DASHBOARD  ·  v6.2" not in eg, "E: stale v6.2 title"
+
+    # B
+    test_db, original = _setup_temp_db('g52')
+    try:
+        from database.data_bridge import (initialize_v7_tables, roll_previous_day_state,
+                                          load_previous_day_scores, update_verdict_streaks)
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        conn = sqlite3.connect("market_data.db")
+        conn.executemany("INSERT INTO latest_analysis_results (symbol, date, composite_score, verdict, "
+                         "consecutive_avoid_quarters) VALUES (?,?,?,?,?)",
+                         [('BEN', '2026-10-16', 100.0, 'BUY', 0), ('AV', '2026-10-16', 30.0, 'AVOID', 1)])
+        conn.commit(); conn.close()
+        src = open(_src_path('master_funnel.py'), encoding='utf-8').read()
+        i = src.rfind("INSERT", 0, src.find("INTO latest_analysis_results"))
+        save_sql = src[i:src.find('"""', i)]
+        def run(score_ben):
+            roll_previous_day_state('2026-10-19')
+            prev = load_previous_day_scores('2026-10-19')
+            stocks = [{'symbol': 'BEN', 'verdict': 'BUY', 'composite_score': score_ben},
+                      {'symbol': 'AV', 'verdict': 'AVOID', 'composite_score': 30.0}]
+            update_verdict_streaks(stocks, run_date='2026-10-19')
+            c = sqlite3.connect("market_data.db")
+            for s_ in stocks:
+                c.execute(save_sql, (s_['symbol'], '2026-10-19', s_['composite_score'], 0, 0, 0, 0, 0,
+                                     s_['verdict'], s_.get('consecutive_avoid_quarters', 0),
+                                     s_.get('consecutive_recovery_quarters', 0)))
+            c.commit(); c.close()
+            return prev, {s_['symbol']: s_['consecutive_avoid_quarters'] for s_ in stocks}
+        p1, st1 = run(85.0)       # morning run
+        p2, st2 = run(85.5)       # same-date re-run
+        assert p1.get('BEN') == 100.0 and p2.get('BEN') == 100.0, f"B: prev morning={p1} re-run={p2}"
+        assert st1['AV'] == 2 and st2['AV'] == 2, f"B: AVOID streak morning={st1} re-run={st2} (want 2, 2)"
+        roll_previous_day_state('2026-10-20')
+        p3 = load_previous_day_scores('2026-10-20')
+        assert p3.get('BEN') == 85.5, f"B: next day must compare with the last run of 19-Oct: {p3}"
+    finally:
+        _restore(original, test_db)
+
+    # E (static — the enrichment loop needs the full pipeline)
+    mf = open(_src_path('master_funnel.py'), encoding='utf-8').read()
+    assert 'stock["support_2"] > _cmp_sr' in mf and 'stock["resist_2"] < _cmp_sr' in mf, "E: S2/R2 guard missing"
+    assert 'if abs(_pe_sm) < 500:' in mf, "E: P/E clamp guard missing on the symbol_master path"
+    # F
+    ai = open(_src_path('ai/ai_analyst.py'), encoding='utf-8').read()
+    assert "T2: ₹{t2}" not in ai and "T3: ₹{t3}" not in ai, "F: AI card still sends T2/T3"
+    assert '_CARD_FORMAT_VERSION = "v17.16-compact-prompt"' not in ai, "F: card cache key not bumped"
+    return "✅ v17.21: Trade Summary columns, previous-date compare on re-runs, Δ/preview/title, S2/R2, P/E, AI target (A–F)"
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -6746,6 +6854,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g49_v17_21_shadow_stop_armed_floored_and_walked_to_its_end))
     v14_1_results.append(_run_one_test(test_g50_v17_21_performance_sheet_metrics_read_the_db_correctly))
     v14_1_results.append(_run_one_test(test_g51_v17_21_sizing_counts_logged_allocations_and_held_levels_shown))
+    v14_1_results.append(_run_one_test(test_g52_v17_21_report_display_fixes))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

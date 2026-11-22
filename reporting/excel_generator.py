@@ -912,7 +912,7 @@ GLOSSARY_DATA = [
      "Computed as the rolling 252-day min over bars BEFORE the most recent 20, "
      "so a fresh breakdown doesn't make S1 == S2. "
      "If price breaks Support 1 with volume, next target is Support 2. "
-     "Falls back to '—' for stocks with < 80 days of price history.","Full Dashboard"),
+     "Falls back to '—' for stocks with < 80 days of price history, and when the price has already fallen below it (v17.21 — a broken floor is not support).","Full Dashboard"),
     ("TECHNICAL","Resist 1 (₹)",
      "Short-term resistance = 20-day rolling high. Nearest price ceiling — "
      "a close above it on rising volume is a breakout signal.","Full Dashboard"),
@@ -922,7 +922,7 @@ GLOSSARY_DATA = [
      "Earlier v10.9 logic (rolling-252 over the full series) silently mirrored "
      "Resist 1 whenever the 52-week max landed inside the last 20 days — "
      "observed in 87.9 % of production rows. v12.4 separates them. "
-     "Shown as '—' when within 0.5% of Resist 1 (no distinct prior ceiling).","Full Dashboard"),
+     "Shown as '—' when within 0.5% of Resist 1 (no distinct prior ceiling), and when the price is already above it (v17.21).","Full Dashboard"),
 
     # ── BALANCE SHEET ─────────────────────────────────────────────────────────
     ("BALANCE SHEET","BS Health Note",
@@ -1771,7 +1771,7 @@ class ExcelGeneratorV6:
         N=len(FULL_COLS)
         # R1
         ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=N)
-        c=ws.cell(1,1,f"NSE / BSE STOCK ANALYSER  ·  FULL RESEARCH DASHBOARD  ·  v6.2  ·  {self.dlbl}")
+        c=ws.cell(1,1,f"NSE / BSE STOCK ANALYSER  ·  FULL RESEARCH DASHBOARD  ·  {self.dlbl}")
         c.fill=_f(NAVY); c.font=_ft(True,WHITE,13); c.alignment=_al()
         ws.row_dimensions[1].height=34
         # R2
@@ -2154,7 +2154,7 @@ class ExcelGeneratorV6:
     def _trade_summary(self,wb):
         ws=wb.create_sheet("📊 Trade Summary"); ws.sheet_properties.tabColor="059669"
         gdf=self._get_gold()
-        ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=16)
+        ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=14)
         c=ws.cell(1,1,f"GOLD STOCKS — TRADE PLAN SUMMARY  ·  Entry / SL / Target / R:R Ratio  ·  {self.dlbl}")
         c.fill=_f("059669"); c.font=_ft(True,WHITE,11); c.alignment=_al()
         ws.row_dimensions[1].height=26
@@ -2191,8 +2191,13 @@ class ExcelGeneratorV6:
                   f"+{mos:.1f}%" if isinstance(mos,(int,float)) else mos,
                   _g(stk,"2w_chg"),_g(stk,"4w_chg"),_g(stk,"8w_chg"),
                   _g(stk,"entry_range"),_g(stk,"stop_loss"),
-                  _g(stk,"t1"),_g(stk,"t2"),_g(stk,"t3"),
-                  None,_g(stk,"horizon"),_g(stk,"risk_level")]
+                  _g(stk,"t1"),
+                  None,                       # col 12 — R:R, written below
+                  _g(stk,"horizon"),_g(stk,"risk_level")]
+            # v17.21: T2/T3 were still written here after v17.8.1 removed
+            # their headers, so every value from column 12 on sat one-two
+            # columns right of its header (R:R showed T2, Time Horizon showed
+            # T3, Risk Level showed the R:R). One value per header now.
             for ci,val in enumerate(vals,1):
                 cell=ws.cell(rn,ci,val); cell.fill=_f(bg); cell.font=_ft(False,tx,9)
                 cell.alignment=_al("center","center")
@@ -2219,7 +2224,7 @@ class ExcelGeneratorV6:
                     _rr_val = "—"
             except Exception:
                 _rr_val = "—"
-            rr=ws.cell(rn,14,_rr_val); rr.fill=_f(bg); rr.font=_ft(True,"065F46",9)
+            rr=ws.cell(rn,12,_rr_val); rr.fill=_f(bg); rr.font=_ft(True,"065F46",9)
             rr.alignment=_al()
             if isinstance(_rr_val,(int,float)):
                 rr.number_format="0.00"
@@ -2227,6 +2232,16 @@ class ExcelGeneratorV6:
                 if _rr_val >= 3:   rr.fill=_f("D1FAE5"); rr.font=_ft(True,"065F46",9)
                 elif _rr_val >= 2: rr.fill=_f("FEF3C7"); rr.font=_ft(True,"92400E",9)
                 else:              rr.fill=_f("FEE2E2"); rr.font=_ft(True,"7F1D1D",9)
+
+    def _spike_alert_count(self) -> int:
+        """v17.21: stocks with at least one spike trigger today — the stocks
+        the Alert Log raises for a spike (shown as 🔔 SPIKE FIRED unless a
+        score drop or low score takes the label). The Delivery Preview used
+        the top Gold pick's own spike count here, so it read 'SPIKE ALERTS: 0'
+        on 19-Oct-2026 next to 11 spike alerts."""
+        if self.df is None or self.df.empty or "spike_count" not in self.df.columns:
+            return 0
+        return int((pd.to_numeric(self.df["spike_count"], errors="coerce").fillna(0) >= 1).sum())
 
     def _alert_log(self,wb):
         ws=wb.create_sheet("🔔 Alert Log"); ws.sheet_properties.tabColor="7C3AED"
@@ -2269,7 +2284,9 @@ class ExcelGeneratorV6:
                 if prev is not None and prev > 0:
                     prev_disp = f"{prev:.0f}"
                     delta     = comp - prev
-                    delta_disp= f"+{delta:.0f}" if delta > 0 else f"{delta:.0f}"
+                    # v17.21: a delta that rounds to 0 prints "0" (was "+0" / "-0").
+                    _d0 = round(delta)
+                    delta_disp= "0" if _d0 == 0 else (f"+{_d0:.0f}" if _d0 > 0 else f"{_d0:.0f}")
                 else:
                     prev_disp = "—"
                     delta_disp= "—"
@@ -2380,9 +2397,12 @@ class ExcelGeneratorV6:
             w8=top.get("8w_chg",0); w4=top.get("4w_chg",0); w2=top.get("2w_chg",0)
             spk=int(top.get("spike_count",0) or 0); rot=top.get("sector","—")
             r=R(r,None,f"📈  TOP PICK: {sym} — {verd}","FAC775",True)
-            r=R(r,None,f"     CFV: ₹{cfv}  |  CMP: ₹{cmp_}  |  MoS: +{mos:.1f}%  |  Upside: +{up:.1f}%  |  Spike: {spk}/6","FEF3C7",False)
+            # v17.21: "Upside" removed (same number as MoS, as on the sheets).
+            r=R(r,None,f"     CFV: ₹{cfv}  |  CMP: ₹{cmp_}  |  MoS: {mos:+.1f}%  |  Spike: {spk}/6","FEF3C7",False)
             r=R(r,None,f"     8-Week Chg: {w8}%  |  4-Week Chg: {w4}%  |  2-Week Chg: {w2}%","FEF3C7",False)
-            r=R(r,None,f"🔔  SPIKE ALERTS: {spk}  |  🔁  SECTOR: {rot} — Stage {top.get('rotation_stage','—')}","D1FAE5",False)
+            # v17.21: SPIKE ALERTS = stocks with a spike today (the Alert
+            # Log's SPIKE FIRED rows), not the top pick's own spike count.
+            r=R(r,None,f"🔔  SPIKE ALERTS: {self._spike_alert_count()}  |  🔁  SECTOR: {rot} — Stage {top.get('rotation_stage','—')}","D1FAE5",False)
         r=R(r,None,"━"*51,"0D9488",False,10)
         r=R(r,None,f"📎  NSE_BSE_Gold_EarlyMovers_{self.date_str}.xlsx  (attached)","DBEAFE",False)
         r=R(r,None,f"📎  NSE_BSE_Full_Dashboard_{self.date_str}.xlsx  (subscribers)","DBEAFE",False)

@@ -1877,7 +1877,17 @@ def run_master_pipeline():
                     if _mcap_m and not stock.get("mcap_cr"):
                         stock["mcap_cr"] = float(_mcap_m.group(1))
                     if _pe_m   and not stock.get("pe"):
-                        stock["pe"]      = float(_pe_m.group(1))
+                        _pe_sm = float(_pe_m.group(1))
+                        if abs(_pe_sm) < 500:
+                            stock["pe"]  = _pe_sm
+                        else:
+                            # v17.21: same display rule as every other P/E
+                            # path (v10.16): a value at the 500 clamp means
+                            # "not meaningful" → "—" (LOTUSEYE showed 500 on
+                            # 19-Oct-2026). The raw value is kept as pe_num so
+                            # scoring is unchanged (≥ 500 is scored neutral).
+                            stock["pe"]  = "—"
+                            stock.setdefault("pe_num", _pe_sm)
 
             # ────────────────────────────────────────────────────────────
             # v15.8: POST-ENRICHMENT ETF/MF FILTER (second-pass)
@@ -2489,6 +2499,20 @@ def run_master_pipeline():
                 stock["support_2"]  = round(float(s2), 2) if s2 else "—"
                 stock["resist_1"]   = round(float(r1), 2) if r1 else 0
                 stock["resist_2"]   = round(float(r2), 2) if r2 else "—"
+                # v17.21: Support 2 / Resist 2 are the PRIOR 52-week low / high
+                # (bars before the last 20). Once the price has broken through
+                # one of them it is no longer support / resistance — on
+                # 19-Oct-2026 12 stocks at fresh lows showed a "Support 2"
+                # above the CMP (e.g. NTPC 315.55 vs 309). Show "—" then.
+                try:
+                    _cmp_sr = float(stock.get("close", 0) or 0)
+                except (TypeError, ValueError):
+                    _cmp_sr = 0.0
+                if _cmp_sr > 0:
+                    if isinstance(stock["support_2"], float) and stock["support_2"] > _cmp_sr:
+                        stock["support_2"] = "—"
+                    if isinstance(stock["resist_2"], float) and stock["resist_2"] < _cmp_sr:
+                        stock["resist_2"] = "—"
                 # v14.6: ATR-14 used downstream by multi-factor SL/T derivation
                 stock["atr_14"]     = round(float(atr14), 2) if atr14 else 0
                 # v15.0: 252-day baseline ATR for regime detection (extended
@@ -3924,12 +3948,18 @@ def run_master_pipeline():
         # This reads yesterday's scores from latest_analysis_results so the
         # Alert Log can show a real delta vs today's scores.
         # If the table is empty (first-ever run) prev_scores = {} → shows '—'.
+        # v17.21: first roll every row from an EARLIER date into prev_*, then
+        # read prev_* — so a second run on the same trading date (e.g. an AI
+        # re-run) still compares against the previous trading date instead of
+        # that morning's run (19-Oct-2026 lost BENARAS −15 / KINGFA −5).
         try:
-            from database.data_bridge import load_latest_analysis_results as _load_prev
-            _prev_records = _load_prev()
-            _prev_scores = {r["symbol"]: float(r.get("composite_score", 0) or 0)
-                            for r in _prev_records}
-        except Exception:
+            from database.data_bridge import (roll_previous_day_state as _roll_prev,
+                                              load_previous_day_scores as _load_prev_day)
+            _run_iso = target_date.strftime("%Y-%m-%d")
+            _roll_prev(_run_iso)
+            _prev_scores = _load_prev_day(_run_iso)
+        except Exception as _pse:
+            print(f"   ⚠️  previous-day scores unavailable: {_pse}")
             _prev_scores = {}
 
         # ── Step B: Save TODAY's scores (for NEXT run to use as prev_scores) ─────
@@ -3946,7 +3976,8 @@ def run_master_pipeline():
         # stock dict so the Excel/report layers can read them in-process.
         try:
             from database.data_bridge import update_verdict_streaks as _upd_streaks
-            _streak_summary = _upd_streaks(final_100_list)
+            _streak_summary = _upd_streaks(final_100_list,
+                                           run_date=target_date.strftime("%Y-%m-%d"))
             _n_avoid_chronic    = sum(1 for v in _streak_summary.values() if v.get("avoid", 0) >= 2)
             _n_turnaround       = sum(1 for v in _streak_summary.values() if v.get("recovery", 0) >= 2)
             print(f"   🔁 Verdict streaks updated: chronic-AVOID={_n_avoid_chronic}, "
@@ -3959,13 +3990,28 @@ def run_master_pipeline():
             _conn_lar = _sq_lar.connect("market_data.db")
             _date_lar = target_date.strftime("%Y-%m-%d")
             for _s_lar in final_100_list:
+                # v17.21: UPSERT instead of INSERT OR REPLACE — REPLACE deletes
+                # the row first, which would wipe the prev_* columns that
+                # roll_previous_day_state() filled (a same-date re-run needs
+                # them). Only the columns listed here are updated.
                 _conn_lar.execute(
                     """
-                    INSERT OR REPLACE INTO latest_analysis_results
+                    INSERT INTO latest_analysis_results
                         (symbol, date, composite_score, early_score,
                          spike_score, storm_score, cfv, mos_pct, verdict,
                          consecutive_avoid_quarters, consecutive_recovery_quarters)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(symbol) DO UPDATE SET
+                        date = excluded.date,
+                        composite_score = excluded.composite_score,
+                        early_score = excluded.early_score,
+                        spike_score = excluded.spike_score,
+                        storm_score = excluded.storm_score,
+                        cfv = excluded.cfv,
+                        mos_pct = excluded.mos_pct,
+                        verdict = excluded.verdict,
+                        consecutive_avoid_quarters = excluded.consecutive_avoid_quarters,
+                        consecutive_recovery_quarters = excluded.consecutive_recovery_quarters
                     """,
                     (
                         str(_s_lar.get("symbol", "") or ""),

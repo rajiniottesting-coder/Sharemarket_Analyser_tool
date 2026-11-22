@@ -271,7 +271,7 @@ def _generate_ai_analysis(stock_list_df) -> str:
         es    = v("early_entry_score"); e_lbl = v("early_label")
         rsi   = v("rsi"); macd = v("macd_signal"); st = v("supertrend"); adx = v("adx")
         entry = v("entry_range"); sl = v("stop_loss")
-        t1    = v("t1"); t2 = v("t2"); t3 = v("t3")
+        t1    = v("t1")   # v17.21: the single live Target; T2/T3 are not sent
         hor   = v("horizon"); risk = v("risk_level")
         bs    = v("bs_status"); bs_note = v("bs_flags")
         sigs  = v("early_signals"); sm = v("smart_money_signals")
@@ -332,7 +332,7 @@ BALANCE SHEET
   Status: {bs} | {bs_note}
 
 TRADE PLAN
-  Entry: ₹{entry} | SL: ₹{sl} | T1: ₹{t1} | T2: ₹{t2} | T3: ₹{t3}
+  Entry: ₹{entry} | SL: ₹{sl} | Target: ₹{t1} (the only exit target — there is no T2/T3)
   Horizon: {hor} | Risk: {risk}
 
 CATALYST SEARCH QUERIES (use for Block H grounding):
@@ -587,7 +587,7 @@ def _cards_complete(text: str, df) -> bool:
         return True
     except Exception:
         return False
-_CARD_FORMAT_VERSION = "v17.16-compact-prompt"
+_CARD_FORMAT_VERSION = "v17.21-single-target"
 
 
 def _mark_batch(batch, text: str) -> str:
