@@ -1005,6 +1005,8 @@ TIPS: Dict[str, Tuple[str, str]] = {
                  "v16.5: TRAIL_SL (trailing-stop break-even/profit exits) are\n"
                  "EXCLUDED from this rate — they are not thesis failures."),
     "AVG DAYS → TARGET": ("Mean days from recommendation to Target hit",
+                          "Counts the same rows as the TARGET HIT tile (T1_HIT\n"
+                          "plus any older T2_HIT/T3_HIT rows).\n"
                           "How quickly winners reached the Target. Lower = faster\n"
                           "win realisation. If AVG=20, plan to hold ~3 weeks; if\n"
                           "AVG=60, expect 2 months of patience. Mean only — a few\n"
@@ -1050,10 +1052,14 @@ TIPS: Dict[str, Tuple[str, str]] = {
                      "What really happened to this pick — SL_HIT, T1_HIT,\n"
                      "TRAIL_SL, etc. This is unchanged and authoritative."),
     "Shadow Outcome": ("What a regime-aware trailing stop WOULD have done",
-                       "Observational only. A Chandelier stop that ratchets up\n"
-                       "behind the price, modulated by the stock's volatility\n"
-                       "regime. Never affects the real outcome — it's a\n"
-                       "measurement of a candidate exit rule."),
+                       "Observational only. A Chandelier stop (peak − N × ATR,\n"
+                       "N 2.5/3.0/3.5 by horizon, ±10% by volatility regime)\n"
+                       "that ratchets up behind the price, never below the\n"
+                       "original stop, armed from the first day. It keeps\n"
+                       "walking after the live trade closes, to its own end:\n"
+                       "TRAIL_SL (trail above the original stop), SL_HIT\n"
+                       "(original stop) or EXPIRED (horizon end, last close).\n"
+                       "Never affects the real outcome."),
     "Shadow P&L %": ("P&L the shadow trailing stop would have locked in",
                      "If this beats Real P&L on round-trip losses, the\n"
                      "ratcheting stop is protecting gains the frozen stop\n"
@@ -1062,8 +1068,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "Difference": ("Shadow P&L minus Real P&L, in percentage points",
                    "Positive (green) = shadow would have done better.\n"
                    "Negative (red) = shadow cut a winner short. Only shown\n"
-                   "when BOTH real and shadow have closed."),
-    "Cur. Shadow Stop": ("Today's live ratcheting shadow stop level",
+                   "when BOTH real and shadow have closed (the shadow can\n"
+                   "close weeks after the live trade)."),
+    "Cur. Shadow Stop": ("Shadow stop in force — max(original stop, trail)",
                          "For open positions: watch this climb as the stock\n"
                          "rises. It only moves UP, never down — the Chandelier\n"
                          "ratchet. Shows how the stop would protect gains in\n"
