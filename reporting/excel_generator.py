@@ -1095,7 +1095,7 @@ GLOSSARY_DATA = [
      "The tracker walks each open row's daily price history every run, refreshing current_price + max_runup + max_drawdown. Open rows become EXPIRED "
      "automatically at the end of their window if no event fires.","🎯 Performance"),
     ("PERFORMANCE","Hit Rate (T1+)",
-     "(T1_HIT + T2_HIT + T3_HIT) / CLOSED × 100. The fraction of closed picks where price reached the Target (T2_HIT / T3_HIT occur only when price gaps through the dormant spacing levels). The headline measure of system accuracy. "
+     "(T1_HIT + T2_HIT + T3_HIT) / CLOSED × 100. The fraction of closed picks where price reached the Target (since v17.21 the tracker books every target exit as T1_HIT; T2_HIT / T3_HIT can only remain on rows closed earlier that could not be restated). The headline measure of system accuracy. "
      "Heuristics: ≥60% = strong predictive value; 40-60% = useful but mixed; <40% = weak signal, review filter logic. "
      "Wait for ≥30 closed picks before drawing conclusions — sample size matters.","🎯 Performance"),
     ("PERFORMANCE","SL Rate",
@@ -1104,10 +1104,10 @@ GLOSSARY_DATA = [
      "(chasing momentum) or SL is set too tight. v16.5: TRAIL_SL (trailing-stop break-even / locked-profit exits) are EXCLUDED from this rate — they are not stop-loss failures.","🎯 Performance"),
     ("PERFORMANCE","Target Hit",
      "Headline tile TARGET HIT = T1_HIT + T2_HIT + T3_HIT. Since v17.8 there is one live Target: regime multiplier × SL distance (1.3× calm / 1.5× normal / 1.8× volatile), capped at +50%. "
-     "T2/T3 are dormant spacing levels (Target × 1.35 and × 1.35²) kept for older rows and the Continuation Audit; a T2_HIT/T3_HIT only appears when price gaps through them on one bar.","🎯 Performance"),
+     "T2/T3 are dormant spacing levels (Target × 1.35 and × 1.35²) kept only for the Continuation Audit — they are not exits. v17.21 fill model: a target exit fills at the Target, or at the day's open if the stock gapped above it; a stop exit fills at the stop, or at the open if the stock gapped below it.","🎯 Performance"),
     ("PERFORMANCE","SL Hit",
      "Count of closed picks where the daily LOW touched/breached the stop loss before any target was hit. We use daily OHLC, so on same-day ties (low ≤ SL AND high ≥ T1), "
-     "SL wins by convention — we can't tell intra-day order from daily bars.","🎯 Performance"),
+     "SL wins by convention — we can't tell intra-day order from daily bars. v17.21: when the day OPENS below the stop the exit is booked at the open, so a gap-down loss is larger than the SL %.","🎯 Performance"),
     ("PERFORMANCE","Expired",
      "Count of closed picks that reached the end of their horizon window (SHORT TERM 30 / POSITIONAL 90 / LONG TERM 270 days) without hitting the Target or a stop. Bucketed separately because they're neither wins nor losses — "
      "the stock simply drifted sideways. High Expired rate suggests targets may be too ambitious for the chosen time horizon.","🎯 Performance"),
@@ -3128,11 +3128,9 @@ class ExcelGeneratorV6:
         #
         # WHY: the outcome tracker is first-event-wins. Once T1_HIT is
         # recorded the position leaves the OPEN pool and is never walked
-        # again, and all three targets are tested on the SAME bar in
-        # descending priority (T3 → T2 → T1). So T2_HIT can only fire on a
-        # single-bar leap from below T1 to above T2 — a median 13.9
-        # percentage-point jump. The T2 HIT / T3 HIT tiles above are
-        # therefore permanent zeros by construction, not for lack of data.
+        # again. Since v17.21 the live walk books only the Target (T1) — T2/T3
+        # are never exits — so what happens after the Target is measured here
+        # and nowhere else.
         #
         # This section reads gold_continuation, a SHADOW WALK that runs from
         # the day after T1 to the position's OWN expiry date. It is purely

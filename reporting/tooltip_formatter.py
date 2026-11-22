@@ -1182,23 +1182,23 @@ TIPS: Dict[str, Tuple[str, str]] = {
     # v14.5: CLOSED POSITIONS columns
     # ────────────────────────────────────────────────────────────────────
     "Outcome": ("How this position closed",
-                "One of: T1_HIT = Target reached (T2_HIT / T3_HIT appear only\n"
-                "if price gaps through the dormant spacing levels), SL_HIT\n"
+                "One of: T1_HIT = Target reached (T2_HIT / T3_HIT can appear\n"
+                "only on rows closed before v17.21 that could not be restated), SL_HIT\n"
                 "(original stop loss breached — a real loss), TRAIL_SL\n"
                 "(trailing stop hit after a favourable run — break-even or\n"
                 "locked profit, NOT a loss), EXPIRED (no event within the\n"
                 "horizon window). Colour-coded: green = targets, red =\n"
                 "SL_HIT, blue = TRAIL_SL, amber = EXPIRED."),
     "Outcome Date": ("Calendar date when the closing event fired",
-                     "For T-HIT outcomes, this is the day the stock high crossed\n"
-                     "the target level. For SL_HIT / TRAIL_SL, the day the stock\n"
+                     "For T1_HIT, this is the day the stock high crossed\n"
+                     "the Target. For SL_HIT / TRAIL_SL, the day the stock\n"
                      "low touched the (original or trailing) stop. For EXPIRED,\n"
                      "the date = recommendation_date + expiry_days."),
     "Days to Outcome": ("Calendar days between recommendation and closing event",
-                        "Lower is faster. T1 wins often resolve in 10-30 days;\n"
-                        "T2 in 25-50; T3 in 40-90. SL_HITs are usually fast (5-15\n"
-                        "days) — meaningful info: if SL_HIT averages slower than\n"
-                        "T1_HIT, the stop is well-calibrated. TRAIL_SL exits\n"
+                        "Lower is faster. Target hits often resolve in 10-30 days.\n"
+                        "SL_HITs are usually fast (5-15 days) — meaningful info:\n"
+                        "if SL_HIT averages slower than T1_HIT, the stop is\n"
+                        "well-calibrated. TRAIL_SL exits\n"
                         "vary — they follow a favourable run then a pullback."),
     "Entry CMP": ("Closing price the day this stock was first recommended (frozen)",
                   "Same value as 'CMP at Rec' (just a shorter column name used\n"
@@ -1206,12 +1206,13 @@ TIPS: Dict[str, Tuple[str, str]] = {
                   "Frozen at log time — never updated even on re-appearance.\n"
                   "This is the reference price the realised P&L is computed from:\n"
                   "  Realised P&L % = (Outcome Price - Entry CMP) / Entry CMP × 100."),
-    "Outcome Price": ("Price at which the closing event fired (CLOSED rows only)",
-                      "  • For T1_HIT / T2_HIT / T3_HIT: the relevant target level\n"
-                      "    crossed (e.g. T1 ≈ +20% above entry).\n"
-                      "  • For SL_HIT: the original stop-loss price touched (a loss).\n"
-                      "  • For TRAIL_SL: the trailing-stop price touched after a\n"
-                      "    favourable run (break-even or locked profit — P&L ≥ 0).\n"
+    "Outcome Price": ("Price the exit would have filled at (CLOSED rows only)",
+                      "  • T1_HIT: the Target — or the day's OPEN when the stock\n"
+                      "    gapped up above the Target.\n"
+                      "  • SL_HIT: the original stop — or the day's OPEN when the\n"
+                      "    stock gapped down below it (the loss can exceed the SL %).\n"
+                      "  • TRAIL_SL: the trailing stop (or a lower open on a gap)\n"
+                      "    after a favourable run — break-even or locked profit.\n"
                       "  • For EXPIRED: the daily close on the expiry date (no\n"
                       "    SL/T event fired within the horizon window).\n"
                       "Realised P&L % = (Outcome Price - CMP at Rec) / CMP at Rec × 100."),
@@ -1318,10 +1319,9 @@ TIPS: Dict[str, Tuple[str, str]] = {
     "T2 Reached": ("Did price reach T2 after the T1 exit?",
                    "Y = daily high touched T2 before expiry, with the number\n"
                    "of days after T1 that it took. N = never got there.\n"
-                   "This is the number the T2 HIT tile could never show:\n"
-                   "the tracker is first-event-wins, so a closed position is\n"
-                   "never walked again and T2_HIT can only fire on a single-bar\n"
-                   "leap from below T1 to above T2 (median 13.9pp)."),
+                   "The live walk exits at the Target (T1) and, since v17.21,\n"
+                   "never at T2/T3 — so this audit is the only place that\n"
+                   "measures how far the stock ran after the Target exit."),
     "T3 Reached": ("Did price reach T3 after the T1 exit?",
                    "Same mechanic as T2 Reached, measured against T3.\n"
                    "Expect this to stay low — T3 is the stretch target and\n"

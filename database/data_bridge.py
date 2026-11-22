@@ -1753,6 +1753,129 @@ def get_open_recommendations() -> list:
         return []
 
 
+_REC_WALK_COLUMNS = """
+                    r.symbol, r.recommendation_date,
+                    r.cmp_at_recommendation,
+                    r.entry_low, r.entry_high,
+                    r.stop_loss, r.t1, r.t2, r.t3,
+                    r.composite_score, r.quick_pick_label,
+                    r.time_horizon,
+                    COALESCE(r.expiry_days, 90) AS expiry_days,
+                    COALESCE(r.expiry_date, '') AS expiry_date,
+                    o.last_checked_date, o.outcome_type,
+                    o.outcome_date, o.outcome_price,
+                    o.max_drawdown_pct, o.max_runup_pct
+"""
+
+
+def get_closed_recommendations(outcome_types) -> list:
+    """v17.21: closed recommendations of the given outcome types, with the
+    same columns get_open_recommendations() returns plus outcome_date /
+    outcome_price — used by the tracker's one-time exit-model restatement.
+    READ-ONLY. [] on any error."""
+    types = tuple(outcome_types or ())
+    if not types:
+        return []
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            ph = ",".join("?" * len(types))
+            df = pd.read_sql_query(f"""
+                SELECT {_REC_WALK_COLUMNS}
+                FROM gold_recommendations r
+                INNER JOIN gold_outcomes o
+                  ON r.symbol = o.symbol
+                  AND r.recommendation_date = o.recommendation_date
+                WHERE o.outcome_type IN ({ph})
+                ORDER BY r.recommendation_date ASC
+            """, conn, params=types)
+            return df.to_dict("records")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  get_closed_recommendations: {e}")
+        return []
+
+
+def get_shadow_candidates(include_final: bool = False) -> list:
+    """v17.21: positions whose shadow stop still needs walking — every row
+    (OPEN or closed live) whose shadow_status is not final
+    (TRAIL_SL / SL_HIT / EXPIRED). include_final=True returns every row.
+    Before v17.21 only live-OPEN rows were walked, so a shadow froze the day
+    the live trade closed. READ-ONLY. [] on any error."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            _where = "" if include_final else (
+                "WHERE COALESCE(o.shadow_status, '') "
+                "NOT IN ('TRAIL_SL', 'SL_HIT', 'EXPIRED')")
+            df = pd.read_sql_query(f"""
+                SELECT {_REC_WALK_COLUMNS}
+                FROM gold_recommendations r
+                INNER JOIN gold_outcomes o
+                  ON r.symbol = o.symbol
+                  AND r.recommendation_date = o.recommendation_date
+                {_where}
+                ORDER BY r.recommendation_date ASC
+            """, conn)
+            return df.to_dict("records")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  get_shadow_candidates: {e}")
+        return []
+
+
+def _ensure_migrations_table(conn) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_migrations (
+            migration_id   TEXT PRIMARY KEY,
+            applied_at     TEXT NOT NULL,
+            rows_affected  INTEGER DEFAULT 0
+        )
+    """)
+
+
+def migration_applied(migration_id: str) -> bool:
+    """v17.21: True when `migration_id` is recorded in pipeline_migrations.
+    Same marker table as the v12.0.1 allowlist purge (created if missing).
+    On a DB error returns True so a one-time job is never re-run blindly."""
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            _ensure_migrations_table(conn)
+            row = conn.execute(
+                "SELECT 1 FROM pipeline_migrations WHERE migration_id = ?",
+                (migration_id,)).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  migration_applied({migration_id}): {e}")
+        return True
+
+
+def mark_migration(migration_id: str, rows_affected: int = 0) -> bool:
+    """v17.21: record a one-time job as done (idempotent)."""
+    from datetime import datetime as _dtm
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            _ensure_migrations_table(conn)
+            conn.execute(
+                "INSERT OR IGNORE INTO pipeline_migrations "
+                "(migration_id, applied_at, rows_affected) VALUES (?, ?, ?)",
+                (migration_id, _dtm.now().strftime("%Y-%m-%d %H:%M:%S"),
+                 int(rows_affected or 0)))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  mark_migration({migration_id}): {e}")
+        return False
+
+
 def update_outcome(symbol: str, recommendation_date: str,
                    outcome_type: str, outcome_date: str = "",
                    outcome_price: float = 0,
@@ -1878,7 +2001,7 @@ def get_shadow_comparison() -> pd.DataFrame:
         conn = sqlite3.connect("market_data.db")
         try:
             return pd.read_sql_query("""
-                SELECT r.symbol, r.time_horizon,
+                SELECT r.symbol, r.recommendation_date, r.time_horizon,
                        o.outcome_type, o.current_pnl_pct,
                        o.shadow_status, o.shadow_pnl_pct,
                        o.shadow_stop_price, o.shadow_peak_price,
