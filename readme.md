@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.11-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Pipeline](https://img.shields.io/badge/pipeline-daily%20cron-orange)](./.github/workflows/market_run.yml)
-[![Version](https://img.shields.io/badge/version-v17.20.1-informational)](#version-history)
+[![Version](https://img.shields.io/badge/version-v17.21-informational)](#version-history)
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
 > ~5,200 NSE/BSE stocks → scored Excel dashboard with regime-gated Gold picks → your inbox every trading morning.
@@ -38,8 +38,9 @@ Single-user personal research tool. No UI, no server to manage. Runs on GitHub A
 - **Regime-aware stop & target** — ATR-based stop-loss scaled by horizon, sector and the stock's own volatility regime; a single **Target = regime multiplier × SL** (1.3× calm · 1.5× normal · 1.8× volatile).
 - **News & catalyst intelligence** — recent headlines per stock are read by an LLM that returns a sentiment verdict, a catalyst, a risk and results tone. Insider buy/sell, bulk-deal and regulatory flags are kept only when the model quotes the headline behind them (enforced in code); the prompt also forbids any number that does not appear in a headline. Feeds the sentiment sub-score.
 - **Real NSE pledge / promoter data** — fetched weekly from a residential IP by a scheduled local job, committed as a validated, timestamped snapshot, and used by the cloud pipeline only when fresh (≤ 14 days).
-- **Outcome tracking** — every Gold pick is logged with entry / SL / Target and walked forward daily until it hits target, stop, trailing stop or expiry. The 🎯 Performance sheet reports hit rates, speed, breakdowns, risk-adjusted returns, continuation after exit, and a survivorship audit.
-- **Shadow trailing stop** — a regime-aware Chandelier stop runs in parallel with the live exit, purely observationally, so a better exit rule can be adopted on evidence rather than intuition.
+- **Outcome tracking** — every Gold pick is logged with entry / SL / Target and walked forward daily until it hits target, stop, trailing stop or expiry. Exits are booked as a trader could have filled them: at the level, or at the day's open when the stock gaps through it (v17.21). The 🎯 Performance sheet reports hit rates, speed, breakdowns (incl. by rule version), risk-adjusted returns, continuation after exit, and a survivorship audit.
+- **Replay of every pick** — `backtest/replay_picks.py` (manual workflow *Gold_Pick_Replay*) re-walks all logged picks on real prices with the live exit model and scores four entry rules fixed in advance (trend, market regime, re-entry cooldown, MoS cap), so a strategy change is decided on evidence (v17.21).
+- **Shadow trailing stop** — a regime-aware Chandelier stop runs in parallel with the live exit, purely observationally, from the first day and until its own exit, so a better exit rule can be adopted on evidence rather than intuition.
 - **Bearish-regime resilience watchlist** — on bearish days, stocks up ≥ 5% that are outperforming the Nifty are logged (reference only, never auto-bought) so strength is not lost while Gold is suppressed.
 - **AI investor cards** — narrative cards for Gold picks and currently-held positions only, cached per day so same-day re-runs cost nothing.
 - **Forensic guards** — pledge > 20 %, Altman Z < 1.81 or Beneish M > −1.78 suppress spike alerts; Altman Z, BS Health, pledge and earnings quality are also Gold gates; Piotroski F /9 (approximated from free data) feeds the safety sub-score.
@@ -56,8 +57,9 @@ Sharemarket_Analyser_tool/
 ├── track_outcomes.py             Gold-pick outcome tracker + continuation walk + shadow trailing stop
 ├── fetch_nse_local.py            Runs on the OWNER'S machine: NSE pledge + shareholding → data/nse_snapshot.json → git push
 ├── fetch_nse_now.bat             One-click manual trigger for the above (identical to the scheduled run)
-├── reset_performance_tracking.py Guarded one-shot wipe of outcome-tracking tables (manual dispatch only)
-├── test_v13_v14_consolidated.py  Regression suite (99 guards) — `python test_v13_v14_consolidated.py`
+├── reset_performance_tracking.py Guarded one-shot wipe of outcome-tracking tables (manual dispatch only;
+│                                 for a rule change bump GOLD_RULE_VERSION instead)
+├── test_v13_v14_consolidated.py  Regression suite (106 guards) — `python test_v13_v14_consolidated.py`
 ├── requirements.txt
 ├── .env                          (local only — never committed)
 │
@@ -103,6 +105,8 @@ Sharemarket_Analyser_tool/
 │
 ├── risk/correlation_aware_sizing.py   Risk-parity position sizing
 ├── backtest/walk_forward.py           Offline hit-rate report from gold_outcomes
+├── backtest/replay_picks.py           Replays every Gold pick on real prices + scores 4 pre-set entry rules (v17.21)
+├── backtest/picks_2026H2.csv          49 picks (Jul–Oct 2026) rebuilt from the dashboards (v17.21)
 │
 ├── database/
 │   ├── data_bridge.py            Schema + all query helpers
@@ -126,6 +130,7 @@ Sharemarket_Analyser_tool/
 ├── scripts/seed_holidays.py      One-off holiday-calendar seeding
 └── .github/workflows/
     ├── market_run.yml            Daily pipeline
+    ├── replay.yml                Manual: replay every Gold pick on the latest DB (v17.21)
     └── keep_alive.yml            Prevents GitHub from disabling scheduled workflows
 ```
 
@@ -205,7 +210,9 @@ Without LLM credentials the pipeline still runs end to end: news sentiment is sk
 
 **Steps, in order:** checkout · Python 3.11 · dependencies · restore AI card cache · restore `market_data.db` artifact · show DB size · auto-backfill when `daily_prices` < 50,000 rows · *(manual only)* performance reset · run `master_funnel.py` · delete the old DB artifact · upload the new one · show DB size.
 
-**Manual run options:** *Actions → NSE_BSE_Daily_Pipeline → Run workflow*. Leave `reset_performance` blank for a normal run. Typing `RESET-PERFORMANCE` wipes `gold_recommendations`, `gold_outcomes` and `gold_continuation` before the run — irreversible, and it can never fire on the schedule.
+**Manual run options:** *Actions → NSE_BSE_Daily_Pipeline → Run workflow*. Leave `reset_performance` blank for a normal run. Typing `RESET-PERFORMANCE` wipes `gold_recommendations`, `gold_outcomes` and `gold_continuation` before the run — irreversible, and it can never fire on the schedule. For a rule change, bump `GOLD_RULE_VERSION` in `master_funnel.py` instead: every pick carries its rule version and the Performance sheet compares versions, so no open pick loses its outcome.
+
+**Replay (v17.21):** *Actions → Gold_Pick_Replay → Run workflow* (`exit_mode` logged or uniform) downloads the latest `market-data-db` artifact, replays every Gold pick and uploads `replay-results` (CSV + summary). Read-only — it never changes the DB.
 
 **Persistence:**
 - `market_data.db` (SQLite, ~730 MB after the daily VACUUM) lives only as the workflow artifact `market-data-db` (30-day retention), downloaded at the start of each run and re-uploaded at the end. It is never committed — any schema change must run as a workflow step.
@@ -264,8 +271,9 @@ Section 6       Scoring — sub-scores → composite → verdict → storm/spike
 Section 9/10    Held-monitor rows set aside · ETF-leak prune
                 Market-regime gate (Nifty vs 20-day SMA, 2% tolerance)
                 Resilience watchlist refresh (bearish days only)
-                Save today's scores (Alert Log baseline) · allowlist prune
-                Log today's Gold picks → outcome tracker
+                Save today's scores (Alert Log baseline = previous trading date) · allowlist prune
+                Log today's Gold picks (sized at log time, rule version) →
+                held stocks shown with their tracked levels → outcome tracker
                   (live trailing stop · shadow stop · continuation walk)
 Section 7/8     AI investor cards — Gold picks + open positions only, per-day cache
 Section 9/10    8-sheet Excel + text research report
@@ -313,13 +321,15 @@ Missing forensic data (`—`) passes the forensic gates so small caps without fo
 
 **Stop-loss** — `ATR-14 × horizon multiplier (SHORT 2.5 · POSITIONAL 3.5 · LONG 5.0)`, adjusted for sector volatility tier and the stock's own volatility regime (current ATR vs its 1-year / 252-trading-day average: ±10%), floored at volume-confirmed support, bounded to **4.5%–15%**, with SHORT TERM capped at **7%**.
 
-**Target** — a single level: `Target = regime multiplier × SL` — **1.3×** in a calm regime, **1.5×** normal, **1.8×** volatile — with a 50% sanity ceiling against corrupt inputs. Fair value and horizon caps no longer set the target. The multipliers are starting values, to be reviewed once enough positions have closed. T2/T3 are kept only as dormant spacing levels (Target × 1.35, × 1.35²) so older rows and the continuation audit still work.
+**Target** — a single level: `Target = regime multiplier × SL` — **1.3×** in a calm regime, **1.5×** normal, **1.8×** volatile — with a 50% sanity ceiling against corrupt inputs. Fair value and horizon caps no longer set the target. The multipliers are starting values, to be reviewed once enough positions have closed. T2/T3 are kept only as dormant spacing levels (Target × 1.35, × 1.35²) for the continuation audit; since v17.21 they are never exits.
+
+**Fills (v17.21)** — a stop is booked at the stop, or at the day's open when the stock opens below it (so a gap-down loss can exceed the SL %); the Target is booked at the Target, or at the open when the stock opens above it. Closed rows were re-walked once with this rule (only where the exit day is unchanged).
 
 **Live trailing stop** — ratchets the stop up as the peak gain grows: ≥ 25% → lock +12%, ≥ 20% → +9%, ≥ 15% → +5%, and ≥ 12% **with at least 10 days held** → break-even (only the break-even step has the day gate). Below that the original SL protects. Exits at a trailing level are recorded as `TRAIL_SL`, not as a stop-loss failure. The Performance sheet's *Trailing* column shows the level currently locked (`BE locked`, `+5% locked`, `+9% locked`, `+12% locked`).
 
-**Shadow trailing stop (observational)** — every day, for every open position: Chandelier floor = `peak since entry − N × ATR × regime adjustment` (N = 2.5 / 3.0 / 3.5 by horizon), ratcheting up only, with no look-ahead. It never affects a live exit; the Performance sheet compares real vs shadow outcomes so the rule can be promoted on evidence.
+**Shadow trailing stop (observational)** — every day, for every position until the shadow itself exits: Chandelier floor = `peak since entry − N × ATR × regime adjustment` (N = 2.5 / 3.0 / 3.5 by horizon), never below the original stop, ratcheting up only, with no look-ahead. Since v17.21 it is armed from the first day (ATR seeded from pre-entry prices) and keeps walking after the live trade closes, ending as TRAIL_SL, SL_HIT or EXPIRED. It never affects a live exit; the Performance sheet compares real vs shadow outcomes so the rule can be promoted on evidence.
 
-Levels are **frozen at the moment a pick is logged**. The percentage shown beside each level on the Performance sheet is the distance from *today's* price, so it changes as the stock moves while the level itself does not.
+Levels are **frozen at the moment a pick is logged**. The percentage shown beside each level on the Performance sheet is the distance from *today's* price, so it changes as the stock moves while the level itself does not. Since v17.21 a stock that is already held shows those frozen levels and its logged allocation on every sheet ("Held since <date> — tracked levels"), and same-day picks in one sector are sized one after the other so they share the 30% sector headroom.
 
 ---
 
@@ -345,10 +355,10 @@ Verdicts are cap-aware; thresholds live in `analysis/scoring_engine.py`.
 
 1. **📊 Full Dashboard** — up to 100 stocks × 126 columns (fewer when ETF/fund leakers are pruned). Row 2 states the header colour legend and the NSE snapshot's fetch time and age. AI analyst notes are not on this sheet — they appear on the Gold sheet and, for open positions, in the Performance sheet's AI Card column. News columns include Key Catalyst, News Sentiment, Primary Risk, *Insider (news)*, *Bulk Deal* and *Reg Flag*. Red headers mark the few columns that genuinely have no free source.
 2. **⭐ Gold – Early Movers** — the 15-condition filter; row 2 shows the criteria and, on bearish days, the suppression notice. Below it, the **Bearish-Regime Standouts** watchlist (or a greyed *Recent Resilience* strip on bullish days).
-3. **📊 Trade Summary** — Entry range / Stop Loss / Target / R:R / horizon / risk level for Gold picks.
-4. **🔔 Alert Log** — today's score vs yesterday's with an action label (`SCORE DEGRADED` fires only on a genuine ≥ 3-point drop; weak-but-stable names show `LOW SCORE`).
+3. **📊 Trade Summary** — Entry range / Stop Loss / Target / R:R / horizon / risk level for Gold picks (one value per header since v17.21).
+4. **🔔 Alert Log** — today's score vs the previous trading date's (also on a second run the same day, v17.21) with an action label (`SCORE DEGRADED` fires only on a genuine ≥ 3-point drop; weak-but-stable names show `LOW SCORE`).
 5. **📱 Delivery Preview** — WhatsApp / email text preview.
-6. **🎯 Performance** — in sheet order: headline metrics (Target hit / SL / Expired / Trail SL), speed metrics, diagnostic breakdowns (score band · archetype · sector · horizon), closed positions, risk-adjusted returns (Sharpe · Sortino · Calmar · drawdown duration), open positions (original SL, Target, trailing-lock state, regime, suggested allocation, Score Band, Archetype, Sector and an **AI Card** per held stock), missed-runup diagnostic, continuation audit, shadow exit comparison and survivorship audit. A banner warns until 30 positions have closed.
+6. **🎯 Performance** — in sheet order: headline metrics (Target hit / SL / Expired / Trail SL), speed metrics, diagnostic breakdowns (score band · archetype · sector · horizon · rule version), closed positions, risk-adjusted returns (Sharpe · Sortino · Calmar · drawdown duration), open positions (original SL, Target, trailing-lock state, regime, suggested allocation, Score Band, Archetype, Sector and an **AI Card** per held stock), missed-runup diagnostic, continuation audit, shadow exit comparison and survivorship audit. A banner warns until 30 positions have closed.
 7. **📖 Glossary** — column definitions.
 8. **📖 Tooltip Reference** — every header tooltip in one place.
 
@@ -391,6 +401,7 @@ Most recent first. Earlier entries are preserved as written at the time.
 
 | Version | Key change |
 |---|---|
+| **v17.21** | **Performance numbers a trader could actually have got.** An audit of the 19-Oct-2026 dashboard (code unchanged since) found: the tracker still booked the hidden T2/T3 (SUNTV +14.2% instead of the +10.5% Target); every exit was booked at the level even on a gap (SHREERAMA fell 17.6% on day 1, booked −7.0%); DD Recovery Rate showed 100% because a stored 0 was read as 1; AVG DAYS → TARGET ignored T2 rows; the shadow stop was unarmed for 14 days, ignored the original stop and froze when the live trade closed; same-day picks in one sector were each given the full headroom (Consumer Cyclical 40.9% vs the 30% cap); held stocks were shown with levels re-computed from today's price; Trade Summary values sat one-two columns right of their headers; a same-day re-run compared with that morning's run (two SCORE DEGRADED alerts lost); AI cards still received T2/T3; plus a few display slips (Support 2 above the price, P/E 500, "SPIKE ALERTS: 0", "+0", "v6.2"). All fixed — single Target with open-price fills and a one-time restatement of closed rows, shadow stop armed from day 1 and walked to its own end, log-time sizing from logged allocations, tracked levels for held stocks, previous-trading-date comparisons, and the display fixes. Two resets had deleted 26 open picks, so every pick now carries a **rule version** (compare versions instead of resetting) and a new **replay tool** re-walks all 49 picks since July on real prices and scores four pre-set entry rules (trend, regime, cooldown, MoS cap) before any strategy change. Tooltips and glossary updated. New G48–G54, each mutation-checked; 106/106 on Linux and Windows-like. |
 | **v17.20.1** | **A partial NSE fetch no longer wipes the pledge data.** On 27-Sep and 11-Oct-2026 (both Sundays) NSE returned an empty pledge list while shareholding worked, and `fetch_nse_local.py` wrote `pledge {}` over ~340 good rows, so Pledge % was blank until the next fetch. It now checks the previous snapshot with the pipeline's own freshness rule: if a list came back empty and the previous file is still usable and has rows for it, that file is kept untouched and the script exits 3 (explained by `fetch_nse_now.bat`). A stale or missing previous file still gets the partial snapshot. The weekly trigger stays on Sunday; a missed or `0x3` run is covered by an ad hoc `fetch_nse_now.bat`. No pipeline or scoring logic changed. New G47 (99/99, Linux and Windows-like). |
 | **v17.20** | **Empty Gold sheet explained in the run log.** On 10-Oct-2026 the Gold sheet was empty on a BULLISH day and the log only said "logged 0 Gold pick(s)". The 15 Gold gates now live in one list (`_gold_gates()`), which the Gold filter uses unchanged; when the sheet is empty the log prints 🥇 lines with the gate-by-gate funnel, the gate that emptied it and the stocks that were one gate short with the failing value (on BEARISH days, the regime gate and how many stocks it held back). No gate, threshold or score changed — old and new filter agree on 324 comparisons incl. 22 real dashboards. New G46 (98/98, Linux and Windows-like). |
 | **v17.19.1** | **Test suite runs on Windows.** The suite's scratch DBs and workbooks used hard-coded `/tmp` paths, which do not exist on Windows, so 29 DB-backed tests failed there with "unable to open database file" (67/96) while passing on Linux. They now use the OS temp directory with unique names and lock-tolerant cleanup; new G45 rejects POSIX-only paths in any project file. 97/97 on Linux and in a Windows-like run. Test file only — no pipeline change. |
