@@ -812,17 +812,37 @@ def save_to_database(df=None, nse_data=None, bse_data=None,
                      nse_del=None, bse_del=None,
                      sme_nse=None, sme_bse=None,
                      participant_data=None,
-                     table: str = "daily_prices") -> None:
+                     table: str = "daily_prices",
+                     trade_date=None) -> None:
     """
     Saves market data to SQLite.
     Accepts EITHER a single positional df OR named keyword streams.
     None streams are silently skipped.
+
+    v17.22: trade_date = the trading day the data belongs to (master_funnel
+    passes target_date). Every row without a date of its own is stored under
+    it. Before v17.22 the rows were stamped with date.today() — the GitHub
+    runner's clock, which is UTC — so every run that started after 00:00 UTC
+    (86 of the 100 runs up to 21-Nov-2026) stored the bars one day late:
+    Friday's bar as Saturday, Monday's as Tuesday. The outcome tracker walks
+    the bars AFTER the pick date, so its first bar was the pick day's own bar.
+    standardize_to_v7_schema() keeps no date column, so this stamp is the only
+    date the bars get.
     """
     conn = sqlite3.connect("market_data.db")
     try:
         initialize_v7_tables(conn)
         from datetime import date as _date
-        today_str = _date.today().strftime("%Y-%m-%d")
+        if trade_date is not None and str(trade_date).strip():
+            today_str = (trade_date.strftime("%Y-%m-%d") if hasattr(trade_date, "strftime")
+                         else str(trade_date).strip()[:10])
+        else:
+            today_str = _date.today().strftime("%Y-%m-%d")
+            if (table == "daily_prices" and df is None
+                    and any(isinstance(x, pd.DataFrame) and not x.empty
+                            for x in (nse_data, bse_data, sme_nse, sme_bse))):
+                print(f"   ⚠️  save_to_database: no trade_date given — price rows stamped with "
+                      f"the runner's date {today_str}")
 
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             if table == "bulk_deals":
@@ -1950,6 +1970,32 @@ def get_shadow_candidates(include_final: bool = False) -> list:
     except Exception as e:
         print(f"   ⚠️  get_shadow_candidates: {e}")
         return []
+
+
+def delete_continuation_rows(keys) -> int:
+    """v17.22: drop gold_continuation rows for (symbol, recommendation_date)
+    pairs whose live outcome was re-checked and changed, so the continuation
+    pass re-seeds them from the corrected outcome. Touches gold_continuation
+    only. Returns rows deleted (0 on any error)."""
+    keys = [(str(a), str(b)) for a, b in (keys or [])]
+    if not keys:
+        return 0
+    try:
+        conn = sqlite3.connect("market_data.db")
+        try:
+            cur = conn.cursor()
+            n = 0
+            for sym, rd in keys:
+                cur.execute("DELETE FROM gold_continuation WHERE symbol = ? "
+                            "AND recommendation_date = ?", (sym, rd))
+                n += max(cur.rowcount, 0)
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"   ⚠️  delete_continuation_rows: {e}")
+        return 0
 
 
 def _ensure_migrations_table(conn) -> None:
