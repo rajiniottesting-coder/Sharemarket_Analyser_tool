@@ -1,10 +1,11 @@
 name: Gold_Pick_Replay
 
-# v17.21 — manual only. Re-walks every Gold pick (backtest/picks_2026H2.csv +
-# gold_recommendations) on the prices in the latest market_data.db artifact
-# with the live exit model, and scores four entry rules fixed in advance
-# (trend, market regime, re-entry cooldown, MoS cap). READ-ONLY: it downloads
-# the DB artifact, never uploads or changes it, and never touches the daily
+# v17.21 — manual only (v17.22: split_date input). Re-walks every Gold pick
+# (backtest/picks_2026H2.csv + gold_recommendations) on the prices in the
+# latest market_data.db artifact with the live exit model, and scores four
+# entry rules fixed in advance (trend, market regime, re-entry cooldown, MoS
+# cap) plus the DEEP VALUE probation rule (R5). READ-ONLY: it downloads the
+# DB artifact, never uploads or changes it, and never touches the daily
 # pipeline. Results: artifact "replay-results" (CSV + Markdown summary).
 on:
   workflow_dispatch:
@@ -15,6 +16,12 @@ on:
           uniform = logged stop, Target = 1.5 x stop distance for every pick
         required: false
         default: 'logged'
+      split_date:
+        description: >-
+          first pick date of the forward window (YYYY-MM-DD); empty = the
+          DEEP VALUE probation start date
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -48,13 +55,21 @@ jobs:
           if_no_artifact_found: fail
 
       - name: Replay Gold picks
+        # Inputs are passed through env, never pasted into the script text.
+        env:
+          IN_EXIT_MODE: ${{ github.event.inputs.exit_mode }}
+          IN_SPLIT_DATE: ${{ github.event.inputs.split_date }}
         run: |
-          MODE="${{ github.event.inputs.exit_mode }}"
+          MODE="$IN_EXIT_MODE"
           if [ "$MODE" != "uniform" ]; then MODE="logged"; fi
+          SPLIT="$IN_SPLIT_DATE"
+          SPLIT_ARG=""
+          if echo "$SPLIT" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then SPLIT_ARG="--split-date $SPLIT"; fi
           python3 backtest/replay_picks.py \
             --picks backtest/picks_2026H2.csv \
             --db market_data.db \
             --exit "$MODE" \
+            $SPLIT_ARG \
             --out replay_results.csv
 
       - name: Upload replay results

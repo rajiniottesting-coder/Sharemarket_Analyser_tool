@@ -7115,6 +7115,85 @@ def test_g56_v17_22_deep_value_probation_is_display_only():
     return "✅ v17.22: DEEP VALUE probation — split, sheets, preview, logging unchanged, rule, forward test (A–F)"
 
 
+def test_g57_v17_22_replay_counts_each_position_once_and_reports_r():
+    """v17.22: fixes to backtest/replay_picks.py found reading the first
+    replay (23-Nov-2026).
+      A. a re-pick while the stock is still open (or closes that day) is not
+         counted; a re-pick after the close is
+      B. the summary names the exit mode; --from-csv re-summarises a result
+         and infers the mode
+      C. averages over closed picks only; R = P&L ÷ stop distance;
+         one-sided Fisher p (others 8/13 vs DEEP VALUE 7/32 = 0.0146)
+      D. R4 treats a missing cap as n/a (it counted as a known small cap)
+      E. R5 = not DEEP VALUE, same test as the sheets; forward window verdict
+      F. replay.yml passes its inputs through env and validates split_date
+    """
+    import os, tempfile, importlib
+    import pandas as _pd
+    from backtest import replay_picks as rp
+    importlib.reload(rp)
+    from analysis.deep_value_probation import is_on_probation
+
+    def row(sym, rd, outcome, od, pnl, label="DEEP VALUE", cmp_=100.0, sl=93.0, t1=110.5, tu=None, **kw):
+        d = dict(symbol=sym, recommendation_date=rd, outcome=outcome, outcome_date=od, pnl_pct=pnl,
+                 quick_pick_label=label, cmp_at_recommendation=cmp_, stop_loss=sl, t1=t1,
+                 target_used=t1 if tu is None else tu, time_horizon="SHORT TERM", mos_pct=30.0,
+                 cap_category="SMALL CAP", close_vs_sma50_pct=1.0, rs_63d_pp=1.0, nifty_vs_sma20_pct=0.5,
+                 origin="db")
+        d.update(kw)
+        return d
+    df = _pd.DataFrame([
+        row("A", "2026-09-01", "SL_HIT", "2026-09-10", -7.0),
+        row("A", "2026-09-05", "SL_HIT", "2026-09-10", -7.0),        # open from 01-Sep → not counted
+        row("A", "2026-09-10", "T1_HIT", "2026-09-20", 10.5),        # closes on its date → not counted
+        row("A", "2026-09-11", "T1_HIT", "2026-09-21", 10.5, label="WATCHLIST"),   # after the close → counted
+        row("B", "2026-09-02", "OPEN", None, -3.5, label="WATCHLIST"),
+        row("B", "2026-10-02", "SL_HIT", "2026-10-09", -7.0),        # B still open → not counted
+        row("C", "2026-09-03", "EXPIRED", "2026-10-03", 3.5, label="WATCHLIST", cap_category=float("nan"), mos_pct=75.0),
+    ])
+    out, md = rp.finish(df.copy(), "logged", "2026-09-11")
+    cnt = dict(zip(zip(out.symbol, out.recommendation_date), out.counted))
+    assert cnt == {("A", "2026-09-01"): True, ("A", "2026-09-05"): False, ("A", "2026-09-10"): False,
+                   ("A", "2026-09-11"): True, ("B", "2026-09-02"): True, ("B", "2026-10-02"): False,
+                   ("C", "2026-09-03"): True}, f"A: {cnt}"
+    assert "Exit mode: **logged**" in md and "counted: 4" in md and "closed: 3" in md, f"B: {md[:400]}"
+    # C: closed-only average (A −7, A +10.5, C +3.5) and R
+    assert "| Counted picks | 4 | 3 | 1 | 1 | 66.7 | +2.33 |" in md, f"C: overall row {[l for l in md.splitlines() if 'Counted picks' in l]}"
+    a1 = out[(out.symbol == "A") & (out.recommendation_date == "2026-09-01")].iloc[0]
+    assert abs(a1["r_multiple"] + 1.0) < 1e-9 and abs(a1["risk_pct"] - 7.0) < 1e-9, f"C: R {a1['r_multiple']}"
+    assert abs(rp.fisher_p(8, 13, 7, 32) - 0.0146) < 0.0005, f"C: Fisher {rp.fisher_p(8, 13, 7, 32)}"
+    assert rp.fisher_p(0, 0, 3, 5) is None, "C: empty group"
+    # D
+    c_row = out[out.symbol == "C"].iloc[0]
+    assert c_row["R4_mos_cap"] is None or _pd.isna(c_row["R4_mos_cap"]), f"D: missing cap → n/a, got {c_row['R4_mos_cap']}"
+    # E
+    assert all((v is None or _pd.isna(v)) or bool(v) == (not is_on_probation(l))
+               for v, l in zip(out["R5_deep_value"], out["quick_pick_label"])), "E: R5 must mirror is_on_probation"
+    assert "## Forward window — picks dated on or after 2026-09-11" in md and "Probation decision rule: **WAIT**" in md, \
+        "E: forward window"
+    # B: --from-csv + exit-mode inference
+    tmpd = tempfile.mkdtemp()
+    try:
+        p = os.path.join(tmpd, "old.csv")
+        df2 = df.copy()
+        df2.loc[0, "target_used"] = 111.0          # differs from t1 → uniform
+        df2.to_csv(p, index=False)
+        assert rp.main(["--from-csv", p, "--split-date", "2026-09-11"]) == 0
+        txt = open(os.path.join(tmpd, "old_resummary.md"), encoding="utf-8").read()
+        assert "Exit mode: **uniform**" in txt and "counted: 4" in txt, f"B: {txt[:300]}"
+        assert os.path.exists(p), "B: the input file must not be replaced"
+    finally:
+        import shutil; shutil.rmtree(tmpd, ignore_errors=True)
+    # F
+    wf = open(_src_path('.github/workflows/replay.yml'), encoding='utf-8').read()
+    run = wf[wf.find("- name: Replay Gold picks"):wf.find("- name: Upload replay results")]
+    assert "IN_EXIT_MODE: ${{ github.event.inputs.exit_mode }}" in run and "split_date" in wf, "F: env inputs"
+    script = run[run.find("run: |"):]
+    assert "${{" not in script, "F: no ${{ }} expression inside the script text"
+    assert "grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'" in script, "F: split_date must be validated"
+    return "✅ v17.22: replay — one position per stock, exit mode named, closed-only averages + R + p, R4 n/a, R5, workflow (A–F)"
+
+
 # ════════════════════════════════════════════════════════════════════════
 # RUN
 # ════════════════════════════════════════════════════════════════════════
@@ -7313,6 +7392,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g54_v17_21_replay_tool_walks_picks_with_the_live_exit_model))
     v14_1_results.append(_run_one_test(test_g55_v17_22_price_bars_stored_under_the_trading_date))
     v14_1_results.append(_run_one_test(test_g56_v17_22_deep_value_probation_is_display_only))
+    v14_1_results.append(_run_one_test(test_g57_v17_22_replay_counts_each_position_once_and_reports_r))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
