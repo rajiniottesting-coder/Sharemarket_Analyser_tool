@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v17.22 · November 2026
+## AI Context File · v17.22.1 · November 2026
 
 This file gives Claude (or any AI assistant) the project context needed to understand, debug or extend this codebase. **Read it first** before making any change.
 
@@ -46,10 +46,8 @@ Sharemarket_Analyser_tool/
 ├── reset_performance_tracking.py Guarded wipe of the 3 outcome tables (workflow manual-dispatch only;
 │                                 since v17.21 bump GOLD_RULE_VERSION instead for a rule change)
 ├── test_v13_v14_consolidated.py  Regression suite — 109 guards, all green on Linux and Windows (v17.22)
-├── test_v11.0.2_full_withdummies.py  ⚠ NOT the deep ScoringEngine suite any more: overwritten on 16-May-2026
-│                                     (commit a09ba4c) with a stale copy of the consolidated suite (70/84 on
-│                                     current code). The real deep suite is in git history at d2f301a
-│                                     (524 pass / 18 drifted on v17.19 code) — see §20
+│                                 (the deep ScoringEngine suite test_v11.0.2_full_withdummies.py lives in
+│                                  git history at d2f301a — its stale repo copy was removed in v17.22.1; §20)
 ├── test_run.py · test_yfinance.py    Manual helpers (not part of the suite)
 ├── requirements.txt              pandas numpy openpyxl requests pytz twilio python-dotenv flask bse cloudscraper yfinance curl_cffi
 ├── CLAUDE.md · readme.md · pipeline_reference.html · scoring_logic_3Stagefunnel_explained.md
@@ -73,8 +71,8 @@ Sharemarket_Analyser_tool/
 │   ├── fair_value_engine.py      7 FV models + composite FV + MoS (+ cfv_capped / thin-model guard)
 │   ├── forensics_engine.py       Altman Z, real 8-variable Beneish M, ND/EBITDA, CCC, earnings quality, inline yfinance fetch
 │   ├── fundamental_engine.py     Graham, PEG, Piotroski F
-│   ├── technical_engine.py · spike_screener.py · early_detection_engine.py · bs_engine.py
-│   ├── ownership_tracker.py · rotation_engine.py · smart_money.py · market_context.py · v7_analysis_engine.py
+│   ├── spike_screener.py · early_detection_engine.py · bs_engine.py
+│   ├── ownership_tracker.py · rotation_engine.py · smart_money.py · v7_analysis_engine.py
 │   ├── news_sentiment.py         v17.9/v17.11 — Google News RSS → LLM → sentiment + evidenced facts
 │   ├── deep_value_probation.py   v17.22 — DEEP VALUE probation: label test, R, forward-test decision rule
 │   ├── risk_metrics.py           Sharpe / Sortino / Calmar (v16.0)
@@ -88,7 +86,6 @@ Sharemarket_Analyser_tool/
 ├── backtest/picks_2026H2.csv          v17.21 — 49 picks (20-Jul → 15-Oct-2026) rebuilt from the dashboards
 ├── database/
 │   ├── data_bridge.py            Schema + migrations + every query helper (outcome, continuation, shadow, resilience…)
-│   ├── database_manager.py       Connection management
 │   ├── price_date_repair.py      v17.22 — one-time re-dating of daily_prices (Yahoo anchor closes, logged)
 │   └── db_maintenance.py         400-day rolling window (KEEP_DAYS)
 ├── ai/ai_analyst.py              LLM investor notes (Block H) — compact prompt, batches of 4, per-day cache
@@ -131,7 +128,7 @@ Created by `backfill_history.py::init_all_tables()` (full set on cold start), `d
 | `v7_intelligence` · `watchlist` · `run_stats` · `market_holidays` | as named |
 | `dual_listed_runtime` | Runtime dual-listed allowlist (v11.0.2; write-time guarded v17.17) |
 | `failed_yfinance_lookups` | 30-day cache of yfinance 404s (v12.8) |
-| `pipeline_migrations` | One-time migration markers (v12.0.1 allowlist purge · `v17_21_exit_model` · `v17_22_price_dates` · `v17_22_outcome_recheck`) |
+| `pipeline_migrations` | One-time migration markers (`v12_0_1_runtime_allowlist_purge` — its code was removed in v17.22.1 · `v17_21_exit_model` · `v17_22_price_dates` · `v17_22_outcome_recheck`) |
 | `price_date_repair_log` | v17.22 — one row per stored date label checked by the one-time repair: true date, SAME / MOVE / UNCLEAR, anchors used, median close difference of the best and next-best day, rows, dropped duplicate flag. Lets the repair be checked or undone |
 | `gold_recommendations` | **Append-only** log of every Gold pick: entry range, SL, `t1` (= the Target), dormant `t2`/`t3`, CFV, MoS, score, archetype, `time_horizon`, `expiry_days/expiry_date`, `times_reappeared`, audit fields (`original_stop_loss`, `atr_at_rec`, `regime_at_rec`, `next_earnings_date`), `suggested_alloc_pct`, `alloc_rationale`, `rule_version` (v17.21 — `GOLD_RULE_VERSION` at log time; '' before v17.21) |
 | `gold_outcomes` | One row per recommendation (PK `(symbol, recommendation_date)`): `outcome_type` ∈ {OPEN, T1_HIT, T2_HIT, T3_HIT, SL_HIT, TRAIL_SL, EXPIRED}, outcome date/price, max runup/drawdown, current price/P&L, trailing stop (`trailing_sl_pct`, `trailing_sl_price`, `peak_price_seen`), DD duration, `shadow_*` columns (v17.7; `shadow_status` ∈ {OPEN, TRAIL_SL, SL_HIT, EXPIRED} since v17.21) |
@@ -145,8 +142,7 @@ Outcome tables (`gold_recommendations`, `gold_outcomes`, `gold_continuation`) ar
 ## 4. PIPELINE EXECUTION ORDER (`master_funnel.py::run_master_pipeline`)
 
 ```
-Startup       initialize_v7_tables · defensive schema init (v10.5) ·
-              Section 12A.5 one-time v12.0.1 allowlist purge (marker-gated, already done)
+Startup       initialize_v7_tables · defensive schema init (v10.5)
 Section 12B   Gate check (ingestion.orchestrator.gate_check)
                 C1 weekday · C2 NSE holiday (fail-closed) · C3 NSE bhav HEAD (+1 retry)
                 C4 BSE — never blocks · C5 watchlist — skipped
@@ -415,7 +411,7 @@ Same annualization applied to Capex/Rev (capex is annual; uses `revenue` first, 
 
 **Header colours.** Red `991B1B` = column in `NO_FREE_SOURCE_COLS` with < 30 % of rows populated (`_COVERAGE_MIN`, v12.4; Gold sheet uses the same rule, v12.5). Amber = AI-generated column (`NEEDS_AI_CREDITS`; only on the Gold sheet now). Otherwise the band colour.
 
-**Tooltips.** `self._apply_col_tips()` → `tooltip_formatter.apply_tooltips()` (hover note + ⓘ cue + link to the reference sheet). `TIPS` is the single source of truth; the legacy `_HDR_TIPS` dict in excel_generator is unused (kept in sync for external readers). Shared headers on the Performance sheet (P&L %, Max Runup %, Days Held …) must read correctly for both OPEN and CLOSED rows (v15.9, G26).
+**Tooltips.** `self._apply_col_tips()` → `tooltip_formatter.apply_tooltips()` (hover note + ⓘ cue + link to the reference sheet). `TIPS` is the single source of truth (the unused legacy `_HDR_TIPS` dict was removed in v17.22.1). Shared headers on the Performance sheet (P&L %, Max Runup %, Days Held …) must read correctly for both OPEN and CLOSED rows (v15.9, G26).
 
 **Width rule.** Performance-sheet columns are shared by several sections — widths go through `_set_min_width()` (widen-only). Never assign `.width =` there (v17.1/v17.1.1, G35).
 
@@ -757,8 +753,8 @@ _V14_6_SL_MIN_PCT / _MAX = 4.5 / 15.0 (v15.1)
 _V17_SHORT_TERM_SL_MAX_PCT = 7.0     # v17.0
 _V14_6_TARGET_RR_BY_REGIME = {low 1.3, neutral 1.5, normal 1.5, high 1.8}   # v17.8.1 LIVE
 _V14_6_TARGET_SANITY_CEILING_PCT = 50.0
-# Dormant since v17.8.1 (still defined, no longer used for targets):
-#   _V14_6_HORIZON_T1_CAP_BASE, _V14_6_HORIZON_T3_HARD_CAP; T2/T3 = T1 × 1.35, × 1.35²
+# T2/T3 = T1 × 1.35, × 1.35² (dormant spacing levels for the continuation audit).
+# The horizon T1/T3 cap constants (unused since v17.8.1) were removed in v17.22.1.
 
 # Outcome tracking (track_outcomes.py / data_bridge.py)
 EXPIRY_DAYS              = {SHORT TERM 30, POSITIONAL 90, LONG TERM 270}; DEFAULT_EXPIRY_DAYS = 90
@@ -1014,7 +1010,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 - [ ] BSE delivery file missing and BSE SME download failing on every run checked → BSE-only stocks get delivery 0 and always drop at Stage 1 V3. After the logic freeze: treat missing delivery as unknown (Stage 1 V3 and Stage 2 HD2 both read it) or find a working BSE delivery source. Also fix the Section 1.5 log's "N+ inactive/delisted skipped", which is 8,711 − N from a hard-coded constant.
 - [x] Per-gate Gold-funnel log line — done in v17.20 (🥇 lines when the Gold sheet is empty).
 - [ ] Optional: wire `LLM_MAX_TOKENS` / `LLM_REASONING_EFFORT` / `NEWS_MAX_TOKENS` into the workflow as repository Variables.
-- [ ] Restore the deep ScoringEngine suite: `git show d2f301a:test_v11.0.2_full_withdummies.py` — 524 pass / 18 fail on v17.19 code. Categorised from their messages (57.14/57.15 also read in code), all 18 look like assertion drift rather than production bugs: 8 allowlist tests vs the v17.17 ISIN-evidence guard, 2 Gemini-string checks (provider removed v17.10), 2 placeholder-format checks, 2 corp-info QoQ parser tests (endpoint replaced v17.13.3), and 4 technicals tests whose fixture reads the first `technical_indicators` row per symbol (historical ATR rows exist since v15.2). Update those assertions, then run both suites.
+- [ ] Restore the deep ScoringEngine suite: `git show d2f301a:test_v11.0.2_full_withdummies.py` (the stale 70/84 copy that sat in the repo under that name was removed in v17.22.1) — 524 pass / 18 fail on v17.19 code. Categorised from their messages (57.14/57.15 also read in code), all 18 look like assertion drift rather than production bugs: 8 allowlist tests vs the v17.17 ISIN-evidence guard, 2 Gemini-string checks (provider removed v17.10), 2 placeholder-format checks, 2 corp-info QoQ parser tests (endpoint replaced v17.13.3), and 4 technicals tests whose fixture reads the first `technical_indicators` row per symbol (historical ATR rows exist since v15.2). Update those assertions, then run both suites.
 - [ ] 0-vs-missing SQL `COALESCE` cleanup (deferred since v12.4).
 
 **Long-standing backlog (carried from the v17.3 list; still open in the code):**
@@ -1059,6 +1055,16 @@ git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PART B — VERSION HISTORY (newest first)
 
 Entries from v17.3 downwards are preserved as written at the time. Where they describe behaviour that later changed, Part A is authoritative.
+
+### v17.22.1 — Remove dead code and files · 23 Nov 2026
+
+**Why.** Owner asked for the unnecessary entries to be removed after v17.22. Every candidate was checked for imports and references across the .py, .yml, .bat and .txt files before removal.
+
+**Removed.** Modules no file imports: `analysis/technical_engine.py` (needed `pandas_ta`, which is not installed; indicators are computed in `backfill_history.compute_technicals`), `analysis/market_context.py` (`MarketContextPoller`, never called), `database/database_manager.py` (an old `setup_database()` with a different `daily_prices` layout — harmful if anyone ran it). The stale `test_v11.0.2_full_withdummies.py` (a 16-May copy of the consolidated suite, 70/84 on current code; the real deep suite stays at d2f301a — open item kept) and G45's exclusion for it. The one-time v12.0.1 allowlist purge in master_funnel startup (marked "already done" since v12.1; its marker stays in `pipeline_migrations`). Unused `_V14_6_HORIZON_T1_CAP_BASE` / `_V14_6_HORIZON_T3_HARD_CAP` (dormant since v17.8.1), the unused legacy `_HDR_TIPS` dict (~100 lines; `TIPS` is the source of truth) and `ExcelGeneratorV6._gold_file()`.
+
+**Kept on purpose.** GitHub Actions run history (the audit trail — the run start times proved the v17.22 date bug); the v17.21 / v17.22 one-time migrations (not yet run on the real DB); standalone tools (`reporting/whatsapp_gateway.py`, `scripts/seed_holidays.py`, `fetch_nse_local.py`, `test_run.py`, `test_yfinance.py`, `reset_performance_tracking.py`, `backtest/walk_forward.py`); `analysis/intel_fetcher.py` (feeds the AI card's intel line).
+
+**Verification.** No remaining reference to any removed name. G32 checked a Beneish quick-read string inside the dead `_HDR_TIPS`; it now checks the same quick-read in the live `TIPS` (mutant: changing that tooltip to −2.22 makes G32 fail). Suite 109/109 on Linux and in the Windows-like run (G45 now scans every .py file); changed files compile with Python 3.11.
 
 ### v17.22 — Replay review: one position per stock, DEEP VALUE on probation, price bars under the trading date · 23 Nov 2026
 
@@ -4299,4 +4305,4 @@ v17.3 does not improve returns and should not be read as if it does. What it cha
 
 ---
 
-*Last updated: 23 November 2026 · v17.22 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: 23 November 2026 · v17.22.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
