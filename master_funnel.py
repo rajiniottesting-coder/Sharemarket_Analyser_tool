@@ -4280,6 +4280,15 @@ def run_master_pipeline():
                 print(_gl)
         except Exception as _gfe:
             print(f"   ⚠️  Gold-empty reason not logged (non-fatal): {type(_gfe).__name__}: {_gfe}")
+        # ── v17.22: DEEP VALUE probation — display only ─────────────────────
+        # Names the Gold picks shown apart as "on probation" (plain DEEP VALUE).
+        # They were logged above like every other Gold pick; nothing here
+        # changes the gates, the logging or the AI-card scope.
+        try:
+            for _pl in excel_gen.gold_probation_log_lines():
+                print(_pl)
+        except Exception as _ple:
+            print(f"   ⚠️  Gold probation line not logged (non-fatal): {type(_ple).__name__}: {_ple}")
         # ─────────────────────────────────────────────────────────────────────
         # v14.1.3 — RUN OUTCOME TRACKER before Excel build
         # ─────────────────────────────────────────────────────────────────────
