@@ -29,6 +29,13 @@ every closed SL_HIT / TRAIL_SL / T1/T2/T3_HIT row with this model. It only
 rewrites a row when the re-walk closes it on the SAME date; a row never
 re-opens.
 
+v17.22: daily_prices held most bars one day late until
+database/price_date_repair re-dated them, so the walk's first bar was often
+the pick day's own bar. After that repair, a second one-time pass
+(pipeline_migrations 'v17_22_outcome_recheck') re-walks every closed row,
+EXPIRED included, and stores what the corrected walk says — the event date
+may move and a row may re-open.
+
 v17.0 trailing-stop recalibration: break-even threshold raised +10%→+12%
 AND minimum 10-day holding gate before break-even activates (prevents
 IGL/HEXT-class early exits on genuinely trending stocks). Tiers:
@@ -84,6 +91,8 @@ from database.data_bridge import (
     get_shadow_candidates,
     migration_applied,
     mark_migration,
+    # v17.22 — outcome re-check after the price-date repair
+    delete_continuation_rows,
 )
 
 # ─── Config ───────────────────────────────────────────────────────────
@@ -999,6 +1008,75 @@ def _restate_closed_outcomes() -> dict:
     return out
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# v17.22 — ONE-TIME RE-CHECK AFTER THE PRICE-DATE REPAIR
+# ═════════════════════════════════════════════════════════════════════════
+_PRICE_DATE_MIGRATION = "v17_22_price_dates"        # set by database/price_date_repair
+_OUTCOME_RECHECK_MIGRATION = "v17_22_outcome_recheck"
+_RECHECK_TYPES = ("SL_HIT", "TRAIL_SL", "T1_HIT", "T2_HIT", "T3_HIT", "EXPIRED")
+
+
+def _recheck_closed_after_redate() -> dict:
+    """v17.22: re-walk every closed row once on the re-dated prices and store
+    what the walk now says.
+
+    Before the repair, daily_prices held most bars one day late, so a walk
+    from the day after the pick started on the pick day's OWN bar (its high
+    and low came before the entry at the close) — it could book a stop or a
+    Target that never happened. Unlike the v17.21 restatement this one moves
+    the event date and may re-open a row, because the stored outcome came
+    from wrongly dated bars. A row is kept as it is when the re-walk fails or
+    the symbol has no stored bars after the pick. Continuation rows of
+    changed picks are deleted so they re-seed from the corrected outcome.
+    Returns {"checked", "changed", "reopened", "kept"}."""
+    out = {"checked": 0, "changed": 0, "reopened": 0, "kept": 0}
+    changed = []
+    for rec in get_closed_recommendations(_RECHECK_TYPES):
+        out["checked"] += 1
+        sym, rd = rec.get("symbol"), rec.get("recommendation_date")
+        try:
+            if _load_price_history(sym, rd).empty:
+                out["kept"] += 1
+                continue
+            r = _walk_forward(rec)
+        except Exception as _e:
+            out["kept"] += 1
+            print(f"   ⚠️  re-check skipped for {sym}: {_e}")
+            continue
+        old_type = str(rec.get("outcome_type", "") or "")
+        old_date = str(rec.get("outcome_date", "") or "")[:10]
+        old_price = float(rec.get("outcome_price", 0) or 0)
+        new_type = str(r.get("outcome_type", "") or "")
+        new_date = str(r.get("outcome_date", "") or "")[:10]
+        new_price = float(r.get("outcome_price", 0) or 0)
+        if new_type == old_type and new_date == old_date and abs(new_price - old_price) < 0.005:
+            continue
+        update_outcome(
+            symbol=sym, recommendation_date=rd,
+            outcome_type=new_type, outcome_date=r["outcome_date"],
+            outcome_price=r["outcome_price"], days_to_outcome=r["days_to_outcome"],
+            max_drawdown_pct=r["max_drawdown_pct"], max_runup_pct=r["max_runup_pct"],
+            current_price=r["current_price"], current_pnl_pct=r["current_pnl_pct"],
+            last_checked_date=r["last_checked_date"],
+            trailing_sl_pct=r.get("trailing_sl_pct", 0) or 0,
+            trailing_sl_price=r.get("trailing_sl_price", 0) or 0,
+            peak_price_seen=r.get("peak_price_seen", 0) or 0,
+            dd_duration_days=r.get("dd_duration_days", 0) or 0,
+            dd_recovered=r.get("dd_recovered", 1) or 0,
+        )
+        out["changed"] += 1
+        if new_type == "OPEN":
+            out["reopened"] += 1
+        changed.append((sym, rd))
+        _now = (f"OPEN (now ₹{r['current_price']:.2f}, P&L {r['current_pnl_pct']:+.2f}%)"
+                if new_type == "OPEN" else
+                f"{new_type} {new_date} @ ₹{new_price:.2f} (P&L {r['current_pnl_pct']:+.2f}%)")
+        print(f"   ✏️  re-checked {sym:<12} {rd}  {old_type} {old_date} @ ₹{old_price:.2f}  →  {_now}")
+    if changed:
+        delete_continuation_rows(changed)
+    return out
+
+
 def _run_shadow_pass(include_final: bool = False) -> dict:
     """v17.21: compute the shadow stop for every position whose shadow is not
     final yet — open AND closed live trades alike — so the shadow reaches its
@@ -1047,6 +1125,21 @@ def main():
         except Exception as _rse:
             print(f"   ⚠️  v17.21 restatement failed (non-fatal, will retry next run): {_rse}")
             _first_v1721_run = False   # do not mark — retry next run
+
+    # v17.22: once, after database/price_date_repair has re-dated the stored
+    # prices: re-walk every closed row on the corrected bars (may move the
+    # event date or re-open a row). Runs after the v17.21 restatement and
+    # before the live walk, so a re-opened row is walked again today.
+    _recheck_now = (migration_applied(_PRICE_DATE_MIGRATION)
+                    and not migration_applied(_OUTCOME_RECHECK_MIGRATION))
+    if _recheck_now:
+        try:
+            _rc = _recheck_closed_after_redate()
+            print(f"v17.22 outcome re-check on re-dated prices: checked {_rc['checked']}  ·  "
+                  f"changed {_rc['changed']} (re-opened {_rc['reopened']})  ·  kept {_rc['kept']}")
+        except Exception as _rce:
+            print(f"   ⚠️  v17.22 outcome re-check failed (non-fatal, will retry next run): {_rce}")
+            _recheck_now = False   # do not mark — retry next run
 
     opens = get_open_recommendations()
     counts = {"SL_HIT": 0, "TRAIL_SL": 0, "T1_HIT": 0, "T2_HIT": 0, "T3_HIT": 0,
@@ -1134,7 +1227,7 @@ def main():
     # final (open and closed live trades). Writes ONLY shadow_* columns; any
     # failure is non-fatal and cannot change the live result.
     try:
-        _sp = _run_shadow_pass(include_final=_first_v1721_run)
+        _sp = _run_shadow_pass(include_final=_first_v1721_run or _recheck_now)
         if _sp["walked"]:
             print(f"SHADOW STOP — walked {_sp['walked']}  ·  final {_sp['final']}")
     except Exception as _spe:
@@ -1142,6 +1235,8 @@ def main():
 
     if _first_v1721_run:
         mark_migration(_EXIT_MODEL_MIGRATION)
+    if _recheck_now:
+        mark_migration(_OUTCOME_RECHECK_MIGRATION)
 
     # ── v17.3: continuation shadow walk ───────────────────────────────────
     # Runs LAST, after every outcome is committed. Observational only —

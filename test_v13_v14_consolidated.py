@@ -6802,6 +6802,210 @@ def test_g54_v17_21_replay_tool_walks_picks_with_the_live_exit_model():
     return "✅ v17.21: replay tool — live exit model, DB rows win, R1–R4 from pick-date data, outputs, workflow (A–F)"
 
 
+def test_g55_v17_22_price_bars_stored_under_the_trading_date():
+    """v17.22: daily_prices bars were stamped with the runner's UTC date
+    (date.today() in save_to_database; standardize_to_v7_schema keeps no date),
+    so runs after 00:00 UTC stored them one day late — APLLTD's stop dated
+    Saturday 10-Oct-2026 on the 19-Oct Performance sheet — and the tracker's
+    first bar after a pick was the pick day's own bar.
+      A. save_to_database(trade_date=...) stores price rows under trade_date
+      B. master_funnel: repair before gap detection and the save; trade_date
+         passed only after the repair succeeded (no mixed conventions)
+      C. repair: shifted labels move to their trading day for every exchange,
+         a lost bar is reported, every decision is logged, marker set once
+      D. no Yahoo closes → nothing changes, no marker (retry next run)
+      E. two labels for one trading day keep the one that was already right;
+         a label without anchor closes is left as it is
+      F. outcome re-check (after the repair only): a stop booked from the pick
+         day's own bar is re-walked and re-opens; its continuation row goes
+    """
+    import random
+    from datetime import date as _d
+    import pandas as _pd
+    from database import price_date_repair as pr
+    from database.data_bridge import (initialize_v7_tables, save_to_database,
+                                      insert_gold_recommendation, update_outcome)
+
+    def _shifted_db(days, extra=None):
+        random.seed(7)
+        syms = list(pr.ANCHORS) + ["XYZ"]
+        true = {s: {} for s in syms}
+        for s in syms:
+            p = 100.0
+            for d in days:
+                p *= 1 + random.gauss(0, 0.012)
+                true[s][d.isoformat()] = round(p, 2)
+        return syms, true
+
+    # A
+    test_db, original = _setup_temp_db('g55a')
+    try:
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        nse = _pd.DataFrame([{"SYMBOL": "AAA", "OPEN": 10, "HIGH": 11, "LOW": 9, "CLOSE": 10.5,
+                              "PREVCLOSE": 10, "TOTTRDQTY": 1000}])
+        save_to_database(nse_data=nse, trade_date="2026-11-20")
+        got = sqlite3.connect("market_data.db").execute(
+            "SELECT DISTINCT date FROM daily_prices WHERE symbol='AAA'").fetchall()
+        assert got == [("2026-11-20",)], f"A: rows stored under {got}, want 2026-11-20"
+    finally:
+        _restore(original, test_db)
+
+    # B
+    mf = open(_src_path('master_funnel.py'), encoding='utf-8').read()
+    i_rep = mf.find("run_price_date_repair()")
+    i_gap = mf.find("SECTION 1.2: GAP DETECTION")
+    i_save = mf.find("save_to_database(\n            nse_data=raw_nse")
+    assert 0 < i_rep < i_gap < i_save, f"B: order repair {i_rep} < gap {i_gap} < save {i_save}"
+    assert '_trade_iso = target_date.strftime("%Y-%m-%d") if _price_dates_ok else None' in mf, \
+        "B: trade_date must be gated on the repair"
+    assert "trade_date=_trade_iso," in mf[i_save:i_save + 400], "B: price save must pass trade_date"
+
+    # C
+    test_db, original = _setup_temp_db('g55c')
+    try:
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        days = [d for d in (_d(2026, 8, 3) + timedelta(i) for i in range(27)) if d.weekday() < 5]
+        syms, true = _shifted_db(days)
+        stored = {}
+        for d in days:
+            if d <= _d(2026, 8, 14) or d == _d(2026, 8, 26):
+                stored[d.isoformat()] = d                       # right (before-midnight runs)
+            elif d == _d(2026, 8, 25):
+                continue                                        # lost: label 26 was rewritten
+            else:
+                stored[(d + timedelta(1)).isoformat()] = d      # one day late
+        rows = []
+        for lab, d in stored.items():
+            for s in syms:
+                c = true[s][d.isoformat()]
+                for ex in ("NSE", "BSE"):
+                    rows.append((s, lab, c, c, c, c, ex))
+        conn = sqlite3.connect("market_data.db")
+        conn.executemany("INSERT INTO daily_prices (symbol,date,open,high,low,close,exchange) "
+                         "VALUES (?,?,?,?,?,?,?)", rows)
+        conn.commit(); conn.close()
+        yf = {s: dict(true[s]) for s in pr.ANCHORS}
+        res = pr.run_price_date_repair(fetch=lambda *a: yf)
+        assert res["ok"] and res["counts"]["MOVE"] == 8 and res["counts"]["SAME"] == 11, f"C: {res.get('counts')}"
+        assert res["missing_days"] == ["2026-08-25"], f"C: missing {res['missing_days']}"
+        conn = sqlite3.connect("market_data.db")
+        for ex in ("NSE", "BSE"):
+            got = conn.execute("SELECT date, close FROM daily_prices WHERE symbol='XYZ' AND exchange=? "
+                               "ORDER BY date", (ex,)).fetchall()
+            wrong = [(d, c) for d, c in got if true["XYZ"].get(d) != c]
+            assert not wrong and len(got) == 19, f"C: {ex} {len(got)} rows, wrong {wrong[:3]}"
+        log = dict(conn.execute("SELECT status, COUNT(*) FROM price_date_repair_log GROUP BY status").fetchall())
+        assert log == {"MOVE": 8, "SAME": 11}, f"C: log {log}"
+        conn.close()
+        res2 = pr.run_price_date_repair(fetch=lambda *a: (_ for _ in ()).throw(AssertionError("C: fetched twice")))
+        assert res2["ok"] and not res2["log_lines"], f"C: second run {res2}"
+    finally:
+        _restore(original, test_db)
+
+    # D + E
+    test_db, original = _setup_temp_db('g55d')
+    try:
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        days = [_d(2026, 9, 14) + timedelta(i) for i in range(5)]           # Mon–Fri
+        syms, true = _shifted_db(days)
+        rows = []
+        def put(label, d, symbols, k=1.0):
+            for s in symbols:
+                c = round(true[s][d.isoformat()] * k, 2)
+                rows.append((s, label, c, c, c, c, "NSE"))
+        put("2026-09-14", days[0], syms)                  # right
+        put("2026-09-15", days[0], list(pr.ANCHORS))      # same day again, one day late, partial run
+        put("2026-09-16", days[2], ["XYZ"])              # no anchor closes → unclear, left alone
+        put("2026-09-18", days[4], syms, k=1.05)          # closes match no day (5 % off) → unclear
+        for _s in pr.ANCHORS:                              # Thu and Fri closed at the same prices …
+            true[_s][days[3].isoformat()] = true[_s][days[4].isoformat()]
+        put("2026-09-19", days[4], syms)                  # … so a Saturday label matches both → unclear
+        conn = sqlite3.connect("market_data.db")
+        conn.executemany("INSERT INTO daily_prices (symbol,date,open,high,low,close,exchange) "
+                         "VALUES (?,?,?,?,?,?,?)", rows)
+        conn.commit(); conn.close()
+        before = sqlite3.connect("market_data.db").execute(
+            "SELECT symbol, date, close FROM daily_prices ORDER BY 1,2").fetchall()
+        r0 = pr.run_price_date_repair(fetch=lambda *a: {})
+        after = sqlite3.connect("market_data.db").execute(
+            "SELECT symbol, date, close FROM daily_prices ORDER BY 1,2").fetchall()
+        assert not r0["ok"] and before == after, "D: a failed fetch must change nothing"
+        mk = sqlite3.connect("market_data.db").execute(
+            "SELECT COUNT(*) FROM pipeline_migrations WHERE migration_id=?", (pr.MIGRATION_ID,)).fetchone()[0]
+        assert mk == 0, "D: marker must not be set after a failed fetch"
+        yf = {s: dict(true[s]) for s in pr.ANCHORS}
+        r1 = pr.run_price_date_repair(fetch=lambda *a: yf)
+        st = {p["label"]: p["status"] for p in r1["plan"]}
+        assert st == {"2026-09-14": "SAME", "2026-09-15": "MOVE", "2026-09-16": "UNCLEAR",
+                      "2026-09-18": "UNCLEAR", "2026-09-19": "UNCLEAR"}, f"E: {st}"
+        conn = sqlite3.connect("market_data.db")
+        labels = [r[0] for r in conn.execute("SELECT DISTINCT date FROM daily_prices ORDER BY 1")]
+        assert labels == ["2026-09-14", "2026-09-16", "2026-09-18", "2026-09-19"], f"E: labels after repair {labels}"
+        n14 = conn.execute("SELECT COUNT(*) FROM daily_prices WHERE date='2026-09-14'").fetchone()[0]
+        assert n14 == len(syms), f"E: 14-Sep has {n14} rows, want the copy that was already right ({len(syms)})"
+        conn.close()
+    finally:
+        _restore(original, test_db)
+
+    # F
+    test_db, original = _setup_temp_db('g55f')
+    try:
+        import importlib, track_outcomes as to
+        importlib.reload(to)
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        days = [d for d in (_d(2026, 10, 1) + timedelta(i) for i in range(40)) if d.weekday() < 5]
+        syms, true = _shifted_db(days)
+        bars, p = {}, 48.0
+        for d in days:
+            if d == _d(2026, 10, 15):
+                bars[d] = (42.85, 51.39, 41.83, 50.75)       # pick day: opened low, closed 50.75
+            else:
+                p = p * 1.003
+                bars[d] = (p, p * 1.005, p * 0.995, round(p, 2))
+        rows = []
+        for d in days:
+            lab = (d + timedelta(1)).isoformat()            # every bar one day late
+            for s in pr.ANCHORS:
+                c = true[s][d.isoformat()]
+                rows.append((s, lab, c, c, c, c, "NSE"))
+            o, h, l, c = bars[d]
+            rows.append(("SHREE", lab, o, h, l, c, "NSE"))
+        conn = sqlite3.connect("market_data.db")
+        conn.executemany("INSERT INTO daily_prices (symbol,date,open,high,low,close,exchange) "
+                         "VALUES (?,?,?,?,?,?,?)", rows)
+        conn.commit(); conn.close()
+        rec = {"symbol": "SHREE", "recommendation_date": "2026-10-15", "cmp_at_recommendation": 50.75,
+               "stop_loss": 47.20, "t1": 56.08, "t2": 0, "t3": 0, "time_horizon": "SHORT TERM",
+               "expiry_days": 30, "quick_pick_label": "DEEP VALUE", "composite_score": 94.6}
+        insert_gold_recommendation(rec)
+        r = to._walk_forward(rec)
+        assert (r["outcome_type"], r["outcome_price"]) == ("SL_HIT", 42.85), \
+            f"F: on late-dated bars the pick-day open books a stop: {r['outcome_type']} {r['outcome_price']}"
+        update_outcome("SHREE", "2026-10-15", r["outcome_type"], r["outcome_date"], r["outcome_price"],
+                       r["days_to_outcome"], r["max_drawdown_pct"], r["max_runup_pct"],
+                       r["current_price"], r["current_pnl_pct"], r["last_checked_date"])
+        conn = sqlite3.connect("market_data.db")
+        conn.execute("INSERT INTO gold_continuation (symbol, recommendation_date) VALUES ('SHREE','2026-10-15')")
+        conn.commit(); conn.close()
+        to.main()          # no price-date marker yet → no re-check
+        st0 = sqlite3.connect("market_data.db").execute(
+            "SELECT outcome_type FROM gold_outcomes WHERE symbol='SHREE'").fetchone()[0]
+        assert st0 == "SL_HIT", f"F: re-check must wait for the price-date repair, got {st0}"
+        assert pr.run_price_date_repair(fetch=lambda *a: {s: dict(true[s]) for s in pr.ANCHORS})["ok"]
+        to.main()
+        conn = sqlite3.connect("market_data.db")
+        st1 = conn.execute("SELECT outcome_type, outcome_price FROM gold_outcomes WHERE symbol='SHREE'").fetchone()
+        assert st1[0] == "OPEN", f"F: after the repair the false stop must re-open, got {st1}"
+        cont = conn.execute("SELECT COUNT(*) FROM gold_continuation WHERE symbol='SHREE'").fetchone()[0]
+        mk = conn.execute("SELECT COUNT(*) FROM pipeline_migrations "
+                          "WHERE migration_id='v17_22_outcome_recheck'").fetchone()[0]
+        conn.close()
+        assert cont == 0 and mk == 1, f"F: continuation rows {cont}, marker {mk}"
+    finally:
+        _restore(original, test_db)
+    return "✅ v17.22: price bars under the trading date, one-time re-dating, outcome re-check (A–F)"
+
+
 # ════════════════════════════════════════════════════════════════════════
 # RUN
 # ════════════════════════════════════════════════════════════════════════
@@ -6998,6 +7202,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g52_v17_21_report_display_fixes))
     v14_1_results.append(_run_one_test(test_g53_v17_21_rule_version_instead_of_resets))
     v14_1_results.append(_run_one_test(test_g54_v17_21_replay_tool_walks_picks_with_the_live_exit_model))
+    v14_1_results.append(_run_one_test(test_g55_v17_22_price_bars_stored_under_the_trading_date))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

@@ -1054,9 +1054,32 @@ def run_master_pipeline():
             print(f"⚠️  Smart Money warning: {e}")
 
         # ─────────────────────────────────────────────────────────────────────
+        # SECTION 1.1b (v17.22): ONE-TIME REPAIR OF STORED PRICE DATES
+        # Before v17.22 each run's price rows were stamped with the runner's
+        # UTC date, so runs that started after 00:00 UTC stored the bars one
+        # day late. This re-dates the stored rows once (Yahoo closes of 10
+        # liquid stocks decide each date's real trading day; unclear dates are
+        # left alone; every change is logged in price_date_repair_log). Runs
+        # BEFORE gap detection and the save, so both see true trading dates.
+        # Until it has succeeded, today's rows keep the old stamp so the two
+        # date conventions never mix (database/price_date_repair.py).
+        # ─────────────────────────────────────────────────────────────────────
+        _price_dates_ok = False
+        try:
+            from database.price_date_repair import run_price_date_repair
+            _pdr = run_price_date_repair()
+            _price_dates_ok = bool(_pdr.get("ok"))
+            for _pdl in _pdr.get("log_lines", []):
+                print(_pdl)
+        except Exception as _pdre:
+            print(f"   ⚠️  v17.22 price-date repair skipped (non-fatal, retry next run): "
+                  f"{type(_pdre).__name__}: {_pdre}")
+
+        # ─────────────────────────────────────────────────────────────────────
         # SECTION 1.2: GAP DETECTION — must run BEFORE save_to_database
         # Read MAX(date) now while the DB still reflects the last real run.
-        # After save_to_database() the MAX date becomes today → gap = 0.
+        # After save_to_database() the MAX date becomes target_date → gap = 0
+        # (v17.22: rows are stored under the trading date).
         # ─────────────────────────────────────────────────────────────────────
         _missed_trading_days = 0
         _gap_trading_days    = []
@@ -1085,17 +1108,25 @@ def run_master_pipeline():
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 1.3: DATABASE SYNC
         # ─────────────────────────────────────────────────────────────────────
+        # v17.22: rows are stored under the TRADING date, not the runner's
+        # clock (UTC) — see save_to_database(). Only once the stored dates
+        # have been repaired (Section 1.1b); until then the old stamp is kept.
+        _trade_iso = target_date.strftime("%Y-%m-%d") if _price_dates_ok else None
+        if not _price_dates_ok:
+            print("   ⚠️  v17.22: price rows keep the runner-date stamp until the "
+                  "price-date repair has run")
         save_to_database(
             nse_data=raw_nse, bse_data=raw_bse,
             nse_del=nse_deliv, bse_del=bse_deliv,
             sme_nse=sme_nse, sme_bse=sme_bse,
             participant_data=fo_data,
+            trade_date=_trade_iso,
         )
 
         if not bulk_deals_df.empty:
-            save_to_database(df=bulk_deals_df, table="bulk_deals")
+            save_to_database(df=bulk_deals_df, table="bulk_deals", trade_date=_trade_iso)
         if not insider_trades_df.empty:
-            save_to_database(df=insider_trades_df, table="insider_trades")
+            save_to_database(df=insider_trades_df, table="insider_trades", trade_date=_trade_iso)
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 1.4: GAP-FILL — backfill missing trading days
@@ -1509,8 +1540,10 @@ def run_master_pipeline():
 
             # ── Seed symbol_master from daily_prices for today's symbols ────
             # fetch_nse_fundamentals uses UPDATE (not INSERT), so rows must exist first.
-            # IMPORTANT: save_to_database stamps rows with date.today() (run date),
-            # NOT target_date — so we seed from MAX(date) not target_date.
+            # Seed from MAX(date): before v17.22 save_to_database stamped rows
+            # with the runner's date, not target_date; since v17.22 (after the
+            # one-time price-date repair) rows carry target_date. MAX(date) is
+            # today's rows either way.
             try:
                 _conn_pre.execute("""
                     INSERT OR IGNORE INTO symbol_master (symbol, isin, exchange, updated_on)
