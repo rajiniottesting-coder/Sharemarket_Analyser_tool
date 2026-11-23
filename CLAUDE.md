@@ -1,17 +1,17 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v17.21 · November 2026
+## AI Context File · v17.22 · November 2026
 
 This file gives Claude (or any AI assistant) the project context needed to understand, debug or extend this codebase. **Read it first** before making any change.
 
 **How this file is organised**
-- **Part A — Current state (v17.21).** Authoritative description of how the system works today. Sections 1–14 and 16–21 are kept current; when anything in Part B disagrees with Part A, Part A wins.
-- **Part B — Version history, newest first.** Release notes as written at the time (v17.21 back to v10.0). Older entries describe the code *as it was*; many details there (Gemini, T1/T2/T3 targets, 7 sheets, 11 Gold gates, +5 % break-even …) have since been superseded.
+- **Part A — Current state (v17.22).** Authoritative description of how the system works today. Sections 1–14 and 16–21 are kept current; when anything in Part B disagrees with Part A, Part A wins.
+- **Part B — Version history, newest first.** Release notes as written at the time (v17.22 back to v10.0). Older entries describe the code *as it was*; many details there (Gemini, T1/T2/T3 targets, 7 sheets, 11 Gold gates, +5 % break-even …) have since been superseded.
 
 Companion documents: `readme.md` (user-facing overview + version table), `pipeline_reference.html` (visual end-to-end reference), `scoring_logic_3Stagefunnel_explained.md` (funnel + scoring walkthrough with worked examples), `data/README_NSE_SNAPSHOT.md` (local NSE fetch setup).
 
 ---
 
-# PART A — CURRENT STATE (v17.21)
+# PART A — CURRENT STATE (v17.22)
 
 ## 1. PROJECT PURPOSE
 
@@ -20,7 +20,7 @@ A fully automated, cloud-hosted daily pipeline that:
 1. Downloads NSE + BSE market data every trading morning (GitHub Actions cron 23:00 UTC = 04:30 IST, Tue–Sat IST, processing the previous trading day)
 2. Refreshes technicals for the ~6,200 symbols that traded in the past 7 days, then screens ~5,200 stocks (NSE + BSE, a dual-listed stock counted once) through a 3-stage funnel → 100 candidates (plus any open positions that fell out of the top 100)
 3. Runs fundamental, technical, forensic, valuation and **news-sentiment** analysis on them
-4. Gates Gold picks on the **market regime** and a **15-condition** filter, sets a regime-aware **stop-loss + single Target** and a risk-parity position size
+4. Gates Gold picks on the **market regime** and a **15-condition** filter, sets a regime-aware **stop-loss + single Target** and a risk-parity position size; since v17.22 plain DEEP VALUE Gold picks are shown apart, **on probation** (tracked, not recommended)
 5. **Logs every Gold pick and tracks its real outcome** (live trailing stop, shadow stop, continuation audit, risk-adjusted metrics)
 6. Writes **AI analyst notes** (company OpenAI-compatible LLM) for Gold picks and open positions only
 7. Emails an **8-sheet** colour-coded Excel dashboard + a text research report (GitHub queues scheduled runs; delivery has ranged ~05:00–09:30 IST)
@@ -36,15 +36,16 @@ Plus one small job on the owner's Windows laptop: a weekly NSE pledge/promoter f
 
 ```
 Sharemarket_Analyser_tool/
-├── master_funnel.py              ~4,370 lines — pipeline orchestrator (Sections 0–13)
+├── master_funnel.py              ~4,600 lines — pipeline orchestrator (Sections 0–13)
 ├── backfill_history.py           400-day backfill + yfinance / NSE fundamentals & shareholding enrichment
 ├── track_outcomes.py             Gold-pick outcome tracker + continuation walk + shadow stop (auto-invoked);
-│                                 one-time v17.21 exit-model restatement of closed rows
+│                                 one-time v17.21 exit-model restatement of closed rows;
+│                                 one-time v17.22 re-check of closed rows on the re-dated prices
 ├── fetch_nse_local.py            OWNER'S MACHINE ONLY: NSE pledge + shareholding → data/nse_snapshot.json → git push
 ├── fetch_nse_now.bat             One-click manual trigger for the above
 ├── reset_performance_tracking.py Guarded wipe of the 3 outcome tables (workflow manual-dispatch only;
 │                                 since v17.21 bump GOLD_RULE_VERSION instead for a rule change)
-├── test_v13_v14_consolidated.py  Regression suite — 106 guards, all green on Linux and Windows (v17.21)
+├── test_v13_v14_consolidated.py  Regression suite — 109 guards, all green on Linux and Windows (v17.22)
 ├── test_v11.0.2_full_withdummies.py  ⚠ NOT the deep ScoringEngine suite any more: overwritten on 16-May-2026
 │                                     (commit a09ba4c) with a stale copy of the consolidated suite (70/84 on
 │                                     current code). The real deep suite is in git history at d2f301a
@@ -75,22 +76,25 @@ Sharemarket_Analyser_tool/
 │   ├── technical_engine.py · spike_screener.py · early_detection_engine.py · bs_engine.py
 │   ├── ownership_tracker.py · rotation_engine.py · smart_money.py · market_context.py · v7_analysis_engine.py
 │   ├── news_sentiment.py         v17.9/v17.11 — Google News RSS → LLM → sentiment + evidenced facts
+│   ├── deep_value_probation.py   v17.22 — DEEP VALUE probation: label test, R, forward-test decision rule
 │   ├── risk_metrics.py           Sharpe / Sortino / Calmar (v16.0)
 │   ├── survivorship_audit.py     Open positions vs today's universe (v16.0)
 │   └── intel_fetcher.py          Legacy (query strings only)
 ├── risk/correlation_aware_sizing.py   v15.4/v15.5 risk-parity sizing
 ├── backtest/walk_forward.py           Offline hit-rate report (refuses calibration below N=30)
 ├── backtest/replay_picks.py           v17.21 — re-walks every Gold pick with the live exit model and
-│                                      scores 4 pre-set entry rules (R1 trend · R2 regime · R3 cooldown · R4 MoS cap)
+│                                      scores 4 pre-set entry rules (R1 trend · R2 regime · R3 cooldown · R4 MoS cap);
+│                                      v17.22: one position per stock, R, p-values, R5 + forward window, --from-csv
 ├── backtest/picks_2026H2.csv          v17.21 — 49 picks (20-Jul → 15-Oct-2026) rebuilt from the dashboards
 ├── database/
 │   ├── data_bridge.py            Schema + migrations + every query helper (outcome, continuation, shadow, resilience…)
 │   ├── database_manager.py       Connection management
+│   ├── price_date_repair.py      v17.22 — one-time re-dating of daily_prices (Yahoo anchor closes, logged)
 │   └── db_maintenance.py         400-day rolling window (KEEP_DAYS)
 ├── ai/ai_analyst.py              LLM investor notes (Block H) — compact prompt, batches of 4, per-day cache
 ├── reporting/
 │   ├── excel_generator.py        ExcelGeneratorV6 — 8 sheets
-│   ├── tooltip_formatter.py      TIPS (210 entries) · GROUP_TIPS · Tooltip Reference sheet
+│   ├── tooltip_formatter.py      TIPS (214 entries) · GROUP_TIPS · Tooltip Reference sheet
 │   ├── daily_report_generator.py Plain-text research report
 │   ├── report_formatter.py       Quick investor cards for the text report
 │   ├── email_service.py          Gmail SMTP delivery (normal / skip / error mails)
@@ -104,6 +108,7 @@ Sharemarket_Analyser_tool/
 └── .github/workflows/
     ├── market_run.yml            Daily pipeline (12 steps — see §13)
     ├── replay.yml                v17.21 manual: download the DB artifact, run backtest/replay_picks.py, upload "replay-results"
+    │                             (v17.22: optional split_date input; inputs passed via env)
     └── keep_alive.yml            Wed + Sun 10:00 UTC timestamp commit (resets GitHub's 60-day inactivity clock)
 ```
 
@@ -115,7 +120,7 @@ Created by `backfill_history.py::init_all_tables()` (full set on cold start), `d
 
 | Table | Contents |
 |---|---|
-| `daily_prices` | OHLCV + delivery % + 52w hi/lo + day chg %. PK `(symbol, date, exchange)` — **dual-listed stocks have two rows per date; always filter `exchange='NSE'`** (v12.7) |
+| `daily_prices` | OHLCV + delivery % + 52w hi/lo + day chg %. PK `(symbol, date, exchange)` — **dual-listed stocks have two rows per date; always filter `exchange='NSE'`** (v12.7). `date` = the trading day (v17.22: `save_to_database(trade_date=…)`; before that the runner's UTC date, so most bars since 26-Aug-2026 sat one day late until the one-time repair) |
 | `symbol_master` | Company name, sector, cap category, ISIN, BSE code |
 | `fundamental_metrics` | PE, PB, EPS, ROE, D/E, margins, CAGRs + forensic input columns |
 | `shareholding` | Promoter / FII / DII / Pledge % + QoQ; snapshot pledge persisted here every run (v17.13.7) |
@@ -126,7 +131,8 @@ Created by `backfill_history.py::init_all_tables()` (full set on cold start), `d
 | `v7_intelligence` · `watchlist` · `run_stats` · `market_holidays` | as named |
 | `dual_listed_runtime` | Runtime dual-listed allowlist (v11.0.2; write-time guarded v17.17) |
 | `failed_yfinance_lookups` | 30-day cache of yfinance 404s (v12.8) |
-| `pipeline_migrations` | One-time migration markers (e.g. v12.0.1 allowlist purge) |
+| `pipeline_migrations` | One-time migration markers (v12.0.1 allowlist purge · `v17_21_exit_model` · `v17_22_price_dates` · `v17_22_outcome_recheck`) |
+| `price_date_repair_log` | v17.22 — one row per stored date label checked by the one-time repair: true date, SAME / MOVE / UNCLEAR, anchors used, median close difference of the best and next-best day, rows, dropped duplicate flag. Lets the repair be checked or undone |
 | `gold_recommendations` | **Append-only** log of every Gold pick: entry range, SL, `t1` (= the Target), dormant `t2`/`t3`, CFV, MoS, score, archetype, `time_horizon`, `expiry_days/expiry_date`, `times_reappeared`, audit fields (`original_stop_loss`, `atr_at_rec`, `regime_at_rec`, `next_earnings_date`), `suggested_alloc_pct`, `alloc_rationale`, `rule_version` (v17.21 — `GOLD_RULE_VERSION` at log time; '' before v17.21) |
 | `gold_outcomes` | One row per recommendation (PK `(symbol, recommendation_date)`): `outcome_type` ∈ {OPEN, T1_HIT, T2_HIT, T3_HIT, SL_HIT, TRAIL_SL, EXPIRED}, outcome date/price, max runup/drawdown, current price/P&L, trailing stop (`trailing_sl_pct`, `trailing_sl_price`, `peak_price_seen`), DD duration, `shadow_*` columns (v17.7; `shadow_status` ∈ {OPEN, TRAIL_SL, SL_HIT, EXPIRED} since v17.21) |
 | `gold_continuation` | v17.3 post-T1 shadow walk to each position's own expiry (T2/T3 reach, peak/trough, SL break). Never writes `gold_outcomes` |
@@ -149,8 +155,13 @@ Section 12B   Gate check (ingestion.orchestrator.gate_check)
 Section 1     Harvest NSE bhav + delivery, BSE bhav (bse pkg → cloudscraper → curl_cffi), SME, F&O
               C5 data integrity: NSE frame present and ≥ 500 rows, else skip email + return
 Section 3J/K  Bulk deals + SAST insider trades
+Section 1.1b  v17.22 one-time price-date repair (database/price_date_repair.run_price_date_repair):
+              Yahoo closes of 10 liquid stocks decide each stored date's trading day; MOVE labels
+              re-dated for every exchange, UNCLEAR left, every decision in price_date_repair_log;
+              marker v17_22_price_dates only after success (a failed fetch changes nothing)
 Section 1.2   Gap detection (missed trading days)
-Section 1.3   DB sync → daily_prices (save_to_database: reconcile + allowlist recorder, v17.17 guards)
+Section 1.3   DB sync → daily_prices (save_to_database: reconcile + allowlist recorder, v17.17 guards;
+              v17.22: rows stored under trade_date = target_date once the repair has run)
 Section 1.4   Gap-fill (≥ 2 missed days → backfill those days + recompute indicators)
 Section 1.5   Daily technical refresh (_compute_all_indicators, v12.7)
 Section 0     Funnel: Stage 1 → Stage 2 → Stage 3 (top 100)
@@ -184,8 +195,9 @@ Section 9/10  Split held-monitor rows into _held_monitor_map; prune v15.8 ETF le
               → v17.21 _apply_tracked_levels: held stocks show their logged entry / SL / Target /
                 horizon / allocation on every sheet and in the AI-card inputs
               → v17.20 Gold-empty reason: excel_gen.gold_funnel_log_lines() (🥇 lines, only when Gold is empty)
-              → track_outcomes.main(): (one-time v17.21 restatement) + live walk + shadow pass
-                over every non-final shadow row + continuation
+              → v17.22 probation line: excel_gen.gold_probation_log_lines() (🧪, only when DEEP VALUE picks exist)
+              → track_outcomes.main(): (one-time v17.21 restatement) + (one-time v17.22 re-check on the
+                re-dated prices) + live walk + shadow pass over every non-final shadow row + continuation
 Section 7/8   DEFERRED AI cards (v17.14): scope = _get_gold() ∪ get_open_recommendations();
               held positions use their fully-enriched _held_monitor_map rows (v17.15);
               notes synced into the Excel frame by symbol; held cards → market_stats["held_cards"]
@@ -205,6 +217,8 @@ On exception  error email (is_error=True)
 - The v14 logging hook and the tracker must run **before** `generate_excel_reports()` (v14.1.2 / v14.1.3, guards G10/G11) so today's picks and fresh P&L appear in today's Performance sheet.
 - AI cards run **after** the tracker so their scope is the same Gold result the tracker logged (v17.14). Anything written into `market_stats` must happen **after** `market_stats = {…}` is created (v17.11.1, guard G40).
 - Held-monitor rows must be removed before anything renders or saves the top-100 view.
+- The price-date repair (1.1b) runs **before** gap detection and the save (v17.22, G55), and the save passes `trade_date` only once the repair marker is set, so stored rows never mix the two date conventions.
+- The DEEP VALUE probation is display only: logging, the tracker, AI scope and `GOLD_RULE_VERSION` keep using `_get_gold()`; only the Gold sheet, Trade Summary and Delivery Preview call `_gold_split()` (G56).
 
 ---
 
@@ -391,13 +405,13 @@ Same annualization applied to Capex/Rev (capex is annual; uses `revenue` first, 
 | # | Sheet | Content |
 |---|---|---|
 | 1 | 📊 Full Dashboard | Top-100 × **126 columns** in 18 bands: IDENTITY 7 · SCORES 5 · PRICE & MARKET 7 · WEEKLY CHANGE % 4 · FAIR VALUE 12 · VALUATION 7 · PROFITABILITY 10 · GROWTH 10 · FIN HEALTH 10 · CAP ALLOC 3 · SHAREHOLDING 9 · QUALITY SCORES 4 · PIPELINE / OB 5 · EARLY DETECTION 3 · TECHNICAL 14 · BALANCE SHEET 2 · TRADE PLAN 7 (Entry · SL · Target · Horizon · Risk · Suggested Alloc % · Sizing Rationale) · NEWS & RISK 7 (Key Catalyst · News Sentiment · Primary Risk · SEBI Flags · Insider (news) · Bulk Deal · Reg Flag). No AI column since v17.18. Row 2: header-colour legend + `Pledge/Promoter data as of DD-Mon-YYYY HH:MM IST (Nd old)` |
-| 2 | ⭐ Gold – Early Movers | 41 columns in 11 bands (incl. the AI Analysis Summary). Row 2 lists the 15 criteria + count + bearish-regime notice. Below: **Bearish-Regime Standouts** (v17.5) or a greyed *Recent Resilience* strip on bullish days |
-| 3 | 📊 Trade Summary | Entry range · SL · Target · R:R · horizon · risk — one value per header (v17.21; T2/T3 values had shifted R:R, horizon and risk one-two columns right since v17.8.1). R:R colours (≥ 3 green, ≥ 2 amber, else red) predate the single target — with R:R ≈ 1.3–1.8 every row is red (open item) |
+| 2 | ⭐ Gold – Early Movers | 41 columns in 11 bands (incl. the AI Analysis Summary). Row 2 lists the 15 criteria + count (+ "N recommended · M DEEP VALUE on probation", v17.22) + bearish-regime notice. Recommended picks first; below them **🧪 DEEP VALUE — ON PROBATION · tracked, not recommended** (v17.22, muted rows + the replay evidence). Below: **Bearish-Regime Standouts** (v17.5) or a greyed *Recent Resilience* strip on bullish days |
+| 3 | 📊 Trade Summary | Entry range · SL · Target · R:R · horizon · risk — one value per header; recommended picks, then a 🧪 probation separator and the DEEP VALUE rows (v17.22) (v17.21; T2/T3 values had shifted R:R, horizon and risk one-two columns right since v17.8.1). R:R colours (≥ 3 green, ≥ 2 amber, else red) predate the single target — with R:R ≈ 1.3–1.8 every row is red (open item) |
 | 4 | 🔔 Alert Log | Prev Score = the previous trading date (v17.21 — not an earlier run on the same date); Δ that rounds to 0 prints "0". Alert type: `⬇ SCORE DEGRADED` only on a real ≥ 3-pt drop (v17.2), `⚠ LOW SCORE` (< 30, no drop), `🔔 SPIKE FIRED`, `⭐ EARLY MOVER DETECTED`. Action: REVIEW FOR EXIT — SCORE FALLING · REVIEW FOR EXIT · CONSIDER ENTRY (BUY, MoS > 10, score ≥ 65) · MONITOR FOR ENTRY · STRONG STOCK — WAIT FOR PULLBACK (OVERVALUED) · SCORE IMPROVING / DECLINING (WATCHLIST ±3) · VOLUME ALERT · EARLY MOVER — ACCUMULATE · MONITOR CLOSELY |
-| 5 | 📱 Delivery Preview | WhatsApp / email text |
+| 5 | 📱 Delivery Preview | WhatsApp / email text; count + top pick from recommended picks only, probation count beside it (v17.22) |
 | 6 | 🎯 Performance | See §9C |
-| 7 | 📖 Glossary | `GLOSSARY_DATA` (~196 rows) |
-| 8 | 📖 Tooltip Reference | Built from `tooltip_formatter.TIPS` (210 entries) |
+| 7 | 📖 Glossary | `GLOSSARY_DATA` (202 rows) |
+| 8 | 📖 Tooltip Reference | Built from `tooltip_formatter.TIPS` (214 entries) |
 
 **Header colours.** Red `991B1B` = column in `NO_FREE_SOURCE_COLS` with < 30 % of rows populated (`_COVERAGE_MIN`, v12.4; Gold sheet uses the same rule, v12.5). Amber = AI-generated column (`NEEDS_AI_CREDITS`; only on the Gold sheet now). Otherwise the band colour.
 
@@ -424,6 +438,8 @@ Same annualization applied to Capex/Rev (capex is annual; uses `revenue` first, 
 ```
 
 Sector cycle: weak sectors (yfinance "Consumer Defensive", "Industrials", "Technology", "Communication Services" + NSE-style patterns IT / FMCG / capital goods / telecom / media …) pass only if the stock's own 4-week change > 0. The same `_get_gold()` result feeds the Gold sheet, the outcome logger and the AI-card scope — one source of truth. Since v17.20 the 15 gates are one ordered list, `_gold_gates()` → `(key, label, mask)`; `_get_gold()` ANDs it, and `gold_funnel_summary()` / `gold_funnel_log_lines()` explain an empty sheet from the same masks (log lines in §17).
+
+**DEEP VALUE probation** (v17.22, `analysis/deep_value_probation.py`, display only). `_gold_split()` splits `_get_gold()` into recommended picks and plain DEEP VALUE picks (quick-pick label exactly `DEEP VALUE` = margin of safety > 25 % with no early-entry signal; DEEP VALUE EARLY MOVER and a missing label are recommended). Evidence: replay of 23-Nov-2026, 58 independent picks, DEEP VALUE 32 closed, 22 % won, −17.2 R vs all others 13 closed, 62 % won, +6.0 R (one-sided Fisher p 0.015; found by looking, so tested forward). Gates, logging, tracking, AI scope and `GOLD_RULE_VERSION` unchanged. Forward test = picks dated ≥ `PROBATION_SINCE` (2026-11-23); rule fixed in advance: once 30 have closed (≥ 5 in each group) — DEEP VALUE avg R < 0 and below the others → make the exclusion a Gold gate under a new `GOLD_RULE_VERSION`; DEEP VALUE avg R ≥ the others → end the probation; otherwise another 30 closes. Shown on the Performance sheet (DEEP VALUE PROBATION) and in the replay's forward window.
 
 **Resilience watchlist** (`_refresh_resilience_watch`, v17.5/v17.5.1) — reference only, never a pick. On BEARISH days, stocks with own 3-day return ≥ 5 % (`_RW_MIN_ABS_RETURN`) **and** beating the Nifty's 3-day return are upserted into `gold_resilience_watch` (30-day retention, streak over the last 5 bearish days; shown when `streak_hits ≥ 2`). Retention pruning runs every day.
 
@@ -456,19 +472,23 @@ Owner decision (v17.8.1): no fair-value anchoring, no horizon caps; the multipli
 
 **Logging** (master_funnel v14 hook, before the Excel build): every stock in `_get_gold()` is inserted into `gold_recommendations` + an OPEN `gold_outcomes` row — **first appearance only** (`has_open_recommendation`); re-appearances bump `times_reappeared` once per day. `insert_gold_recommendation` returns False on a PK collision (v14.3). Horizon → `expiry_days`: SHORT 30 · POSITIONAL 90 · LONG 270 (`horizon_to_expiry_days`); the stock dict key is `horizon` (v14.1 / v17.1 fixes — never `time_horizon` on the stock dict).
 
-**Walk** (`track_outcomes._walk_forward`, auto-invoked): daily NSE bars from the day after the recommendation; first event wins; SL beats target on same-bar ties; one live Target — T1_HIT (v17.21; T2/T3 are never exits, only the continuation audit reads them); EXPIRED at the horizon cutoff (hard). Fill model (v17.21, `_fill_price`): a stop fills at the stop, or at the open when the bar opens below it; the Target fills at the Target, or at the open when the bar opens above it. A one-time restatement (`pipeline_migrations` id `v17_21_exit_model`) re-walked every closed SL_HIT / TRAIL_SL / T1/T2/T3_HIT row with this model, rewriting a row only when the re-walk closes it on the same date (SUNTV, booked T2_HIT +14.2 %, becomes T1_HIT at the ₹541.67 Target = +10.5 % — or at its 30-Sep open if it opened above the Target). Effective SL = max(original, trailing). Trailing tiers (v16.5 → v17.0): peak ≥ 25 % → lock +12 % · ≥ 20 % → +9 % · ≥ 15 % → +5 % · ≥ 12 % **and** ≥ 10 days held → break-even · otherwise none. Trailing updates at the end of each bar (no look-ahead, G17). A stop hit on the trailing level is **TRAIL_SL** (excluded from SL rate); on the original level **SL_HIT**.
+**Walk** (`track_outcomes._walk_forward`, auto-invoked): daily NSE bars from the day after the recommendation (v17.22: bars carry their trading date — before the repair the first bar after a pick was usually the pick day's own bar); first event wins; SL beats target on same-bar ties; one live Target — T1_HIT (v17.21; T2/T3 are never exits, only the continuation audit reads them); EXPIRED at the horizon cutoff (hard). Fill model (v17.21, `_fill_price`): a stop fills at the stop, or at the open when the bar opens below it; the Target fills at the Target, or at the open when the bar opens above it. A one-time restatement (`pipeline_migrations` id `v17_21_exit_model`) re-walked every closed SL_HIT / TRAIL_SL / T1/T2/T3_HIT row with this model, rewriting a row only when the re-walk closes it on the same date (SUNTV, booked T2_HIT +14.2 %, becomes T1_HIT at the ₹541.67 Target = +10.5 % — or at its 30-Sep open if it opened above the Target). Effective SL = max(original, trailing). Trailing tiers (v16.5 → v17.0): peak ≥ 25 % → lock +12 % · ≥ 20 % → +9 % · ≥ 15 % → +5 % · ≥ 12 % **and** ≥ 10 days held → break-even · otherwise none. Trailing updates at the end of each bar (no look-ahead, G17). A stop hit on the trailing level is **TRAIL_SL** (excluded from SL rate); on the original level **SL_HIT**.
 
 **Continuation** (v17.3, `gold_continuation`): for each T1_HIT, a shadow walk from the next day to the position's own expiry (T2/T3 reach, peak/trough vs T1, broke original SL). Read-only w.r.t. `gold_outcomes` (G37).
 
 **Shadow stop** (v17.7): Chandelier stop = peak − N × Wilder-ATR × regime adj (N = 2.5 / 3.0 / 3.5 by horizon), ratchet-up only, no look-ahead; writes `shadow_*` columns only (G39). v17.21: ATR seeded from 60 calendar days of pre-entry bars (armed from day 1), stop in force = max(original stop, trail) → TRAIL_SL or SL_HIT, gap fills at the open, EXPIRED at the horizon end; walked every run for every row whose shadow is not final (`get_shadow_candidates`), so it no longer freezes when the live trade closes (G49).
 
-**Performance sheet sections, in order:** title + sample-size banner (< 30 closed = preliminary) · HEADLINE (Total / Closed / Open / Hit rate (T1+) / SL rate; tiles TARGET HIT · SL HIT · EXPIRED · TRAIL SL) · SPEED (avg days → Target / SL) · DIAGNOSTIC BREAKDOWNS (score band · archetype · sector · time horizon · rule version, v17.21) · CLOSED POSITIONS (15 cols incl. Score Band / Archetype / Sector, v17.4) · RISK-ADJUSTED RETURNS (Sharpe / Sortino / Calmar, rf 6.5 %, DD duration, v16.0) · OPEN POSITIONS (SL, Target, Trailing — label = level actually locked (v17.19), Regime, Suggested Alloc, Sizing Rationale, Score Band, Archetype, Sector, **AI Card**; pale-yellow ⚠ when ≤ 14 days left) · EXPIRED MISSED-RUNUP diagnostic (≥ 3 expired) · CONTINUATION AUDIT · SHADOW EXIT COMPARISON · SURVIVORSHIP AUDIT (open positions vs today's universe).
+**Performance sheet sections, in order:** title + sample-size banner (< 30 closed = preliminary) · HEADLINE (Total / Closed / Open / Hit rate (T1+) / SL rate; tiles TARGET HIT · SL HIT · EXPIRED · TRAIL SL) · SPEED (avg days → Target / SL) · DIAGNOSTIC BREAKDOWNS (score band · archetype · sector · time horizon · rule version, v17.21) · DEEP VALUE PROBATION forward test (v17.22: DEEP VALUE vs all other picks since 23-Nov-2026 — picks, closed, won, win %, avg R, total R — and the decision line) · CLOSED POSITIONS (15 cols incl. Score Band / Archetype / Sector, v17.4) · RISK-ADJUSTED RETURNS (Sharpe / Sortino / Calmar, rf 6.5 %, DD duration, v16.0) · OPEN POSITIONS (SL, Target, Trailing — label = level actually locked (v17.19), Regime, Suggested Alloc, Sizing Rationale, Score Band, Archetype, Sector, **AI Card**; pale-yellow ⚠ when ≤ 14 days left) · EXPIRED MISSED-RUNUP diagnostic (≥ 3 expired) · CONTINUATION AUDIT · SHADOW EXIT COMPARISON · SURVIVORSHIP AUDIT (open positions vs today's universe).
 
 `reset_performance_tracking.py` (workflow input `RESET-PERFORMANCE`, manual dispatch only) wipes the three outcome tables — irreversible. Since v17.21 a rule change bumps `GOLD_RULE_VERSION` (master_funnel) instead: every pick carries `rule_version` and BY RULE VERSION compares the versions. The 31-Aug and 17-Sep-2026 resets deleted 26 open picks.
 
 **Replay** (v17.21, `backtest/replay_picks.py`, workflow `replay.yml`, manual): re-walks every pick in `backtest/picks_2026H2.csv` + `gold_recommendations` with `_walk_forward`, adds pick-date-only features and scores R1 trend (close > 50-day average and 63-day return > Nifty), R2 regime (Nifty ≥ its 20-day average), R3 cooldown (no SL exit on the symbol in the previous 28 days), R4 MoS cap (not MoS > 60 % on LARGE/MID). Read-only; results artifact `replay-results`.
 
 Performance metrics (v17.21): AVG DAYS → TARGET counts T1 + T2 + T3 rows; DD Recovery Rate keeps a stored 0 (`_flag01`; `int(x or 1)` showed 100 %).
+
+**Outcome re-check** (v17.22, `track_outcomes._recheck_closed_after_redate`, marker `v17_22_outcome_recheck`): once, after the price-date repair, every closed row (EXPIRED included) is re-walked on the re-dated bars and stored as the walk now says — the event date may move and a row may re-open (unlike the v17.21 restatement). Rows with no stored bars after the pick keep their outcome; continuation rows of changed picks are deleted and re-seed; the shadow pass recomputes every row that run. Log: `v17.22 outcome re-check on re-dated prices: checked N · changed k (re-opened r) · kept m`.
+
+**Replay v17.22 changes:** a re-pick while the stock is still open from an earlier pick (or closes that day) is listed but not counted (first appearance, like the live tracker — the first replay counted 8 of 66 twice); the summary names the exit mode; averages are over closed picks, with R (P&L ÷ stop distance) and total R; each rule row shows "kept better on both win rate and avg R?" and a one-sided Fisher p; R4 treats a missing cap as n/a (it counted as a known small cap); R5 = not DEEP VALUE (post-hoc, labelled); forward window = picks ≥ `--split-date` (default `PROBATION_SINCE`) with the probation decision; breakdowns by archetype, time horizon, margin of safety, stop distance and month; `--from-csv` re-summarises a downloaded result without the DB (writes `<stem>_resummary.md`).
 
 ---
 
@@ -582,7 +602,7 @@ Google News RSS, up to 15 headlines from the last 14 days (`NEWS_MAX_HEADLINES`,
 `0 23 * * 1-5` + `workflow_dispatch` (input `reset_performance`). Steps: Checkout · Python 3.11 · Install deps · **Restore AI card cache** · **Restore `market_data.db`** (`dawidd6/action-download-artifact@v6`, `if_no_artifact_found: ignore`) · Show DB state · **Auto-backfill** (`backfill_history.py 400` when `daily_prices` < 50,000 rows) · **v17.3 performance reset** (only when the input equals `RESET-PERFORMANCE`; dry run then `--commit --confirm`) · **Execute `python master_funnel.py || true`** · Delete previous DB artifact (REST API with `GITHUB_TOKEN`) · Upload `market-data-db` (30-day retention, `overwrite: true`) · Show DB state after. The v12.1 allowlist-wipe and v16.5 KOVAI steps were removed in v17.17.
 
 ### `replay.yml` (v17.21, manual)
-`workflow_dispatch` (input `exit_mode` logged | uniform). Checkout · Python 3.11 · deps · download `market-data-db` from `market_run.yml` (`if_no_artifact_found: fail`) · `backtest/replay_picks.py` · upload `replay-results` (CSV + summary, 30 days). Never uploads or changes the DB.
+`workflow_dispatch` (inputs `exit_mode` logged | uniform, `split_date` YYYY-MM-DD optional — v17.22; both passed to the script through env and the date validated). Checkout · Python 3.11 · deps · download `market-data-db` from `market_run.yml` (`if_no_artifact_found: fail`) · `backtest/replay_picks.py` · upload `replay-results` (CSV + summary, 30 days). Never uploads or changes the DB. Results download from GitHub's file storage (not reachable from Claude's environment), so the owner downloads the two zips and attaches them.
 
 **Secrets:** `OPENAI_API_KEY`, `OPENAI_API_BASE`, `LLM_MODEL`, `SENDER_EMAIL`, `SENDER_APP_PASSWORD`, `USER_EMAIL_ID`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` (optional), `KEEPALIVE_PAT`. **Variables:** `NEWS_SENTIMENT_SHADOW`, `AI_CACHE` (optional). `LLM_MAX_TOKENS`, `LLM_REASONING_EFFORT`, `NEWS_MAX_TOKENS` are not wired into the workflow — defaults apply on Actions.
 
@@ -747,6 +767,14 @@ _TRAIL_BREAKEVEN_THRESHOLD = 12.0 · _TRAIL_MIN_HOLDING_DAYS = 10    # v17.0
 _SHADOW_N_BY_HORIZON     = {SHORT 2.5, POSITIONAL 3.0, LONG 3.5}; regime 1.20/0.80 → ×1.10/×0.90
 _SHADOW_ATR_LOOKBACK_DAYS = 60       # v17.21: pre-entry calendar days that seed the shadow ATR
 GOLD_RULE_VERSION        = "v17.21"  # v17.21 (master_funnel): stamped on every logged pick
+                                     # (unchanged in v17.22 — the probation is display only)
+
+# DEEP VALUE probation (analysis/deep_value_probation.py, v17.22)
+PROBATION_LABEL = "DEEP VALUE" · PROBATION_SINCE = "2026-11-23" · PROBATION_MIN_CLOSED = 30 · PROBATION_MIN_PER_GROUP = 5
+
+# Price-date repair (database/price_date_repair.py, v17.22)
+MIGRATION_ID = "v17_22_price_dates" · ANCHORS = RELIANCE HDFCBANK ICICIBANK INFY TCS SBIN BHARTIARTL ITC LT AXISBANK
+LOOKBACK_DAYS = 6 · MIN_ANCHORS = 3 · MATCH_MAX_PCT = 0.30 · SEPARATION_RATIO = 2.0 · SEPARATION_MIN_PP = 0.15
 RISK_FREE_RATE           = 6.5% (India 91-day T-bill) for Sharpe / Sortino
 SAMPLE_SIZE_BANNER       = 30 closed positions
 
@@ -786,6 +814,10 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 | Earnings-week SL widening | No reliable free earnings calendar | Built in, never fires |
 | NIFTY 50 not in `daily_prices` | Index not ingested | Regime gate uses `get_nifty_20d_sma()` (DB first, yfinance `^NSEI` fallback); the text report's mood/VIX render `—` |
 | Daily OHLC only | No intraday data | Same-bar SL+target ties resolve to SL |
+| Results are gross | No brokerage, STT, stamp duty, exchange / GST / DP charges or slippage are modelled | Performance sheet and replay show gross P&L and R; roughly 0.25 % per delivery round trip before slippage would come off each trade (approximate) — open item |
+| Splits / bonuses | daily_prices holds raw bhavcopy prices; nothing adjusts them | A split or bonus during a holding would look like a crash and could book a false SL_HIT. None hit the 66 replayed picks (worst drawdown −18 %) — open item |
+| Bars lost before v17.22 | When two runs wrote the same date label (a run after 00:00 UTC followed by one before it), the later run deleted the earlier bar | The repair reports these days ("N trading day(s) … have no bar"); they are not re-downloaded — open item |
+| No benchmark | P&L is not compared with Nifty over the same holding period; no portfolio-level P&L | Open item |
 | 0-vs-missing ambiguity in some SQL `COALESCE(…, 0)` reads | Architectural | Deferred since v12.4 |
 | Altman Z capped at 10 | X4 unit mismatch on some large caps | By design (v12.5) |
 | BSE delivery + BSE SME files | Both fail on every run checked (`BSE-Deliv ⚠️`; BSE SME "File is not a zip file") | Dual-listed stocks use NSE delivery %; BSE-only stocks get delivery 0 and are dropped at Stage 1 V3, so the top 100 comes from NSE-listed stocks in practice (open item, §20) |
@@ -817,7 +849,12 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 🥇 Emptied by: ROE ≥ 10% — removed the last 1: PLASTIBLEN (ROE 9.5%)
 🥇 One gate short: WEALTH (MoS +6.7%), GNFC (MoS +7.0%), …     ← 🥇 lines only when Gold is empty (v17.20)
 📌 v17.21: N held stock(s) shown with their tracked entry / SL / Target / allocation
+🧪 v17.22 probation: N of M Gold pick(s) are DEEP VALUE (…) — shown apart as 'on probation', still logged and tracked · K recommended · SYMBOLS
+🗓️  v17.22 price-date repair: N stored dates checked · a already right · b moved to their trading day (R rows) · c unclear (left as they were) · d duplicate day(s) removed   ← first run after v17.22 only
+🗓️  v17.22 price-date repair: N trading day(s) since … have no bar (overwritten before v17.22): …   ← only when bars were lost
+⚠️  v17.22 price-date repair NOT run: Yahoo anchor closes unavailable — …   ← retried next run; rows keep the old stamp until then
 v17.21 exit-model restatement: checked N  ·  changed k  ·  kept m      ← first run after v17.21 only
+v17.22 outcome re-check on re-dated prices: checked N  ·  changed k (re-opened r)  ·  kept m   ← first run after the repair only
 SHADOW STOP — walked N  ·  final k
 🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...
 💾 AI cards served from today's cache (…)          ← same-day re-run
@@ -899,8 +936,10 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 | Gold filter | `reporting/excel_generator.py` | `ExcelGeneratorV6._gold_gates()` (the 15 gates, one list) → `_get_gold()`; criteria text "ALL 15 must pass" |
 | Empty-Gold reason (v17.20) | `reporting/excel_generator.py` · `master_funnel.py` | `gold_funnel_summary()`, `gold_funnel_log_lines()`; printed after the Gold-logging line |
 | Outcome logging hook | `master_funnel.py` | "v14.0/v14.1 — OUTCOME TRACKING" before the Excel build |
-| Tracker | `track_outcomes.py` | `main()`, `_walk_forward()`, `_fill_price()`, `_compute_shadow_stop()`, `_restate_closed_outcomes()`, `_run_shadow_pass()`, continuation pass |
-| Replay | `backtest/replay_picks.py` | `load_picks`, `walk`, `features`, `apply_rules`, `summarize`; picks in `backtest/picks_2026H2.csv` |
+| Tracker | `track_outcomes.py` | `main()`, `_walk_forward()`, `_fill_price()`, `_compute_shadow_stop()`, `_restate_closed_outcomes()`, `_recheck_closed_after_redate()` (v17.22), `_run_shadow_pass()`, continuation pass |
+| Replay | `backtest/replay_picks.py` | `load_picks`, `walk`, `features`, `mark_overlaps`, `add_risk`, `apply_rules`, `fisher_p`, `summarize`, `finish`; `--from-csv`; picks in `backtest/picks_2026H2.csv` |
+| Price-date repair (v17.22) | `database/price_date_repair.py` | `run_price_date_repair`, `plan_repair`, `apply_repair`, `fetch_anchor_closes`; log table `price_date_repair_log` |
+| DEEP VALUE probation (v17.22) | `analysis/deep_value_probation.py` · `reporting/excel_generator.py` | `is_on_probation`, `r_multiple`, `forward_verdict`; `ExcelGeneratorV6._gold_split()`, `gold_probation_log_lines()`, `probation_forward_stats()`, `_probation_block()` |
 | Held-stock levels / log-time sizing | `master_funnel.py` | `_apply_tracked_levels()`, `_alloc_for_log()`, `GOLD_RULE_VERSION` |
 | Outcome DB helpers | `database/data_bridge.py` | `insert_gold_recommendation`, `get_open_recommendations`, `get_open_recommendation_levels`, `get_closed_recommendations`, `get_shadow_candidates`, `update_outcome`, `update_shadow_outcome`, `get_outcome_stats`, `get_continuation_stats`, `migration_applied` / `mark_migration` |
 | AI notes | `ai/ai_analyst.py` | `get_ai_analysis` (cache wrapper) → `_generate_ai_analysis`; `_llm_complete`; `_load_card_system_prompt` |
@@ -952,13 +991,18 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 26. **`market_data.db` cannot be committed** (≈ 730 MB artifact). Schema changes = idempotent migrations inside the pipeline.
 27. **One live Target.** The tracker exits at T1 only and fills at the open on gaps (`_fill_price`); do not reintroduce T2/T3 exits (G48).
 28. **Rule change → bump `GOLD_RULE_VERSION`, do not reset** the outcome tables (G53).
+29. **Price rows carry the trading date.** Pass `trade_date` to `save_to_database()`; never stamp rows with the runner's clock (`date.today()` on Actions is UTC). `standardize_to_v7_schema()` keeps no date column, so the stamp is the only date a bar gets (G55).
+30. **The DEEP VALUE probation is display only.** Do not filter the outcome logging, the tracker or the AI-card scope with `_gold_split()`; promote it to a gate only through the forward-test rule and a new `GOLD_RULE_VERSION` (G56).
 
 ---
 
 ## 20. OPEN ITEMS / NEXT ACTIONS (November 2026)
 
-- [ ] **v17.21 follow-up — run the "Gold_Pick_Replay" workflow** (Actions → Gold_Pick_Replay → Run, `exit_mode` logged, then uniform) and review `replay_results_summary.md`. Adopt an entry rule (R1 trend / R2 regime / R3 cooldown / R4 MoS cap) only if it improves BOTH win rate and mean P&L while keeping enough picks; switch it on under a new `GOLD_RULE_VERSION`, never with a reset. Evidence so far (19-Oct-2026, 49 picks, 12 closed): 10 SL_HIT · 1 TRAIL_SL · 1 target; all 10 stop-outs were DEEP VALUE; median best gain before the stop +2.4 %; DEEP VALUE 35 picks mean −1.7 % vs others 14 picks +1.5 % (one-sided p ≈ 0.03 with several splits looked at — a lead, not proof).
+- [x] **Gold_Pick_Replay run (23-Nov-2026, runs 45096331225 logged / 45096339238 uniform).** Result (58 independent picks, 45 closed, logged exits): 11 targets · 27 stops · 33 % won · −0.25 R per trade · −11.2 R total; uniform 1.5× targets 38 % · −0.15 R. None of R1–R4 passes (R2 is the wrong way round — it mostly tracks the pick month; R4 points the right way, p 0.39). DEEP VALUE 32 closed, 22 % won, −17.2 R vs others 13 closed, 62 % won, +6.0 R → v17.22 DEEP VALUE probation (display only, decision rule fixed in advance).
+- [ ] **After the first v17.22 run:** check the log for the `🗓️ v17.22 price-date repair` line (expected: most dates since 26-Aug moved back one trading day, a few already right, any lost days listed) and `v17.22 outcome re-check on re-dated prices` (SHREERAMA's −15.6 % stop at its own pick-day open expected to move or re-open). Then re-run Gold_Pick_Replay (logged + uniform) on the re-dated prices and compare with the 23-Nov result.
 - [ ] After the first v17.21 run: check the log for `v17.21 exit-model restatement: checked … changed …` (SUNTV expected T2_HIT → T1_HIT) and that the Performance sheet shows SUNTV at the Target (+10.5 %) or at its 30-Sep open if that was higher.
+- [ ] DEEP VALUE probation decision once 30 picks dated from 23-Nov-2026 have closed (Performance → DEEP VALUE PROBATION shows the rule's verdict).
+- [ ] Measurement gaps found 23-Nov-2026: no trading costs (show net next to gross), no split/bonus guard (flag a one-day drop matching a standard ratio for review instead of booking SL_HIT), no Nifty-relative return per closed pick, bars lost before v17.22 not re-downloaded, entry assumed at the pick-date close (a real order fills at the next open).
 - [ ] NSE snapshot: only 19-Oct and 10-Nov-2026 commits in five weeks; the 10-Nov file is accepted up to the 25-Nov run. Both Sunday fetches that returned data had an empty pledge list (exit 3 since v17.20.1); weekday/Saturday fetches had ~340 — consider moving the task to Saturday (owner decision).
 
 - [ ] Re-band the Trade Summary R:R colours for the single regime target (currently every row is red) — owner decision.
@@ -992,12 +1036,12 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 git pull origin main --rebase      # keep-alive bot and the weekly NSE snapshot commit to main
 git checkout -b fix/vXX-description
 # replace files
-python test_v13_v14_consolidated.py     # expect ALL green (106/106 at v17.21)
+python test_v13_v14_consolidated.py     # expect ALL green (109/109 at v17.22)
 git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PR → green check → merge
 ```
 
-**Test suite.** `test_v13_v14_consolidated.py` — 106 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. G47 (v17.20.1) checks that a partial NSE fetch keeps a usable previous snapshot (exit 3) and still writes over a stale or missing one. G48–G54 (v17.21): single Target + gap fills + restatement, shadow stop, Performance metrics, sizing + held levels, report display, rule_version, replay tool — each was mutation-checked (every reverted fix makes its guard fail; run mutants with bytecode caching off, since a same-size edit can survive in a stale .pyc). Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
+**Test suite.** `test_v13_v14_consolidated.py` — 109 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. G47 (v17.20.1) checks that a partial NSE fetch keeps a usable previous snapshot (exit 3) and still writes over a stale or missing one. G48–G54 (v17.21): single Target + gap fills + restatement, shadow stop, Performance metrics, sizing + held levels, report display, rule_version, replay tool — each was mutation-checked (every reverted fix makes its guard fail; run mutants with bytecode caching off, since a same-size edit can survive in a stale .pyc). G55–G57 (v17.22): price bars under the trading date + one-time repair + outcome re-check (15 mutants), DEEP VALUE probation display-only + decision rule + forward test (12), replay one-position-per-stock + R + p + R4 n/a + R5 + workflow env inputs (10) — 37 mutants, all killed. Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
 
 **Hard lessons — do not repeat.**
 1. **Tests must be bidirectional.** Reintroduce the bug, confirm the test fails, restore, confirm it passes (G35 once passed while the bug shipped; G40's first draft too).
@@ -1015,6 +1059,15 @@ git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PART B — VERSION HISTORY (newest first)
 
 Entries from v17.3 downwards are preserved as written at the time. Where they describe behaviour that later changed, Part A is authoritative.
+
+### v17.22 — Replay review: one position per stock, DEEP VALUE on probation, price bars under the trading date · 23 Nov 2026
+
+**Why.** Claude ran Gold_Pick_Replay for the first time (runs 45096331225 logged, 45096339238 uniform; the owner downloaded the two result zips — GitHub's file storage is not reachable from Claude's environment). Reading the results showed (1) the replay counted 8 of 66 picks twice — a re-pick of a stock that was still open from an earlier pick (HEROMOTOCO 8-Sep and 17-Sep, both stopped out on 9-Oct), which the live tracker never does; (2) both summaries said "exit model = live tracker" whatever the mode; (3) its averages mixed open and closed picks and showed no R or significance; (4) R4 counted a missing cap category as a known small cap. On the 58 independent picks (45 closed, logged exits): 11 targets, 27 stops, 33 % won, −0.25 R per trade, −11.2 R in total; with every Target at 1.5× the stop 38 % and −0.15 R. None of the four pre-set rules passed: R1 trend 36 % vs 31 % (p 0.51); R2 regime the wrong way round (kept 20 %, dropped 50 % — 89 % of July picks and all November picks were "above average" days, and those were the worst months); R3 dropped 4 picks; R4 46 % vs 29 % (p 0.39, 7 closed dropped). The one strong pattern: DEEP VALUE (margin of safety > 25 % with no early-entry signal) 32 closed, 22 % won, −17.2 R vs all others 13 closed, 62 % won, +6.0 R (one-sided Fisher p 0.015) — first seen 19-Oct on largely the same picks, so a lead to test forward. Bigger discounts did worse (≤ 25 %: 75 % won on 4 closed; > 60 %: 22 % on 9); on large caps a 90 % margin of safety (HEROMOTOCO, LUPIN, NATIONALUM) reads as a fair-value model error.
+Checking the outcome dates found a production data bug: 11 of the 45 stop / target / trailing exits in the replay file are dated Saturdays (and 1 a Monday) (the 19-Oct Performance sheet shows APLLTD's stop on Saturday 10-Oct-2026). `standardize_to_v7_schema()` keeps no date column and `save_to_database()` stamped the rows with `date.today()` on the runner — UTC — so every run that started after 00:00 UTC (86 of the last 100; all since 26-Aug, the 14 before midnight were 5–25 Aug) stored each bar one day late. The tracker walks bars dated after the pick, so its first bar was the pick day's own bar, whose high and low came before the entry at the close (SHREERAMA's −15.6 % "gap" stop at ₹42.85 is most likely its own pick-day open). Where a later run started before midnight, it overwrote the earlier run's bar.
+
+**Change.** Replay: `mark_overlaps` (first appearance), exit mode in the summary, closed-only averages + R + total R, kept-better-on-both + one-sided Fisher p per rule, R4 missing cap → n/a, R5 not-DEEP-VALUE (labelled post-hoc), forward window (`--split-date`, default 2026-11-23) with the probation decision, breakdowns (archetype, time horizon, margin of safety, stop distance, month), `--from-csv`; replay.yml gains `split_date` and passes inputs through env. Probation (`analysis/deep_value_probation.py`): `_gold_split()` shows plain DEEP VALUE Gold picks apart on the Gold sheet, Trade Summary and Delivery Preview ("on probation — tracked, not recommended"), a 🧪 log line, and a Performance block with the forward test and a decision rule fixed in advance (30 closed from 23-Nov-2026, ≥ 5 per group: DEEP VALUE avg R < 0 and below the others → gate under a new `GOLD_RULE_VERSION`; ≥ the others → end; else another 30). Gates, logging, tracking, AI scope and `GOLD_RULE_VERSION` unchanged. Price dates: `save_to_database(trade_date=…)` (master_funnel passes `target_date`, also for bulk deals / insider rows); `database/price_date_repair.py` re-dates the stored bars once before gap detection and the save (Yahoo closes of 10 liquid stocks decide each label's trading day; unclear labels left; duplicates of one day keep the copy that was already right; every decision in `price_date_repair_log`; marker only after success, and the new stamp is used only after it); `track_outcomes._recheck_closed_after_redate()` re-walks every closed row once on the re-dated bars (may move the date or re-open; continuation rows of changed picks deleted; shadow recomputed). Tooltips (Avg R, Total R, Won, Quick Pick) and glossary (DEEP VALUE PROBATION, R, price-bar dates, Quick Pick) updated.
+
+**Verification.** The fixed replay re-summarised both downloaded CSVs here with `--from-csv`; its numbers match an independent analysis of the same files (58 counted / 45 closed / −0.25 R / −11.2 R; DEEP VALUE −17.2 R vs +6.0 R; p 0.0146). New guards G55–G57; 37 mutants (G55 15 · G56 12 · G57 10), each makes its guard fail for the intended reason. Suite **109/109** on Linux and in the Windows-like run; the changed files compile with Python 3.11. Not verified here: the repair and the re-check on the real DB (it is only reachable on Actions) — the first v17.22 run's log shows both lines; the replay should be re-run afterwards.
 
 ### v17.21 — Performance numbers a trader could actually have got · 22 Nov 2026
 
@@ -4246,4 +4299,4 @@ v17.3 does not improve returns and should not be read as if it does. What it cha
 
 ---
 
-*Last updated: 22 November 2026 · v17.21 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: 23 November 2026 · v17.22 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.11-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Pipeline](https://img.shields.io/badge/pipeline-daily%20cron-orange)](./.github/workflows/market_run.yml)
-[![Version](https://img.shields.io/badge/version-v17.21-informational)](#version-history)
+[![Version](https://img.shields.io/badge/version-v17.22-informational)](#version-history)
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
 > ~5,200 NSE/BSE stocks → scored Excel dashboard with regime-gated Gold picks → your inbox every trading morning.
@@ -39,7 +39,9 @@ Single-user personal research tool. No UI, no server to manage. Runs on GitHub A
 - **News & catalyst intelligence** — recent headlines per stock are read by an LLM that returns a sentiment verdict, a catalyst, a risk and results tone. Insider buy/sell, bulk-deal and regulatory flags are kept only when the model quotes the headline behind them (enforced in code); the prompt also forbids any number that does not appear in a headline. Feeds the sentiment sub-score.
 - **Real NSE pledge / promoter data** — fetched weekly from a residential IP by a scheduled local job, committed as a validated, timestamped snapshot, and used by the cloud pipeline only when fresh (≤ 14 days).
 - **Outcome tracking** — every Gold pick is logged with entry / SL / Target and walked forward daily until it hits target, stop, trailing stop or expiry. Exits are booked as a trader could have filled them: at the level, or at the day's open when the stock gaps through it (v17.21). The 🎯 Performance sheet reports hit rates, speed, breakdowns (incl. by rule version), risk-adjusted returns, continuation after exit, and a survivorship audit.
-- **Replay of every pick** — `backtest/replay_picks.py` (manual workflow *Gold_Pick_Replay*) re-walks all logged picks on real prices with the live exit model and scores four entry rules fixed in advance (trend, market regime, re-entry cooldown, MoS cap), so a strategy change is decided on evidence (v17.21).
+- **Replay of every pick** — `backtest/replay_picks.py` (manual workflow *Gold_Pick_Replay*) re-walks all logged picks on real prices with the live exit model and scores four entry rules fixed in advance (trend, market regime, re-entry cooldown, MoS cap), so a strategy change is decided on evidence (v17.21). Since v17.22 it counts a stock once while it is held (as the live tracker does), reports results in R (P&L ÷ stop distance) with a significance test, and re-summarises a downloaded result with `--from-csv`.
+- **DEEP VALUE on probation** — the first replay (23-Nov-2026) found Gold picks labelled DEEP VALUE (margin of safety above 25 % with no early-entry signal) lost 17.2 R on 32 closed trades while all other picks made 6.0 R on 13. They still pass the 15 gates and are still logged and tracked, but since v17.22 the Gold sheet, Trade Summary and Delivery Preview show them apart as *on probation — tracked, not recommended*. The Performance sheet tracks DEEP VALUE vs the rest on picks from 23-Nov-2026 and applies a decision rule fixed in advance after 30 closes.
+- **Price bars dated by trading day** — until v17.22 each run stored its price bars under the GitHub runner's date (UTC), so most bars since late August sat one day late and the tracker's first bar after a pick was the pick day's own bar. Bars are now stored under the trading day; a one-time repair re-dates the stored history (logged in `price_date_repair_log`) and every closed pick is re-checked once on the corrected bars.
 - **Shadow trailing stop** — a regime-aware Chandelier stop runs in parallel with the live exit, purely observationally, from the first day and until its own exit, so a better exit rule can be adopted on evidence rather than intuition.
 - **Bearish-regime resilience watchlist** — on bearish days, stocks up ≥ 5% that are outperforming the Nifty are logged (reference only, never auto-bought) so strength is not lost while Gold is suppressed.
 - **AI investor cards** — narrative cards for Gold picks and currently-held positions only, cached per day so same-day re-runs cost nothing.
@@ -59,7 +61,7 @@ Sharemarket_Analyser_tool/
 ├── fetch_nse_now.bat             One-click manual trigger for the above (identical to the scheduled run)
 ├── reset_performance_tracking.py Guarded one-shot wipe of outcome-tracking tables (manual dispatch only;
 │                                 for a rule change bump GOLD_RULE_VERSION instead)
-├── test_v13_v14_consolidated.py  Regression suite (106 guards) — `python test_v13_v14_consolidated.py`
+├── test_v13_v14_consolidated.py  Regression suite (109 guards) — `python test_v13_v14_consolidated.py`
 ├── requirements.txt
 ├── .env                          (local only — never committed)
 │
@@ -92,6 +94,7 @@ Sharemarket_Analyser_tool/
 │   ├── fundamental_engine.py     Graham, PEG, Piotroski F-Score
 │   ├── technical_engine.py       RSI / MACD / Supertrend / ADX / MFI / Stoch
 │   ├── news_sentiment.py         Headlines → LLM → evidenced facts (sentiment, insider, bulk, regulatory)
+│   ├── deep_value_probation.py   DEEP VALUE probation: label test, R, forward-test decision rule (v17.22)
 │   ├── ownership_tracker.py      Promoter / FII / DII QoQ trends
 │   ├── spike_screener.py         6-trigger spike score
 │   ├── early_detection_engine.py 12-signal early-entry score
@@ -111,6 +114,7 @@ Sharemarket_Analyser_tool/
 ├── database/
 │   ├── data_bridge.py            Schema + all query helpers
 │   ├── database_manager.py       Connection management
+│   ├── price_date_repair.py      One-time re-dating of stored price bars (v17.22)
 │   └── db_maintenance.py         400-day rolling window
 │
 ├── ai/
@@ -212,7 +216,7 @@ Without LLM credentials the pipeline still runs end to end: news sentiment is sk
 
 **Manual run options:** *Actions → NSE_BSE_Daily_Pipeline → Run workflow*. Leave `reset_performance` blank for a normal run. Typing `RESET-PERFORMANCE` wipes `gold_recommendations`, `gold_outcomes` and `gold_continuation` before the run — irreversible, and it can never fire on the schedule. For a rule change, bump `GOLD_RULE_VERSION` in `master_funnel.py` instead: every pick carries its rule version and the Performance sheet compares versions, so no open pick loses its outcome.
 
-**Replay (v17.21):** *Actions → Gold_Pick_Replay → Run workflow* (`exit_mode` logged or uniform) downloads the latest `market-data-db` artifact, replays every Gold pick and uploads `replay-results` (CSV + summary). Read-only — it never changes the DB.
+**Replay (v17.21):** *Actions → Gold_Pick_Replay → Run workflow* (`exit_mode` logged or uniform; optional `split_date` for the forward window, v17.22) downloads the latest `market-data-db` artifact, replays every Gold pick and uploads `replay-results` (CSV + summary). Read-only — it never changes the DB. It is a study, not a daily job: run it after roughly 30 more closed picks or before switching on a new rule. A downloaded `replay_results.csv` can be re-summarised anywhere with `python backtest/replay_picks.py --from-csv replay_results.csv`.
 
 **Persistence:**
 - `market_data.db` (SQLite, ~730 MB after the daily VACUUM) lives only as the workflow artifact `market-data-db` (30-day retention), downloaded at the start of each run and re-uploaded at the end. It is never committed — any schema change must run as a workflow step.
@@ -354,10 +358,10 @@ Verdicts are cap-aware; thresholds live in `analysis/scoring_engine.py`.
 ## Excel output — 8 sheets
 
 1. **📊 Full Dashboard** — up to 100 stocks × 126 columns (fewer when ETF/fund leakers are pruned). Row 2 states the header colour legend and the NSE snapshot's fetch time and age. AI analyst notes are not on this sheet — they appear on the Gold sheet and, for open positions, in the Performance sheet's AI Card column. News columns include Key Catalyst, News Sentiment, Primary Risk, *Insider (news)*, *Bulk Deal* and *Reg Flag*. Red headers mark the few columns that genuinely have no free source.
-2. **⭐ Gold – Early Movers** — the 15-condition filter; row 2 shows the criteria and, on bearish days, the suppression notice. Below it, the **Bearish-Regime Standouts** watchlist (or a greyed *Recent Resilience* strip on bullish days).
+2. **⭐ Gold – Early Movers** — the 15-condition filter; row 2 shows the criteria and, on bearish days, the suppression notice. Recommended picks first; DEEP VALUE picks below them in a muted **🧪 On probation — tracked, not recommended** block (v17.22). Below it, the **Bearish-Regime Standouts** watchlist (or a greyed *Recent Resilience* strip on bullish days).
 3. **📊 Trade Summary** — Entry range / Stop Loss / Target / R:R / horizon / risk level for Gold picks (one value per header since v17.21).
 4. **🔔 Alert Log** — today's score vs the previous trading date's (also on a second run the same day, v17.21) with an action label (`SCORE DEGRADED` fires only on a genuine ≥ 3-point drop; weak-but-stable names show `LOW SCORE`).
-5. **📱 Delivery Preview** — WhatsApp / email text preview.
+5. **📱 Delivery Preview** — WhatsApp / email text preview; the count and top pick come from recommended picks only, with the probation count beside them (v17.22).
 6. **🎯 Performance** — in sheet order: headline metrics (Target hit / SL / Expired / Trail SL), speed metrics, diagnostic breakdowns (score band · archetype · sector · horizon · rule version), closed positions, risk-adjusted returns (Sharpe · Sortino · Calmar · drawdown duration), open positions (original SL, Target, trailing-lock state, regime, suggested allocation, Score Band, Archetype, Sector and an **AI Card** per held stock), missed-runup diagnostic, continuation audit, shadow exit comparison and survivorship audit. A banner warns until 30 positions have closed.
 7. **📖 Glossary** — column definitions.
 8. **📖 Tooltip Reference** — every header tooltip in one place.
@@ -401,6 +405,7 @@ Most recent first. Earlier entries are preserved as written at the time.
 
 | Version | Key change |
 |---|---|
+| **v17.22** | **Replay review: one position per stock, DEEP VALUE on probation, price bars under the trading date.** The first replay (23-Nov-2026) counted 8 of 66 picks twice (a re-pick while the stock was still open), named no exit mode and mixed open with closed picks — fixed, and it now reports R, a significance test, a forward window and breakdowns, and re-summarises a downloaded CSV. On 58 independent picks (45 closed) the strategy lost 0.25 R per trade (−11.2 R); none of the four pre-set rules passed; DEEP VALUE picks lost 17.2 R on 32 closed (22 % won) while the rest made 6.0 R on 13 (62 % won) — so DEEP VALUE picks are shown *on probation* (still logged and tracked; gates unchanged) and a decision rule fixed in advance settles it after 30 new closes. Checking the exit dates found 11 of 45 on Saturdays: price bars were stored under the runner's UTC date, one day late on most runs since 26-Aug, so the tracker's first bar after a pick was the pick day's own bar. Bars are now stored under the trading date, a one-time repair re-dates the history (Yahoo closes of 10 liquid stocks decide each date; every change logged), and closed picks are re-checked once on the corrected bars. New G55–G57 (37 mutants); 109/109 on Linux and Windows-like. |
 | **v17.21** | **Performance numbers a trader could actually have got.** An audit of the 19-Oct-2026 dashboard (code unchanged since) found: the tracker still booked the hidden T2/T3 (SUNTV +14.2% instead of the +10.5% Target); every exit was booked at the level even on a gap (SHREERAMA fell 17.6% on day 1, booked −7.0%); DD Recovery Rate showed 100% because a stored 0 was read as 1; AVG DAYS → TARGET ignored T2 rows; the shadow stop was unarmed for 14 days, ignored the original stop and froze when the live trade closed; same-day picks in one sector were each given the full headroom (Consumer Cyclical 40.9% vs the 30% cap); held stocks were shown with levels re-computed from today's price; Trade Summary values sat one-two columns right of their headers; a same-day re-run compared with that morning's run (two SCORE DEGRADED alerts lost); AI cards still received T2/T3; plus a few display slips (Support 2 above the price, P/E 500, "SPIKE ALERTS: 0", "+0", "v6.2"). All fixed — single Target with open-price fills and a one-time restatement of closed rows, shadow stop armed from day 1 and walked to its own end, log-time sizing from logged allocations, tracked levels for held stocks, previous-trading-date comparisons, and the display fixes. Two resets had deleted 26 open picks, so every pick now carries a **rule version** (compare versions instead of resetting) and a new **replay tool** re-walks all 49 picks since July on real prices and scores four pre-set entry rules (trend, regime, cooldown, MoS cap) before any strategy change. Tooltips and glossary updated. New G48–G54, each mutation-checked; 106/106 on Linux and Windows-like. |
 | **v17.20.1** | **A partial NSE fetch no longer wipes the pledge data.** On 27-Sep and 11-Oct-2026 (both Sundays) NSE returned an empty pledge list while shareholding worked, and `fetch_nse_local.py` wrote `pledge {}` over ~340 good rows, so Pledge % was blank until the next fetch. It now checks the previous snapshot with the pipeline's own freshness rule: if a list came back empty and the previous file is still usable and has rows for it, that file is kept untouched and the script exits 3 (explained by `fetch_nse_now.bat`). A stale or missing previous file still gets the partial snapshot. The weekly trigger stays on Sunday; a missed or `0x3` run is covered by an ad hoc `fetch_nse_now.bat`. No pipeline or scoring logic changed. New G47 (99/99, Linux and Windows-like). |
 | **v17.20** | **Empty Gold sheet explained in the run log.** On 10-Oct-2026 the Gold sheet was empty on a BULLISH day and the log only said "logged 0 Gold pick(s)". The 15 Gold gates now live in one list (`_gold_gates()`), which the Gold filter uses unchanged; when the sheet is empty the log prints 🥇 lines with the gate-by-gate funnel, the gate that emptied it and the stocks that were one gate short with the failing value (on BEARISH days, the regime gate and how many stocks it held back). No gate, threshold or score changed — old and new filter agree on 324 comparisons incl. 22 real dashboards. New G46 (98/98, Linux and Windows-like). |
