@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.11-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![Pipeline](https://img.shields.io/badge/pipeline-daily%20cron-orange)](./.github/workflows/market_run.yml)
-[![Version](https://img.shields.io/badge/version-v17.22-informational)](#version-history)
+[![Version](https://img.shields.io/badge/version-v17.22.1-informational)](#version-history)
 
 > **Fully automated · Daily pre-market intelligence for Indian equities**
 > ~5,200 NSE/BSE stocks → scored Excel dashboard with regime-gated Gold picks → your inbox every trading morning.
@@ -92,7 +92,6 @@ Sharemarket_Analyser_tool/
 │   ├── scoring_engine.py         Composite score + verdict + confidence + storm score
 │   ├── forensics_engine.py       Altman Z + Beneish M + ND/EBITDA + CCC
 │   ├── fundamental_engine.py     Graham, PEG, Piotroski F-Score
-│   ├── technical_engine.py       RSI / MACD / Supertrend / ADX / MFI / Stoch
 │   ├── news_sentiment.py         Headlines → LLM → evidenced facts (sentiment, insider, bulk, regulatory)
 │   ├── deep_value_probation.py   DEEP VALUE probation: label test, R, forward-test decision rule (v17.22)
 │   ├── ownership_tracker.py      Promoter / FII / DII QoQ trends
@@ -103,7 +102,6 @@ Sharemarket_Analyser_tool/
 │   ├── risk_metrics.py           Sharpe / Sortino / Calmar
 │   ├── survivorship_audit.py     Open positions vs today's universe
 │   ├── smart_money.py            Bulk-deal + SAST insider scraping
-│   ├── market_context.py         Market-wide context
 │   └── v7_analysis_engine.py     Sections 3A–3H analytical overlays
 │
 ├── risk/correlation_aware_sizing.py   Risk-parity position sizing
@@ -113,7 +111,6 @@ Sharemarket_Analyser_tool/
 │
 ├── database/
 │   ├── data_bridge.py            Schema + all query helpers
-│   ├── database_manager.py       Connection management
 │   ├── price_date_repair.py      One-time re-dating of stored price bars (v17.22)
 │   └── db_maintenance.py         400-day rolling window
 │
@@ -405,6 +402,7 @@ Most recent first. Earlier entries are preserved as written at the time.
 
 | Version | Key change |
 |---|---|
+| **v17.22.1** | **Dead code removed.** Three modules no file imported (`technical_engine.py`, `market_context.py`, `database_manager.py`), the stale copy of the old test suite, the one-time v12.0.1 allowlist purge (done long ago), two target-cap constants unused since v17.8.1, the unused legacy header-tooltip dict and an unused helper. Run history, standalone tools and the v17.21/v17.22 one-time jobs are kept on purpose. 109/109 on Linux and Windows-like. |
 | **v17.22** | **Replay review: one position per stock, DEEP VALUE on probation, price bars under the trading date.** The first replay (23-Nov-2026) counted 8 of 66 picks twice (a re-pick while the stock was still open), named no exit mode and mixed open with closed picks — fixed, and it now reports R, a significance test, a forward window and breakdowns, and re-summarises a downloaded CSV. On 58 independent picks (45 closed) the strategy lost 0.25 R per trade (−11.2 R); none of the four pre-set rules passed; DEEP VALUE picks lost 17.2 R on 32 closed (22 % won) while the rest made 6.0 R on 13 (62 % won) — so DEEP VALUE picks are shown *on probation* (still logged and tracked; gates unchanged) and a decision rule fixed in advance settles it after 30 new closes. Checking the exit dates found 11 of 45 on Saturdays: price bars were stored under the runner's UTC date, one day late on most runs since 26-Aug, so the tracker's first bar after a pick was the pick day's own bar. Bars are now stored under the trading date, a one-time repair re-dates the history (Yahoo closes of 10 liquid stocks decide each date; every change logged), and closed picks are re-checked once on the corrected bars. New G55–G57 (37 mutants); 109/109 on Linux and Windows-like. |
 | **v17.21** | **Performance numbers a trader could actually have got.** An audit of the 19-Oct-2026 dashboard (code unchanged since) found: the tracker still booked the hidden T2/T3 (SUNTV +14.2% instead of the +10.5% Target); every exit was booked at the level even on a gap (SHREERAMA fell 17.6% on day 1, booked −7.0%); DD Recovery Rate showed 100% because a stored 0 was read as 1; AVG DAYS → TARGET ignored T2 rows; the shadow stop was unarmed for 14 days, ignored the original stop and froze when the live trade closed; same-day picks in one sector were each given the full headroom (Consumer Cyclical 40.9% vs the 30% cap); held stocks were shown with levels re-computed from today's price; Trade Summary values sat one-two columns right of their headers; a same-day re-run compared with that morning's run (two SCORE DEGRADED alerts lost); AI cards still received T2/T3; plus a few display slips (Support 2 above the price, P/E 500, "SPIKE ALERTS: 0", "+0", "v6.2"). All fixed — single Target with open-price fills and a one-time restatement of closed rows, shadow stop armed from day 1 and walked to its own end, log-time sizing from logged allocations, tracked levels for held stocks, previous-trading-date comparisons, and the display fixes. Two resets had deleted 26 open picks, so every pick now carries a **rule version** (compare versions instead of resetting) and a new **replay tool** re-walks all 49 picks since July on real prices and scores four pre-set entry rules (trend, regime, cooldown, MoS cap) before any strategy change. Tooltips and glossary updated. New G48–G54, each mutation-checked; 106/106 on Linux and Windows-like. |
 | **v17.20.1** | **A partial NSE fetch no longer wipes the pledge data.** On 27-Sep and 11-Oct-2026 (both Sundays) NSE returned an empty pledge list while shareholding worked, and `fetch_nse_local.py` wrote `pledge {}` over ~340 good rows, so Pledge % was blank until the next fetch. It now checks the previous snapshot with the pipeline's own freshness rule: if a list came back empty and the previous file is still usable and has rows for it, that file is kept untouched and the script exits 3 (explained by `fetch_nse_now.bat`). A stale or missing previous file still gets the partial snapshot. The weekly trigger stays on Sunday; a missed or `0x3` run is covered by an ad hoc `fetch_nse_now.bat`. No pipeline or scoring logic changed. New G47 (99/99, Linux and Windows-like). |

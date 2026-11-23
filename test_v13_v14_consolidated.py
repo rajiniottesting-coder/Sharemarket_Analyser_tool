@@ -19,8 +19,9 @@ every test passes. Test groups (run in order):
   Total: 65 regression tests · zero shared mutable state between tests
 
 What this suite does NOT cover (kept as separate files in repo by design):
-  · test_v11.0.2_full_withdummies.py — ScoringEngine integration suite (269 KB,
-    covers v10.17/v11.0/v11.0.1/v11.0.2/v12.1 logic — different layer of system)
+  · the deep ScoringEngine suite — test_v11.0.2_full_withdummies.py, in git
+    history at d2f301a (the stale copy in the repo was removed in v17.22.1;
+    see CLAUDE.md section 20)
   · test_run.py                       — manual pipeline launcher (not a test)
   · test_yfinance.py                  — external-API diagnostic
 """
@@ -4356,9 +4357,11 @@ def test_g32_v16_4_beneish_threshold_recalibration():
     assert "M > -2.22 = possible manipulator" in src_xl, (
         "v16.4: Glossary Beneish entry must mention -2.22 (possible manipulator) threshold"
     )
-    # The short TIPS dict tooltip
-    assert "<-1.78 acceptable | >-1.78 likely manipulation" in src_xl, (
-        "v16.4: Excel TIPS dict Beneish entry must use new -1.78 quick-read"
+    # The short quick-read of the LIVE tooltip (tooltip_formatter.TIPS). Until
+    # v17.22.1 this checked the unused legacy _HDR_TIPS dict in
+    # excel_generator, which was removed; the hover text users see is TIPS.
+    assert "<\u22121.78 acceptable | >\u22121.78 likely manipulation" in src_tt, (
+        "v16.4: Beneish M tooltip quick-read must use the -1.78 threshold"
     )
 
     return ("\u2705 v16.4: Beneish threshold recalibration verified — "
@@ -5859,14 +5862,13 @@ def test_g45_v17_19_1_suite_is_portable_no_posix_temp_paths():
     Windows, so 29 DB-backed tests failed there with "unable to open database
     file" while passing in a Linux sandbox.
       A. no string literal in the project's .py files starts with '/tmp' or
-         '/home/' (comments may mention them; the stale test_v11 copy is
-         excluded - see CLAUDE.md section 20)
+         '/home/' (comments may mention them)
       B. scratch DBs are created inside tempfile.gettempdir()
     """
     import tokenize, tempfile, glob
     files = {_src_path('test_v13_v14_consolidated.py')}
     for f in glob.glob(os.path.join(_HERE, '**', '*.py'), recursive=True):
-        if '__pycache__' in f or os.path.basename(f).startswith('test_v11'):
+        if '__pycache__' in f:
             continue
         files.add(f)
     # prefixes built at runtime so this guard does not flag its own source

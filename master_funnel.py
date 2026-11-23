@@ -491,8 +491,6 @@ _V14_7_SECTOR_TIER = {
 _V14_6_CAP_ATR_FALLBACK = {'LARGE': 2.0, 'MID': 2.8, 'SMALL': 4.0, 'MICRO': 5.5}
 _V14_6_CAP_DEFAULT_ATR  = 3.0
 _V14_6_HORIZON_SL_MULT  = {'SHORT TERM': 2.5, 'POSITIONAL': 3.5, 'LONG TERM': 5.0}
-_V14_6_HORIZON_T1_CAP_BASE = {'SHORT TERM': 10.0, 'POSITIONAL': 20.0, 'LONG TERM': 35.0}
-_V14_6_HORIZON_T3_HARD_CAP = {'SHORT TERM': 35.0, 'POSITIONAL': 80.0, 'LONG TERM': 200.0}
 _V14_6_SL_MIN_PCT = 4.5    # never tighter (avoid whipsaw)
 # v17.0 Fix 4: separate SL cap for SHORT TERM picks.
 # Performance audit (31 closed positions, Jul 2026): SHORT TERM SL hits
@@ -887,97 +885,6 @@ def run_master_pipeline():
         print(f"⚠️  v10.5: Defensive init warning: {_dex}")
 
     conn.close()
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # SECTION 12A.5 — v12.0.1 SELF-HEALING CLEANUP (one-time)
-    # Detects and purges the polluted dual_listed_runtime allowlist that the
-    # pre-v12.0.1 reconciler bug created via empty-ISIN Cartesian merge.
-    #
-    # Trigger condition: > 500 rows in dual_listed_runtime AND no v12_0_1 marker.
-    # A healthy pipeline adds 0–30 runtime symbols per run; >500 is unambiguous
-    # evidence of the cross-join bug. The marker (one row in a tiny new table)
-    # ensures this cleanup runs at most once per DB lifetime — subsequent
-    # pipeline runs see the marker and skip the check entirely.
-    #
-    # Safe-by-default: backs up the polluted table before truncating, and
-    # uses a self-contained try/except so any cleanup failure logs a warning
-    # but never blocks the pipeline.
-    # ═══════════════════════════════════════════════════════════════════════════
-    try:
-        import sqlite3 as _sq_v12
-        _conn_v12 = _sq_v12.connect("market_data.db")
-        _cur_v12  = _conn_v12.cursor()
-
-        # Create marker table if it doesn't exist (idempotent)
-        _cur_v12.execute("""
-            CREATE TABLE IF NOT EXISTS pipeline_migrations (
-                migration_id   TEXT PRIMARY KEY,
-                applied_at     TEXT NOT NULL,
-                rows_affected  INTEGER DEFAULT 0
-            )
-        """)
-
-        # Check if v12_0_1 cleanup has already run
-        _cur_v12.execute(
-            "SELECT 1 FROM pipeline_migrations WHERE migration_id = ?",
-            ("v12_0_1_runtime_allowlist_purge",),
-        )
-        _already_done = _cur_v12.fetchone() is not None
-
-        if not _already_done:
-            # Check if dual_listed_runtime exists and is polluted
-            _cur_v12.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='dual_listed_runtime'"
-            )
-            _table_exists = _cur_v12.fetchone() is not None
-
-            if _table_exists:
-                _cur_v12.execute("SELECT COUNT(*) FROM dual_listed_runtime")
-                _row_count = _cur_v12.fetchone()[0]
-
-                if _row_count > 500:
-                    # POLLUTED — back up, truncate, mark migration done
-                    print(f"🧹 v12.0.1: Detected polluted runtime allowlist ({_row_count:,} rows). Cleaning...")
-                    _cur_v12.execute("DROP TABLE IF EXISTS dual_listed_runtime_backup_v12_0_1")
-                    _cur_v12.execute(
-                        "CREATE TABLE dual_listed_runtime_backup_v12_0_1 AS "
-                        "SELECT * FROM dual_listed_runtime"
-                    )
-                    _cur_v12.execute("DELETE FROM dual_listed_runtime")
-                    _cur_v12.execute(
-                        "INSERT INTO pipeline_migrations (migration_id, applied_at, rows_affected) "
-                        "VALUES (?, ?, ?)",
-                        ("v12_0_1_runtime_allowlist_purge",
-                         datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                         _row_count),
-                    )
-                    _conn_v12.commit()
-                    print(f"   ✅ Backed up {_row_count:,} rows → dual_listed_runtime_backup_v12_0_1")
-                    print(f"   ✅ Truncated dual_listed_runtime — fixed reconciler will repopulate cleanly")
-                else:
-                    # Healthy or already empty — just mark migration done so we don't re-check
-                    _cur_v12.execute(
-                        "INSERT INTO pipeline_migrations (migration_id, applied_at, rows_affected) "
-                        "VALUES (?, ?, ?)",
-                        ("v12_0_1_runtime_allowlist_purge",
-                         datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z", 0),
-                    )
-                    _conn_v12.commit()
-                    print(f"✅ v12.0.1: Runtime allowlist healthy ({_row_count} rows) — no cleanup needed")
-            else:
-                # Table doesn't exist yet (fresh DB) — mark done so we skip on subsequent runs
-                _cur_v12.execute(
-                    "INSERT INTO pipeline_migrations (migration_id, applied_at, rows_affected) "
-                    "VALUES (?, ?, ?)",
-                    ("v12_0_1_runtime_allowlist_purge",
-                     datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z", 0),
-                )
-                _conn_v12.commit()
-                print("✅ v12.0.1: Fresh DB (no dual_listed_runtime table yet) — marked clean")
-
-        _conn_v12.close()
-    except Exception as _v12_e:
-        print(f"⚠️  v12.0.1 self-healing cleanup warning (non-fatal): {_v12_e}")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # SECTION 12B — GATE CHECK FIRST
@@ -3730,8 +3637,8 @@ def run_master_pipeline():
                 # Consequence of the old bug (present since v14.6):
                 #   • _V14_6_HORIZON_SL_MULT always used 3.5 (POSITIONAL),
                 #     never 2.5 for SHORT TERM → short-term stops far too wide
-                #   • _V14_6_HORIZON_T1_CAP_BASE always used 20.0, never 10.0
-                #     → short-term T1 targets unreachable in a 30-day window
+                #   • the horizon T1 cap (dropped in v17.8.1) always used 20.0,
+                #     never 10.0 → short-term T1 targets unreachable in 30 days
                 #   • v17.0 Fix 4 (7% SHORT TERM SL cap) never fired
                 # Read "horizon" first, keep "time_horizon" as a fallback so
                 # any caller that does supply the longer key still works.
