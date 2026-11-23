@@ -87,7 +87,7 @@
 <body>
 <div class="wrap">
 <h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
-<div class="meta">v17.21 · 22 November 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
+<div class="meta">v17.22 · 23 November 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
 <div class="toc">
   <h3>Contents</h3>
   <ol start="0">
@@ -1101,6 +1101,7 @@
 <tr><td>2</td><td>Headline metrics</td><td>Total · Closed · Open · Hit rate · SL rate · tiles TARGET HIT / SL HIT / EXPIRED / TRAIL SL</td></tr>
 <tr><td>3</td><td>Speed metrics</td><td>Average days to Target and to SL</td></tr>
 <tr><td>4</td><td>Diagnostic breakdowns</td><td>Hit rate by score band, archetype, sector, time horizon, rule version (v17.21)</td></tr>
+<tr><td>4b</td><td>DEEP VALUE probation (v17.22)</td><td>DEEP VALUE vs all other Gold picks logged from 23-Nov-2026, in R; the decision rule fixed in advance applies after 30 closes</td></tr>
 <tr><td>5</td><td>Closed positions (15 columns)</td><td>Every realised outcome, newest first, with Score Band / Archetype / Sector</td></tr>
 <tr><td>6</td><td>Risk-adjusted returns</td><td>Sharpe · Sortino · Calmar (risk-free 6.5 %) · drawdown duration</td></tr>
 <tr><td>7</td><td>Open positions</td><td>SL (the original stop, frozen at log time), Target, Trailing (level locked so far — the tracker exits on the higher of the two), Regime, Suggested Alloc, AI Card; ⚠ when ≤ 14 days left</td></tr>
@@ -1189,13 +1190,13 @@
 <table class="tbl" aria-label="Workbook sheets">
 <thead><tr><th>#</th><th>Sheet</th><th>Contents</th></tr></thead><tbody>
 <tr><td>1</td><td>📊 Full Dashboard</td><td>Top 100 × 126 columns in 18 bands. Row 2: header-colour legend and <em>Pledge/Promoter data as of … IST (Nd old)</em>. Red header = no free source and &lt; 30 % populated.</td></tr>
-<tr><td>2</td><td>⭐ Gold – Early Movers</td><td>41 columns incl. the AI Analysis Summary; row 2 lists the 15 criteria and any bearish-regime notice; resilience strip below.</td></tr>
-<tr><td>3</td><td>📊 Trade Summary</td><td>Entry range · SL · Target · R:R · horizon · risk for Gold picks — one value per header (v17.21).</td></tr>
+<tr><td>2</td><td>⭐ Gold – Early Movers</td><td>41 columns incl. the AI Analysis Summary; row 2 lists the 15 criteria and any bearish-regime notice; recommended picks first, then DEEP VALUE picks in a muted “on probation — tracked, not recommended” block (v17.22); resilience strip below.</td></tr>
+<tr><td>3</td><td>📊 Trade Summary</td><td>Entry range · SL · Target · R:R · horizon · risk for Gold picks — one value per header (v17.21); probation picks below a separator (v17.22).</td></tr>
 <tr><td>4</td><td>🔔 Alert Log</td><td>Score vs the previous trading date (also on a same-day re-run, v17.21): ⬇ SCORE DEGRADED only on a real ≥ 3-point drop; ⚠ LOW SCORE for weak-but-stable; action label per row.</td></tr>
-<tr><td>5</td><td>📱 Delivery Preview</td><td>WhatsApp / email text.</td></tr>
-<tr><td>6</td><td>🎯 Performance</td><td>11 sections — see Part 6.</td></tr>
-<tr><td>7</td><td>📖 Glossary</td><td>~196 column definitions.</td></tr>
-<tr><td>8</td><td>📖 Tooltip Reference</td><td>All 210 header tooltips (the same text appears on hover with an ⓘ cue).</td></tr>
+<tr><td>5</td><td>📱 Delivery Preview</td><td>WhatsApp / email text; count and top pick from recommended picks only (v17.22).</td></tr>
+<tr><td>6</td><td>🎯 Performance</td><td>12 sections — see Part 6.</td></tr>
+<tr><td>7</td><td>📖 Glossary</td><td>202 definitions.</td></tr>
+<tr><td>8</td><td>📖 Tooltip Reference</td><td>All 214 header tooltips (the same text appears on hover with an ⓘ cue).</td></tr>
 </tbody></table>
 <table class="tbl" aria-label="Full Dashboard bands"><thead><tr><th>Full Dashboard band</th><th>Columns</th></tr></thead>
 <tbody><tr><td>IDENTITY</td><td class='num'>7</td></tr><tr><td>SCORES</td><td class='num'>5</td></tr><tr><td>PRICE &amp; MARKET</td><td class='num'>7</td></tr><tr><td>WEEKLY CHANGE %</td><td class='num'>4</td></tr><tr><td>FAIR VALUE</td><td class='num'>12</td></tr><tr><td>VALUATION</td><td class='num'>7</td></tr><tr><td>PROFITABILITY</td><td class='num'>10</td></tr><tr><td>GROWTH</td><td class='num'>10</td></tr><tr><td>FIN HEALTH</td><td class='num'>10</td></tr><tr><td>CAP ALLOC</td><td class='num'>3</td></tr><tr><td>SHAREHOLDING</td><td class='num'>9</td></tr><tr><td>QUALITY SCORES</td><td class='num'>4</td></tr><tr><td>PIPELINE / OB</td><td class='num'>5</td></tr><tr><td>EARLY DETECTION</td><td class='num'>3</td></tr><tr><td>TECHNICAL</td><td class='num'>14</td></tr><tr><td>BALANCE SHEET</td><td class='num'>2</td></tr><tr><td>TRADE PLAN</td><td class='num'>7</td></tr><tr><td>NEWS &amp; RISK</td><td class='num'>7</td></tr><tr><th>Total</th><th class='num'>126</th></tr></tbody></table>
@@ -1265,10 +1266,12 @@
 <tr><td>Position size</td><td><code>risk/correlation_aware_sizing.py::compute_suggested_allocation</code></td></tr>
 <tr><td>Regime gate · resilience</td><td><code>master_funnel.py</code> Section 9/10 · <code>_refresh_resilience_watch</code> · <code>data_bridge.get_nifty_20d_sma</code></td></tr>
 <tr><td>Gold filter</td><td><code>reporting/excel_generator.py::ExcelGeneratorV6._get_gold</code></td></tr>
-<tr><td>Outcome tracking</td><td><code>track_outcomes.py::main</code>, <code>_walk_forward</code>, <code>_fill_price</code>, <code>_compute_shadow_stop</code>, <code>_restate_closed_outcomes</code> · <code>data_bridge</code> outcome helpers · replay: <code>backtest/replay_picks.py</code> (workflow <code>replay.yml</code>)</td></tr>
+<tr><td>Outcome tracking</td><td><code>track_outcomes.py::main</code>, <code>_walk_forward</code>, <code>_fill_price</code>, <code>_compute_shadow_stop</code>, <code>_restate_closed_outcomes</code>, <code>_recheck_closed_after_redate</code> (v17.22) · <code>data_bridge</code> outcome helpers · replay: <code>backtest/replay_picks.py</code> (workflow <code>replay.yml</code>)</td></tr>
+<tr><td>Price-bar dates</td><td><code>database/data_bridge.py::save_to_database(trade_date=…)</code> · one-time repair <code>database/price_date_repair.py::run_price_date_repair</code> (log table <code>price_date_repair_log</code>) (v17.22)</td></tr>
+<tr><td>DEEP VALUE probation</td><td><code>analysis/deep_value_probation.py</code> · <code>ExcelGeneratorV6._gold_split</code>, <code>probation_forward_stats</code> (v17.22)</td></tr>
 <tr><td>AI notes</td><td><code>ai/ai_analyst.py::get_ai_analysis</code> → <code>_generate_ai_analysis</code> · <code>_load_card_system_prompt</code></td></tr>
 <tr><td>Workbook · tooltips</td><td><code>reporting/excel_generator.py</code> (8 sheets) · <code>reporting/tooltip_formatter.py::TIPS</code></td></tr>
-<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 106 guards, all green on Linux and Windows (v17.21)</td></tr>
+<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 109 guards, all green on Linux and Windows (v17.22)</td></tr>
 </tbody></table>
 
 <h3>Key constants &amp; thresholds</h3>
@@ -1297,8 +1300,8 @@ Display thresholds (v10.16 Option B): PE / PB / PS / EV-EBITDA above 500 and PEG
 <h3>Quick-pick labels are separate from the verdict</h3>
 <p style="margin-top:0"><code>stock["verdict"]</code> (BUY / WATCHLIST / NEUTRAL / OVERVALUED / AVOID) and <code>stock["label"]</code> (DEEP VALUE / EARLY MOVER / …) come from different functions. The verdict drives colour and the Gold filter; the label is an archetype used for sorting and for the Performance breakdowns.</p>
 <div class="footer">
-NSE/BSE Stock Analyser · Pipeline reference · v17.21 (22 November 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
-Parts 1–4 are the v16.5 scoring deep-dives, re-checked against the code — the screening and scoring modules are unchanged since v16.4; only funnel counts and output facts were updated. Parts 0 and 5–8 are new and describe v17.0–v17.20.1: market-regime gate and 15-condition Gold filter (v17.0, v17.5.1), single regime-aware Target (v17.8.1), live trailing tiers (v17.0), continuation audit (v17.3), shadow stop (v17.7), news engine (v17.9/v17.11), company-LLM analyst notes with per-day cache (v17.10–v17.16), weekly NSE snapshot (v17.13), allowlist write-time guards (v17.17), Full Dashboard without the AI column (v17.18), the Trailing-label fix (v17.19), the empty-Gold reason in the run log (v17.20) the NSE fetcher keeping the previous snapshot on a partial fetch (v17.20.1), and v17.21: one live Target with open-price fills and a one-time restatement, the shadow stop armed from day 1 and walked to its own end, sizing from logged allocations with held stocks shown at their tracked levels, previous-trading-date comparisons, rule-version tagging instead of resets, and the pick replay tool.
+NSE/BSE Stock Analyser · Pipeline reference · v17.22 (23 November 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
+Parts 1–4 are the v16.5 scoring deep-dives, re-checked against the code — the screening and scoring modules are unchanged since v16.4; only funnel counts and output facts were updated. Parts 0 and 5–8 are new and describe v17.0–v17.20.1: market-regime gate and 15-condition Gold filter (v17.0, v17.5.1), single regime-aware Target (v17.8.1), live trailing tiers (v17.0), continuation audit (v17.3), shadow stop (v17.7), news engine (v17.9/v17.11), company-LLM analyst notes with per-day cache (v17.10–v17.16), weekly NSE snapshot (v17.13), allowlist write-time guards (v17.17), Full Dashboard without the AI column (v17.18), the Trailing-label fix (v17.19), the empty-Gold reason in the run log (v17.20) the NSE fetcher keeping the previous snapshot on a partial fetch (v17.20.1), and v17.21: one live Target with open-price fills and a one-time restatement, the shadow stop armed from day 1 and walked to its own end, sizing from logged allocations with held stocks shown at their tracked levels, previous-trading-date comparisons, rule-version tagging instead of resets, and the pick replay tool; v17.22: price bars stored under the trading date with a one-time re-dating of the history and a re-check of closed picks, DEEP VALUE Gold picks shown on probation (display only, forward test on the Performance sheet), and the replay counting a stock once while it is held, in R.
 </div>
 </div>
 <script>
