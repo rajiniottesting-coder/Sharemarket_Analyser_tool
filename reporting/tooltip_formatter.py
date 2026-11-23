@@ -104,7 +104,10 @@ TIPS: Dict[str, Tuple[str, str]] = {
                    "\n"
                    "2. DEEP VALUE (green)\n"
                    "    elif MoS > 25% AND Score > 70\n"
-                   "    → Cheap vs fair value, no breakout yet — patient buy.\n"
+                   "    → Cheap vs fair value, no breakout yet.\n"
+                   "    v17.22: Gold picks with this label are ON PROBATION —\n"
+                   "    shown apart, tracked, not recommended (replay of\n"
+                   "    23-Nov-2026: 22% won, −17.2 R on 32 closed).\n"
                    "\n"
                    "3. EARLY MOVER (gold)\n"
                    "    elif EarlyEntry ≥ 70 AND Score > 55\n"
@@ -1158,6 +1161,18 @@ TIPS: Dict[str, Tuple[str, str]] = {
                          "if SHORT TERM has lower hit rate than POSITIONAL\n"
                          "despite being stricter (high spike count required),\n"
                          "the SHORT TERM trigger may need recalibration."),
+    "Avg R": ("Average result per closed pick, in units of the risk taken",
+              "R = (exit price − entry) ÷ (entry − original stop).\n"
+              "−1 R = stopped out at the stop; +1.5 R = a Target 1.5×\n"
+              "the stop distance away. The risk-parity sizing risks about\n"
+              "1 % of capital per R, so R compares picks fairly whatever\n"
+              "their stop width. Gross of trading costs."),
+    "Total R": ("Sum of R over the closed picks of the group",
+                "With ~1 % of capital risked per R, Total R ≈ the % of\n"
+                "capital gained or lost by the group (before costs)."),
+    "Won": ("Closed picks that ended above their entry (R > 0)",
+            "Counts Target hits, profitable trailing-stop exits and\n"
+            "expiries above entry."),
     "BY RULE VERSION": ("Hit rate per version of the Gold / trade-plan rules",
                         "Each pick is stamped with the rule version that\n"
                         "produced it (v17.21+; earlier picks = 'before v17.21').\n"

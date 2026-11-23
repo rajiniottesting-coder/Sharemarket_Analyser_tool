@@ -19,6 +19,15 @@ from reporting.tooltip_formatter import (
     apply_group_tooltips as _tt_apply_groups,
     build_reference_sheet as _tt_build_ref,
 )
+# v17.22: DEEP VALUE probation (display only — gates and logging unchanged)
+from analysis.deep_value_probation import (
+    PROBATION_EVIDENCE as _PROB_EVIDENCE,
+    PROBATION_MIN_CLOSED as _PROB_MIN_CLOSED,
+    PROBATION_SINCE as _PROB_SINCE,
+    forward_verdict as _prob_verdict,
+    is_on_probation as _on_probation,
+    r_multiple as _r_multiple,
+)
 
 NAVY  = "1E293B";  WHITE = "FFFFFF";  LG = "F8FAFC"
 
@@ -260,7 +269,7 @@ GLOSSARY_DATA = [
      "the stock's character (asks 'what kind of signal is this?'). The two CAN disagree — that's by design, not a bug. "
      "Possible values (priority order, first match wins): "
      "DEEP VALUE EARLY MOVER = MoS > 25% AND score > 70 AND early_entry ≥ 60 (cheap + breaking out, top conviction) | "
-     "DEEP VALUE = MoS > 25% AND score > 70 (cheap vs fair value, no breakout yet) | "
+     "DEEP VALUE = MoS > 25% AND score > 70 (cheap vs fair value, no breakout yet; v17.22: Gold picks with this label are shown 'on probation' — tracked, not recommended) | "
      "EARLY MOVER = early_entry ≥ 70 AND score > 55 (technical breakout signal, may not be deeply discounted) | "
      "AVOID / EXIT = score < 38 OR (score < 45 AND MoS < −30%) (weak fundamentals + bad value) | "
      "WATCHLIST = fallback for everything else (no special archetype, monitor). "
@@ -1144,6 +1153,23 @@ GLOSSARY_DATA = [
     ("PERFORMANCE","Approaching Expiry Warning",
      "⚠ flag (last column of Open Positions table) and pale-yellow row highlight when Days Left ≤ 14. Surfaces positions nearing the hard cutoff so you can decide whether to manually exit at current P&L or accept the EXPIRED outcome. "
      "End-of-table summary line counts how many positions are approaching expiry — useful at-a-glance metric for daily review.","🎯 Performance"),
+    ("PERFORMANCE","DEEP VALUE PROBATION (forward test)",
+     "v17.22. The Gold-pick replay of 23-Nov-2026 (58 independent picks 20-Jul → 21-Nov-2026, 45 closed) found that Gold picks labelled DEEP VALUE "
+     "(margin of safety > 25 % with no early-entry signal) lost 17.2 R on 32 closed trades (22 % won) while all other Gold picks made 6.0 R on 13 (62 % won). "
+     "Because the pattern was found by looking at the data, it is tested on NEW picks: from 23-Nov-2026 on, DEEP VALUE Gold picks are shown apart on the Gold sheet, "
+     "Trade Summary and Delivery Preview as 'on probation — tracked, not recommended'. The 15 gates, the logging and the tracking are unchanged. "
+     "This table compares DEEP VALUE with all other picks logged since then. Rule fixed in advance: once 30 have closed (at least 5 in each group), "
+     "DEEP VALUE average R below 0 and below the others → make the exclusion a Gold gate under a new rule version; DEEP VALUE average R ≥ the others → end the probation; "
+     "anything else → another 30 closes.","🎯 Performance"),
+    ("PERFORMANCE","R (risk multiple)",
+     "Result of a pick in units of the risk taken: (exit price − entry) ÷ (entry − original stop). −1 R = stopped out at the stop (a gap through the stop is worse than −1 R); "
+     "+1.5 R = a Target 1.5 × the stop distance away. The risk-parity sizing risks about 1 % of capital per R, so R compares picks with wide and narrow stops fairly "
+     "and Total R is roughly the % of capital gained or lost. Gross of brokerage, STT, stamp duty and slippage.","🎯 Performance"),
+    ("PERFORMANCE","Price-bar dates (v17.22)",
+     "Each daily bar in the price history is stored under the trading day it belongs to. Before v17.22 the bars were stamped with the GitHub runner's date (UTC), "
+     "so most were stored one day late (Friday's bar as Saturday) and the outcome tracker's first bar after a pick was the pick day's own bar. "
+     "A one-time repair re-dated the stored bars (price_date_repair_log lists every date it checked) and a one-time re-check re-walked every closed pick on the corrected bars; "
+     "a pick whose stop or Target came only from its own pick-day bar may have moved or re-opened.","🎯 Performance"),
     ("PERFORMANCE","BY RULE VERSION breakdown",
      "Hit rate per version of the Gold / trade-plan rules that produced each pick (rule_version, stamped at log time since v17.21; earlier rows show 'before v17.21'). "
      "A rule change bumps the version instead of wiping the outcome tables, so old and new rules can be compared on the same sheet. Wait for ~30 closed picks per version before comparing.","🎯 Performance"),
@@ -1943,9 +1969,16 @@ class ExcelGeneratorV6:
     def _gold_ws(self,ws):
         gdf=self._get_gold(); N=len(GOLD_COLS)
         gc=len(gdf)
-        ae=gdf["early_entry_score"].mean() if not gdf.empty else 0
-        au=gdf["upside"].mean()            if not gdf.empty else 0
-        asp=gdf["spike_count"].mean()      if not gdf.empty else 0
+        # v17.22: DEEP VALUE picks are shown apart, "on probation" — still
+        # logged and tracked (same _get_gold()), not recommended.
+        rdf, pdf = self._gold_split(gdf)
+        rc, pc = len(rdf), len(pdf)
+        def _avg(col):
+            try:
+                return float(pd.to_numeric(rdf[col], errors="coerce").mean()) if rc else None
+            except Exception:
+                return None
+        ae, au, asp = _avg("early_entry_score"), _avg("upside"), _avg("spike_count")
         # R1
         ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=N)
         c=ws.cell(1,1,f"⭐  NSE / BSE  —  GOLD CATEGORY  ·  EARLY MOVER STOCKS  ·  Highest Upside Before Consensus  ·  {self.dlbl}")
@@ -1956,12 +1989,16 @@ class ExcelGeneratorV6:
         # v10.11: criteria text expanded from 8 → 11 conditions to match the
         # _get_gold() filter. New gates: Altman Z≥1.8 | EQ≠LOW | IntCov≥1.5×.
         regime_note = "" if self.market_regime != "BEARISH" else " · ⚠ BEARISH REGIME — Gold suppressed today"
-        c2=ws.cell(2,1,f"Gold-Tier Criteria (ALL 15 must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed · Altman Z≥1.8 · EQ≠LOW · Int Coverage≥1.5× · ROE≥10% · PEG≤8 · 3d-ROC≥0 · Sector-cycle OK  ·  {gc} stocks qualify{regime_note}")
+        _prob_note = (f" ({rc} recommended · {pc} DEEP VALUE on probation)" if pc else "")
+        c2=ws.cell(2,1,f"Gold-Tier Criteria (ALL 15 must pass): BUY verdict · Score≥70 · 15%≤MoS≤100% · Storm≥5 · RSI≤70 · BS not ALERT · Pledge≤10% · not spike-suppressed · Altman Z≥1.8 · EQ≠LOW · Int Coverage≥1.5× · ROE≥10% · PEG≤8 · 3d-ROC≥0 · Sector-cycle OK  ·  {gc} stocks qualify{_prob_note}{regime_note}")
         c2.fill=_f("FEF3C7"); c2.font=_ft(False,"92400E",8,True); c2.alignment=_al("left","center")
         ws.row_dimensions[2].height=14
         # R3 summary strip
-        strips=[(1,5,f"⭐ GOLD STOCKS: {gc}"),(6,11,f"AVG EARLY SCORE: {ae:.0f}/100"),
-                (12,17,f"AVG UPSIDE TO FV: +{au:.1f}%"),(18,23,f"AVG SPIKE SCORE: {asp:.1f}/6"),
+        _g1 = f"⭐ GOLD STOCKS: {rc}" + (f"  ·  🧪 ON PROBATION: {pc}" if pc else "")
+        strips=[(1,5,_g1),
+                (6,11,"AVG EARLY SCORE: " + ("—" if ae is None else f"{ae:.0f}/100")),
+                (12,17,"AVG UPSIDE TO FV: " + ("—" if au is None else f"+{au:.1f}%")),
+                (18,23,"AVG SPIKE SCORE: " + ("—" if asp is None else f"{asp:.1f}/6")),
                 (24,N,f"DELIVERED: {self.run_time} · WhatsApp + Email")]
         ws.row_dimensions[3].height=22
         for s,e,t in strips:
@@ -2023,29 +2060,63 @@ class ExcelGeneratorV6:
         ws.freeze_panes="A6"
         ws.auto_filter.ref=f"A5:{get_column_letter(N)}5"
         # Data
-        for ri,stk in enumerate(gdf.to_dict("records")):
-            rn=ri+6; ws.row_dimensions[rn].height=20
-            bg="92400E" if ri%2==0 else "FAC775"
-            tx=WHITE   if ri%2==0 else "412402"
-            # v13.x: Quick Pick gets its own archetype color (same logic as Full sheet)
-            qp_label=str(stk.get("label","WATCHLIST"))
-            qp_st=VERDICT_STYLES.get(qp_label,{"bg":bg,"text":tx})
-            qp_bg,qp_tx=qp_st["bg"],qp_st["text"]
-            qp_ubg=qp_bg if ri%2==0 else _alt(qp_bg)
-            for ci,(_,_,key) in enumerate(GOLD_COLS,1):
-                val=_g(stk,key); cell=ws.cell(rn,ci,val)
-                # v13.x: Quick Pick column uses archetype color, not row color
-                if key == "label":
-                    cell.fill=_f(qp_ubg); cell.font=_ft(True,qp_tx,9)
+        def _rows(records, rn, muted=False):
+            for ri,stk in enumerate(records):
+                ws.row_dimensions[rn].height=20
+                if muted:   # v17.22 probation rows: same columns, muted colours
+                    bg="F1EFE8" if ri%2==0 else "E7E5DE"; tx="44403C"
                 else:
-                    cell.fill=_f(bg); cell.font=_ft(False,tx,9)
-                cell.alignment=_al("left" if ci in {2,3,N} else "center","center",wrap=(ci==N))
-                cell.border=Border(
-                    left=Side(style="thin",color="E2E8F0"),
-                    right=Side(style="thin",color="E2E8F0"),
-                    top=Side(style="thin",color="E2E8F0"),
-                    bottom=Side(style="thin",color="E2E8F0")
-                )
+                    bg="92400E" if ri%2==0 else "FAC775"
+                    tx=WHITE   if ri%2==0 else "412402"
+                # v13.x: Quick Pick gets its own archetype color (same logic as Full sheet)
+                qp_label=str(stk.get("label","WATCHLIST"))
+                qp_st=VERDICT_STYLES.get(qp_label,{"bg":bg,"text":tx})
+                qp_bg,qp_tx=qp_st["bg"],qp_st["text"]
+                qp_ubg=qp_bg if ri%2==0 else _alt(qp_bg)
+                for ci,(_,_,key) in enumerate(GOLD_COLS,1):
+                    val=_g(stk,key); cell=ws.cell(rn,ci,val)
+                    # v13.x: Quick Pick column uses archetype color, not row color
+                    if key == "label" and not muted:
+                        cell.fill=_f(qp_ubg); cell.font=_ft(True,qp_tx,9)
+                    else:
+                        cell.fill=_f(bg); cell.font=_ft(key == "label",tx,9)
+                    cell.alignment=_al("left" if ci in {2,3,N} else "center","center",wrap=(ci==N))
+                    cell.border=Border(
+                        left=Side(style="thin",color="E2E8F0"),
+                        right=Side(style="thin",color="E2E8F0"),
+                        top=Side(style="thin",color="E2E8F0"),
+                        bottom=Side(style="thin",color="E2E8F0")
+                    )
+                rn+=1
+            return rn
+
+        rn = 6
+        if rc:
+            rn = _rows(rdf.to_dict("records"), rn)
+        elif pc:
+            ws.merge_cells(start_row=rn,start_column=1,end_row=rn,end_column=N)
+            c=ws.cell(rn,1,f"  No recommended Gold pick today — {pc} DEEP VALUE pick(s) on probation below.")
+            c.fill=_f("FEF3C7"); c.font=_ft(True,"92400E",9); c.alignment=_al("left","center")
+            ws.row_dimensions[rn].height=18
+            rn += 1
+        if pc:
+            # ── v17.22: DEEP VALUE — ON PROBATION ─────────────────────────
+            rn += 1
+            ws.merge_cells(start_row=rn,start_column=1,end_row=rn,end_column=N)
+            c=ws.cell(rn,1,"🧪  DEEP VALUE — ON PROBATION  ·  tracked, not recommended  ·  "
+                           "passed all 15 gates; margin of safety > 25 % with no early-entry signal")
+            c.fill=_f("57534E"); c.font=_ft(True,WHITE,10); c.alignment=_al("left","center")
+            ws.row_dimensions[rn].height=20
+            rn += 1
+            ws.merge_cells(start_row=rn,start_column=1,end_row=rn,end_column=N)
+            c=ws.cell(rn,1,
+                f"  {_PROB_EVIDENCE}. These picks are still logged and tracked exactly like the "
+                f"others (Performance sheet). Decision after {_PROB_MIN_CLOSED} closed picks from "
+                f"{_PROB_SINCE} on — see DEEP VALUE PROBATION on the Performance sheet.")
+            c.fill=_f("F1EFE8"); c.font=_ft(False,"44403C",9,True); c.alignment=_al("left","center",True)
+            ws.row_dimensions[rn].height=28
+            rn += 1
+            rn = _rows(pdf.to_dict("records"), rn, muted=True)
 
         # ── v17.5: BEARISH-REGIME RESILIENCE WATCHLIST (reference log) ─────
         # Stocks that outperformed a FALLING Nifty — surfaced so they are not
@@ -2180,9 +2251,24 @@ class ExcelGeneratorV6:
                    "Time Horizon","Risk Level"]
         self._apply_col_tips(ws, 2, _ts_hdrs)
         ws.freeze_panes="A3"
-        for ri,stk in enumerate(gdf.to_dict("records")):
+        # v17.22: recommended picks first; DEEP VALUE probation picks below a
+        # separator row, muted (still tracked — see _gold_split).
+        _rdf, _pdf = self._gold_split(gdf)
+        _plan = [(stk, False) for stk in _rdf.to_dict("records")]
+        if len(_pdf):
+            _plan.append((None, True))
+            _plan += [(stk, True) for stk in _pdf.to_dict("records")]
+        for ri,(stk,_muted) in enumerate(_plan):
             rn=ri+3; ws.row_dimensions[rn].height=22
+            if stk is None:
+                ws.merge_cells(start_row=rn,start_column=1,end_row=rn,end_column=14)
+                c=ws.cell(rn,1,"🧪  DEEP VALUE — ON PROBATION  ·  tracked, not recommended "
+                               "(see the Gold sheet note)")
+                c.fill=_f("57534E"); c.font=_ft(True,WHITE,9); c.alignment=_al("left","center")
+                continue
             bg="D1FAE5" if ri%2==0 else "ECFDF5"; tx="065F46"
+            if _muted:
+                bg="F1EFE8" if ri%2==0 else "E7E5DE"; tx="44403C"
             cmp=_g(stk,"close",0); cfv=_g(stk,"cfv",0)
             mos=_g(stk,"mos_pct",0)
             # Session 23: Upside column removed — same value as MoS. The
@@ -2205,7 +2291,7 @@ class ExcelGeneratorV6:
                 cell=ws.cell(rn,ci,val); cell.fill=_f(bg); cell.font=_ft(False,tx,9)
                 cell.alignment=_al("center","center")
                 # Column 10 is now Stop Loss (was 11); red highlight kept
-                if ci==10: cell.fill=_f("FEE2E2"); cell.font=_ft(False,"7F1D1D",9)
+                if ci==10 and not _muted: cell.fill=_f("FEE2E2"); cell.font=_ft(False,"7F1D1D",9)
             # Compute R:R numerically — entry_range is text "353.8–364.7",
             # parse midpoint so Excel formula doesn't fail on text input
             try:
@@ -2375,7 +2461,11 @@ class ExcelGeneratorV6:
     def _delivery_preview(self,wb):
         ws=wb.create_sheet("📱 Delivery Preview"); ws.sheet_properties.tabColor="0D9488"
         ws.column_dimensions["A"].width=22; ws.column_dimensions["B"].width=72
-        gdf=self._get_gold(); gc=len(gdf)
+        # v17.22: the preview leads with RECOMMENDED Gold picks; DEEP VALUE
+        # probation picks are counted separately and never shown as the top pick.
+        _all_gold=self._get_gold()
+        gdf, _pdf = self._gold_split(_all_gold)
+        gc=len(gdf); pc=len(_pdf)
         top=gdf.iloc[0] if not gdf.empty else {}
         ws.row_dimensions[1].height=24
         c=ws.cell(1,1,f"DELIVERY PREVIEW  ·  WhatsApp & Email Format  ·  Generated {self.run_time}")
@@ -2392,7 +2482,9 @@ class ExcelGeneratorV6:
         r=R(r,None,"━"*51,"0D9488",False,10)
         r=R(r,None,f"⭐  NSE/BSE GOLD STOCKS  ·  {self.dlbl}  ·  {self.run_time}","B45309",True)
         r=R(r,None,"━"*51,"0D9488",False,10)
-        r=R(r,None,f"⭐  EARLY MOVERS TODAY: {gc} stocks identified","D1FAE5",False)
+        r=R(r,None,f"⭐  EARLY MOVERS TODAY: {gc} stocks identified"
+                   + (f"  ·  🧪 {pc} DEEP VALUE on probation (tracked, not recommended)" if pc else ""),
+            "D1FAE5",False)
         if not gdf.empty:
             sym=top.get("symbol","—"); verd=top.get("verdict","—")
             cfv=top.get("cfv",0); cmp_=top.get("close",0)
@@ -2689,6 +2781,15 @@ class ExcelGeneratorV6:
             if not _closed.empty and "rule_version" in _closed.columns:
                 _closed["_rule_version"] = _rv(_closed["rule_version"])
                 next_row = _build_breakdown_table(next_row, "BY RULE VERSION", "_rule_version")
+
+        # ── v17.22: DEEP VALUE PROBATION — forward test ──────────────────
+        # Gold picks logged from the probation start date on, DEEP VALUE vs
+        # all others, in R (P&L ÷ the original stop distance). The decision
+        # rule was fixed on 23-Nov-2026 (analysis/deep_value_probation).
+        try:
+            next_row = self._probation_block(ws, next_row, _df_all)
+        except Exception as _pbe:
+            print(f"   ⚠️  Performance — probation block skipped (non-fatal): {_pbe}")
 
         # ── Section 4: CLOSED POSITIONS (v14.5) ───────────────────────────
         # Chronological detail log of every closed pick (SL_HIT/T1_HIT/T2_HIT/
@@ -3712,6 +3813,109 @@ class ExcelGeneratorV6:
             # AND the AI-card scope, and used to leave no trace in the log.
             print(f"   ⚠️  _get_gold() failed — Gold treated as empty: {type(_ge).__name__}: {_ge}")
             return pd.DataFrame()
+
+    @staticmethod
+    def probation_forward_stats(df_all):
+        """v17.22: the DEEP VALUE probation forward test from the outcome
+        table (get_outcome_stats rows). Picks dated ≥ PROBATION_SINCE only.
+        Returns {"since", "groups": {name: {picks, closed, won, r: [...]}},
+        "verdict": forward_verdict(...)}."""
+        out = {"since": _PROB_SINCE, "groups": {}, "verdict": _prob_verdict([], [])}
+        if df_all is None or df_all.empty:
+            return out
+        d = df_all[df_all["recommendation_date"].astype(str).str[:10] >= _PROB_SINCE]
+        closed_types = {"SL_HIT", "TRAIL_SL", "T1_HIT", "T2_HIT", "T3_HIT", "EXPIRED"}
+        groups = {"DEEP VALUE (probation)": [], "All other picks": []}
+        stats = {k: {"picks": 0, "closed": 0, "won": 0, "r": []} for k in groups}
+        for _, row in d.iterrows():
+            g = ("DEEP VALUE (probation)" if _on_probation(row.get("quick_pick_label"))
+                 else "All other picks")
+            st = stats[g]
+            st["picks"] += 1
+            if str(row.get("outcome_type", "")) not in closed_types:
+                continue
+            st["closed"] += 1
+            stop = row.get("original_stop_loss")
+            try:
+                stop = float(stop) if stop is not None and float(stop) > 0 else float(row.get("stop_loss") or 0)
+            except (TypeError, ValueError):
+                stop = 0.0
+            r = _r_multiple(row.get("cmp_at_recommendation"), stop, row.get("outcome_price"))
+            if r is not None:
+                st["r"].append(r)
+                if r > 0:
+                    st["won"] += 1
+        out["groups"] = stats
+        out["verdict"] = _prob_verdict(stats["DEEP VALUE (probation)"]["r"],
+                                       stats["All other picks"]["r"])
+        return out
+
+    def _probation_block(self, ws, row, df_all):
+        """Render the forward test on the Performance sheet; returns next row."""
+        fs = self.probation_forward_stats(df_all)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
+        c = ws.cell(row, 1, f"🧪  DEEP VALUE PROBATION  ·  forward test on Gold picks logged from "
+                            f"{fs['since']}  ·  decision after {_PROB_MIN_CLOSED} closed picks")
+        c.fill = _f("57534E"); c.font = _ft(True, WHITE, 11); c.alignment = _al("left")
+        ws.row_dimensions[row].height = 22
+        row += 1
+        hdr = ["Group", "Picks", "Closed", "Won", "Win %", "Avg R", "Total R"]
+        for ci, h in enumerate(hdr, 1):
+            cc = ws.cell(row, ci, h)
+            cc.fill = _f("E7E5DE"); cc.font = _ft(True, NAVY, 9); cc.alignment = _al()
+        self._apply_col_tips(ws, row, hdr)
+        row += 1
+        for name, st in fs["groups"].items() or []:
+            rr = st["r"]
+            vals = [name, st["picks"], st["closed"], st["won"],
+                    f"{st['won'] / len(rr) * 100:.1f}%" if rr else "—",
+                    f"{sum(rr) / len(rr):+.2f}" if rr else "—",
+                    f"{sum(rr):+.1f}" if rr else "—"]
+            for ci, v in enumerate(vals, 1):
+                cc = ws.cell(row, ci, v)
+                cc.fill = _f("F1EFE8"); cc.font = _ft(ci == 1, NAVY, 9)
+                cc.alignment = _al("left" if ci == 1 else "center")
+            row += 1
+        if not fs["groups"]:
+            ws.cell(row, 1, "  (no picks logged since the probation started)").font = _ft(False, "6B7280", 9, True)
+            row += 1
+        v = fs["verdict"]
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=10)
+        c = ws.cell(row, 1,
+            f"  Decision: {v['code']} — {v['text']}.  Rule (fixed 23-Nov-2026): once {_PROB_MIN_CLOSED} "
+            f"picks have closed, DEEP VALUE avg R below 0 and below the others → make the exclusion a "
+            f"Gold gate (new rule version); DEEP VALUE avg R ≥ the others → end the probation; "
+            f"otherwise another {_PROB_MIN_CLOSED} closes.  {_PROB_EVIDENCE}.")
+        c.fill = _f("FAF9F6"); c.font = _ft(False, "44403C", 9, True); c.alignment = _al("left", "center", True)
+        ws.row_dimensions[row].height = 42
+        return row + 2
+
+    # ── v17.22: DEEP VALUE probation (display only) ──────────────────────────
+    def _gold_split(self, gdf=None):
+        """(recommended, probation) — the rows of _get_gold() split by the
+        quick-pick label. Probation = plain DEEP VALUE (margin of safety > 25 %
+        with no early-entry signal; see analysis/deep_value_probation). The
+        15 gates, the outcome logging, the AI-card scope and GOLD_RULE_VERSION
+        all keep using _get_gold() unchanged, so probation picks are still
+        logged and tracked."""
+        if gdf is None:
+            gdf = self._get_gold()
+        if gdf is None or gdf.empty or "label" not in gdf.columns:
+            empty = gdf.iloc[0:0] if isinstance(gdf, pd.DataFrame) else pd.DataFrame()
+            return (gdf if isinstance(gdf, pd.DataFrame) else pd.DataFrame()), empty
+        m = gdf["label"].apply(_on_probation)
+        return (gdf[~m].reset_index(drop=True), gdf[m].reset_index(drop=True))
+
+    def gold_probation_log_lines(self):
+        """One log line naming today's probation picks; [] when there are none."""
+        gdf = self._get_gold()
+        rec, prob = self._gold_split(gdf)
+        if prob.empty:
+            return []
+        syms = ", ".join(str(x) for x in prob["symbol"].tolist()[:12])
+        return [f"   🧪 v17.22 probation: {len(prob)} of {len(gdf)} Gold pick(s) are DEEP VALUE "
+                f"(margin of safety > 25 %, no early-entry signal) — shown apart as "
+                f"'on probation', still logged and tracked · {len(rec)} recommended · {syms}"]
 
     # ── v17.20: why is the Gold sheet empty? ─────────────────────────────────
     _GOLD_NEAR_MISS_SHOWN = 8

@@ -7006,6 +7006,115 @@ def test_g55_v17_22_price_bars_stored_under_the_trading_date():
     return "✅ v17.22: price bars under the trading date, one-time re-dating, outcome re-check (A–F)"
 
 
+def test_g56_v17_22_deep_value_probation_is_display_only():
+    """v17.22: plain DEEP VALUE Gold picks are shown 'on probation' (replay of
+    23-Nov-2026: 22 % won, −17.2 R on 32 closed). Display only.
+      A. _gold_split: plain DEEP VALUE → probation; DEEP VALUE EARLY MOVER,
+         WATCHLIST, missing label → recommended; _get_gold() unchanged
+      B. Gold sheet: recommended rows, then the probation header + rows
+      C. Trade Summary and Delivery Preview: probation picks apart / never the top pick
+      D. logging + AI scope still use _get_gold(); log line wired in a try
+      E. forward_verdict follows the rule fixed on 23-Nov-2026
+      F. Performance forward test counts only picks from PROBATION_SINCE on, in R
+    """
+    import openpyxl, inspect
+    import pandas as _pd
+    from reporting.excel_generator import ExcelGeneratorV6
+    from analysis import deep_value_probation as dvp
+    base = {"company_name": "Test Co", "sector": "Healthcare", "verdict": "BUY",
+            "composite_score": 85.0, "mos_pct": 30.0, "storm_score": 7, "rsi": 55.0,
+            "bs_status": "HEALTHY", "pledge_pct": 0.0, "spike_suppressed": False,
+            "altman_z": 4.0, "earnings_quality": "HIGH", "int_coverage": 5.0,
+            "roe": 20.0, "peg": 1.2, "close": 100.0, "3d_roc": 2.5, "4w_chg": 8.0,
+            "early_entry_score": 40, "upside": 30.0, "spike_count": 1, "entry_range": "98–101",
+            "stop_loss": 93.0, "t1": 110.5, "horizon": "SHORT TERM", "risk_level": "LOW"}
+    stocks = [dict(base, symbol="DVPICK", label="DEEP VALUE"),
+              dict(base, symbol="WLPICK", label="WATCHLIST", mos_pct=20.0),
+              dict(base, symbol="DVEM", label="DEEP VALUE EARLY MOVER", early_entry_score=65),
+              dict(base, symbol="NOLABEL")]
+    test_db, original = _setup_temp_db('g56')
+    try:
+        from database.data_bridge import initialize_v7_tables
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        g = ExcelGeneratorV6(stocks, "20261124", run_time="05:00 IST", prev_scores={},
+                             market_stats={"market_regime": "BULLISH"})
+        # A
+        assert sorted(g._get_gold()["symbol"]) == ["DVEM", "DVPICK", "NOLABEL", "WLPICK"], "A: _get_gold changed"
+        rec, prob = g._gold_split()
+        assert list(prob["symbol"]) == ["DVPICK"], f"A: probation {list(prob['symbol'])}"
+        assert sorted(rec["symbol"]) == ["DVEM", "NOLABEL", "WLPICK"], f"A: recommended {list(rec['symbol'])}"
+        for lab, want in (("DEEP VALUE", True), (" deep value ", True), ("DEEP VALUE EARLY MOVER", False),
+                          ("WATCHLIST", False), (None, False), (float("nan"), False), ("", False)):
+            assert dvp.is_on_probation(lab) is want, f"A: is_on_probation({lab!r})"
+        # B + C
+        wb = openpyxl.Workbook()
+        g._gold_sheet(wb); g._trade_summary(wb); g._delivery_preview(wb)
+        ws = wb["⭐ Gold – Early Movers"]
+        col1 = [str(ws.cell(r, 1).value or "") for r in range(1, ws.max_row + 1)]
+        i_hdr = next(i for i, v in enumerate(col1) if "ON PROBATION" in v and "tracked, not recommended" in v)
+        i_dv = col1.index("DVPICK")
+        assert all(col1.index(s) < i_hdr for s in ("WLPICK", "DVEM", "NOLABEL")) and i_hdr < i_dv, \
+            f"B: order {col1[:15]}"
+        assert "3 recommended · 1 DEEP VALUE on probation" in col1[1], f"B: row 2 {col1[1][-80:]}"
+        ts = wb["📊 Trade Summary"]
+        tcol = [str(ts.cell(r, 1).value or "") for r in range(3, ts.max_row + 1)]
+        j_hdr = next(i for i, v in enumerate(tcol) if "ON PROBATION" in v)
+        assert tcol.index("DVPICK") > j_hdr > max(tcol.index(s) for s in ("WLPICK", "DVEM", "NOLABEL")), \
+            f"C: Trade Summary order {tcol}"
+        dp = wb["📱 Delivery Preview"]
+        dtext = " | ".join(str(dp.cell(r, 2).value or "") for r in range(1, dp.max_row + 1))
+        assert "EARLY MOVERS TODAY: 3 stocks identified" in dtext and "1 DEEP VALUE on probation" in dtext, \
+            f"C: preview {dtext[:300]}"
+        assert "TOP PICK: DVPICK" not in dtext, "C: a probation pick must never be the top pick"
+        g2 = ExcelGeneratorV6([dict(base, symbol="ONLYDV", label="DEEP VALUE")], "20261124",
+                              run_time="05:00 IST", prev_scores={}, market_stats={"market_regime": "BULLISH"})
+        wb2 = openpyxl.Workbook(); g2._delivery_preview(wb2); g2._gold_sheet(wb2)
+        d2 = " | ".join(str(wb2["📱 Delivery Preview"].cell(r, 2).value or "") for r in range(1, 30))
+        assert "TOP PICK" not in d2, f"C: only-probation day must show no top pick: {d2[:200]}"
+        assert "No recommended Gold pick today" in str(wb2["⭐ Gold – Early Movers"].cell(6, 1).value), "B: empty note"
+        assert g.gold_probation_log_lines() and "DVPICK" in g.gold_probation_log_lines()[0], "D: log line"
+        assert g2._gold_split()[0].empty and ExcelGeneratorV6([dict(base, symbol="W", label="WATCHLIST")],
+               "20261124", market_stats={"market_regime": "BULLISH"}).gold_probation_log_lines() == [], "D: no line"
+    finally:
+        _restore(original, test_db)
+    # D (static)
+    mf = open(_src_path('master_funnel.py'), encoding='utf-8').read()
+    hook = mf[mf.find("v14.0/v14.1 — OUTCOME TRACKING"):mf.find("v17.20: say WHY the Gold sheet is empty")]
+    assert "excel_gen._get_gold()" in hook and "_gold_split" not in hook, "D: logging must keep using _get_gold()"
+    i_pl = mf.find("excel_gen.gold_probation_log_lines()")
+    assert i_pl > mf.find("excel_gen.gold_funnel_log_lines()") > 0, "D: log line after the Gold-empty lines"
+    assert "try:" in mf[i_pl - 400:i_pl] and "except Exception as _ple" in mf[i_pl:i_pl + 300], "D: not in a try"
+    assert "_gold_split" not in mf, "D: master_funnel must not filter logging or AI scope by probation"
+    # E
+    R = dvp.forward_verdict
+    assert R([-1.0] * 10, [1.0] * 19)["code"] == "WAIT", "E: 29 closed must wait"
+    assert R([-1.0] * 4, [1.0] * 26)["code"] == "EXTEND", "E: a group under 5 must extend"
+    assert R([-0.5] * 20, [0.2] * 10)["code"] == "GATE", "E: DV below 0 and below others → GATE"
+    assert R([0.3] * 20, [0.3] * 10)["code"] == "END", "E: DV ≥ others → END"
+    assert R([0.1] * 20, [0.5] * 10)["code"] == "EXTEND", "E: DV ≥ 0 but below others → EXTEND"
+    assert dvp.r_multiple(100, 93, 93) == -1.0 and dvp.r_multiple(100, 93, 110.5) == 1.5, "E: R"
+    assert dvp.r_multiple(100, 0, 90) is None and dvp.r_multiple(90, 93, 95) is None, "E: R guard"
+    # F
+    rows = _pd.DataFrame([
+        dict(symbol="OLD", recommendation_date="2026-11-20", quick_pick_label="DEEP VALUE",
+             outcome_type="SL_HIT", cmp_at_recommendation=100, stop_loss=93, original_stop_loss=93, outcome_price=93),
+        dict(symbol="NDV", recommendation_date=dvp.PROBATION_SINCE, quick_pick_label="DEEP VALUE",
+             outcome_type="SL_HIT", cmp_at_recommendation=100, stop_loss=96, original_stop_loss=90, outcome_price=90),
+        dict(symbol="NWL", recommendation_date="2026-11-24", quick_pick_label="WATCHLIST",
+             outcome_type="T1_HIT", cmp_at_recommendation=100, stop_loss=93, original_stop_loss=93, outcome_price=110.5),
+        dict(symbol="NOP", recommendation_date="2026-11-25", quick_pick_label="WATCHLIST",
+             outcome_type="OPEN", cmp_at_recommendation=100, stop_loss=93, original_stop_loss=93, outcome_price=0)])
+    fs = ExcelGeneratorV6.probation_forward_stats(rows)
+    dv, ot = fs["groups"]["DEEP VALUE (probation)"], fs["groups"]["All other picks"]
+    assert (dv["picks"], dv["closed"], dv["r"]) == (1, 1, [-1.0]), f"F: DV {dv} (original stop must be used)"
+    assert (ot["picks"], ot["closed"], ot["r"]) == (2, 1, [1.5]), f"F: others {ot}"
+    assert fs["verdict"]["code"] == "WAIT", f"F: {fs['verdict']}"
+    eg = open(_src_path('reporting/excel_generator.py'), encoding='utf-8').read()
+    i_pb = eg.find("next_row = self._probation_block(ws, next_row, _df_all)")
+    assert 0 < i_pb < eg.find("# ── Section 4: CLOSED POSITIONS (v14.5)"), "F: block must sit before CLOSED POSITIONS"
+    return "✅ v17.22: DEEP VALUE probation — split, sheets, preview, logging unchanged, rule, forward test (A–F)"
+
+
 # ════════════════════════════════════════════════════════════════════════
 # RUN
 # ════════════════════════════════════════════════════════════════════════
@@ -7203,6 +7312,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g53_v17_21_rule_version_instead_of_resets))
     v14_1_results.append(_run_one_test(test_g54_v17_21_replay_tool_walks_picks_with_the_live_exit_model))
     v14_1_results.append(_run_one_test(test_g55_v17_22_price_bars_stored_under_the_trading_date))
+    v14_1_results.append(_run_one_test(test_g56_v17_22_deep_value_probation_is_display_only))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
