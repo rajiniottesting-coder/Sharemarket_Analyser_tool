@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v17.22.1 · November 2026
+## AI Context File · v17.22.2 · November 2026
 
 This file gives Claude (or any AI assistant) the project context needed to understand, debug or extend this codebase. **Read it first** before making any change.
 
@@ -23,7 +23,7 @@ A fully automated, cloud-hosted daily pipeline that:
 4. Gates Gold picks on the **market regime** and a **15-condition** filter, sets a regime-aware **stop-loss + single Target** and a risk-parity position size; since v17.22 plain DEEP VALUE Gold picks are shown apart, **on probation** (tracked, not recommended)
 5. **Logs every Gold pick and tracks its real outcome** (live trailing stop, shadow stop, continuation audit, risk-adjusted metrics)
 6. Writes **AI analyst notes** (company OpenAI-compatible LLM) for Gold picks and open positions only
-7. Emails an **8-sheet** colour-coded Excel dashboard + a text research report (GitHub queues scheduled runs; delivery has ranged ~05:00–09:30 IST)
+7. Emails an **8-sheet** colour-coded Excel dashboard + a text research report (GitHub queues scheduled runs; in Oct–Nov 2026 runs started 2 h – 7 h 46 min after the cron, so delivery ranged ~06:45–12:30 IST, later each week)
 8. Maintains its own SQLite history (400-day rolling window; outcome tables never pruned)
 
 Plus one small job on the owner's Windows laptop: a weekly NSE pledge/promoter fetch, because NSE does not serve cloud runners.
@@ -45,7 +45,7 @@ Sharemarket_Analyser_tool/
 ├── fetch_nse_now.bat             One-click manual trigger for the above
 ├── reset_performance_tracking.py Guarded wipe of the 3 outcome tables (workflow manual-dispatch only;
 │                                 since v17.21 bump GOLD_RULE_VERSION instead for a rule change)
-├── test_v13_v14_consolidated.py  Regression suite — 109 guards, all green on Linux and Windows (v17.22)
+├── test_v13_v14_consolidated.py  Regression suite — 111 guards, all green on Linux and Windows (v17.22.2)
 │                                 (the deep ScoringEngine suite test_v11.0.2_full_withdummies.py lives in
 │                                  git history at d2f301a — its stale repo copy was removed in v17.22.1; §20)
 ├── test_run.py · test_yfinance.py    Manual helpers (not part of the suite)
@@ -57,7 +57,7 @@ Sharemarket_Analyser_tool/
 ├── ingestion/
 │   ├── orchestrator.py           Gate check C1–C5 → "GATE APPROVED"
 │   ├── holiday_calendar.py       NSE holiday-master fetch + DB cache (fail-closed)
-│   ├── trading_day_calendar.py   Exact trading-day arithmetic (v15.3)
+│   ├── trading_day_calendar.py   Exact trading-day arithmetic (v15.3); missing_trading_days for gap-fill (v17.22.2)
 │   ├── harvester.py              NSE bhav / delivery / SME / F&O downloaders
 │   ├── reconciler.py             NSE+BSE merge on ISIN; sets df.attrs["dual_match_method"]; allowlist fallback
 │   ├── allowlist_maintainer.py   dual_listed_runtime table — write-time guards (v17.17), 30-day prune
@@ -155,11 +155,14 @@ Section 1.1b  v17.22 one-time price-date repair (database/price_date_repair.run_
               Yahoo closes of 10 liquid stocks decide each stored date's trading day; MOVE labels
               re-dated for every exchange, UNCLEAR left, every decision in price_date_repair_log;
               marker v17_22_price_dates only after success (a failed fetch changes nothing)
-Section 1.2   Gap detection (missed trading days)
+Section 1.2   Gap detection: trading days since the newest stored NSE bar (NSE holidays excluded,
+              missing_trading_days); only once the price-date repair has run (v17.22.2)
 Section 1.3   DB sync → daily_prices (save_to_database: reconcile + allowlist recorder, v17.17 guards;
               v17.22: rows stored under trade_date = target_date once the repair has run)
-Section 1.4   Gap-fill (≥ 2 missed days → backfill those days + recompute indicators)
-Section 1.5   Daily technical refresh (_compute_all_indicators, v12.7)
+Section 1.4   Gap-fill (≥ 1 missed trading day, GAP_FILL_MIN_DAYS → download those days, stored under
+              their own date, + recompute indicators; was ≥ 2 weekdays before v17.22.2)
+Section 1.5   Daily technical refresh (_compute_all_indicators, v12.7) — runs whenever 1.4 did not
+              recompute (v17.22.2: before, a gap-fill that downloaded nothing skipped both)
 Section 0     Funnel: Stage 1 → Stage 2 → Stage 3 (top 100)
               v17.15 held monitoring: OPEN positions not in the top 100 appended (_held_monitor=True)
 Section 3     Per-stock overlays (3A valuation · 3B inline forensic fetch · 3D/3G forensics ·
@@ -213,7 +216,7 @@ On exception  error email (is_error=True)
 - The v14 logging hook and the tracker must run **before** `generate_excel_reports()` (v14.1.2 / v14.1.3, guards G10/G11) so today's picks and fresh P&L appear in today's Performance sheet.
 - AI cards run **after** the tracker so their scope is the same Gold result the tracker logged (v17.14). Anything written into `market_stats` must happen **after** `market_stats = {…}` is created (v17.11.1, guard G40).
 - Held-monitor rows must be removed before anything renders or saves the top-100 view.
-- The price-date repair (1.1b) runs **before** gap detection and the save (v17.22, G55), and the save passes `trade_date` only once the repair marker is set, so stored rows never mix the two date conventions.
+- The price-date repair (1.1b) runs **before** gap detection and the save (v17.22, G55), and the save passes `trade_date` only once the repair marker is set, so stored rows never mix the two date conventions. Gap detection and gap-fill run only after the repair too (v17.22.2, G58).
 - The DEEP VALUE probation is display only: logging, the tracker, AI scope and `GOLD_RULE_VERSION` keep using `_get_gold()`; only the Gold sheet, Trade Summary and Delivery Preview call `_gold_split()` (G56).
 
 ---
@@ -435,7 +438,7 @@ Same annualization applied to Capex/Rev (capex is annual; uses `revenue` first, 
 
 Sector cycle: weak sectors (yfinance "Consumer Defensive", "Industrials", "Technology", "Communication Services" + NSE-style patterns IT / FMCG / capital goods / telecom / media …) pass only if the stock's own 4-week change > 0. The same `_get_gold()` result feeds the Gold sheet, the outcome logger and the AI-card scope — one source of truth. Since v17.20 the 15 gates are one ordered list, `_gold_gates()` → `(key, label, mask)`; `_get_gold()` ANDs it, and `gold_funnel_summary()` / `gold_funnel_log_lines()` explain an empty sheet from the same masks (log lines in §17).
 
-**DEEP VALUE probation** (v17.22, `analysis/deep_value_probation.py`, display only). `_gold_split()` splits `_get_gold()` into recommended picks and plain DEEP VALUE picks (quick-pick label exactly `DEEP VALUE` = margin of safety > 25 % with no early-entry signal; DEEP VALUE EARLY MOVER and a missing label are recommended). Evidence: replay of 23-Nov-2026, 58 independent picks, DEEP VALUE 32 closed, 22 % won, −17.2 R vs all others 13 closed, 62 % won, +6.0 R (one-sided Fisher p 0.015; found by looking, so tested forward). Gates, logging, tracking, AI scope and `GOLD_RULE_VERSION` unchanged. Forward test = picks dated ≥ `PROBATION_SINCE` (2026-11-23); rule fixed in advance: once 30 have closed (≥ 5 in each group) — DEEP VALUE avg R < 0 and below the others → make the exclusion a Gold gate under a new `GOLD_RULE_VERSION`; DEEP VALUE avg R ≥ the others → end the probation; otherwise another 30 closes. Shown on the Performance sheet (DEEP VALUE PROBATION) and in the replay's forward window.
+**DEEP VALUE probation** (v17.22, `analysis/deep_value_probation.py`, display only). `_gold_split()` splits `_get_gold()` into recommended picks and plain DEEP VALUE picks (quick-pick label exactly `DEEP VALUE` = margin of safety > 25 % with no early-entry signal; DEEP VALUE EARLY MOVER and a missing label are recommended). Evidence: replay of 23-Nov-2026, 58 independent picks, DEEP VALUE 32 closed, 22 % won, −17.2 R vs all others 13 closed, 62 % won, +6.0 R (one-sided Fisher p 0.015; found by looking, so tested forward). That replay read bars stored one day late; re-run on the corrected dates (24-Nov-2026, runs 45353469993 / 45353482214): DEEP VALUE 34 closed, 24 % won, −15.4 R vs others unchanged (p 0.018; uniform targets p 0.046) — both lines are shown on the sheets (`probation_evidence_text()`; the decision-time line is never edited). Gates, logging, tracking, AI scope and `GOLD_RULE_VERSION` unchanged. Forward test = picks dated ≥ `PROBATION_SINCE` (2026-11-23); rule fixed in advance: once 30 have closed (≥ 5 in each group) — DEEP VALUE avg R < 0 and below the others → make the exclusion a Gold gate under a new `GOLD_RULE_VERSION`; DEEP VALUE avg R ≥ the others → end the probation; otherwise another 30 closes. Shown on the Performance sheet (DEEP VALUE PROBATION) and in the replay's forward window.
 
 **Resilience watchlist** (`_refresh_resilience_watch`, v17.5/v17.5.1) — reference only, never a pick. On BEARISH days, stocks with own 3-day return ≥ 5 % (`_RW_MIN_ABS_RETURN`) **and** beating the Nifty's 3-day return are upserted into `gold_resilience_watch` (30-day retention, streak over the last 5 bearish days; shown when `streak_hits ≥ 2`). Retention pruning runs every day.
 
@@ -756,6 +759,9 @@ _V14_6_TARGET_SANITY_CEILING_PCT = 50.0
 # T2/T3 = T1 × 1.35, × 1.35² (dormant spacing levels for the continuation audit).
 # The horizon T1/T3 cap constants (unused since v17.8.1) were removed in v17.22.1.
 
+# Gap-fill (master_funnel.py, v17.22.2)
+GAP_FILL_MIN_DAYS        = 1         # missed trading days that trigger a gap-fill (was 2 weekdays)
+
 # Outcome tracking (track_outcomes.py / data_bridge.py)
 EXPIRY_DAYS              = {SHORT TERM 30, POSITIONAL 90, LONG TERM 270}; DEFAULT_EXPIRY_DAYS = 90
 TRAIL tiers              = peak ≥25% → +12% · ≥20% → +9% · ≥15% → +5% · ≥12% & ≥10 days → break-even
@@ -817,7 +823,7 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 | 0-vs-missing ambiguity in some SQL `COALESCE(…, 0)` reads | Architectural | Deferred since v12.4 |
 | Altman Z capped at 10 | X4 unit mismatch on some large caps | By design (v12.5) |
 | BSE delivery + BSE SME files | Both fail on every run checked (`BSE-Deliv ⚠️`; BSE SME "File is not a zip file") | Dual-listed stocks use NSE delivery %; BSE-only stocks get delivery 0 and are dropped at Stage 1 V3, so the top 100 comes from NSE-listed stocks in practice (open item, §20) |
-| Scheduled-run timing | GitHub queues scheduled workflows | Delivery ~05:00–09:30 IST |
+| Scheduled-run timing | GitHub queues scheduled workflows | Runs started 2 h – 7 h 46 min after the 23:00 UTC cron in Oct–Nov 2026, later each week (24-Nov: 06:46 UTC = 12:16 IST); the email follows ~15 min after the start |
 | Piotroski F /9 | No free source for true year-on-year comparisons | Proxy from available data |
 | Alert Log Prev Score / Score Δ | Needs the previous trading date's `prev_*` row | Blank on the first run after a fresh DB, and for a symbol first seen today |
 | BSE downloads from cloud runners | Cloudflare / Akamai block cloud IPs | `bse` package → cloudscraper → curl_cffi cascade; NSE-only mode + allowlist fallback when all fail |
@@ -852,6 +858,8 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 v17.21 exit-model restatement: checked N  ·  changed k  ·  kept m      ← first run after v17.21 only
 v17.22 outcome re-check on re-dated prices: checked N  ·  changed k (re-opened r)  ·  kept m   ← first run after the repair only
 SHADOW STOP — walked N  ·  final k
+⚠️  [Gap Detect] 1 trading day(s) missing since 2026-11-20: 2026-11-23   ← only when a trading day was missed (v17.22.2)
+🔄 [Gap Fill] Downloading 1 missing trading days...  →  ✅ Gap filled: 1/1 days. Recomputing indicators...
 🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...
 💾 AI cards served from today's cache (…)          ← same-day re-run
 ```
@@ -947,6 +955,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 | 400-day window | `database/db_maintenance.py` | `enforce_circular_queue` (`KEEP_DAYS = 400`) |
 | Local NSE fetch | `fetch_nse_local.py` | `--dry-run`, `--push`, `--probe` |
 | Holiday calendar | `ingestion/holiday_calendar.py` | `ensure_holiday_calendar_fresh()` — NSE API + `market_holidays` cache |
+| Gap detection / fill (v17.22.2) | `master_funnel.py` Sections 1.2 / 1.4 / 1.5 · `ingestion/trading_day_calendar.py` | `missing_trading_days`, `GAP_FILL_MIN_DAYS`, `_indicators_refreshed` |
 | NSE / BSE downloaders | `ingestion/harvester.py` | `download_nse_bhavcopy`, `download_nse_delivery`, `download_nse_sme_bhavcopy`, `download_bse_bhavcopy`, `download_bse_delivery`, `download_bse_sme_bhavcopy`, `download_nse_fo_participant_data` |
 | Core DB helpers | `database/data_bridge.py` | `save_to_database`, `get_symbol_history`, `get_20d_avg_vol` / `get_20d_avg_vol_batch`, `load_latest_analysis_results`, `roll_previous_day_state` / `load_previous_day_scores` (v17.21), `get_prior_analysis_map(run_date)`, `get_today_consolidated_data` (feeds `command_parser`), `get_historical_quarter_data` (QoQ baseline) |
 | Market helpers | `database/data_bridge.py` | `get_nifty_20d_sma` (regime gate), `get_nifty_200_sma`, `get_nifty_52w_high_from_db`, `get_latest_fii_net_cash` |
@@ -989,14 +998,16 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 28. **Rule change → bump `GOLD_RULE_VERSION`, do not reset** the outcome tables (G53).
 29. **Price rows carry the trading date.** Pass `trade_date` to `save_to_database()`; never stamp rows with the runner's clock (`date.today()` on Actions is UTC). `standardize_to_v7_schema()` keeps no date column, so the stamp is the only date a bar gets (G55).
 30. **The DEEP VALUE probation is display only.** Do not filter the outcome logging, the tracker or the AI-card scope with `_gold_split()`; promote it to a gate only through the forward-test rule and a new `GOLD_RULE_VERSION` (G56).
+31. **Every missed trading day is gap-filled** (`GAP_FILL_MIN_DAYS = 1`, holidays from `market_holidays`), only after the price-date repair, and the daily indicator recompute runs whenever gap-fill did not recompute (G58). The probation's decision-time evidence line is never edited; later re-checks are added after it (G59).
 
 ---
 
 ## 20. OPEN ITEMS / NEXT ACTIONS (November 2026)
 
 - [x] **Gold_Pick_Replay run (23-Nov-2026, runs 45096331225 logged / 45096339238 uniform).** Result (58 independent picks, 45 closed, logged exits): 11 targets · 27 stops · 33 % won · −0.25 R per trade · −11.2 R total; uniform 1.5× targets 38 % · −0.15 R. None of R1–R4 passes (R2 is the wrong way round — it mostly tracks the pick month; R4 points the right way, p 0.39). DEEP VALUE 32 closed, 22 % won, −17.2 R vs others 13 closed, 62 % won, +6.0 R → v17.22 DEEP VALUE probation (display only, decision rule fixed in advance).
-- [ ] **After the first v17.22 run:** check the log for the `🗓️ v17.22 price-date repair` line (expected: most dates since 26-Aug moved back one trading day, a few already right, any lost days listed) and `v17.22 outcome re-check on re-dated prices` (SHREERAMA's −15.6 % stop at its own pick-day open expected to move or re-open). Then re-run Gold_Pick_Replay (logged + uniform) on the re-dated prices and compare with the 23-Nov result.
-- [ ] After the first v17.21 run: check the log for `v17.21 exit-model restatement: checked … changed …` (SUNTV expected T2_HIT → T1_HIT) and that the Performance sheet shows SUNTV at the Target (+10.5 %) or at its 30-Sep open if that was higher.
+- [x] **First v17.22 run (24-Nov-2026, manual run 45351540307 — the scheduled run 45342911109 stopped after 32 s, see v17.22.2).** Checked on the 23-Nov dashboard and the replay re-run (45353469993 logged / 45353482214 uniform): every exit after 26-Aug moved back one day, the 3 before it unchanged (runs then started before midnight UTC); non-expiry exits on a weekend 11 → 0; SHREERAMA SL_HIT → T1_HIT +10.5 % on 16-Oct (live table and replay); all 22 live closed rows equal the replay's outcome, date and P&L. Logged replay 60 counted / 47 closed · 34 % won · −0.20 R · −9.4 R (23-Nov: 58 / 45 · 33 % · −0.25 R · −11.2 R); uniform 38 % · −0.10 R. The repair / re-check log lines themselves were not read here.
+- [x] v17.21 restatement: the 23-Nov Performance sheet shows SUNTV as T1_HIT at the Target, +10.5 % (19-Oct: T2_HIT +14.2 %); its date is now 29-Sep after the v17.22 re-dating.
+- [ ] `market_run.yml` runs `python master_funnel.py || true`, so a gate skip and a crash both show a green step — the 24-Nov 32-second run could only be read from its duration. Consider surfacing the pipeline's own result in the step summary (owner decision; artifact upload must still run).
 - [ ] DEEP VALUE probation decision once 30 picks dated from 23-Nov-2026 have closed (Performance → DEEP VALUE PROBATION shows the rule's verdict).
 - [ ] Measurement gaps found 23-Nov-2026: no trading costs (show net next to gross), no split/bonus guard (flag a one-day drop matching a standard ratio for review instead of booking SL_HIT), no Nifty-relative return per closed pick, bars lost before v17.22 not re-downloaded, entry assumed at the pick-date close (a real order fills at the next open).
 - [ ] NSE snapshot: only 19-Oct and 10-Nov-2026 commits in five weeks; the 10-Nov file is accepted up to the 25-Nov run. Both Sunday fetches that returned data had an empty pledge list (exit 3 since v17.20.1); weekday/Saturday fetches had ~340 — consider moving the task to Saturday (owner decision).
@@ -1032,12 +1043,12 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 git pull origin main --rebase      # keep-alive bot and the weekly NSE snapshot commit to main
 git checkout -b fix/vXX-description
 # replace files
-python test_v13_v14_consolidated.py     # expect ALL green (109/109 at v17.22)
+python test_v13_v14_consolidated.py     # expect ALL green (111/111 at v17.22.2)
 git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PR → green check → merge
 ```
 
-**Test suite.** `test_v13_v14_consolidated.py` — 109 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. G47 (v17.20.1) checks that a partial NSE fetch keeps a usable previous snapshot (exit 3) and still writes over a stale or missing one. G48–G54 (v17.21): single Target + gap fills + restatement, shadow stop, Performance metrics, sizing + held levels, report display, rule_version, replay tool — each was mutation-checked (every reverted fix makes its guard fail; run mutants with bytecode caching off, since a same-size edit can survive in a stale .pyc). G55–G57 (v17.22): price bars under the trading date + one-time repair + outcome re-check (15 mutants), DEEP VALUE probation display-only + decision rule + forward test (12), replay one-position-per-stock + R + p + R4 n/a + R5 + workflow env inputs (10) — 37 mutants, all killed. Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
+**Test suite.** `test_v13_v14_consolidated.py` — 111 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. G47 (v17.20.1) checks that a partial NSE fetch keeps a usable previous snapshot (exit 3) and still writes over a stale or missing one. G48–G54 (v17.21): single Target + gap fills + restatement, shadow stop, Performance metrics, sizing + held levels, report display, rule_version, replay tool — each was mutation-checked (every reverted fix makes its guard fail; run mutants with bytecode caching off, since a same-size edit can survive in a stale .pyc). G55–G57 (v17.22): price bars under the trading date + one-time repair + outcome re-check (15 mutants), DEEP VALUE probation display-only + decision rule + forward test (12), replay one-position-per-stock + R + p + R4 n/a + R5 + workflow env inputs (10) — 37 mutants, all killed. G58 (v17.22.2) runs master_funnel's real Section 1.2–1.5 code with stubbed downloads (10 mutants); G59 checks the probation evidence keeps its decision-time line and adds the re-check on both sheets (5) — 15 mutants, all killed. Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
 
 **Hard lessons — do not repeat.**
 1. **Tests must be bidirectional.** Reintroduce the bug, confirm the test fails, restore, confirm it passes (G35 once passed while the bug shipped; G40's first draft too).
@@ -1055,6 +1066,14 @@ git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PART B — VERSION HISTORY (newest first)
 
 Entries from v17.3 downwards are preserved as written at the time. Where they describe behaviour that later changed, Part A is authoritative.
+
+### v17.22.2 — One missed trading day is filled; DEEP VALUE evidence re-checked on corrected dates · 24 Nov 2026
+
+**Why.** The scheduled run for Monday 23-Nov-2026 (45342911109) started at 06:46 UTC, 7 h 46 min after the cron, and its *Execute Master Pipeline* step took 32 s — the length of the NSE file check (C3) failing twice 30 s apart (inferred from the timing; the log is not readable from Claude's environment, and `|| true` keeps the step green). Monday was processed only because the owner had it re-run by hand (45351540307, 12 min 3 s). Without that, the next run would have found one missing weekday, and gap-fill needed **2**, so Monday's bar would never have been downloaded and the tracker would have walked past it. Gap detection also counted weekdays, so an NSE holiday counted as a missing day. And a gap-fill that downloaded nothing (or failed) skipped both indicator recomputes, leaving every technical one day stale. Separately, the replay re-run on the re-dated prices (45353469993 logged / 45353482214 uniform) changed the DEEP VALUE evidence: 34 closed, 24 % won, −15.4 R (was 32 closed, 22 %, −17.2 R); all other picks unchanged at 13 closed, 62 % won, +6.0 R; p 0.018. Only one DEEP VALUE outcome changed with the dates (SHREERAMA, −15.6 % stop → +10.5 % target); BLACKROSE and KKCL closed at their stops on 23-Nov.
+
+**Change.** `ingestion/trading_day_calendar.missing_trading_days()` — trading days strictly between the newest stored NSE bar and the target, holidays from `market_holidays` (weekdays when the calendar is empty). master_funnel Section 1.2 uses it, only after the price-date repair (before it, MAX(date) is a day late and a filled bar would carry the other date convention); gap-fill at `GAP_FILL_MIN_DAYS = 1`; the log lists the missing dates; `_indicators_refreshed` makes Section 1.5 run whenever gap-fill did not recompute. `PROBATION_RECHECK` + `probation_evidence_text()`: the Gold-sheet probation note and the Performance decision line show the decision-time evidence (unchanged, as its comment requires) followed by the re-check; glossary and Quick Pick tooltip updated.
+
+**Verification.** G58 executes master_funnel's real Section 1.2–1.5 source with stubbed downloads: one missed day is downloaded under its own date and indicators recomputed once; a holiday is not a gap; nothing downloaded → the daily recompute still runs; no repair yet → no gap-fill; no gap → no download; plus the helper's edge cases (10 mutants). G59: the decision-time evidence stays first and unchanged, the re-check follows it on both sheets, and a rendered Performance block shows both (5 mutants). All 15 killed. Suite **111/111** on Linux and in the Windows-like run. Not verified here: a real gap-fill download from the NSE archive on Actions — it first happens the next time a trading day is missed.
 
 ### v17.22.1 — Remove dead code and files · 23 Nov 2026
 
@@ -4305,4 +4324,4 @@ v17.3 does not improve returns and should not be read as if it does. What it cha
 
 ---
 
-*Last updated: 23 November 2026 · v17.22.1 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: 24 November 2026 · v17.22.2 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
