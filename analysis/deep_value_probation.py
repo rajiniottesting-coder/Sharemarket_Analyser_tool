@@ -9,6 +9,16 @@ signal) lost 17.2 R on 32 closed trades (22 % won), while all other Gold
 picks made 6.0 R on 13 (62 % won). The pattern was first seen on 19-Oct and
 re-checked on largely the same picks, so it is a lead, not proof.
 
+RE-CHECK ON CORRECTED PRICE DATES (24-Nov-2026, v17.22.2)
+The 23-Nov replay ran on price bars stored one day late (fixed in v17.22).
+Re-run on the re-dated bars (prices to 23-Nov-2026, runs 45353469993 logged /
+45353482214 uniform): DEEP VALUE 34 closed, 24 % won, −15.4 R; all other
+picks unchanged at 13 closed, 62 % won, +6.0 R (one-sided Fisher p 0.018;
+uniform 1.5× targets p 0.046). Only one DEEP VALUE outcome changed with the
+dates (SHREERAMA: a −15.6 % stop that was its own pick-day open became a
++10.5 % target); BLACKROSE and KKCL closed at their stops on 23-Nov. The
+conclusion stands; the decision rule below is unchanged.
+
 WHAT CHANGES
 Display only. The 15 Gold gates, the outcome logging, the tracker, the AI-card
 scope and GOLD_RULE_VERSION are unchanged, so every DEEP VALUE Gold pick is
@@ -46,6 +56,18 @@ PROBATION_MIN_PER_GROUP = 5
 PROBATION_EVIDENCE = ("Replay of 23-Nov-2026 (58 Gold picks, 20-Jul → 21-Nov-2026): "
                       "DEEP VALUE 32 closed, 22 % won, −17.2 R · all other picks "
                       "13 closed, 62 % won, +6.0 R")
+
+# v17.22.2: the same replay re-run on the corrected price dates (the 23-Nov
+# run read bars stored one day late). A new note, as the comment above asks.
+PROBATION_RECHECK = ("Re-checked 24-Nov-2026 on corrected price dates (prices to "
+                     "23-Nov-2026): DEEP VALUE 34 closed, 24 % won, −15.4 R · all "
+                     "other picks 13 closed, 62 % won, +6.0 R")
+
+
+def probation_evidence_text() -> str:
+    """The evidence line shown on the sheets: the decision-time result, then
+    every later re-check, oldest first."""
+    return f"{PROBATION_EVIDENCE}. {PROBATION_RECHECK}"
 
 
 def is_on_probation(label) -> bool:

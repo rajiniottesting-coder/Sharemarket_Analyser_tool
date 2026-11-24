@@ -21,11 +21,11 @@ from reporting.tooltip_formatter import (
 )
 # v17.22: DEEP VALUE probation (display only — gates and logging unchanged)
 from analysis.deep_value_probation import (
-    PROBATION_EVIDENCE as _PROB_EVIDENCE,
     PROBATION_MIN_CLOSED as _PROB_MIN_CLOSED,
     PROBATION_SINCE as _PROB_SINCE,
     forward_verdict as _prob_verdict,
     is_on_probation as _on_probation,
+    probation_evidence_text as _prob_evidence,
     r_multiple as _r_multiple,
 )
 
@@ -1156,6 +1156,8 @@ GLOSSARY_DATA = [
     ("PERFORMANCE","DEEP VALUE PROBATION (forward test)",
      "v17.22. The Gold-pick replay of 23-Nov-2026 (58 independent picks 20-Jul → 21-Nov-2026, 45 closed) found that Gold picks labelled DEEP VALUE "
      "(margin of safety > 25 % with no early-entry signal) lost 17.2 R on 32 closed trades (22 % won) while all other Gold picks made 6.0 R on 13 (62 % won). "
+     "That replay read price bars stored one day late; re-run on the corrected dates (24-Nov-2026, prices to 23-Nov) DEEP VALUE lost 15.4 R on 34 closed (24 % won) "
+     "and the other picks were unchanged — the pattern holds. "
      "Because the pattern was found by looking at the data, it is tested on NEW picks: from 23-Nov-2026 on, DEEP VALUE Gold picks are shown apart on the Gold sheet, "
      "Trade Summary and Delivery Preview as 'on probation — tracked, not recommended'. The 15 gates, the logging and the tracking are unchanged. "
      "This table compares DEEP VALUE with all other picks logged since then. Rule fixed in advance: once 30 have closed (at least 5 in each group), "
@@ -1991,7 +1993,7 @@ class ExcelGeneratorV6:
             rn += 1
             ws.merge_cells(start_row=rn,start_column=1,end_row=rn,end_column=N)
             c=ws.cell(rn,1,
-                f"  {_PROB_EVIDENCE}. These picks are still logged and tracked exactly like the "
+                f"  {_prob_evidence()}. These picks are still logged and tracked exactly like the "
                 f"others (Performance sheet). Decision after {_PROB_MIN_CLOSED} closed picks from "
                 f"{_PROB_SINCE} on — see DEEP VALUE PROBATION on the Performance sheet.")
             c.fill=_f("F1EFE8"); c.font=_ft(False,"44403C",9,True); c.alignment=_al("left","center",True)
@@ -3766,9 +3768,9 @@ class ExcelGeneratorV6:
             f"  Decision: {v['code']} — {v['text']}.  Rule (fixed 23-Nov-2026): once {_PROB_MIN_CLOSED} "
             f"picks have closed, DEEP VALUE avg R below 0 and below the others → make the exclusion a "
             f"Gold gate (new rule version); DEEP VALUE avg R ≥ the others → end the probation; "
-            f"otherwise another {_PROB_MIN_CLOSED} closes.  {_PROB_EVIDENCE}.")
+            f"otherwise another {_PROB_MIN_CLOSED} closes.  {_prob_evidence()}.")
         c.fill = _f("FAF9F6"); c.font = _ft(False, "44403C", 9, True); c.alignment = _al("left", "center", True)
-        ws.row_dimensions[row].height = 42
+        ws.row_dimensions[row].height = 48   # v17.22.2: room for the re-check note
         return row + 2
 
     # ── v17.22: DEEP VALUE probation (display only) ──────────────────────────
