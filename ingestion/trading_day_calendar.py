@@ -19,6 +19,9 @@ This module provides:
     Returns the calendar date that is exactly N trading days before today.
   - `is_trading_day(date_iso) → bool`
     True if the given date is a weekday AND not in market_holidays.
+  - `missing_trading_days(last_stored_iso, target_date) → [date, …]`
+    v17.22.2: trading days between the newest stored bar and the day being
+    processed — what master_funnel's gap-fill downloads.
 
 Both functions cache the holiday set per-call for performance.
 
@@ -147,6 +150,56 @@ def n_trading_days_ago(today_iso: str, n: int,
             walked += 1
 
     return d.isoformat()
+
+
+def missing_trading_days(last_stored_iso: Optional[str], target_date,
+                         exchange: str = "NSE",
+                         holiday_set: Optional[Set[str]] = None) -> list:
+    """
+    v17.22.2 — trading days with no stored bar: every day strictly after
+    `last_stored_iso` (the newest date in daily_prices) and strictly before
+    `target_date` (the day this run processes) that is a weekday and not in
+    market_holidays.
+
+    Used by master_funnel's gap detection. Before v17.22.2 that code counted
+    weekdays and only filled a gap of 2 or more, so one skipped day (e.g. a
+    run that stopped at the NSE file check) was never downloaded, and a
+    holiday counted as a missing day.
+
+    An empty holiday calendar falls back to weekdays (a holiday then fails to
+    download and is reported, never stored). A malformed or missing
+    `last_stored_iso`, or one on/after the target, returns [].
+
+    Args:
+        last_stored_iso: 'YYYY-MM-DD' or None
+        target_date: datetime.date or 'YYYY-MM-DD'
+        exchange: 'NSE' (default) or 'BSE'
+        holiday_set: optional pre-loaded set (tests, bulk callers)
+
+    Returns:
+        list of datetime.date, oldest first
+    """
+    if not last_stored_iso:
+        return []
+    try:
+        last = datetime.date.fromisoformat(str(last_stored_iso)[:10])
+        if isinstance(target_date, datetime.datetime):
+            target = target_date.date()
+        elif isinstance(target_date, datetime.date):
+            target = target_date
+        else:
+            target = datetime.date.fromisoformat(str(target_date)[:10])
+    except (ValueError, TypeError):
+        return []
+    if holiday_set is None:
+        holiday_set = _load_holidays_set(exchange)
+    out = []
+    d = last + datetime.timedelta(days=1)
+    while d < target:
+        if d.weekday() < 5 and d.isoformat() not in holiday_set:
+            out.append(d)
+        d += datetime.timedelta(days=1)
+    return out
 
 
 def trading_day_window_iso(today_iso: str, trading_days: int,
