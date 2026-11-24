@@ -559,6 +559,12 @@ _V14_6_TARGET_SANITY_CEILING_PCT = 50.0   # v17.8.1: guard vs broken-ATR only
 # 17-Sep-2026) deleted 26 open picks whose outcomes were never measured.
 GOLD_RULE_VERSION = "v17.21"
 
+# v17.22.2: gap-fill downloads missed trading days once at least this many
+# are missing (NSE holidays excluded). Was 2 weekdays before v17.22.2, so a
+# single skipped day was never filled — its bar stayed missing for good, and
+# the outcome tracker walked straight past it.
+GAP_FILL_MIN_DAYS = 1
+
 # v14.7: Regime detection thresholds (ratio of current ATR to baseline ATR)
 _V14_7_REGIME_HIGH_THRESHOLD = 1.20  # current > 1.20× baseline → high-vol regime
 _V14_7_REGIME_LOW_THRESHOLD  = 0.80  # current < 0.80× baseline → low-vol regime
@@ -987,30 +993,37 @@ def run_master_pipeline():
         # Read MAX(date) now while the DB still reflects the last real run.
         # After save_to_database() the MAX date becomes target_date → gap = 0
         # (v17.22: rows are stored under the trading date).
+        # v17.22.2: trading days come from the NSE holiday calendar
+        # (missing_trading_days) and ONE missed day is enough to fill — before,
+        # weekdays were counted and only a gap of 2+ was filled, so a single
+        # skipped day (24-Nov-2026: the scheduled run stopped at the NSE file
+        # check) was never downloaded. Only once the stored dates are repaired
+        # (Section 1.1b): before that MAX(date) is a day late and a gap-filled
+        # bar would carry the other date convention.
         # ─────────────────────────────────────────────────────────────────────
         _missed_trading_days = 0
         _gap_trading_days    = []
-        try:
-            import sqlite3 as _sq_gap
-            _conn_gap  = _sq_gap.connect("market_data.db")
-            _last_row  = _conn_gap.execute(
-                "SELECT MAX(date) FROM daily_prices WHERE exchange='NSE'"
-            ).fetchone()
-            _conn_gap.close()
-            _last_ds = _last_row[0] if _last_row and _last_row[0] else None
-            if _last_ds:
-                _last_d = datetime.date.fromisoformat(_last_ds)
-                _d = _last_d + datetime.timedelta(days=1)
-                while _d < target_date:
-                    if _d.weekday() < 5:
-                        _gap_trading_days.append(_d)
-                    _d += datetime.timedelta(days=1)
+        if _price_dates_ok:
+            try:
+                import sqlite3 as _sq_gap
+                from ingestion.trading_day_calendar import missing_trading_days
+                _conn_gap  = _sq_gap.connect("market_data.db")
+                _last_row  = _conn_gap.execute(
+                    "SELECT MAX(date) FROM daily_prices WHERE exchange='NSE'"
+                ).fetchone()
+                _conn_gap.close()
+                _last_ds = _last_row[0] if _last_row and _last_row[0] else None
+                _gap_trading_days    = missing_trading_days(_last_ds, target_date)
                 _missed_trading_days = len(_gap_trading_days)
-                if _missed_trading_days >= 2:
-                    print(f"⚠️  [Gap Detect] {_missed_trading_days} trading days missing "
-                          f"({_gap_trading_days[0]} → {_gap_trading_days[-1]})")
-        except Exception as _gde:
-            print(f"   ⚠️  Gap detection (non-critical): {_gde}")
+                if _missed_trading_days >= GAP_FILL_MIN_DAYS:
+                    print(f"⚠️  [Gap Detect] {_missed_trading_days} trading day(s) missing "
+                          f"since {_last_ds}: "
+                          f"{', '.join(str(_g) for _g in _gap_trading_days)}")
+            except Exception as _gde:
+                print(f"   ⚠️  Gap detection (non-critical): {_gde}")
+        else:
+            print("   ⚠️  Gap detection waits for the v17.22 price-date repair "
+                  "(stored dates not yet on the trading-day convention)")
 
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 1.3: DATABASE SYNC
@@ -1038,9 +1051,12 @@ def run_master_pipeline():
         # ─────────────────────────────────────────────────────────────────────
         # SECTION 1.4: GAP-FILL — backfill missing trading days
         # Runs after today's data is saved. Downloads missing days from
-        # NSE archives so technicals (SMA, Chg% windows) stay accurate.
+        # NSE archives so technicals (SMA, Chg% windows) and the outcome
+        # tracker (which walks every bar after a pick) see every trading day.
+        # v17.22.2: one missed trading day is enough (GAP_FILL_MIN_DAYS).
         # ─────────────────────────────────────────────────────────────────────
-        if _missed_trading_days >= 2:
+        _indicators_refreshed = False
+        if _missed_trading_days >= GAP_FILL_MIN_DAYS:
             print(f"🔄 [Gap Fill] Downloading {_missed_trading_days} missing trading days...")
             try:
                 from backfill_history import (
@@ -1084,9 +1100,12 @@ def run_master_pipeline():
                     print(f"   ✅ Gap filled: {_filled}/{_missed_trading_days} days. "
                           f"Recomputing indicators...")
                     _compute_all_indicators(_bf_conn)
+                    _indicators_refreshed = True
                 else:
-                    print(f"   ⚠️  Gap fill: NSE archives not available for gap dates "
-                          f"(older than 30 days). Continuing with available data.")
+                    print(f"   ⚠️  Gap fill: no NSE bhavcopy downloaded for "
+                          f"{', '.join(str(_g) for _g in _gap_trading_days)} "
+                          f"(archive older than ~30 days, or not a trading day). "
+                          f"Continuing with available data.")
                 _bf_conn.close()
                 import shutil as _sh
                 _sh.rmtree(_bf_tmp, ignore_errors=True)
@@ -1103,8 +1122,11 @@ def run_master_pipeline():
         # stale (and for dual-listed stocks, the values were also wrong
         # for separate reasons fixed in #1/#2/#5). After this refresh the
         # daily Excel uses today's prices in every rolling window.
-        # Skipped if gap-fill already ran the recompute above.
-        if _missed_trading_days < 2:
+        # Skipped only if gap-fill already ran the recompute above.
+        # v17.22.2: keyed on whether the recompute actually ran — before, a
+        # gap-fill that downloaded nothing (or failed) skipped BOTH recomputes
+        # and left every technical one day stale.
+        if not _indicators_refreshed:
             try:
                 from backfill_history import _compute_all_indicators as _ci_daily
                 import sqlite3 as _sq_daily
