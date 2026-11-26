@@ -87,7 +87,7 @@
 <body>
 <div class="wrap">
 <h1>NSE/BSE Stock Analyser — Pipeline Reference</h1>
-<div class="meta">v17.22.2 · 24 November 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
+<div class="meta">v17.22.3 · 26 November 2026 · Code-verified reference for the whole daily pipeline: gate and data in, screening and scoring, Gold gate and trade plan, outcome tracking, AI / news / NSE snapshot, outputs and operations. Funnel counts are from production logs. Release history: readme.md and CLAUDE.md.</div>
 <div class="toc">
   <h3>Contents</h3>
   <ol start="0">
@@ -137,7 +137,7 @@
 <line x1="340" y1="908" x2="340" y2="920" class="arr" marker-end="url(#arrE0)"/>
 <g class="c-teal"><rect x="40.0" y="930" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="950" text-anchor="middle" dominant-baseline="central">TRACK · track_outcomes.main()</text><text class="ts" x="340" y="972" text-anchor="middle" dominant-baseline="central">walk every open pick · live trailing stop · shadow stop · continuation audit · rule version</text></g>
 <line x1="340" y1="990" x2="340" y2="1002" class="arr" marker-end="url(#arrE0)"/>
-<g class="c-pink"><rect x="40.0" y="1012" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1032" text-anchor="middle" dominant-baseline="central">AI NOTES · Section 7/8 (deferred)</text><text class="ts" x="340" y="1054" text-anchor="middle" dominant-baseline="central">Block H notes for Gold picks + open positions only · per-day cache</text></g>
+<g class="c-pink"><rect x="40.0" y="1012" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1032" text-anchor="middle" dominant-baseline="central">AI NOTES · Section 7/8 (deferred)</text><text class="ts" x="340" y="1054" text-anchor="middle" dominant-baseline="central">Block H notes for Gold picks + open positions only · cached per stock + trading date</text></g>
 <line x1="340" y1="1072" x2="340" y2="1084" class="arr" marker-end="url(#arrE0)"/>
 <g class="c-gray"><rect x="40.0" y="1094" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="1114" text-anchor="middle" dominant-baseline="central">DELIVER · Sections 9/10, 12, 13</text><text class="ts" x="340" y="1136" text-anchor="middle" dominant-baseline="central">8-sheet Excel + text report → email · 400-day DB window · upload DB artifact</text></g>
 </svg>
@@ -179,7 +179,7 @@
 <g class="c-purple"><rect x="40.0" y="378" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="398" text-anchor="middle" dominant-baseline="central">5A.4 · QoQ</text><text class="ts" x="187.5" y="420" text-anchor="middle" dominant-baseline="central">Pro / FII deltas from</text><text class="ts" x="187.5" y="440" text-anchor="middle" dominant-baseline="central">stored history</text></g>
 <g class="c-purple"><rect x="345.0" y="378" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="398" text-anchor="middle" dominant-baseline="central">5A.5 · forensics</text><text class="ts" x="492.5" y="420" text-anchor="middle" dominant-baseline="central">Altman Z · Beneish M</text><text class="ts" x="492.5" y="440" text-anchor="middle" dominant-baseline="central">earnings quality</text></g>
 <line x1="340" y1="458" x2="340" y2="470" class="arr" marker-end="url(#arrE2)"/>
-<g class="c-pink"><rect x="40.0" y="480" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="500" text-anchor="middle" dominant-baseline="central">5A.6 · news &amp; catalyst (v17.9 / v17.11)</text><text class="ts" x="340" y="522" text-anchor="middle" dominant-baseline="central">≤ 15 Google News headlines (14 days) → LLM, temperature 0, JSON</text><text class="ts" x="340" y="542" text-anchor="middle" dominant-baseline="central">confidence &lt; 0.6 → NEUTRAL · facts must quote their headline</text></g>
+<g class="c-pink"><rect x="40.0" y="480" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="500" text-anchor="middle" dominant-baseline="central">5A.6 · news &amp; catalyst (v17.9 / v17.11)</text><text class="ts" x="340" y="522" text-anchor="middle" dominant-baseline="central">≤ 15 Google News headlines (14 days) → LLM (reply cached), temp 0, JSON</text><text class="ts" x="340" y="542" text-anchor="middle" dominant-baseline="central">confidence &lt; 0.6 → NEUTRAL · facts must quote their headline</text></g>
 <line x1="340" y1="560" x2="340" y2="572" class="arr" marker-end="url(#arrE2)"/>
 <g class="c-amber"><rect x="40.0" y="582" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="602" text-anchor="middle" dominant-baseline="central">5B · fair value</text><text class="ts" x="136.65" y="624" text-anchor="middle" dominant-baseline="central">7 models → CFV</text><text class="ts" x="136.65" y="644" text-anchor="middle" dominant-baseline="central">MoS · score adj</text></g>
 <g class="c-amber"><rect x="243.3" y="582" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="602" text-anchor="middle" dominant-baseline="central">6 · scoring</text><text class="ts" x="339.95" y="624" text-anchor="middle" dominant-baseline="central">sub-scores → composite</text><text class="ts" x="339.95" y="644" text-anchor="middle" dominant-baseline="central">verdict · storm · spike</text></g>
@@ -1122,7 +1122,7 @@
 </div>
 <div class="section">
 <div id="h0" class="panel active">
-<svg viewBox="0 0 680 558" role="img" aria-label="diagram">
+<svg viewBox="0 0 680 578" role="img" aria-label="diagram">
 <defs><marker id="arrH0" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <text class="th" x="340" y="28" text-anchor="middle">News &amp; catalyst engine</text>
 <text class="ts" x="340" y="48" text-anchor="middle">analysis/news_sentiment.py · Section 5A.6 · before scoring</text>
@@ -1136,7 +1136,7 @@
 <g class="c-teal"><rect x="40.0" y="358" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="187.5" y="378" text-anchor="middle" dominant-baseline="central">row fields</text><text class="ts" x="187.5" y="400" text-anchor="middle" dominant-baseline="central">Key Catalyst · Primary Risk</text><text class="ts" x="187.5" y="420" text-anchor="middle" dominant-baseline="central">Insider (news) · Bulk Deal · Reg Flag</text></g>
 <g class="c-blue"><rect x="345.0" y="358" width="295.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="492.5" y="378" text-anchor="middle" dominant-baseline="central">insider BUY with evidence</text><text class="ts" x="492.5" y="400" text-anchor="middle" dominant-baseline="central">may raise insider_buy_alert</text><text class="ts" x="492.5" y="420" text-anchor="middle" dominant-baseline="central">NO → YES, never lowers SAST</text></g>
 <line x1="340" y1="438" x2="340" y2="450" class="arr" marker-end="url(#arrH0)"/>
-<g class="c-gray"><rect x="40.0" y="460" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="480" text-anchor="middle" dominant-baseline="central">switches</text><text class="ts" x="340" y="502" text-anchor="middle" dominant-baseline="central">NEWS_SENTIMENT_SHADOW=1 → log only · no credentials → skipped,</text><text class="ts" x="340" y="522" text-anchor="middle" dominant-baseline="central">the sentiment weight redistributes as before</text></g>
+<g class="c-gray"><rect x="40.0" y="460" width="600.0" height="100" rx="8" stroke-width="0.5"/><text class="th" x="340" y="480" text-anchor="middle" dominant-baseline="central">reply cache (v17.22.3) · switches</text><text class="ts" x="340" y="502" text-anchor="middle" dominant-baseline="central">same exact headlines → stored reply, no LLM call (ai_cache/news/)</text><text class="ts" x="340" y="522" text-anchor="middle" dominant-baseline="central">SHADOW=1 → log only · AI_CACHE or NEWS_CACHE=0 → cache off</text><text class="ts" x="340" y="542" text-anchor="middle" dominant-baseline="central">no credentials → skipped; the sentiment weight redistributes</text></g>
 </svg>
 </div>
 <div id="h1" class="panel">
@@ -1146,7 +1146,7 @@
 <text class="ts" x="340" y="48" text-anchor="middle">ai/ai_analyst.py · generated after the tracker (v17.14)</text>
 <g class="c-teal"><rect x="40.0" y="72" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">SCOPE</text><text class="ts" x="340" y="114" text-anchor="middle" dominant-baseline="central">today's _get_gold() ∪ get_open_recommendations() — nothing else</text><text class="ts" x="340" y="134" text-anchor="middle" dominant-baseline="central">held stocks use their fully-enriched held-monitor row (v17.15)</text></g>
 <line x1="340" y1="152" x2="340" y2="164" class="arr" marker-end="url(#arrH1)"/>
-<g class="c-gray"><rect x="40.0" y="174" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="194" text-anchor="middle" dominant-baseline="central">per-day cache · downloads/ai_cache/</text><text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">key = date + sha1(symbol | score | label | entry | SL | target | horizon | format)</text><text class="ts" x="340" y="236" text-anchor="middle" dominant-baseline="central">hit → zero API calls · AI_CACHE=0 bypasses · actions/cache keeps it across runs</text></g>
+<g class="c-gray"><rect x="40.0" y="174" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="194" text-anchor="middle" dominant-baseline="central">cache per stock · per trading date (v17.22.3) · ai_cache/cards/</text><text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">key = sha1(symbol · score · label · close · SL · target · horizon · prompt)</text><text class="ts" x="340" y="236" text-anchor="middle" dominant-baseline="central">only stocks without a card go to the LLM · AI_CACHE=0 bypasses</text></g>
 <line x1="340" y1="254" x2="340" y2="266" class="arr" marker-end="url(#arrH1)"/>
 <g class="c-pink"><rect x="40.0" y="276" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="296" text-anchor="middle" dominant-baseline="central">PROMPT · ~2 KB (v17.16)</text><text class="ts" x="340" y="318" text-anchor="middle" dominant-baseline="central">SYSTEM ROLE + BLOCK H extracted from the master prompt + "write only Block H"</text></g>
 <line x1="340" y1="336" x2="340" y2="348" class="arr" marker-end="url(#arrH1)"/>
@@ -1154,7 +1154,7 @@
 <line x1="340" y1="438" x2="340" y2="450" class="arr" marker-end="url(#arrH1)"/>
 <g class="c-amber"><rect x="40.0" y="460" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="136.65" y="480" text-anchor="middle" dominant-baseline="central">missing note</text><text class="ts" x="136.65" y="502" text-anchor="middle" dominant-baseline="central">retried one stock</text><text class="ts" x="136.65" y="522" text-anchor="middle" dominant-baseline="central">at a time</text></g>
 <g class="c-amber"><rect x="243.3" y="460" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="339.95" y="480" text-anchor="middle" dominant-baseline="central">LLM error</text><text class="ts" x="339.95" y="502" text-anchor="middle" dominant-baseline="central">real cause raised</text><text class="ts" x="339.95" y="522" text-anchor="middle" dominant-baseline="central">(body · finish_reason)</text></g>
-<g class="c-amber"><rect x="446.7" y="460" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="480" text-anchor="middle" dominant-baseline="central">incomplete output</text><text class="ts" x="543.35" y="502" text-anchor="middle" dominant-baseline="central">never cached</text></g>
+<g class="c-amber"><rect x="446.7" y="460" width="193.3" height="80" rx="8" stroke-width="0.5"/><text class="th" x="543.35" y="480" text-anchor="middle" dominant-baseline="central">placeholder card</text><text class="ts" x="543.35" y="502" text-anchor="middle" dominant-baseline="central">never cached</text></g>
 <line x1="340" y1="540" x2="340" y2="552" class="arr" marker-end="url(#arrH1)"/>
 <g class="c-gray"><rect x="40.0" y="562" width="600.0" height="80" rx="8" stroke-width="0.5"/><text class="th" x="340" y="582" text-anchor="middle" dominant-baseline="central">WHERE THEY APPEAR</text><text class="ts" x="340" y="604" text-anchor="middle" dominant-baseline="central">Gold sheet Analysis Summary · Performance sheet AI Card</text><text class="ts" x="340" y="624" text-anchor="middle" dominant-baseline="central">not on the Full Dashboard (v17.18)</text></g>
 </svg>
@@ -1208,7 +1208,7 @@
 <text class="ts" x="340" y="48" text-anchor="middle">cron 0 23 * * 1-5 + manual dispatch</text>
 <g class="c-gray"><rect x="40.0" y="72" width="600.0" height="40" rx="8" stroke-width="0.5"/><text class="th" x="340" y="92" text-anchor="middle" dominant-baseline="central">1–3 · checkout · Python 3.11 · pip install -r requirements.txt</text></g>
 <line x1="340" y1="112" x2="340" y2="124" class="arr" marker-end="url(#arrI1)"/>
-<g class="c-teal"><rect x="40.0" y="134" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="154" text-anchor="middle" dominant-baseline="central">4 · restore AI-card cache (actions/cache)</text><text class="ts" x="340" y="176" text-anchor="middle" dominant-baseline="central">key ai-cache-&lt;run_id&gt; · restore-keys ai-cache-</text></g>
+<g class="c-teal"><rect x="40.0" y="134" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="154" text-anchor="middle" dominant-baseline="central">4 · restore LLM reply cache: AI cards + news (actions/cache)</text><text class="ts" x="340" y="176" text-anchor="middle" dominant-baseline="central">key ai-cache-&lt;run_id&gt;-&lt;run_attempt&gt; · restore-keys ai-cache-</text></g>
 <line x1="340" y1="194" x2="340" y2="206" class="arr" marker-end="url(#arrI1)"/>
 <g class="c-teal"><rect x="40.0" y="216" width="600.0" height="60" rx="8" stroke-width="0.5"/><text class="th" x="340" y="236" text-anchor="middle" dominant-baseline="central">5 · restore market_data.db artifact</text><text class="ts" x="340" y="258" text-anchor="middle" dominant-baseline="central">≈ 730 MB · 30-day retention · missing → fresh DB</text></g>
 <line x1="340" y1="276" x2="340" y2="288" class="arr" marker-end="url(#arrI1)"/>
@@ -1239,6 +1239,7 @@
    📰 News sentiment: LIVE (feeds score) · model=… · N stocks
    📰 News sentiment: k/N stocks got an informed signal
    📰   not informed: headlines neutral ×… · …
+   📰 News LLM calls: M · from cache: N · no LLM needed: K   ← v17.22.3; M = 0 on a re-run unless headlines changed
    📊 Market regime: BULLISH (Nifty X vs 20d-SMA Y, gap +Z%, tolerance -2.0%)
    📈 v14.1 outcome tracking: logged N Gold pick(s) …
    🥇 Gold empty on a BULLISH day (Nifty -1.91% vs 20d-SMA, tolerance -2.0%) — 0 of 95 stocks passed all 15 gates.
@@ -1246,7 +1247,8 @@
    🥇 Emptied by: ROE ≥ 10% — removed the last 1: PLASTIBLEN (ROE 9.5%)
    🥇 One gate short: WEALTH (MoS +6.7%), GNFC (MoS +7.0%), …   ← 🥇 only when Gold is empty (v17.20)
 🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...
-   💾 AI cards served from today's cache (…)        ← only on a same-day re-run</pre>
+   💾 AI cards (trading date …): N from cache · M not in the cache → k new card(s) stored
+   💾 AI cards: all N from the cache for trading date … — no LLM calls.   ← re-run, same stocks</pre>
 <div class="callout">Zero Gold picks is normal on BEARISH days and on weak tapes — 15 strict gates. When it happens, the 🥇 lines name the gate that emptied the sheet (v17.20); "BULLISH" only means Nifty is no more than 2 % below its 20-day SMA. A snapshot older than 7 days means the weekly fetch was missed, or it kept the previous file because NSE returned an empty pledge list (exit 3, v17.20.1): double-click <code>fetch_nse_now.bat</code> once during the week.</div>
 </div>
 </div>
@@ -1271,7 +1273,7 @@
 <tr><td>DEEP VALUE probation</td><td><code>analysis/deep_value_probation.py</code> · <code>ExcelGeneratorV6._gold_split</code>, <code>probation_forward_stats</code> (v17.22)</td></tr>
 <tr><td>AI notes</td><td><code>ai/ai_analyst.py::get_ai_analysis</code> → <code>_generate_ai_analysis</code> · <code>_load_card_system_prompt</code></td></tr>
 <tr><td>Workbook · tooltips</td><td><code>reporting/excel_generator.py</code> (8 sheets) · <code>reporting/tooltip_formatter.py::TIPS</code></td></tr>
-<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 111 guards, all green on Linux and Windows (v17.22.2)</td></tr>
+<tr><td>Regression suite</td><td><code>test_v13_v14_consolidated.py</code> — 112 guards, all green on Linux and Windows (v17.22.3)</td></tr>
 </tbody></table>
 
 <h3>Key constants &amp; thresholds</h3>
@@ -1300,7 +1302,7 @@ Display thresholds (v10.16 Option B): PE / PB / PS / EV-EBITDA above 500 and PEG
 <h3>Quick-pick labels are separate from the verdict</h3>
 <p style="margin-top:0"><code>stock["verdict"]</code> (BUY / WATCHLIST / NEUTRAL / OVERVALUED / AVOID) and <code>stock["label"]</code> (DEEP VALUE / EARLY MOVER / …) come from different functions. The verdict drives colour and the Gold filter; the label is an archetype used for sorting and for the Performance breakdowns.</p>
 <div class="footer">
-NSE/BSE Stock Analyser · Pipeline reference · v17.22.2 (24 November 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
+NSE/BSE Stock Analyser · Pipeline reference · v17.22.3 (26 November 2026). Replaces pipeline_reference_v16_5.html; the file name no longer carries a version so links do not go stale.<br>
 Parts 1–4 are the v16.5 scoring deep-dives, re-checked against the code — the screening and scoring modules are unchanged since v16.4; only funnel counts and output facts were updated. Parts 0 and 5–8 are new and describe v17.0–v17.20.1: market-regime gate and 15-condition Gold filter (v17.0, v17.5.1), single regime-aware Target (v17.8.1), live trailing tiers (v17.0), continuation audit (v17.3), shadow stop (v17.7), news engine (v17.9/v17.11), company-LLM analyst notes with per-day cache (v17.10–v17.16), weekly NSE snapshot (v17.13), allowlist write-time guards (v17.17), Full Dashboard without the AI column (v17.18), the Trailing-label fix (v17.19), the empty-Gold reason in the run log (v17.20) the NSE fetcher keeping the previous snapshot on a partial fetch (v17.20.1), and v17.21: one live Target with open-price fills and a one-time restatement, the shadow stop armed from day 1 and walked to its own end, sizing from logged allocations with held stocks shown at their tracked levels, previous-trading-date comparisons, rule-version tagging instead of resets, and the pick replay tool; v17.22: price bars stored under the trading date with a one-time re-dating of the history and a re-check of closed picks, DEEP VALUE Gold picks shown on probation (display only, forward test on the Performance sheet), and the replay counting a stock once while it is held, in R.
 </div>
 </div>
