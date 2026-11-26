@@ -38,22 +38,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── v17.12: per-day AI card cache across runs ─────────────────────────
+      # ── LLM reply cache across runs (v17.12; cards + news since v17.22.3) ──
       # Each Actions run is a fresh VM, so downloads/ai_cache/ written by one
-      # run vanishes before the next — the same-day re-run cache never hit and
-      # every re-run re-billed the LLM. actions/cache restores the latest
-      # cache at job start and saves it at job end automatically.
-      #   key          — unique per run, so every run SAVES its (possibly
-      #                  updated) cache; actions/cache never overwrites a hit key
-      #   restore-keys — prefix match restores the most recent cache from
-      #                  ANY prior run. Same-day files are then served; the
-      #                  Python layer purges any older-dated files itself.
-      # AI_CACHE=0 (repo variable) bypasses without touching this step.
-      - name: Restore AI card cache (v17.12)
+      # run vanishes before the next. actions/cache restores the latest cache
+      # at job start and saves it at job end. It holds:
+      #   downloads/ai_cache/cards/<YYYYMMDD>.json  AI cards, per stock, for
+      #                                             the trading date processed
+      #   downloads/ai_cache/news/<sha1>.json       news-sentiment replies, one
+      #                                             per exact headline set
+      #   key          — unique per run AND per attempt. With the run id alone,
+      #                  "Re-run jobs" (same run id) hit the key on restore, and
+      #                  actions/cache does not save over a key it hit, so the
+      #                  re-run's new replies were lost (v17.22.3).
+      #   restore-keys — prefix match restores the most recent cache from any
+      #                  earlier run or attempt. Python deletes stale entries.
+      # AI_CACHE=0 (repo variable) bypasses both caches without touching this step.
+      - name: Restore LLM reply cache (AI cards + news)
         uses: actions/cache@v4
         with:
           path: downloads/ai_cache
-          key: ai-cache-${{ github.run_id }}
+          key: ai-cache-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ai-cache-
 
@@ -129,7 +133,7 @@ jobs:
           OPENAI_API_BASE:       ${{ secrets.OPENAI_API_BASE }}
           LLM_MODEL:             ${{ secrets.LLM_MODEL }}
           NEWS_SENTIMENT_SHADOW: ${{ vars.NEWS_SENTIMENT_SHADOW }}
-          AI_CACHE:              ${{ vars.AI_CACHE }}   # v17.12: unset/1 = cache on, 0 = bypass
+          AI_CACHE:              ${{ vars.AI_CACHE }}   # unset/1 = card + news cache on, 0 = bypass
           SENDER_EMAIL:          ${{ secrets.SENDER_EMAIL }}
           SENDER_APP_PASSWORD:   ${{ secrets.SENDER_APP_PASSWORD }}
           USER_EMAIL_ID:         ${{ secrets.USER_EMAIL_ID }}

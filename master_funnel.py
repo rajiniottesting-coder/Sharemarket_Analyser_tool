@@ -4379,7 +4379,11 @@ def run_master_pipeline():
               f"{len(_scope_indices)} out of scope · {len(_avoid_indices)} AVOID")
 
         if _ai_input_stocks:
-            investor_cards_text = get_ai_analysis(pd.DataFrame(_ai_input_stocks))
+            # v17.22.3: cards are cached per stock for the TRADING date this run
+            # processes, so a re-run (or "Re-run jobs") pays only for stocks
+            # that have no card yet — not for the whole set again.
+            investor_cards_text = get_ai_analysis(pd.DataFrame(_ai_input_stocks),
+                                                  trade_date=target_date)
         else:
             investor_cards_text = ""
 
