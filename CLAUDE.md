@@ -1,5 +1,5 @@
 # CLAUDE.md — NSE/BSE Stock Analyser Tool
-## AI Context File · v17.22.2 · November 2026
+## AI Context File · v17.22.3 · November 2026
 
 This file gives Claude (or any AI assistant) the project context needed to understand, debug or extend this codebase. **Read it first** before making any change.
 
@@ -45,7 +45,7 @@ Sharemarket_Analyser_tool/
 ├── fetch_nse_now.bat             One-click manual trigger for the above
 ├── reset_performance_tracking.py Guarded wipe of the 3 outcome tables (workflow manual-dispatch only;
 │                                 since v17.21 bump GOLD_RULE_VERSION instead for a rule change)
-├── test_v13_v14_consolidated.py  Regression suite — 111 guards, all green on Linux and Windows (v17.22.2)
+├── test_v13_v14_consolidated.py  Regression suite — 112 guards, all green on Linux and Windows (v17.22.3)
 │                                 (the deep ScoringEngine suite test_v11.0.2_full_withdummies.py lives in
 │                                  git history at d2f301a — its stale repo copy was removed in v17.22.1; §20)
 ├── test_run.py · test_yfinance.py    Manual helpers (not part of the suite)
@@ -73,7 +73,8 @@ Sharemarket_Analyser_tool/
 │   ├── fundamental_engine.py     Graham, PEG, Piotroski F
 │   ├── spike_screener.py · early_detection_engine.py · bs_engine.py
 │   ├── ownership_tracker.py · rotation_engine.py · smart_money.py · v7_analysis_engine.py
-│   ├── news_sentiment.py         v17.9/v17.11 — Google News RSS → LLM → sentiment + evidenced facts
+│   ├── news_sentiment.py         v17.9/v17.11 — Google News RSS → LLM → sentiment + evidenced facts;
+│   │                             v17.22.3: reply cache per exact headline set (downloads/ai_cache/news/)
 │   ├── deep_value_probation.py   v17.22 — DEEP VALUE probation: label test, R, forward-test decision rule
 │   ├── risk_metrics.py           Sharpe / Sortino / Calmar (v16.0)
 │   ├── survivorship_audit.py     Open positions vs today's universe (v16.0)
@@ -88,7 +89,8 @@ Sharemarket_Analyser_tool/
 │   ├── data_bridge.py            Schema + migrations + every query helper (outcome, continuation, shadow, resilience…)
 │   ├── price_date_repair.py      v17.22 — one-time re-dating of daily_prices (Yahoo anchor closes, logged)
 │   └── db_maintenance.py         400-day rolling window (KEEP_DAYS)
-├── ai/ai_analyst.py              LLM investor notes (Block H) — compact prompt, batches of 4, per-day cache
+├── ai/ai_analyst.py              LLM investor notes (Block H) — compact prompt, batches of 4,
+│                                 cache per stock and trading date (v17.22.3; downloads/ai_cache/cards/)
 ├── reporting/
 │   ├── excel_generator.py        ExcelGeneratorV6 — 8 sheets
 │   ├── tooltip_formatter.py      TIPS (214 entries) · GROUP_TIPS · Tooltip Reference sheet
@@ -175,7 +177,8 @@ Section 5A.3b NSE snapshot fallback (v17.13): load_snapshot() → apply_snapshot
               pledge / promoter / FII / DII; provenance kept for the Excel header
 Section 5A.4  QoQ recompute (Pro / FII / DII) · 5A.4b cleanup ('—' for no history)
 Section 5A.5  Forensics re-run with enriched data
-Section 5A.6  News & catalyst extraction (v17.9/v17.11) — before scoring
+Section 5A.6  News & catalyst extraction (v17.9/v17.11) — before scoring; an exact headline set already
+              judged is read from the reply cache, not sent again (v17.22.3)
 Section 5B    Fair value engine (7 models → CFV, MoS)
 Section 6     Scoring loop per stock: tech / fund / safety / sentiment / early-entry sub-scores →
               composite + verdict (scoring_engine) → storm → horizon + risk level →
@@ -199,6 +202,8 @@ Section 9/10  Split held-monitor rows into _held_monitor_map; prune v15.8 ETF le
                 re-dated prices) + live walk + shadow pass over every non-final shadow row + continuation
 Section 7/8   DEFERRED AI cards (v17.14): scope = _get_gold() ∪ get_open_recommendations();
               held positions use their fully-enriched _held_monitor_map rows (v17.15);
+              get_ai_analysis(…, trade_date=target_date): only stocks with no card cached for
+              that trading date go to the LLM (v17.22.3);
               notes synced into the Excel frame by symbol; held cards → market_stats["held_cards"]
 Section 9/10  generate_excel_reports() → 8-sheet workbook; DailyReportGenerator text report
 Section 12    Email (Excel + Gold file + text report)
@@ -584,12 +589,14 @@ Gemini and the `google-genai` SDK were removed in v17.10. Both modules call `{OP
 ### News & catalyst sentiment — `analysis/news_sentiment.py` (Section 5A.6)
 Google News RSS, up to 15 headlines from the last 14 days (`NEWS_MAX_HEADLINES`, `NEWS_LOOKBACK_DAYS`) → LLM at temperature 0 with a strict JSON schema, `max_tokens` 3,000 (`NEWS_MAX_TOKENS`), optional `LLM_REASONING_EFFORT`. Verdicts below confidence 0.6 become NEUTRAL. Live mode sets `news_sentiment` (POSITIVE +4 / NEGATIVE −5 in the sentiment sub-score; an informed verdict switches the composite to canonical weights), `key_catalyst`, `primary_risk`. v17.11 evidenced facts: `news_insider` (a news-evidenced BUY may raise `insider_buy_alert` NO → YES, never lowers a SAST YES), `news_bulk_deal` and `regulatory_flag` are dropped unless the model quotes the headline (enforced in code); results tone, catalyst and risk carry no evidence field; the prompt forbids numbers not in a headline (a prompt rule, not code-enforced). `NEWS_SENTIMENT_SHADOW=1` logs without touching scores; `NEWS_SENTIMENT_ENABLED=0` disables. Logs: `📰 News sentiment: N/M stocks got an informed signal` and `📰   not informed: headlines neutral ×K · …`.
 
+**Reply cache (v17.22.3).** Every reply that parsed as JSON is stored in `downloads/ai_cache/news/<sha1>.json`, key = sha1(model + `LLM_REASONING_EFFORT` + system prompt + the exact user message — symbol and every headline with its date and source). The same prompt is never sent twice: a re-run, a "Re-run jobs" attempt, or the next day for a stock whose headlines did not change reads the stored reply (and skips the 0.4 s pause); new or changed headlines change the key. The confidence floor and evidence rule run on the stored reply as on a fresh one. Failed / non-JSON replies are never stored. Files unused for `NEWS_CACHE_KEEP_DAYS` (lookback + 1 = 15) are deleted at the start of 5A.6; a hit refreshes the file time. `AI_CACHE=0` or `NEWS_CACHE=0` turns it off. Each result carries `news_llm_source` (`llm` / `cache` / '' when no LLM was needed); log `📰 News LLM calls: M · from cache: N · no LLM needed: K`.
+
 ### Investor notes (Block H) — `ai/ai_analyst.py`
 - **Scope** (v17.10/v17.14): `excel_gen._get_gold()` ∪ `get_open_recommendations()` — nothing else. Generated after logging + tracker, just before the Excel build. Held positions outside the top 100 use their fully enriched `_held_monitor_map` row (v17.15).
 - **Prompt** (v17.16): `_load_card_system_prompt()` extracts **SYSTEM ROLE** (up to `SECTION 1A`) and **BLOCK H — ANALYSIS SUMMARY** (up to `LIST VIEW sort`) from the master prompt (~2 KB) and adds "write ONLY Block H notes". Falls back to the full prompt if the headings are renamed — don't rename them.
-- **Batches** of 4; each note delimited `=== CARD: SYMBOL ===` and parsed by symbol (`_mark_batch`, `_parse_marked`); missing notes retried one stock at a time (`_recover_missing`); `_cards_complete` gates caching. `LLM_CARD_MAX_TOKENS` = `LLM_MAX_TOKENS` env (default 16,000).
+- **Batches** of 4; each note delimited `=== CARD: SYMBOL ===` and parsed by symbol (`_mark_batch`, `_parse_marked`); missing notes retried one stock at a time (`_recover_missing`). `LLM_CARD_MAX_TOKENS` = `LLM_MAX_TOKENS` env (default 16,000).
 - **Errors** (`_llm_complete`): raises with the real cause — error body, no `choices`, empty content (with `finish_reason` / usage); records `_LAST_CALL`. A missing/invalid key stops after the first failure (v17.6).
-- **Cache** (v17.12): `downloads/ai_cache/` (git-ignored), one file per day, key = date + sha1(symbol | score | label | entry | SL | target | horizon | `_CARD_FORMAT_VERSION="v17.21-single-target"`). Same-day re-runs make zero calls; failed/partial output is never cached; `AI_CACHE=0` bypasses. Persisted across Actions runs by `actions/cache` (`key: ai-cache-${{ github.run_id }}`, `restore-keys: ai-cache-`). Bump `_CARD_FORMAT_VERSION` when the card format changes.
+- **Cache** (v17.12; per stock and per trading date since v17.22.3): `downloads/ai_cache/cards/<YYYYMMDD>.json` (git-ignored), one file per **trading date** — master_funnel passes `trade_date=target_date` (v17.12 used `date.today()` on the runner, i.e. UTC, so a re-run after 00:00 UTC missed). One entry per stock, key = sha1(symbol | score | label | close | SL | target | horizon | held context | `_CARD_FORMAT_VERSION="v17.21-single-target"` | sha1(model + card system prompt)). Only stocks without a stored card go to `_generate_ai_analysis` (v17.12 hashed the whole list into one key, so one changed stock regenerated every card); the cached and new cards are returned under their own markers; with nothing cached the generator's text is returned unchanged. Only real cards are stored — `[AI …` placeholders never, so a failed stock is retried next run. Other dates' files and the v17.12 `<date>_<hash>.json` files are deleted. `AI_CACHE=0` bypasses. Log `💾 AI cards (trading date …): N from cache · M not in the cache → k new card(s) stored` or `💾 AI cards: all N from the cache for trading date … — no LLM calls.` Persisted across Actions runs by `actions/cache` (`key: ai-cache-${{ github.run_id }}-${{ github.run_attempt }}`, `restore-keys: ai-cache-`; the attempt was added in v17.22.3 — a "Re-run jobs" attempt hit the run-id key, and actions/cache does not save over a key it hit). Bump `_CARD_FORMAT_VERSION` when the card format changes.
 - **Card input** (v17.21): the trade plan line sends Entry · SL · Target only (it still sent T2/T3, and notes said "rather than targeting T3"); held stocks use their logged levels.
 - **Where notes appear:** Gold sheet *Analysis Summary*; Performance sheet *AI Card* for every open position. Not on the Full Dashboard (v17.18).
 
@@ -598,12 +605,12 @@ Google News RSS, up to 15 headlines from the last 14 days (`NEWS_MAX_HEADLINES`,
 ## 13. INFRASTRUCTURE
 
 ### `.github/workflows/market_run.yml` (12 steps)
-`0 23 * * 1-5` + `workflow_dispatch` (input `reset_performance`). Steps: Checkout · Python 3.11 · Install deps · **Restore AI card cache** · **Restore `market_data.db`** (`dawidd6/action-download-artifact@v6`, `if_no_artifact_found: ignore`) · Show DB state · **Auto-backfill** (`backfill_history.py 400` when `daily_prices` < 50,000 rows) · **v17.3 performance reset** (only when the input equals `RESET-PERFORMANCE`; dry run then `--commit --confirm`) · **Execute `python master_funnel.py || true`** · Delete previous DB artifact (REST API with `GITHUB_TOKEN`) · Upload `market-data-db` (30-day retention, `overwrite: true`) · Show DB state after. The v12.1 allowlist-wipe and v16.5 KOVAI steps were removed in v17.17.
+`0 23 * * 1-5` + `workflow_dispatch` (input `reset_performance`). Steps: Checkout · Python 3.11 · Install deps · **Restore LLM reply cache** (`downloads/ai_cache`: cards + news, key per run and attempt) · **Restore `market_data.db`** (`dawidd6/action-download-artifact@v6`, `if_no_artifact_found: ignore`) · Show DB state · **Auto-backfill** (`backfill_history.py 400` when `daily_prices` < 50,000 rows) · **v17.3 performance reset** (only when the input equals `RESET-PERFORMANCE`; dry run then `--commit --confirm`) · **Execute `python master_funnel.py || true`** · Delete previous DB artifact (REST API with `GITHUB_TOKEN`) · Upload `market-data-db` (30-day retention, `overwrite: true`) · Show DB state after. The v12.1 allowlist-wipe and v16.5 KOVAI steps were removed in v17.17.
 
 ### `replay.yml` (v17.21, manual)
 `workflow_dispatch` (inputs `exit_mode` logged | uniform, `split_date` YYYY-MM-DD optional — v17.22; both passed to the script through env and the date validated). Checkout · Python 3.11 · deps · download `market-data-db` from `market_run.yml` (`if_no_artifact_found: fail`) · `backtest/replay_picks.py` · upload `replay-results` (CSV + summary, 30 days). Never uploads or changes the DB. Results download from GitHub's file storage (not reachable from Claude's environment), so the owner downloads the two zips and attaches them.
 
-**Secrets:** `OPENAI_API_KEY`, `OPENAI_API_BASE`, `LLM_MODEL`, `SENDER_EMAIL`, `SENDER_APP_PASSWORD`, `USER_EMAIL_ID`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` (optional), `KEEPALIVE_PAT`. **Variables:** `NEWS_SENTIMENT_SHADOW`, `AI_CACHE` (optional). `LLM_MAX_TOKENS`, `LLM_REASONING_EFFORT`, `NEWS_MAX_TOKENS` are not wired into the workflow — defaults apply on Actions.
+**Secrets:** `OPENAI_API_KEY`, `OPENAI_API_BASE`, `LLM_MODEL`, `SENDER_EMAIL`, `SENDER_APP_PASSWORD`, `USER_EMAIL_ID`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` (optional), `KEEPALIVE_PAT`. **Variables:** `NEWS_SENTIMENT_SHADOW`, `AI_CACHE` (optional; `0` turns the card and news caches off). `LLM_MAX_TOKENS`, `LLM_REASONING_EFFORT`, `NEWS_MAX_TOKENS` are not wired into the workflow — defaults apply on Actions.
 
 Runner: `ubuntu-latest`, Python 3.11.
 
@@ -718,7 +725,8 @@ PE_SCORING_NEUTRAL_CUTOFF = 500      # v10.16: fundamental_score treats pe_num
 # AI batching (ai/ai_analyst.py)
 AI_BATCH_SIZE            = 4         # v17.16 (was 12)
 LLM_CARD_MAX_TOKENS      = 16000     # env LLM_MAX_TOKENS (v17.16)
-_CARD_FORMAT_VERSION     = "v17.21-single-target"    # part of the per-day cache key
+_CARD_FORMAT_VERSION     = "v17.21-single-target"    # part of each stock's card cache key
+_CARD_CACHE_DIR          = "downloads/ai_cache/cards"  # v17.22.3: <YYYYMMDD>.json per trading date
 AVOID_SKIP_AI            = True      # v10.13 — AVOID verdict → placeholder (moot since v17.10 scope)
 
 # News (analysis/news_sentiment.py)
@@ -726,6 +734,8 @@ NEWS_MAX_HEADLINES       = 15        # v17.11 (was 8)
 NEWS_LOOKBACK_DAYS       = 14        # v17.11 (was 7)
 _NEWS_MAX_TOKENS         = 3000      # env NEWS_MAX_TOKENS (v17.16)
 NEWS_CONFIDENCE_FLOOR    = 0.6       # below → NEUTRAL
+_NEWS_CACHE_DIR          = "downloads/ai_cache/news"   # v17.22.3: one reply per exact prompt
+NEWS_CACHE_KEEP_DAYS     = 15        # v17.22.3: lookback + 1; unused replies older than this are deleted
 NEWS_SENT_POSITIVE       = +4        # sentiment sub-score
 NEWS_SENT_NEGATIVE       = -5
 
@@ -844,6 +854,7 @@ Moved to **Part B** at the end of this file (newest first). `readme.md` carries 
 📰 News sentiment: LIVE (feeds score) · model=… · N stocks
 📰 News sentiment: k/N stocks got an informed signal
 📰   not informed: headlines neutral ×… · …
+📰 News LLM calls: M · from cache: N · no LLM needed: K      ← v17.22.3; a same-day re-run shows M = 0 unless headlines changed
 📊 Market regime: BULLISH|BEARISH (Nifty X vs 20d-SMA Y, gap ±Z%, tolerance -2.0%)
 📈 v14.1 outcome tracking: logged N Gold pick(s) …
 🥇 Gold empty on a BULLISH day (Nifty -1.91% vs 20d-SMA, tolerance -2.0%) — 0 of 95 stocks passed all 15 gates.
@@ -861,7 +872,8 @@ SHADOW STOP — walked N  ·  final k
 ⚠️  [Gap Detect] 1 trading day(s) missing since 2026-11-20: 2026-11-23   ← only when a trading day was missed (v17.22.2)
 🔄 [Gap Fill] Downloading 1 missing trading days...  →  ✅ Gap filled: 1/1 days. Recomputing indicators...
 🤖 [Section 7/8 — deferred, v17.14] Generating AI Cards for Gold + open positions...
-💾 AI cards served from today's cache (…)          ← same-day re-run
+💾 AI cards (trading date …): N from cache · M not in the cache → k new card(s) stored   ← v17.22.3
+💾 AI cards: all N from the cache for trading date … — no LLM calls.   ← re-run, same stocks
 ```
 
 Zero Gold picks is normal on BEARISH days and on weak tapes (15 strict gates); the 🥇 lines name the gate that emptied the sheet. "BULLISH" only means Nifty is no more than 2 % below its 20-day SMA, so it can sit on a falling tape — that is when the 3-day ROC gate tends to empty the sheet. A snapshot older than 7 days means the Sunday fetch was missed or kept the previous file (exit 3) — run `fetch_nse_now.bat` ad hoc during the week.
@@ -931,7 +943,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 | NSE snapshot | `ingestion/nse_snapshot.py` | `load_snapshot`, `apply_snapshot`; Section 5A.3b |
 | NSE pledge (live) | `ingestion/nse_pledge.py` | `fetch_bulk_pledge_data` (empty on Actions — expected) |
 | NSE shareholding (live) | `backfill_history.py` | `_nse_shareholding()` — `corporate-share-holdings-master` |
-| News sentiment | `analysis/news_sentiment.py` | `enrich_stocks_with_news`, `get_news_sentiment`; Section 5A.6 |
+| News sentiment | `analysis/news_sentiment.py` | `enrich_stocks_with_news`, `get_news_sentiment`; Section 5A.6; reply cache `_news_cache_key` / `_news_cache_get` / `_news_cache_put` / `_news_cache_prune` (v17.22.3) |
 | Composite + verdict | `analysis/scoring_engine.py` | `calculate_composite_score`, `_get_verdict_with_confidence`, `_assign_quick_pick` |
 | SL / Target | `master_funnel.py` | `_compute_sl_t_v14_6()`; constants `_V14_6_*`, `_V14_7_*`, `_V17_SHORT_TERM_SL_MAX_PCT` |
 | Sizing | `risk/correlation_aware_sizing.py` | risk-parity allocation + rationale |
@@ -946,7 +958,7 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 | DEEP VALUE probation (v17.22) | `analysis/deep_value_probation.py` · `reporting/excel_generator.py` | `is_on_probation`, `r_multiple`, `forward_verdict`; `ExcelGeneratorV6._gold_split()`, `gold_probation_log_lines()`, `probation_forward_stats()`, `_probation_block()` |
 | Held-stock levels / log-time sizing | `master_funnel.py` | `_apply_tracked_levels()`, `_alloc_for_log()`, `GOLD_RULE_VERSION` |
 | Outcome DB helpers | `database/data_bridge.py` | `insert_gold_recommendation`, `get_open_recommendations`, `get_open_recommendation_levels`, `get_closed_recommendations`, `get_shadow_candidates`, `update_outcome`, `update_shadow_outcome`, `get_outcome_stats`, `get_continuation_stats`, `migration_applied` / `mark_migration` |
-| AI notes | `ai/ai_analyst.py` | `get_ai_analysis` (cache wrapper) → `_generate_ai_analysis`; `_llm_complete`; `_load_card_system_prompt` |
+| AI notes | `ai/ai_analyst.py` | `get_ai_analysis(df, trade_date)` (per-stock cache, v17.22.3: `_card_stock_key`, `_card_trade_key`, `_card_cache_purge`) → `_generate_ai_analysis`; `_llm_complete`; `_load_card_system_prompt` |
 | Deferred card block | `master_funnel.py` | "[Section 7/8 — deferred, v17.14]" |
 | Excel workbook | `reporting/excel_generator.py` | `ExcelGeneratorV6.generate_excel_reports()`; `_full_sheet`, `_gold_ws`, `_alert_log`, `_performance_sheet` |
 | Trailing label | `reporting/excel_generator.py` | `_trailing_state_label()` (v17.19) |
@@ -1006,6 +1018,8 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 
 - [x] **Gold_Pick_Replay run (23-Nov-2026, runs 45096331225 logged / 45096339238 uniform).** Result (58 independent picks, 45 closed, logged exits): 11 targets · 27 stops · 33 % won · −0.25 R per trade · −11.2 R total; uniform 1.5× targets 38 % · −0.15 R. None of R1–R4 passes (R2 is the wrong way round — it mostly tracks the pick month; R4 points the right way, p 0.39). DEEP VALUE 32 closed, 22 % won, −17.2 R vs others 13 closed, 62 % won, +6.0 R → v17.22 DEEP VALUE probation (display only, decision rule fixed in advance).
 - [x] **First v17.22 run (24-Nov-2026, manual run 45351540307 — the scheduled run 45342911109 stopped after 32 s, see v17.22.2).** Checked on the 23-Nov dashboard and the replay re-run (45353469993 logged / 45353482214 uniform): every exit after 26-Aug moved back one day, the 3 before it unchanged (runs then started before midnight UTC); non-expiry exits on a weekend 11 → 0; SHREERAMA SL_HIT → T1_HIT +10.5 % on 16-Oct (live table and replay); all 22 live closed rows equal the replay's outcome, date and P&L. Logged replay 60 counted / 47 closed · 34 % won · −0.20 R · −9.4 R (23-Nov: 58 / 45 · 33 % · −0.25 R · −11.2 R); uniform 38 % · −0.10 R. The repair / re-check log lines themselves were not read here.
+- [x] **Every fix through v17.22.2 is in production (26-Nov-2026).** Scheduled run 45756879444 ran on main f900feb (v17.22.2 + keep-alive) and produced the 25-Nov dashboard. The 25-Nov run stopped after 6 s — the gate's weekday / holiday check (C1/C2); 24-Nov was most likely an NSE holiday (inferred from the 6 s, not confirmed from a log).
+- [x] **LLM calls on re-runs → v17.22.3.** The 25-Nov dashboard has a Key Catalyst or Primary Risk line — written only from a news LLM reply — on 69 of its 91 stocks, so that run made at least 69 news calls, and any re-run repeated all of them (news had no cache). The card cache (14 stocks, ~4 calls) missed on any change to one stock, on a re-run after 00:00 UTC and on every "Re-run jobs" attempt. v17.22.3 caches both per stock.
 - [x] v17.21 restatement: the 23-Nov Performance sheet shows SUNTV as T1_HIT at the Target, +10.5 % (19-Oct: T2_HIT +14.2 %); its date is now 29-Sep after the v17.22 re-dating.
 - [ ] `market_run.yml` runs `python master_funnel.py || true`, so a gate skip and a crash both show a green step — the 24-Nov 32-second run could only be read from its duration. Consider surfacing the pipeline's own result in the step summary (owner decision; artifact upload must still run).
 - [ ] DEEP VALUE probation decision once 30 picks dated from 23-Nov-2026 have closed (Performance → DEEP VALUE PROBATION shows the rule's verdict).
@@ -1043,12 +1057,12 @@ If N is 0, NSE API is being blocked (common on GitHub Actions, typically works o
 git pull origin main --rebase      # keep-alive bot and the weekly NSE snapshot commit to main
 git checkout -b fix/vXX-description
 # replace files
-python test_v13_v14_consolidated.py     # expect ALL green (111/111 at v17.22.2)
+python test_v13_v14_consolidated.py     # expect ALL green (112/112 at v17.22.3)
 git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PR → green check → merge
 ```
 
-**Test suite.** `test_v13_v14_consolidated.py` — 111 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. G47 (v17.20.1) checks that a partial NSE fetch keeps a usable previous snapshot (exit 3) and still writes over a stale or missing one. G48–G54 (v17.21): single Target + gap fills + restatement, shadow stop, Performance metrics, sizing + held levels, report display, rule_version, replay tool — each was mutation-checked (every reverted fix makes its guard fail; run mutants with bytecode caching off, since a same-size edit can survive in a stale .pyc). G55–G57 (v17.22): price bars under the trading date + one-time repair + outcome re-check (15 mutants), DEEP VALUE probation display-only + decision rule + forward test (12), replay one-position-per-stock + R + p + R4 n/a + R5 + workflow env inputs (10) — 37 mutants, all killed. G58 (v17.22.2) runs master_funnel's real Section 1.2–1.5 code with stubbed downloads (10 mutants); G59 checks the probation evidence keeps its decision-time line and adds the re-check on both sheets (5) — 15 mutants, all killed. Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
+**Test suite.** `test_v13_v14_consolidated.py` — 112 guards in 6 groups (v13_R1, v13_R2, v13_REG, v13_R3, v14_0, v14_1); run from the repo root; ~15 s. Since v17.19 every test reads sources relative to the repo, and since v17.19.1 scratch DBs / workbooks go to the OS temp dir (`tempfile.gettempdir()`, unique names, best-effort deletes) instead of `/tmp`, so the suite runs the same on Windows and Linux and a failure is always real (before v17.19, 4–7 "expected" sandbox-path failures hid a genuine G9 regression from v17.7 to v17.18; before v17.19.1, 29 DB-backed tests failed on Windows). G45 rejects any `/tmp` or `/home/` string literal in the project's .py files. G46 (v17.20) checks every Gold gate on both sides of its threshold and that an empty Gold sheet is explained in the log. G47 (v17.20.1) checks that a partial NSE fetch keeps a usable previous snapshot (exit 3) and still writes over a stale or missing one. G48–G54 (v17.21): single Target + gap fills + restatement, shadow stop, Performance metrics, sizing + held levels, report display, rule_version, replay tool — each was mutation-checked (every reverted fix makes its guard fail; run mutants with bytecode caching off, since a same-size edit can survive in a stale .pyc). G55–G57 (v17.22): price bars under the trading date + one-time repair + outcome re-check (15 mutants), DEEP VALUE probation display-only + decision rule + forward test (12), replay one-position-per-stock + R + p + R4 n/a + R5 + workflow env inputs (10) — 37 mutants, all killed. G58 (v17.22.2) runs master_funnel's real Section 1.2–1.5 code with stubbed downloads (10 mutants); G59 checks the probation evidence keeps its decision-time line and adds the re-check on both sheets (5) — 15 mutants, all killed. G60 (v17.22.3) runs the real news enrichment and card code with only the HTTP layer stubbed and counts the calls that reach it: re-runs make none, a changed stock costs one, failures are not stored, the trading date and the workflow's run attempt are wired (18 mutants, all killed). Needs `pip install -r requirements.txt` (several tests import `pytz` / `yfinance`).
 
 **Hard lessons — do not repeat.**
 1. **Tests must be bidirectional.** Reintroduce the bug, confirm the test fails, restore, confirm it passes (G35 once passed while the bug shipped; G40's first draft too).
@@ -1066,6 +1080,16 @@ git add <files> && git commit -m "..." && git push -u origin fix/vXX-description
 # PART B — VERSION HISTORY (newest first)
 
 Entries from v17.3 downwards are preserved as written at the time. Where they describe behaviour that later changed, Part A is authoritative.
+
+### v17.22.3 — An LLM reply is never paid for twice (news + cards cached per stock) · 26 Nov 2026
+
+**Why.** The owner asked to confirm that running the pipeline again does not repeat LLM calls. Two call sites exist. (1) **News sentiment** (Section 5A.6, `analysis/news_sentiment.py`) had **no cache at all**: every run, re-run and "Re-run jobs" attempt sent every stock's headlines to the LLM again. The 25-Nov dashboard (run 45756879444) has a Key Catalyst or Primary Risk line — written only from a news reply — on 69 of its 91 stocks, so that run made at least 69 news calls. (2) **AI cards** (v17.12 cache): one sha1 over the whole stock list, so a change to any one stock (score, close, SL, label) regenerated every card; the key's date came from `date.today()` on the runner (UTC), so a re-run that started after 00:00 UTC missed; and the workflow key `ai-cache-${{ github.run_id }}` meant a "Re-run jobs" attempt (same run id) hit the key on restore, and actions/cache does not save over a key it hit, so that attempt's new cards were thrown away. Today's card scope is 14 stocks (~4 batch calls).
+
+**Change.** News: reply cache in `downloads/ai_cache/news/<sha1>.json`, key = sha1(model + reasoning effort + system prompt + the exact user message); hit → stored reply, no call, no pause; only JSON replies stored (atomic write); unused 15+ days → deleted; `AI_CACHE=0` / `NEWS_CACHE=0` off; `news_llm_source` per stock and a `📰 News LLM calls · from cache · no LLM needed` log line. Cards: `get_ai_analysis(df, trade_date)` caches per stock in `downloads/ai_cache/cards/<YYYYMMDD>.json` for the trading date master_funnel passes (`target_date`); key = symbol, score, label, close, SL, target, horizon, held context, card format and sha1(model + system prompt); only stocks without a stored card are generated and the rest come from the cache under their own markers (nothing cached → the generator's text unchanged); placeholders never stored; other dates' files and the v17.12 files removed; `💾 AI cards … from cache · … stored` log line. Workflow: cache key `ai-cache-${{ github.run_id }}-${{ github.run_attempt }}`; step renamed "Restore LLM reply cache (AI cards + news)". No change to prompts, scoring, gates or the Excel layout.
+
+**What still costs a call (by design).** A stock whose headlines changed (new news, or the 14-day window dropped one) is judged again; a card whose stock's score, close, levels, label or held context changed is regenerated; a new trading date regenerates every card (cards describe that day's data). A news reply is reused across days while the exact headline set is unchanged.
+
+**Verification.** G60 runs the real `enrich_stocks_with_news` and `get_ai_analysis` → `_generate_ai_analysis` → `_llm_complete` with only `requests` stubbed: news re-run 0 calls with identical verdicts, one changed headline set → 1 call, HTTP 500 not stored, model change → re-asked, cache off → always called and nothing written, env `AI_CACHE=0` / `NEWS_CACHE=0` honoured, 20-day-old reply pruned; cards re-run 0 calls with identical cards, one changed or added stock → one call holding only that stock, new trading date → generated and old files removed, a 401 failure → placeholders, nothing written, next run generates, model change → generated, cache off → always generated; master_funnel passes the trading date and the workflow key has the run attempt. 18 mutants, all killed (bytecode caching off). Suite **112/112** on Linux and in the Windows-like run; changed files compile with Python 3.11. Not verified here: a real Actions run — the first run after merge shows the two new log lines; a same-day manual re-run should then show `📰 News LLM calls: 0` (unless Google News added headlines in between) and `💾 AI cards: all N from the cache`.
 
 ### v17.22.2 — One missed trading day is filled; DEEP VALUE evidence re-checked on corrected dates · 24 Nov 2026
 
@@ -4324,4 +4348,4 @@ v17.3 does not improve returns and should not be read as if it does. What it cha
 
 ---
 
-*Last updated: 24 November 2026 · v17.22.2 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*
+*Last updated: 26 November 2026 · v17.22.3 · Maintained by: Rajkumar + Claude (Anthropic) working sessions*

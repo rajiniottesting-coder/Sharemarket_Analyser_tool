@@ -44,7 +44,8 @@ Single-user personal research tool. No UI, no server to manage. Runs on GitHub A
 - **Price bars dated by trading day** — until v17.22 each run stored its price bars under the GitHub runner's date (UTC), so most bars since late August sat one day late and the tracker's first bar after a pick was the pick day's own bar. Bars are now stored under the trading day; a one-time repair re-dates the stored history (logged in `price_date_repair_log`) and every closed pick is re-checked once on the corrected bars.
 - **Shadow trailing stop** — a regime-aware Chandelier stop runs in parallel with the live exit, purely observationally, from the first day and until its own exit, so a better exit rule can be adopted on evidence rather than intuition.
 - **Bearish-regime resilience watchlist** — on bearish days, stocks up ≥ 5% that are outperforming the Nifty are logged (reference only, never auto-bought) so strength is not lost while Gold is suppressed.
-- **AI investor cards** — narrative cards for Gold picks and currently-held positions only, cached per day so same-day re-runs cost nothing.
+- **AI investor cards** — narrative cards for Gold picks and currently-held positions only, cached per stock for the trading date, so a re-run pays only for stocks that have no card yet.
+- **LLM reply cache** — news-sentiment replies are stored per exact headline set (v17.22.3), so a re-run sends no headline set to the LLM twice.
 - **Forensic guards** — pledge > 20 %, Altman Z < 1.81 or Beneish M > −1.78 suppress spike alerts; Altman Z, BS Health, pledge and earnings quality are also Gold gates; Piotroski F /9 (approximated from free data) feeds the safety sub-score.
 - **Gate-checked execution** — weekday, NSE holiday calendar (fail-closed) and NSE bhav availability are checked before anything runs; the downloaded data must then pass an integrity check, and missed trading days — even a single one, NSE holidays excluded (v17.22.2) — are gap-filled before analysis.
 
@@ -61,7 +62,7 @@ Sharemarket_Analyser_tool/
 ├── fetch_nse_now.bat             One-click manual trigger for the above (identical to the scheduled run)
 ├── reset_performance_tracking.py Guarded one-shot wipe of outcome-tracking tables (manual dispatch only;
 │                                 for a rule change bump GOLD_RULE_VERSION instead)
-├── test_v13_v14_consolidated.py  Regression suite (109 guards) — `python test_v13_v14_consolidated.py`
+├── test_v13_v14_consolidated.py  Regression suite (112 guards) — `python test_v13_v14_consolidated.py`
 ├── requirements.txt
 ├── .env                          (local only — never committed)
 │
@@ -115,7 +116,7 @@ Sharemarket_Analyser_tool/
 │   └── db_maintenance.py         400-day rolling window
 │
 ├── ai/
-│   └── ai_analyst.py             LLM investor cards (OpenAI-compatible) + per-day cache
+│   └── ai_analyst.py             LLM investor cards (OpenAI-compatible) + per-stock, per-trading-date cache
 │
 ├── reporting/
 │   ├── excel_generator.py        8-sheet workbook
@@ -182,7 +183,8 @@ TWILIO_AUTH_TOKEN=...                     # optional, WhatsApp only
 
 # Optional switches
 NEWS_SENTIMENT_SHADOW=0    # 1 = compute + log news verdicts without changing scores
-AI_CACHE=1                 # 0 = bypass the per-day AI card cache (e.g. after a prompt change)
+AI_CACHE=1                 # 0 = bypass the AI card cache and the news reply cache
+NEWS_CACHE=1               # 0 = bypass the news reply cache only
 LLM_MAX_TOKENS=16000       # card output budget (reasoning models spend hidden tokens first)
 LLM_REASONING_EFFORT=      # optional; sent to the endpoint only when set (e.g. low / medium)
 NEWS_MAX_TOKENS=3000       # news-sentiment output budget
@@ -209,7 +211,7 @@ Without LLM credentials the pipeline still runs end to end: news sentiment is sk
 
 **Variables** (same page → *Variables*): `NEWS_SENTIMENT_SHADOW`, `AI_CACHE` (both optional).
 
-**Steps, in order:** checkout · Python 3.11 · dependencies · restore AI card cache · restore `market_data.db` artifact · show DB size · auto-backfill when `daily_prices` < 50,000 rows · *(manual only)* performance reset · run `master_funnel.py` · delete the old DB artifact · upload the new one · show DB size.
+**Steps, in order:** checkout · Python 3.11 · dependencies · restore LLM reply cache (AI cards + news; key per run and attempt) · restore `market_data.db` artifact · show DB size · auto-backfill when `daily_prices` < 50,000 rows · *(manual only)* performance reset · run `master_funnel.py` · delete the old DB artifact · upload the new one · show DB size.
 
 **Manual run options:** *Actions → NSE_BSE_Daily_Pipeline → Run workflow*. Leave `reset_performance` blank for a normal run. Typing `RESET-PERFORMANCE` wipes `gold_recommendations`, `gold_outcomes` and `gold_continuation` before the run — irreversible, and it can never fire on the schedule. For a rule change, bump `GOLD_RULE_VERSION` in `master_funnel.py` instead: every pick carries its rule version and the Performance sheet compares versions, so no open pick loses its outcome.
 
@@ -217,7 +219,7 @@ Without LLM credentials the pipeline still runs end to end: news sentiment is sk
 
 **Persistence:**
 - `market_data.db` (SQLite, ~730 MB after the daily VACUUM) lives only as the workflow artifact `market-data-db` (30-day retention), downloaded at the start of each run and re-uploaded at the end. It is never committed — any schema change must run as a workflow step.
-- The AI card cache (`downloads/ai_cache/`) is persisted between runs with `actions/cache`; it expires itself by date.
+- The LLM reply cache (`downloads/ai_cache/`: `cards/<trading date>.json` and `news/<sha1>.json`) is persisted between runs with `actions/cache`. Card files for other trading dates are deleted; news replies unused for 15 days are deleted. The cache key includes the run attempt, so a "Re-run jobs" attempt also saves what it generated.
 
 **Keep-alive:** `keep_alive.yml` runs Wednesday and Sunday 10:00 UTC and commits a timestamp so GitHub does not disable the scheduled pipeline after 60 days of inactivity. Because it commits to `main`, pull with `git pull --rebase` before pushing.
 
@@ -276,7 +278,7 @@ Section 9/10    Held-monitor rows set aside · ETF-leak prune
                 Log today's Gold picks (sized at log time, rule version) →
                 held stocks shown with their tracked levels → outcome tracker
                   (live trailing stop · shadow stop · continuation walk)
-Section 7/8     AI investor cards — Gold picks + open positions only, per-day cache
+Section 7/8     AI investor cards — Gold picks + open positions only, per-stock cache for the trading date
 Section 9/10    8-sheet Excel + text research report
 Section 12      Email delivery
 Section 13      DB maintenance — 400-day rolling window (outcome tables are never pruned)
@@ -402,6 +404,7 @@ Most recent first. Earlier entries are preserved as written at the time.
 
 | Version | Key change |
 |---|---|
+| **v17.22.3** | **An LLM reply is never paid for twice.** News sentiment had no cache: every run and re-run sent every stock's headlines to the LLM again (at least 69 calls on the 25-Nov run). The card cache used one key for the whole stock list, dated by the runner's UTC clock, so one changed stock, a re-run after 00:00 UTC or a "Re-run jobs" attempt regenerated every card. Now news replies are cached per exact headline set (model + prompt + headlines), cards per stock for the trading date; only new or changed stocks go to the LLM, failures are never stored, and the workflow cache key includes the run attempt. New guard G60 runs the real code with only HTTP stubbed and counts the calls (18 mutants, all killed); suite 112/112 on Linux and Windows. |
 | **v17.22.2** | **One missed trading day is filled; DEEP VALUE evidence re-checked on corrected dates.** On 24-Nov-2026 the scheduled run stopped after 32 s (most likely the NSE file check) and Monday 23-Nov was processed only because the run was repeated by hand. Gap-fill needed 2 missed weekdays, so a single skipped day was never downloaded, a holiday counted as missing, and a gap-fill that downloaded nothing also skipped the daily indicator recompute. Now every missed trading day is filled (NSE holidays excluded, only after the v17.22 date repair) and the recompute always runs. The replay re-run on the corrected dates: DEEP VALUE 34 closed, 24 % won, −15.4 R vs all other picks 13 closed, 62 % won, +6.0 R (p 0.018) — the sheets show it under the original evidence. New guards G58 (runs the real gap code with stubbed downloads) and G59 (evidence lines), 15 mutants all killed; suite 111/111 on Linux and Windows. |
 | **v17.22.1** | **Dead code removed.** Three modules no file imported (`technical_engine.py`, `market_context.py`, `database_manager.py`), the stale copy of the old test suite, the one-time v12.0.1 allowlist purge (done long ago), two target-cap constants unused since v17.8.1, the unused legacy header-tooltip dict and an unused helper. Run history, standalone tools and the v17.21/v17.22 one-time jobs are kept on purpose. 109/109 on Linux and Windows-like. |
 | **v17.22** | **Replay review: one position per stock, DEEP VALUE on probation, price bars under the trading date.** The first replay (23-Nov-2026) counted 8 of 66 picks twice (a re-pick while the stock was still open), named no exit mode and mixed open with closed picks — fixed, and it now reports R, a significance test, a forward window and breakdowns, and re-summarises a downloaded CSV. On 58 independent picks (45 closed) the strategy lost 0.25 R per trade (−11.2 R); none of the four pre-set rules passed; DEEP VALUE picks lost 17.2 R on 32 closed (22 % won) while the rest made 6.0 R on 13 (62 % won) — so DEEP VALUE picks are shown *on probation* (still logged and tracked; gates unchanged) and a decision rule fixed in advance settles it after 30 new closes. Checking the exit dates found 11 of 45 on Saturdays: price bars were stored under the runner's UTC date, one day late on most runs since 26-Aug, so the tracker's first bar after a pick was the pick day's own bar. Bars are now stored under the trading date, a one-time repair re-dates the history (Yahoo closes of 10 liquid stocks decide each date; every change logged), and closed picks are re-checked once on the corrected bars. New G55–G57 (37 mutants); 109/109 on Linux and Windows-like. |
