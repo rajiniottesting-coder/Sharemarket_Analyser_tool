@@ -30,8 +30,22 @@ CONFIG (environment / .env — OpenAI-compatible, ANY provider):
     NEWS_SENTIMENT_ENABLED   optional, default "1" — set "0" to disable
     NEWS_SENTIMENT_SHADOW    optional, default "0" — "1" = compute + log but
                              DO NOT feed the score (observe-first mode)
-    NEWS_MAX_HEADLINES       optional, default 8
-    NEWS_LOOKBACK_DAYS       optional, default 7
+    NEWS_MAX_HEADLINES       optional, default 15
+    NEWS_LOOKBACK_DAYS       optional, default 14
+    AI_CACHE / NEWS_CACHE    optional, default "1" — either set to "0" turns the
+                             per-stock reply cache off (v17.22.3, see below)
+
+REPLY CACHE (v17.22.3)
+  Every LLM reply that parsed as JSON is kept in downloads/ai_cache/news/, one
+  file per prompt, keyed on sha1(model + reasoning effort + system prompt +
+  the exact user message — i.e. the symbol and every headline with its date
+  and source). The same headlines are never sent twice: a re-run of the
+  pipeline, or the next day for a stock whose headlines did not change, reads
+  the stored reply instead of calling the LLM. New or changed headlines change
+  the key, so the stock is judged again. Failed or non-JSON replies are never
+  stored. Files unused for NEWS_CACHE_KEEP_DAYS (lookback + 1) are deleted.
+  The post-processing below (confidence floor, evidence rule) runs on the
+  stored reply exactly as on a fresh one.
 
 DESIGN RULES (accuracy)
   · temperature=0 and a strict JSON schema → as deterministic as an LLM gets.
@@ -48,6 +62,7 @@ import os
 import re
 import json
 import time
+import hashlib
 import datetime as _dt
 import xml.etree.ElementTree as _ET
 from urllib.parse import quote_plus
@@ -76,6 +91,13 @@ _RATE_LIMIT_S = 0.4   # polite gap between LLM calls
 
 NEWS_AVAILABLE = bool(_API_KEY and _API_BASE and _MODEL) and _ENABLED and requests is not None
 
+# v17.22.3: per-prompt reply cache (see module docstring).
+_NEWS_CACHE_ENABLED = (os.getenv("AI_CACHE", "1").strip() != "0"
+                       and os.getenv("NEWS_CACHE", "1").strip() != "0")
+_NEWS_CACHE_DIR = os.path.join("downloads", "ai_cache", "news")
+NEWS_CACHE_KEEP_DAYS = _LOOKBACK_DAYS + 1   # a prompt older than the lookback cannot recur
+_NEWS_CACHE_VERSION = "v17.22.3"            # bump if the stored payload changes shape
+
 
 def _neutral(reason: str, headlines=None, raw: str = "") -> dict:
     """Uninformed result — scoring engine will redistribute the weight."""
@@ -93,6 +115,7 @@ def _neutral(reason: str, headlines=None, raw: str = "") -> dict:
         "news_bulk_deal": "NONE", "news_bulk_deal_evidence": "",
         "news_regulatory_flag": False, "news_regulatory_evidence": "",
         "news_results_tone": "NONE",
+        "news_llm_source": "",   # v17.22.3: no LLM reply involved
     }
 
 
@@ -160,13 +183,100 @@ _SYSTEM = (
 )
 
 
-def _call_llm(symbol: str, headlines: list) -> tuple:
-    """Returns (parsed_dict_or_None, raw_text). Never raises."""
+def _user_message(symbol: str, headlines: list) -> str:
+    """The exact user message sent to the LLM — also the cache key's input."""
     lines = "\n".join(
         f"- [{h.get('published','')[:16]}] {h['title']} ({h.get('source','')})"
         for h in headlines
     )
-    user = f"Stock: {symbol}\nRecent headlines:\n{lines}\n\nReturn the JSON."
+    return f"Stock: {symbol}\nRecent headlines:\n{lines}\n\nReturn the JSON."
+
+
+# ── 2b. Reply cache (v17.22.3) ───────────────────────────────────────────────
+def _news_cache_key(symbol: str, headlines: list) -> str:
+    """sha1 of everything that decides the reply: model, reasoning effort,
+    system prompt and the exact user message. '' if it cannot be built."""
+    try:
+        blob = json.dumps({"v": _NEWS_CACHE_VERSION, "model": _MODEL,
+                           "effort": _REASONING_EFFORT, "system": _SYSTEM,
+                           "user": _user_message(symbol, headlines)},
+                          sort_keys=True, ensure_ascii=False)
+        return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _news_cache_get(key: str):
+    """(parsed, raw) for a stored reply, else None. Never raises. A hit
+    refreshes the file's time so the prune keeps replies still in use."""
+    if not (_NEWS_CACHE_ENABLED and key):
+        return None
+    path = os.path.join(_NEWS_CACHE_DIR, f"{key}.json")
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        parsed = payload.get("parsed")
+        if payload.get("key") != key or not isinstance(parsed, dict):
+            return None
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
+        return parsed, str(payload.get("raw", "") or "")
+    except Exception:
+        return None
+
+
+def _news_cache_put(key: str, symbol: str, parsed: dict, raw: str) -> bool:
+    """Store a reply that parsed as JSON. Atomic (temp file + replace), so an
+    interrupted run never leaves half a file. Never raises."""
+    if not (_NEWS_CACHE_ENABLED and key and isinstance(parsed, dict)):
+        return False
+    path = os.path.join(_NEWS_CACHE_DIR, f"{key}.json")
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(_NEWS_CACHE_DIR, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"key": key, "symbol": symbol, "model": _MODEL,
+                       "stored": _dt.datetime.now().isoformat(timespec="seconds"),
+                       "parsed": parsed, "raw": str(raw or "")[:4000]},
+                      fh, ensure_ascii=False)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _news_cache_prune(keep_days: int = None) -> int:
+    """Delete stored replies not used for keep_days. Returns the count."""
+    if not _NEWS_CACHE_ENABLED:
+        return 0
+    keep_days = NEWS_CACHE_KEEP_DAYS if keep_days is None else keep_days
+    cutoff = time.time() - keep_days * 86400
+    n = 0
+    try:
+        for name in os.listdir(_NEWS_CACHE_DIR):
+            p = os.path.join(_NEWS_CACHE_DIR, name)
+            try:
+                if name.endswith((".json", ".tmp")) and os.path.getmtime(p) < cutoff:
+                    os.remove(p); n += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return n
+
+
+def _call_llm(symbol: str, headlines: list) -> tuple:
+    """Returns (parsed_dict_or_None, raw_text). Never raises."""
+    user = _user_message(symbol, headlines)
     payload = {
         "model": _MODEL,
         "temperature": 0,
@@ -216,12 +326,25 @@ def get_news_sentiment(symbol: str, company_name: str = "") -> dict:
     if not headlines:
         return _neutral("no recent headlines found", headlines)
 
-    time.sleep(_RATE_LIMIT_S)
-    parsed, raw = _call_llm(symbol, headlines)
+    # v17.22.3: the same prompt is never sent twice — a stored reply for these
+    # exact headlines is used instead (and the polite delay is skipped).
+    _key = _news_cache_key(symbol, headlines)
+    _hit = _news_cache_get(_key)
+    if _hit is not None:
+        parsed, raw = _hit
+        _source = "cache"
+    else:
+        time.sleep(_RATE_LIMIT_S)
+        parsed, raw = _call_llm(symbol, headlines)
+        _source = "llm"
+        if parsed:
+            _news_cache_put(_key, symbol, parsed, raw)   # failures are never stored
     if not parsed:
         _r = str(raw or "")
         _why = (_r[:45] if _r.startswith(("HTTP", "EXC", "empty reply")) else "reply was not JSON")
-        return _neutral(f"LLM: {_why}", headlines, raw)
+        _res = _neutral(f"LLM: {_why}", headlines, raw)
+        _res["news_llm_source"] = _source
+        return _res
 
     sent = str(parsed.get("sentiment", "NEUTRAL")).upper().strip()
     if sent not in ("POSITIVE", "NEGATIVE", "NEUTRAL"):
@@ -273,6 +396,7 @@ def get_news_sentiment(symbol: str, company_name: str = "") -> dict:
         "news_raw_llm": raw[:1000],
         "news_shadow": _SHADOW,
         "news_headlines": [h["title"] for h in headlines],
+        "news_llm_source": _source,   # v17.22.3: "llm" = called now · "cache" = stored reply
     }
 
 
@@ -288,6 +412,10 @@ def enrich_stocks_with_news(stocks: list, log_fn=print) -> int:
         return 0
     mode = "SHADOW (log only, score untouched)" if _SHADOW else "LIVE (feeds score)"
     log_fn(f"   📰 News sentiment: {mode} · model={_MODEL} · {len(stocks)} stocks")
+    _pruned = _news_cache_prune()
+    if _pruned:
+        log_fn(f"   📰 News reply cache: removed {_pruned} reply(ies) unused for "
+               f"{NEWS_CACHE_KEEP_DAYS}+ days")
     informed = 0
     for st in stocks:
         try:
@@ -321,6 +449,15 @@ def enrich_stocks_with_news(stocks: list, log_fn=print) -> int:
         except Exception as e:
             st["news_detail"] = _neutral(f"enrich error: {e}")
     log_fn(f"   📰 News sentiment: {informed}/{len(stocks)} stocks got an informed signal")
+    # v17.22.3: how many LLM calls this run actually made.
+    try:
+        _src = [str((st.get("news_detail") or {}).get("news_llm_source", "") or "") for st in stocks]
+        _n_llm, _n_cache = _src.count("llm"), _src.count("cache")
+        log_fn(f"   📰 News LLM calls: {_n_llm} · from cache: {_n_cache} · "
+               f"no LLM needed: {len(stocks) - _n_llm - _n_cache}"
+               + ("" if _NEWS_CACHE_ENABLED else " · cache OFF (AI_CACHE/NEWS_CACHE=0)"))
+    except Exception:
+        pass
     # v17.16: show why the rest were not informed, so a silent LLM failure
     # (e.g. output cut off) is visible instead of looking like "no news".
     try:
