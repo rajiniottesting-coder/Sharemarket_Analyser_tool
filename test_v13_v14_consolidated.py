@@ -7335,6 +7335,208 @@ def test_g59_v17_22_2_probation_evidence_keeps_decision_line_and_adds_recheck():
     return "✅ v17.22.2: probation evidence — decision line kept, corrected-date re-check added on both sheets (A–C)"
 
 
+def test_g60_v17_22_3_llm_replies_are_never_paid_for_twice():
+    """v17.22.3: news sentiment (Section 5A.6) had no cache — every run, re-run
+    and "Re-run jobs" sent every stock's headlines to the LLM again — and the
+    card cache hashed the whole stock list into one key dated by the runner's
+    clock, so one changed stock (or a re-run after 00:00 UTC) regenerated every
+    card. The real enrichment and card code run here with only the HTTP layer
+    stubbed, counting the calls that reach it.
+      A. news: re-run → 0 calls, same verdicts · changed headlines → 1 call ·
+         failed reply not stored · model change → called again · cache off →
+         always called, nothing written · env AI_CACHE/NEWS_CACHE=0 → off ·
+         stale replies pruned
+      B. cards: re-run → 0 calls, same text · one changed or added stock → one
+         call holding only that stock, the others from the cache · new trading
+         date → generated, old date's file and v17.12 files removed · failure
+         (placeholder) not stored · model change → generated · cache off →
+         always generated
+      C. master_funnel passes the trading date; the workflow cache key has the
+         run attempt (a "Re-run jobs" attempt hit the run-id key and never saved)
+    """
+    import re, json as _json, importlib, datetime as _d
+    import analysis.news_sentiment as ns
+    import ai.ai_analyst as aa
+
+    class _Resp:
+        def __init__(self, status, payload):
+            self.status_code, self._p = status, payload
+            self.text = _json.dumps(payload)
+        def json(self):
+            return self._p
+
+    class _FakeHTTP:
+        """Stands in for requests: answers like the gateway and counts calls."""
+        def __init__(self, kind):
+            self.kind, self.calls, self.fail = kind, [], None
+        def post(self, url, headers=None, json=None, timeout=None):
+            user = json["messages"][1]["content"]
+            self.calls.append(user)
+            if self.fail:
+                return _Resp(self.fail, {"error": f"HTTP {self.fail}"})
+            if self.kind == "news":
+                body = _json.dumps({"sentiment": "POSITIVE", "confidence": 0.9,
+                                    "catalyst": "order win", "risk": ""})
+            else:
+                syms = re.findall(r"^STOCK: (\S+) \|", user, flags=re.M)
+                body = "\n\n".join(f"=== CARD: {s} ===\nNote on {s}." for s in syms)
+            return _Resp(200, {"choices": [{"message": {"content": body},
+                                            "finish_reason": "stop"}]})
+
+    tmp = _tempfile.mkdtemp(prefix="g60_")
+    saved_ns = {k: getattr(ns, k) for k in ("requests", "NEWS_AVAILABLE", "_API_KEY", "_API_BASE",
+                                            "_MODEL", "_RATE_LIMIT_S", "_NEWS_CACHE_ENABLED",
+                                            "_NEWS_CACHE_DIR", "fetch_headlines")}
+    saved_aa = {k: getattr(aa, k) for k in ("requests", "_AI_ENABLED", "_API_KEY", "_API_BASE",
+                                            "LLM_MODEL", "_AI_CACHE_ENABLED", "_AI_CACHE_DIR",
+                                            "_CARD_CACHE_DIR", "_PROMPT_SIG")}
+    saved_env = {k: os.environ.get(k) for k in ("AI_CACHE", "NEWS_CACHE")}
+    try:
+        # ── A. news sentiment, through the real enrich_stocks_with_news ──
+        nh = _FakeHTTP("news")
+        ns.requests, ns.NEWS_AVAILABLE, ns._RATE_LIMIT_S = nh, True, 0
+        ns._API_KEY, ns._API_BASE, ns._MODEL = "k", "https://llm.invalid/v1", "model-a"
+        ns._NEWS_CACHE_ENABLED, ns._NEWS_CACHE_DIR = True, os.path.join(tmp, "ai_cache", "news")
+        HL = {"AAA": [{"title": "AAA wins order", "source": "s", "published": "Wed, 25 Nov 2026"},
+                      {"title": "AAA results", "source": "s", "published": "Tue, 24 Nov 2026"}],
+              "BBB": [{"title": "BBB expands plant", "source": "s", "published": "Wed, 25 Nov 2026"}],
+              "CCC": [], "DDD": [{"title": "DDD news", "source": "s", "published": "Wed, 25 Nov 2026"}]}
+        ns.fetch_headlines = lambda sym, co="": [dict(h) for h in HL[sym]]
+        quiet = lambda *a, **k: None
+
+        def run_news(syms):
+            nh.calls.clear()
+            st = [{"symbol": s} for s in syms]
+            ns.enrich_stocks_with_news(st, log_fn=quiet)
+            return st, list(nh.calls)
+
+        st1, c1 = run_news(["AAA", "BBB", "CCC"])
+        assert len(c1) == 2, f"A: first run must call once per stock with headlines: {len(c1)}"
+        st2, c2 = run_news(["AAA", "BBB", "CCC"])
+        assert c2 == [], f"A: a re-run must make no LLM call: {len(c2)}"
+        assert [s["news_sentiment"] for s in st2] == [s["news_sentiment"] for s in st1] == \
+            ["POSITIVE", "POSITIVE", "NEUTRAL"], "A: cached verdicts must equal the fresh ones"
+        assert [s["news_detail"]["news_llm_source"] for s in st2] == ["cache", "cache", ""], \
+            "A: the result must say where the reply came from"
+        assert st2[0].get("key_catalyst") == "order win", "A: a cached reply must still fill the catalyst"
+        HL["AAA"].append({"title": "AAA new contract", "source": "s", "published": "Thu, 26 Nov 2026"})
+        _, c3 = run_news(["AAA", "BBB", "CCC"])
+        assert len(c3) == 1 and "Stock: AAA" in c3[0], f"A: changed headlines → exactly 1 call: {len(c3)}"
+        nh.fail = 500
+        st4, c4 = run_news(["DDD"])
+        assert len(c4) == 1 and st4[0]["news_detail"]["news_reason"].startswith("LLM: HTTP 500"), "A: failure"
+        nh.fail = None
+        _, c5 = run_news(["DDD"])
+        assert len(c5) == 1, "A: a failed reply must not be stored — the next run asks again"
+        ns._MODEL = "model-b"
+        _, c6 = run_news(["AAA", "BBB", "DDD"])
+        assert len(c6) == 3, f"A: a model change must not serve the old model's replies: {len(c6)}"
+        ns._MODEL = "model-a"
+        n_files = len(os.listdir(ns._NEWS_CACHE_DIR))
+        ns._NEWS_CACHE_ENABLED = False
+        HL["BBB"].append({"title": "BBB other", "source": "s", "published": "Thu, 26 Nov 2026"})
+        _, c7 = run_news(["AAA", "BBB"]); _, c8 = run_news(["AAA", "BBB"])
+        assert len(c7) == 2 and len(c8) == 2, "A: cache off → every run calls"
+        assert len(os.listdir(ns._NEWS_CACHE_DIR)) == n_files, "A: cache off → nothing written"
+        ns._NEWS_CACHE_ENABLED = True
+        files = sorted(os.listdir(ns._NEWS_CACHE_DIR))
+        old = os.path.join(ns._NEWS_CACHE_DIR, files[0])
+        os.utime(old, (0, _d.datetime.now().timestamp() - 20 * 86400))
+        assert ns._news_cache_prune() == 1 and not os.path.exists(old) and \
+            len(os.listdir(ns._NEWS_CACHE_DIR)) == len(files) - 1, "A: replies unused for 15+ days are pruned"
+
+        # ── B. AI cards, through the real get_ai_analysis / _generate_ai_analysis ──
+        ah = _FakeHTTP("cards")
+        aa.requests, aa._AI_ENABLED, aa._API_KEY, aa._API_BASE = ah, True, "k", "https://llm.invalid/v1"
+        aa.LLM_MODEL, aa._PROMPT_SIG = "model-a", None
+        aa._AI_CACHE_ENABLED = True
+        aa._AI_CACHE_DIR = os.path.join(tmp, "ai_cache")
+        aa._CARD_CACHE_DIR = os.path.join(aa._AI_CACHE_DIR, "cards")
+        rows = [{"symbol": s, "company_name": s, "composite_score": 76.0, "quick_pick_label": "EARLY MOVER",
+                 "close": 100.0 + i, "stop_loss": 92.0, "t1": 112.0, "horizon": "POSITIONAL"}
+                for i, s in enumerate(["XXX", "YYY", "ZZZ"])]
+
+        def run_cards(rs, td):
+            ah.calls.clear()
+            import contextlib, io
+            with contextlib.redirect_stdout(io.StringIO()):
+                txt = aa.get_ai_analysis(pd.DataFrame([dict(r) for r in rs]), trade_date=td)
+            return txt, list(ah.calls)
+
+        t1, k1 = run_cards(rows, "2026-11-25")
+        assert len(k1) == 1 and set(aa._parse_marked(t1)) == {"XXX", "YYY", "ZZZ"}, f"B: first run: {len(k1)}"
+        t2, k2 = run_cards(rows, _d.date(2026, 11, 25))
+        assert k2 == [] and aa._parse_marked(t2) == aa._parse_marked(t1), \
+            f"B: a re-run for the same trading date must make no call and return the same cards: {len(k2)}"
+        rows[1]["close"] = 105.5
+        t3, k3 = run_cards(rows, "2026-11-25")
+        assert len(k3) == 1 and "STOCK: YYY |" in k3[0] and "STOCK: XXX |" not in k3[0] \
+            and "STOCK: ZZZ |" not in k3[0], "B: one changed stock → one call holding only that stock"
+        p3 = aa._parse_marked(t3)
+        assert set(p3) == {"XXX", "YYY", "ZZZ"} and p3["XXX"] == aa._parse_marked(t1)["XXX"], \
+            "B: the unchanged stocks' cards must come from the cache"
+        rows.append(dict(rows[0], symbol="WWW", company_name="WWW", close=50.0))
+        _, k4 = run_cards(rows, "2026-11-25")
+        assert len(k4) == 1 and "STOCK: WWW |" in k4[0] and "STOCK: XXX |" not in k4[0], "B: added stock only"
+        open(os.path.join(aa._AI_CACHE_DIR, "20261125_abcdef123456.json"), "w").write("{}")   # v17.12 file
+        ah.fail = 401
+        t5, k5 = run_cards(rows, "2026-11-26")
+        assert len(k5) == 1 and all(b.startswith("[AI") for b in aa._parse_marked(t5).values()), "B: failure"
+        assert not os.path.exists(os.path.join(aa._CARD_CACHE_DIR, "20261126.json")), \
+            "B: placeholders must never be written to the card cache"
+        assert not os.path.exists(os.path.join(aa._CARD_CACHE_DIR, "20261125.json")), \
+            "B: another trading date's card file must be removed"
+        assert not os.path.exists(os.path.join(aa._AI_CACHE_DIR, "20261125_abcdef123456.json")), \
+            "B: v17.12 cache files must be removed"
+        ah.fail = None
+        t6, k6 = run_cards(rows, "2026-11-26")
+        assert len(k6) == 1 and not any(b.startswith("[AI") for b in aa._parse_marked(t6).values()), \
+            "B: placeholders must not be stored — the next run generates the cards"
+        _, k6b = run_cards(rows, "2026-11-26")
+        assert k6b == [], "B: after the retry succeeded, a re-run makes no call"
+        aa.LLM_MODEL, aa._PROMPT_SIG = "model-b", None
+        _, k7 = run_cards(rows, "2026-11-26")
+        assert len(k7) == 1, "B: a model / prompt change must not serve the old cards"
+        aa._AI_CACHE_ENABLED = False
+        _, k8 = run_cards(rows, "2026-11-26"); _, k9 = run_cards(rows, "2026-11-26")
+        assert len(k8) == 1 and len(k9) == 1, "B: cache off → every run generates"
+        aa._AI_CACHE_ENABLED = True
+
+        # A (env): AI_CACHE=0 or NEWS_CACHE=0 turns the news cache off
+        for env, want in (({"AI_CACHE": "0"}, False), ({"NEWS_CACHE": "0"}, False), ({}, True)):
+            for k in ("AI_CACHE", "NEWS_CACHE"):
+                os.environ.pop(k, None)
+            os.environ.update(env)
+            importlib.reload(ns)
+            assert ns._NEWS_CACHE_ENABLED is want, f"A: env {env} → news cache {want}"
+        ai_src = open(_src_path('ai/ai_analyst.py'), encoding='utf-8').read()
+        assert '_AI_CACHE_ENABLED = os.getenv("AI_CACHE", "1").strip() != "0"' in ai_src, "B: AI_CACHE env"
+
+        # ── C. wiring ──
+        mf = open(_src_path('master_funnel.py'), encoding='utf-8').read()
+        assert re.search(r"get_ai_analysis\(pd\.DataFrame\(_ai_input_stocks\),\s*trade_date=target_date\)", mf), \
+            "C: master_funnel must pass the trading date to the card cache"
+        assert "enrich_stocks_with_news(final_100_list)" in mf, "C: Section 5A.6 must use the cached enrichment"
+        import yaml
+        wf = yaml.safe_load(open(_src_path('.github/workflows/market_run.yml'), encoding='utf-8'))
+        steps = [s for s in wf["jobs"][list(wf["jobs"])[0]]["steps"] if "actions/cache" in str(s.get("uses", ""))]
+        assert steps and steps[0]["with"]["path"] == "downloads/ai_cache", "C: cache step must keep downloads/ai_cache"
+        assert "github.run_attempt" in steps[0]["with"]["key"] and "github.run_id" in steps[0]["with"]["key"], \
+            "C: the cache key must include the run attempt"
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        importlib.reload(ns)
+        for k, v in saved_aa.items():
+            setattr(aa, k, v)
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+    return "✅ v17.22.3: news + card LLM replies cached — re-runs make 0 calls, a change costs only its own call (A–C)"
+
+
 # ════════════════════════════════════════════════════════════════════════
 # RUN
 # ════════════════════════════════════════════════════════════════════════
@@ -7536,6 +7738,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g57_v17_22_replay_counts_each_position_once_and_reports_r))
     v14_1_results.append(_run_one_test(test_g58_v17_22_2_single_missed_trading_day_is_filled))
     v14_1_results.append(_run_one_test(test_g59_v17_22_2_probation_evidence_keeps_decision_line_and_adds_recheck))
+    v14_1_results.append(_run_one_test(test_g60_v17_22_3_llm_replies_are_never_paid_for_twice))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))

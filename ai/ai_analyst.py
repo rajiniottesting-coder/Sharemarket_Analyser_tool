@@ -486,64 +486,121 @@ CATALYST SEARCH QUERIES (use for Block H grounding):
 
 
 # =============================================================================
-# v17.12 — PER-DAY AI CARD CACHE
+# AI CARD CACHE — v17.12, per stock and per trading date since v17.22.3
 #
-# WHY: every LLM call is billed, and the pipeline is re-run several times a
-# day (after a data fix, to regenerate a sheet, to retry a step). Without a
-# cache each re-run regenerated every card from scratch.
+# WHY: every LLM call is billed, and the pipeline is re-run (after a data fix,
+# to regenerate a sheet, "Re-run jobs" on Actions). A re-run must not pay for
+# cards it already has.
 #
-# KEY = date + hash(input). Keyed on the ACTUAL input — symbol, score, label,
-# entry, SL, target, horizon — not on price ticks (hashing every field would
-# change the key on any drift and defeat the cache).
-#   same day, same picks     -> served from cache, zero API calls
-#   same day, picks changed  -> regenerates (different stocks = different key)
-#   next day                 -> regenerates; yesterday's files are purged
-#   AI_CACHE=0               -> bypass, for when fresh output is wanted
+# ONE FILE PER TRADING DATE: downloads/ai_cache/cards/<YYYYMMDD>.json, holding
+# one entry per stock. The date is the trading day the run processes (passed
+# in by master_funnel), not the runner's clock — before v17.22.3 the key used
+# date.today() on the runner (UTC), so a re-run after 00:00 UTC missed.
 #
-# FAILED BATCHES ARE NEVER CACHED. Pinning a failure for a day costs a
-# debugging session, because a cache hit looks exactly like a success.
-# Cache lives in downloads/ai_cache/ (gitignored). Any cache error falls back
-# to a normal generate — the cache can only save cost, never break a run.
+# STOCK KEY = sha1(symbol, score, label, close, SL, target, horizon, held
+# context, card format version, model, system prompt). Identity fields, not
+# every input — hashing every field would change the key on any drift.
+#   re-run, same stocks       -> every card from the cache, zero LLM calls
+#   one stock added/changed   -> only that stock is generated
+#   next trading date         -> regenerated; other dates' files are deleted
+#   AI_CACHE=0                -> bypass, for when fresh output is wanted
+# (v17.12 hashed the whole stock list into one key, so one changed stock
+# regenerated every card.)
+#
+# PLACEHOLDERS ARE NEVER CACHED: only a real card ("[AI …" text is a
+# placeholder) is stored, so a failed stock is retried on the next run while
+# the stocks that worked are not paid for twice. Any cache error falls back to
+# a normal generate — the cache can only save cost, never break a run.
 # =============================================================================
 _AI_CACHE_ENABLED = os.getenv("AI_CACHE", "1").strip() != "0"
 _AI_CACHE_DIR     = os.path.join("downloads", "ai_cache")
+_CARD_CACHE_DIR   = os.path.join(_AI_CACHE_DIR, "cards")
+_PROMPT_SIG = None   # sha1 of model + card system prompt, computed once
 
 
-def _ai_cache_key(stock_list_df) -> str:
-    """date + sha1 of the identity-defining input fields, sorted by symbol so
-    row order never changes the key. Returns '' if the input is unusable."""
+def _card_trade_key(trade_date=None) -> str:
+    """YYYYMMDD of the trading date (date, datetime, 'YYYY-MM-DD' or
+    'YYYYMMDD'). Falls back to the local date only when none is given."""
+    if trade_date is None or trade_date == "":
+        return _dt.date.today().strftime("%Y%m%d")
+    if isinstance(trade_date, (_dt.date, _dt.datetime)):
+        return trade_date.strftime("%Y%m%d")
+    t = str(trade_date).strip()
+    for text, fmt in ((t[:10], "%Y-%m-%d"), (t[:8], "%Y%m%d")):
+        try:
+            return _dt.datetime.strptime(text, fmt).strftime("%Y%m%d")
+        except ValueError:
+            continue
+    raise ValueError(f"unreadable trade_date: {trade_date!r}")
+
+
+def _card_prompt_sig() -> str:
+    """Model + system prompt: a change to either must not serve old cards."""
+    global _PROMPT_SIG
+    if _PROMPT_SIG is None:
+        try:
+            _PROMPT_SIG = hashlib.sha1(
+                (LLM_MODEL + "\n" + _load_card_system_prompt()).encode("utf-8")).hexdigest()[:12]
+        except Exception:
+            _PROMPT_SIG = "noprompt"
+    return _PROMPT_SIG
+
+
+def _card_stock_key(row) -> str:
+    """sha1 of the fields that define one stock's card."""
+    g = lambda k: str(row.get(k, "") if row.get(k, "") is not None else "").strip()
+    parts = [
+        g("symbol").upper(),
+        f"{_sf(row.get('composite_score', 0)):.1f}",
+        g("quick_pick_label") or g("label"),
+        f"{_sf(row.get('close', 0)):.2f}",
+        f"{_sf(row.get('stop_loss', 0)):.2f}",
+        f"{_sf(row.get('t1', 0)):.2f}",
+        g("time_horizon") or g("horizon"),
+        g("_held_context"),
+        f"fmt={_CARD_FORMAT_VERSION}",
+        f"prompt={_card_prompt_sig()}",
+    ]
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _card_cache_load(path: str) -> dict:
+    """{stock_key: {"symbol", "card", "stored"}} for one trading date."""
     try:
-        rows = []
-        for _, r in stock_list_df.iterrows():
-            g = lambda k: str(r.get(k, "") if hasattr(r, "get") else "").strip()
-            rows.append("|".join([
-                g("symbol"),
-                f"{_sf(r.get('composite_score', 0)):.1f}",
-                g("quick_pick_label") or g("label"),
-                f"{_sf(r.get('close', 0)):.2f}",
-                f"{_sf(r.get('stop_loss', 0)):.2f}",
-                f"{_sf(r.get('t1', 0)):.2f}",
-                g("time_horizon") or g("horizon"),
-            ]))
-        rows.sort()
-        # v17.14: include the card output-format version, so a change to the
-        # prompt/output contract (e.g. the per-symbol markers) never serves
-        # cached text produced under the previous format.
-        rows.append(f"fmt={_CARD_FORMAT_VERSION}")
-        today = _dt.date.today().strftime("%Y%m%d")
-        digest = hashlib.sha1(("\n".join(rows)).encode("utf-8")).hexdigest()[:12]
-        return f"{today}_{digest}"
-    except Exception:
-        return ""
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        cards = payload.get("cards", {})
+        return cards if isinstance(cards, dict) else {}
+    except Exception as e:
+        print(f"   ⚠️  AI card cache unreadable ({e}) — starting it again.")
+        return {}
 
 
-def _ai_cache_purge_old(today: str) -> int:
-    """Delete cache files not from today. Returns count removed."""
+def _card_cache_save(path: str, trade_key: str, cards: dict) -> None:
+    """Atomic write (temp file + replace)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"trade_date": trade_key, "format": _CARD_FORMAT_VERSION,
+                   "cards": cards}, fh, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _card_cache_purge(keep_path: str) -> int:
+    """Delete other trading dates' card files and the v17.12 files
+    (downloads/ai_cache/<date>_<hash>.json). The news/ folder is untouched."""
     n = 0
     try:
-        for f in glob.glob(os.path.join(_AI_CACHE_DIR, "*.json")):
-            if not os.path.basename(f).startswith(today + "_"):
-                os.remove(f); n += 1
+        for f in (glob.glob(os.path.join(_CARD_CACHE_DIR, "*.json"))
+                  + glob.glob(os.path.join(_CARD_CACHE_DIR, "*.tmp"))
+                  + glob.glob(os.path.join(_AI_CACHE_DIR, "*.json"))):
+            if os.path.abspath(f) != os.path.abspath(keep_path):
+                try:
+                    os.remove(f); n += 1
+                except OSError:
+                    pass
     except Exception:
         pass
     return n
@@ -604,45 +661,73 @@ def _mark_batch(batch, text: str) -> str:
     return "\n\n".join(out) if out else text
 
 
-def get_ai_analysis(stock_list_df) -> str:
-    """PUBLIC entry point (v17.12): cache-aware wrapper around
-    _generate_ai_analysis(). Same signature and return value as before, so
-    every caller is unchanged."""
+def get_ai_analysis(stock_list_df, trade_date=None) -> str:
+    """PUBLIC entry point: cache-aware wrapper around _generate_ai_analysis().
+
+    v17.22.3: cached per stock for the trading date `trade_date` (the date the
+    run processes; master_funnel passes target_date). Only the stocks with no
+    stored card are sent to the LLM. Returns the same '=== CARD: SYMBOL ==='
+    text as before; with nothing in the cache the generator's text is returned
+    unchanged."""
     if not _AI_CACHE_ENABLED or stock_list_df is None or len(stock_list_df) == 0:
         return _generate_ai_analysis(stock_list_df)
-
-    key = _ai_cache_key(stock_list_df)
-    if not key:
+    try:
+        import pandas as pd
+        df = stock_list_df if isinstance(stock_list_df, pd.DataFrame) else pd.DataFrame(stock_list_df)
+        df = df.reset_index(drop=True)
+        trade_key = _card_trade_key(trade_date)
+        path = os.path.join(_CARD_CACHE_DIR, f"{trade_key}.json")
+        keys = [_card_stock_key(r) for _, r in df.iterrows()]
+        syms = [str(r.get("symbol", "")).strip() for _, r in df.iterrows()]
+        store = _card_cache_load(path)
+    except Exception as e:
+        print(f"   ⚠️  AI card cache unavailable ({e}) — generating without it.")
         return _generate_ai_analysis(stock_list_df)
-    today = key.split("_", 1)[0]
-    path = os.path.join(_AI_CACHE_DIR, f"{key}.json")
 
-    # ── cache hit ──
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as fh:
-                payload = json.load(fh)
-            text = payload.get("cards", "")
-            if not _ai_output_is_failure(text) and _cards_complete(text, stock_list_df):
-                print(f"   💾 AI cards served from today's cache ({key}) — "
-                      f"no API calls, no cost.")
-                return text
-    except Exception as e:
-        print(f"   ⚠️  AI cache read failed ({e}) — regenerating.")
+    def _real(body) -> bool:
+        return bool(body) and isinstance(body, str) and not body.strip().startswith("[AI")
 
-    # ── cache miss: generate, then store only if it succeeded ──
-    text = _generate_ai_analysis(stock_list_df)
+    hits = {i: store[k]["card"] for i, k in enumerate(keys)
+            if isinstance(store.get(k), dict) and _real(store[k].get("card"))}
+    _date_txt = f"{trade_key[:4]}-{trade_key[4:6]}-{trade_key[6:]}"
+    if len(hits) == len(df):
+        print(f"   💾 AI cards: all {len(df)} from the cache for trading date {_date_txt} "
+              f"— no LLM calls.")
+        return "\n\n".join(CARD_MARKER.format(sym=syms[i]) + "\n" + hits[i]
+                            for i in range(len(df)))
+
+    miss_idx = [i for i in range(len(df)) if i not in hits]
+    gen = _generate_ai_analysis(df.iloc[miss_idx].copy().reset_index(drop=True))
+    parsed = _parse_marked(gen)
+
+    # Store every real card just generated; placeholders are never stored.
+    stored = 0
+    for i in miss_idx:
+        body = parsed.get(syms[i].upper())
+        if _real(body):
+            store[keys[i]] = {"symbol": syms[i], "card": body,
+                              "stored": _dt.datetime.now().isoformat(timespec="seconds")}
+            stored += 1
     try:
-        os.makedirs(_AI_CACHE_DIR, exist_ok=True)
-        purged = _ai_cache_purge_old(today)
-        if _ai_output_is_failure(text) or not _cards_complete(text, stock_list_df):
-            print("   ℹ️  AI cards not cached (failed, skipped or incomplete output is never pinned).")
-        else:
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump({"key": key, "generated": _dt.datetime.now().isoformat(),
-                           "n_stocks": int(len(stock_list_df)), "cards": text}, fh)
-            print(f"   💾 AI cards cached for today ({key})"
-                  + (f" · purged {purged} stale file(s)" if purged else ""))
+        if stored:
+            _card_cache_save(path, trade_key, store)
+        purged = _card_cache_purge(path)
     except Exception as e:
-        print(f"   ⚠️  AI cache write failed ({e}) — output still returned.")
-    return text
+        purged = 0
+        print(f"   ⚠️  AI card cache write failed ({e}) — output still returned.")
+    print(f"   💾 AI cards (trading date {_date_txt}): {len(hits)} from cache · "
+          f"{len(miss_idx)} not in the cache → {stored} new card(s) stored"
+          + (f" · {len(miss_idx) - stored} placeholder/missing, not stored (retried next run)"
+             if stored < len(miss_idx) else "")
+          + (f" · removed {purged} old cache file(s)" if purged else ""))
+
+    if not hits:
+        return gen   # cold cache: exactly what the generator returned
+    # Mixed: cached cards + the generated ones, each under its own marker.
+    _gen_placeholder = gen.strip() if (not parsed and gen.strip().startswith("[AI")) else ""
+    out = []
+    for i in range(len(df)):
+        body = hits.get(i) or parsed.get(syms[i].upper()) or _gen_placeholder
+        if body:
+            out.append(CARD_MARKER.format(sym=syms[i]) + "\n" + body)
+    return "\n\n".join(out)
