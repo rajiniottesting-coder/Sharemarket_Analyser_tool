@@ -6564,7 +6564,9 @@ def test_g51_v17_21_sizing_counts_logged_allocations_and_held_levels_shown():
     i_tracker = src.find("_tracker_main()", hook)
     i_excel = src.find("excel_gen.generate_excel_reports()", hook)
     assert -1 < i_alloc < i_insert, "E: log-time sizing must run before the insert"
-    assert i_insert < i_held < i_tracker, "E: tracked levels must be applied after logging, before the tracker"
+    # v17.22.4: tracked levels are applied AFTER the tracker (a position the
+    # tracker closes in this run must not be shown as held) — see G61.
+    assert i_insert < i_tracker < i_held, "E: tracked levels must be applied after logging and after the tracker"
     assert i_held < i_excel, "E: tracked levels must be applied before the Excel build"
     return "✅ v17.21: logged allocations, own position excluded, same-day cap respected, held stocks show tracked levels (A–E)"
 
@@ -7537,6 +7539,156 @@ def test_g60_v17_22_3_llm_replies_are_never_paid_for_twice():
     return "✅ v17.22.3: news + card LLM replies cached — re-runs make 0 calls, a change costs only its own call (A–C)"
 
 
+def test_g61_v17_22_4_closed_in_run_not_shown_as_held_and_subject_matches():
+    """v17.22.4 (25-Nov-2026 report): HEROMOTOCO's 14-Oct position hit its
+    Target in the run, yet the Gold sheet still showed it as "Held since
+    2026-10-14" with the old Target ₹5,668.77 below the CMP ₹5,751.5 — the held
+    levels were applied before the tracker. And the Delivery Preview's subject
+    line ("… | 0 Early Movers | Top: — +0.0% Upside") was never the subject sent.
+      A. the real master_funnel block (open snapshot → tracker → held levels)
+         runs on a temp DB with the real tracker: a position that stays open
+         shows its tracked levels; one the tracker closes keeps today's levels
+         with a "closed in this run" rationale, on the sheet frame and in the
+         AI-card input; the order in master_funnel is snapshot → tracker →
+         held levels → AI cards → Excel build
+      B. _note_closed_this_run wording for stop / expiry, and no-ops
+      C. the Delivery Preview shows report_subject(), the subject the real
+         send_analysis_email() sets; dates are the India date, not UTC
+    """
+    import re, textwrap, types, io, contextlib, openpyxl
+    from datetime import date as _D, datetime as _DT, timedelta as _TD
+    from master_funnel import _apply_tracked_levels, _note_closed_this_run, _rec_key, _CLOSED_OUTCOMES
+
+    # ── A ──
+    src = open(_src_path('master_funnel.py'), encoding='utf-8').read()
+    lines = src.splitlines(keepends=True)
+    i0 = next(i for i, l in enumerate(lines) if "v17.22.4: positions open BEFORE the tracker" in l)
+    i1 = next(i for i, l in enumerate(lines) if "Generating AI Cards for Gold + open positions" in l)
+    block = textwrap.dedent("".join(lines[i0:i1]))
+    hook = src.find("v14.0/v14.1 — OUTCOME TRACKING")
+    pos = [src.find(t, hook) for t in ("_open_before_tracker = {_rec_key", "_tracker_main()",
+                                       "_n_held = _apply_tracked_levels(excel_gen.df",
+                                       "Generating AI Cards for Gold", "excel_gen.generate_excel_reports()")]
+    assert -1 < pos[0] < pos[1] < pos[2] < pos[3] < pos[4], f"A: order snapshot→tracker→levels→cards→Excel {pos}"
+
+    today = _D.today()
+    trade = today - _TD(days=1)
+    r_hold, r_close = (today - _TD(days=21)).isoformat(), (today - _TD(days=20)).isoformat()
+    test_db, original = _setup_temp_db('g61')
+    try:
+        from database.data_bridge import initialize_v7_tables, insert_gold_recommendation
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        for sym, rd, cmp_, sl, t1 in (("HOLDX", r_hold, 100.0, 90.0, 115.0), ("CLOSEX", r_close, 200.0, 180.0, 220.0)):
+            assert insert_gold_recommendation({
+                "recommendation_date": rd, "symbol": sym, "cmp_at_recommendation": cmp_,
+                "entry_low": cmp_ * 0.98, "entry_high": cmp_ * 1.01, "stop_loss": sl,
+                "t1": t1, "t2": t1 * 1.1, "t3": t1 * 1.2, "time_horizon": "POSITIONAL",
+                "expiry_days": 90, "suggested_alloc_pct": 9.0, "alloc_rationale": "Risk parity: logged"})
+        c = sqlite3.connect("market_data.db")
+        for sym, rd, base in (("HOLDX", r_hold, 101.0), ("CLOSEX", r_close, 202.0)):
+            d0 = _D.fromisoformat(rd)
+            for k in range(1, (trade - d0).days + 1):
+                dd = d0 + _TD(days=k)
+                hi = base * 1.01
+                if sym == "CLOSEX" and dd == trade:
+                    hi = 225.0                       # Target 220 hit on the trading day
+                c.execute("INSERT INTO daily_prices (symbol, date, exchange, open, high, low, close, volume) "
+                          "VALUES (?,?,?,?,?,?,?,?)", (sym, dd.isoformat(), "NSE", base, hi, base * 0.99, base, 1000))
+        c.commit(); c.close()
+
+        def _row(sym, sl, t1):
+            return {"symbol": sym, "stop_loss": sl, "t1": t1, "entry_range": "x–y",
+                    "horizon": "POSITIONAL", "suggested_alloc_pct": 5.0,
+                    "alloc_rationale": "Risk parity: 1.0% / 8.0% = 12.5%"}
+        stocks = [_row("HOLDX", 95.5, 109.0), _row("CLOSEX", 205.0, 240.0), _row("OTHER", 50.0, 60.0)]
+        eg = types.SimpleNamespace(df=pd.DataFrame([dict(s) for s in stocks]),
+                                   gold_funnel_log_lines=lambda: [], gold_probation_log_lines=lambda: [])
+        ns = {"excel_gen": eg, "final_100_list": stocks, "_held_monitor_map": {},
+              "target_date": trade, "_apply_tracked_levels": _apply_tracked_levels,
+              "_note_closed_this_run": _note_closed_this_run, "_rec_key": _rec_key,
+              "_CLOSED_OUTCOMES": _CLOSED_OUTCOMES}
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            exec(compile(block, "master_funnel.py[held levels]", "exec"), ns)
+        log = out.getvalue()
+        c = sqlite3.connect("market_data.db")
+        st = dict(c.execute("SELECT symbol, outcome_type FROM gold_outcomes").fetchall()); c.close()
+        assert st == {"HOLDX": "OPEN", "CLOSEX": "T1_HIT"}, f"A: the real tracker must close CLOSEX only: {st} · {log[-400:]}"
+        df = eg.df.set_index("symbol")
+        assert (df.at["HOLDX", "stop_loss"], df.at["HOLDX", "t1"]) == (90.0, 115.0), "A: open position → tracked levels"
+        assert str(df.at["HOLDX", "alloc_rationale"]).startswith(f"Held since {r_hold}"), "A: open position → held rationale"
+        assert (df.at["CLOSEX", "stop_loss"], df.at["CLOSEX", "t1"]) == (205.0, 240.0), \
+            "A: a position closed in this run must keep today's levels, not the tracked ones"
+        note = str(df.at["CLOSEX", "alloc_rationale"])
+        assert note.startswith(f"Previous pick ({r_close}) closed in this run: Target hit +10.0% on {trade.isoformat()}"), \
+            f"A: closed-in-run rationale: {note}"
+        assert note.endswith("· Risk parity: 1.0% / 8.0% = 12.5%") and "Held since" not in note, f"A: {note}"
+        assert df.at["OTHER", "alloc_rationale"] == "Risk parity: 1.0% / 8.0% = 12.5%", "A: other stocks untouched"
+        sd = {s["symbol"]: s for s in stocks}
+        assert sd["CLOSEX"]["alloc_rationale"] == note and sd["CLOSEX"]["t1"] == 240.0, "A: AI-card input must match the sheet"
+        assert sd["HOLDX"]["t1"] == 115.0, "A: AI-card input of the open position → tracked levels"
+        assert "📌 v17.22.4: 1 stock(s) whose position closed in this run" in log and "CLOSEX" in log, "A: log line"
+    finally:
+        _restore(original, test_db)
+
+    # ── B ──
+    f = pd.DataFrame([{"symbol": "S1", "alloc_rationale": "—"}, {"symbol": "S2", "alloc_rationale": None}])
+    n = _note_closed_this_run(f, [], [
+        {"symbol": "S1", "recommendation_date": "2026-11-02", "outcome_type": "SL_HIT", "outcome_date": "2026-11-20",
+         "outcome_price": 90.0, "cmp_at_recommendation": 100.0},
+        {"symbol": "S2", "recommendation_date": "2026-10-26", "outcome_type": "EXPIRED", "outcome_date": "2026-11-25",
+         "outcome_price": 101.0, "cmp_at_recommendation": 100.0}])
+    assert n == 2, f"B: {n}"
+    assert f.at[0, "alloc_rationale"].startswith("Previous pick (2026-11-02) closed in this run: stop hit -10.0% on 2026-11-20"), f.at[0, "alloc_rationale"]
+    assert f.at[1, "alloc_rationale"].startswith("Previous pick (2026-10-26) closed in this run: expired +1.0%"), f.at[1, "alloc_rationale"]
+    assert "·" not in f.at[0, "alloc_rationale"], "B: a '—' rationale is replaced, not appended to"
+    assert _note_closed_this_run(f, [], []) == 0 and _note_closed_this_run(pd.DataFrame(), [], [{"symbol": "S1"}]) == 0, "B: no-ops"
+
+    # ── C ──
+    from reporting import email_service as es
+    assert es.ist_today_str(_DT(2026, 11, 26, 23, 10)) == "2026-11-27", "C: 23:10 UTC is the next day in India"
+    assert es.ist_today_str(_DT(2026, 11, 26, 18, 0)) == "2026-11-26", "C: 18:00 UTC is the same day in India"
+    from reporting.excel_generator import ExcelGeneratorV6
+    test_db, original = _setup_temp_db('g61c')
+    try:
+        from database.data_bridge import initialize_v7_tables
+        initialize_v7_tables(sqlite3.connect("market_data.db"))
+        g = ExcelGeneratorV6([{"symbol": "AAA", "verdict": "WATCHLIST", "composite_score": 50, "close": 10.0}],
+                             "20261126", run_time="10:28 IST", prev_scores={}, market_stats={"market_regime": "BULLISH"})
+        wb = openpyxl.Workbook(); g._delivery_preview(wb)
+        ws = wb["📱 Delivery Preview"]
+        cells = [str(ws.cell(r, cc).value or "") for r in range(1, ws.max_row + 1) for cc in (1, 2)]
+    finally:
+        _restore(original, test_db)
+    i = next(k for k, v in enumerate(cells) if "EMAIL SUBJECT LINE PREVIEW" in v)
+    shown = next(v for v in cells[i + 1:] if v.strip())
+    assert shown == es.report_subject(), f"C: preview must show the subject that is sent: {shown!r}"
+    assert "Upside" not in shown and "Top:" not in shown, f"C: {shown!r}"
+    sent = {}
+    class _SMTP:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def login(self, *a): pass
+        def sendmail(self, frm, to, raw):
+            import email
+            sent["subject"] = email.message_from_string(raw)["Subject"]
+    saved = (es.smtplib.SMTP_SSL, {k: os.environ.get(k) for k in ("SENDER_EMAIL", "SENDER_APP_PASSWORD", "USER_EMAIL_ID")})
+    try:
+        es.smtplib.SMTP_SSL = _SMTP
+        os.environ.update({"SENDER_EMAIL": "a@example.com", "SENDER_APP_PASSWORD": "x", "USER_EMAIL_ID": "b@example.com"})
+        with contextlib.redirect_stdout(io.StringIO()):
+            es.send_analysis_email(attachments=[])
+    finally:
+        es.smtplib.SMTP_SSL = saved[0]
+        for k, v in saved[1].items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    assert sent.get("subject") == shown, f"C: sent {sent.get('subject')!r} vs preview {shown!r}"
+    return "✅ v17.22.4: a position closed in this run is not shown as held; the preview shows the subject that is sent (A–C)"
+
+
 # ════════════════════════════════════════════════════════════════════════
 # RUN
 # ════════════════════════════════════════════════════════════════════════
@@ -7739,6 +7891,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g58_v17_22_2_single_missed_trading_day_is_filled))
     v14_1_results.append(_run_one_test(test_g59_v17_22_2_probation_evidence_keeps_decision_line_and_adds_recheck))
     v14_1_results.append(_run_one_test(test_g60_v17_22_3_llm_replies_are_never_paid_for_twice))
+    v14_1_results.append(_run_one_test(test_g61_v17_22_4_closed_in_run_not_shown_as_held_and_subject_matches))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
