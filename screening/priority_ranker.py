@@ -342,9 +342,12 @@ def get_top_100_candidates(df: pd.DataFrame) -> pd.DataFrame:
         for c in top_100["cap_category"].fillna("?"):
             k = str(c).split()[0]; cap_short[k] = cap_short.get(k, 0) + 1
 
+    # v17.22.5: verdicts are set later (Section 6 scoring), so at Stage 3 the
+    # column is normally absent and the log printed "Verdicts: {}" every run.
+    _v_txt = f"Verdicts: {v_counts} | " if v_counts else ""
     print(
         f"✅ Stage 3 Complete: {len(top_100)} stocks selected "
         f"(overrides={len(override_final)}, ranked={remaining_slots}) | "
-        f"Verdicts: {v_counts} | Caps: {cap_short}"
+        f"{_v_txt}Caps: {cap_short}"
     )
     return top_100

@@ -1234,39 +1234,48 @@ def run_backfill():
 # SECTION 9 — POST-BACKFILL INDICATORS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _compute_all_indicators(conn):
-    # ── Step 1: Active symbols only (traded in last 7 days of DB data) ───────
-    # Processing ALL 8,700+ historical symbols one-by-one is very slow.
-    # A stock not traded in the last 7 days will have volume=0 today and
-    # gets dropped at Stage 1 Gate F3 BEFORE technicals are ever read.
-    # So computing technicals for inactive/delisted symbols is 100% wasted work.
-    # -7 days (vs -30 days) gives ~2,500 active symbols instead of 6,600+.
-    #
-    # v12.7 (#10 FIX): pin the 7-day window to (max date in DB - 7 days)
-    # rather than SQLite's date('now') which returns UTC. Pre-fix, on
-    # GitHub Actions runs where the runner clock crosses midnight UTC
-    # before this function executes, date('now', '-7 days') would shift
-    # by a day vs. IST and silently exclude one trading day's symbols
-    # near month/year boundaries. Using MAX(date) anchors the window to
-    # the actual data, eliminating the wallclock dependency.
+def _active_symbols(conn):
+    """Symbols that traded in the 7 days up to the newest stored bar.
+
+    Returns (active_symbols, n_stored_symbols, anchor_date). A stock not traded
+    in the last 7 days has volume=0 today and is dropped at Stage 1 Gate F3
+    before technicals are ever read, so computing them is wasted work.
+
+    v12.7 (#10 FIX): the window is pinned to MAX(date) in the DB, not SQLite's
+    date('now') (UTC on GitHub Actions), so it follows the data, not the clock.
+    v17.22.5: n_stored_symbols is counted from the DB. The log used to print
+    8,711 − active (a fixed number in the code) as "N+ inactive/delisted
+    skipped", which was not a count of anything.
+    """
     _max_date_row = conn.execute(
         "SELECT MAX(date) FROM daily_prices"
     ).fetchone()
     _anchor_date = _max_date_row[0] if _max_date_row and _max_date_row[0] else None
-    if _anchor_date:
-        active_syms = pd.read_sql(
-            "SELECT DISTINCT symbol FROM daily_prices "
-            "WHERE date >= date(?, '-7 days') ORDER BY symbol",
-            conn, params=(_anchor_date,)
-        )['symbol'].tolist()
-    else:
-        # Empty DB — nothing to compute
-        active_syms = []
+    if not _anchor_date:
+        return [], 0, None          # empty DB — nothing to compute
+    active_syms = pd.read_sql(
+        "SELECT DISTINCT symbol FROM daily_prices "
+        "WHERE date >= date(?, '-7 days') ORDER BY symbol",
+        conn, params=(_anchor_date,)
+    )['symbol'].tolist()
+    n_all = conn.execute(
+        "SELECT COUNT(DISTINCT symbol) FROM daily_prices"
+    ).fetchone()[0] or 0
+    return active_syms, int(n_all), _anchor_date
+
+
+def _compute_all_indicators(conn):
+    # ── Step 1: Active symbols only (traded in last 7 days of DB data) ───────
+    # Processing every stored symbol one-by-one is very slow; only the ones
+    # that traded in the last 7 days of data can reach the funnel
+    # (_active_symbols — 6,308 symbols on 26-Nov-2026).
+    active_syms, _n_stored, _anchor_date = _active_symbols(conn)
 
     total   = len(active_syms)
-    skipped = max(0, 8711 - total)
-    print(f"   {total} active symbols to process "
-          f"(traded last 7 days — {skipped}+ inactive/delisted skipped)...",
+    skipped = max(0, _n_stored - total)
+    print(f"   {total} active symbols to process (traded in the 7 days to "
+          f"{_anchor_date or '—'} — {skipped} of {_n_stored} stored symbols "
+          f"not traded, skipped)...",
           flush=True)
 
     ti_rows   = []
@@ -1276,7 +1285,7 @@ def _compute_all_indicators(conn):
 
     # ── Step 2: Chunked bulk reads (500 symbols per chunk) ────────────────────
     # 1 DB query per 500 symbols instead of 1 query per symbol.
-    # ~2,500 / 500 = ~5 queries vs 8,711 previously.
+    # ~6,300 / 500 = ~13 queries instead of one per symbol.
     # RAM per chunk: 500 syms × 250 days × ~60 bytes ≈ 12 MB
     # — well within GitHub Actions 7 GB free tier limit.
     # DataFrame is deleted after each chunk to keep memory flat.
