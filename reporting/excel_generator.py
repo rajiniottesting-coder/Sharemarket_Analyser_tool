@@ -2385,9 +2385,12 @@ class ExcelGeneratorV6:
         r=R(r,None,f"📎  NSE_BSE_Gold_EarlyMovers_{self.date_str}.xlsx  (attached)","DBEAFE",False)
         r=R(r,None,f"📎  NSE_BSE_Full_Dashboard_{self.date_str}.xlsx  (subscribers)","DBEAFE",False)
         r+=1; r=R(r,"EMAIL SUBJECT LINE PREVIEW",None,h=18)
-        ts=top.get("symbol","—") if not gdf.empty else "—"
-        tu=top.get("upside",0)   if not gdf.empty else 0
-        r=R(r,None,f"NSE/BSE Research | {self.dlbl} | {gc} Early Movers | Top: {ts} +{tu:.1f}% Upside","EFF6FF",True)
+        # v17.22.4: the subject that is actually sent (one builder for both).
+        # This line used to show "NSE/BSE Research | … | N Early Movers |
+        # Top: SYM +X% Upside" — a subject the email never had, which read
+        # "Top: — +0.0% Upside" on days with no recommended pick.
+        from reporting.email_service import report_subject
+        r=R(r,None,report_subject(),"EFF6FF",True)
         r+=1; r=R(r,"EXCEL TRIGGER COMMANDS",None,h=18)
         for cmd,desc in [('  "generate excel"',"→  Both files today"),
                          ('  "excel gold only"',"→  Gold file only"),
