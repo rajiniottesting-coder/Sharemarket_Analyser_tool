@@ -889,6 +889,10 @@ TIPS: Dict[str, Tuple[str, str]] = {
                          "      → safety clamp (above 15% or below 1%) fired\n"
                          "  'Held since YYYY-MM-DD — tracked levels · …'\n"
                          "      → already an open position; logged sizing shown\n"
+                         "  'Previous pick (YYYY-MM-DD) closed in this run: …'\n"
+                         "      → its position closed today (Target / stop /\n"
+                         "        expiry); today's levels shown; it is logged\n"
+                         "        again on the next run if it still qualifies\n"
                          "If SL is unavailable (rare), shows 'Fallback: 3.0%'."),
     "R:R Ratio": ("Reward ÷ risk — set by the regime multiplier",
                   "R:R = (Target − Entry mid) / (Entry mid − SL).\n"

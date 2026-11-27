@@ -681,7 +681,7 @@ GLOSSARY_DATA = [
      "v15.5: Human-readable breakdown of how Suggested Alloc % was computed. "
      "Shows the formula step-by-step: 'Risk parity: 1.0% / X% = Y%' + "
      "any cap-category multiplier (LARGE×1.0 / SMALL×0.85 / MICRO×0.70) + "
-     "any sector exposure cap or safety clamp adjustments. A held stock reads 'Held since <date> — tracked levels' followed by the sizing logged that day. "
+     "any sector exposure cap or safety clamp adjustments. A held stock reads 'Held since <date> — tracked levels' followed by the sizing logged that day. A stock whose position closed in this run reads 'Previous pick (<date>) closed in this run: Target hit / stop hit / expired …' — it shows today's levels and is logged again on the next run if it still qualifies. "
      "Lets you audit the sizing decision without re-computing manually.","All sheets"),
     ("ANALYSIS SUMMARY","View Analysis Summary","150–250 word AI note with exact ₹ figures, catalysts, risks","Gold sheet · Performance (AI Card)"),
 

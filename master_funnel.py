@@ -815,6 +815,77 @@ def _apply_tracked_levels(df, stocks, open_levels, today_iso: str) -> int:
     return changed
 
 
+# v17.22.4: every closed outcome type, for looking up positions the tracker
+# closed in this run.
+_CLOSED_OUTCOMES = ("T1_HIT", "T2_HIT", "T3_HIT", "SL_HIT", "TRAIL_SL", "EXPIRED")
+_OUTCOME_WORDS = {"T1_HIT": "Target hit", "T2_HIT": "Target hit", "T3_HIT": "Target hit",
+                  "SL_HIT": "stop hit", "TRAIL_SL": "trailing stop hit", "EXPIRED": "expired"}
+
+
+def _rec_key(r) -> tuple:
+    """(symbol, recommendation date) — the key of one recommendation."""
+    return (str(r.get("symbol", "") or "").strip(),
+            str(r.get("recommendation_date", "") or "")[:10])
+
+
+def _note_closed_this_run(df, stocks, closed_rows) -> int:
+    """v17.22.4: a stock whose open position the tracker closed in THIS run is
+    no longer held, so it keeps the levels computed from today's price (the
+    held levels are applied after the tracker), and its Sizing Rationale says
+    what happened. It is not logged as a new pick today — the logging hook ran
+    while the position was still open (first appearance only; the replay
+    treats a re-pick on the closing day the same way) — so the next run logs
+    it if it still qualifies.
+
+    Before v17.22.4 the held levels were applied before the tracker: on
+    25-Nov-2026 HEROMOTOCO's 14-Oct position hit its Target in the run, yet
+    the Gold sheet still showed it as "Held since 2026-10-14" with the old
+    Target ₹5,668.77 below the CMP ₹5,751.5.
+
+    Updates `df` (ExcelGeneratorV6.df) and the matching dicts in `stocks` in
+    place. Returns the number of symbols annotated."""
+    if df is None or getattr(df, "empty", True) or not closed_rows or "symbol" not in df.columns:
+        return 0
+
+    def _f(v):
+        try:
+            x = float(v)
+            return x if x == x else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    notes = {}
+    for r in closed_rows:
+        sym = _rec_key(r)[0]
+        if not sym:
+            continue
+        entry, out = _f(r.get("cmp_at_recommendation")), _f(r.get("outcome_price"))
+        pnl = f" {(out - entry) / entry * 100:+.1f}%" if entry > 0 and out > 0 else ""
+        word = _OUTCOME_WORDS.get(str(r.get("outcome_type", "")).upper(), "closed")
+        odate = str(r.get("outcome_date", "") or "")[:10]
+        notes[sym] = (f"Previous pick ({_rec_key(r)[1]}) closed in this run: {word}{pnl}"
+                      + (f" on {odate}" if odate else "")
+                      + " — today's levels; logged again on the next run if it still qualifies")
+    by_sym = {}
+    for s in (stocks or []):
+        by_sym.setdefault(str(s.get("symbol", "") or "").strip(), []).append(s)
+    if "alloc_rationale" not in df.columns:
+        df["alloc_rationale"] = None
+    done = set()
+    for idx in df.index:
+        sym = str(df.at[idx, "symbol"] or "").strip()
+        note = notes.get(sym)
+        if note is None:
+            continue
+        old = str(df.at[idx, "alloc_rationale"] or "").strip()
+        new = note + (f" · {old}" if old and old not in ("—", "nan", "None") else "")
+        df.at[idx, "alloc_rationale"] = new
+        for s in by_sym.get(sym, []):
+            s["alloc_rationale"] = new
+        done.add(sym)
+    return len(done)
+
+
 def run_master_pipeline():
     cleanup_temp_files()
 
@@ -4181,22 +4252,15 @@ def run_master_pipeline():
             print(_msg)
         except Exception as _v14e:
             print(f"   ⚠️  v14.0 Gold logging skipped: {_v14e}")
-        # ── v17.21: stocks already held show the levels being tracked ───────
-        # Entry / SL / Target / horizon / allocation of every OPEN position
-        # logged before today replace the values re-computed from today's
-        # price, on all sheets and in the AI-card inputs (levels are frozen at
-        # log time — rule 19). Gold gates do not read these fields.
+        # ── v17.22.4: positions open BEFORE the tracker ─────────────────────
+        # Kept so that, after the tracker, a position it closed in this run can
+        # be recognised (see the held-levels block after the tracker).
         try:
             from database.data_bridge import get_open_recommendation_levels
-            _held_stocks = list(final_100_list) + list(_held_monitor_map.values())
-            _n_held = _apply_tracked_levels(excel_gen.df, _held_stocks,
-                                            get_open_recommendation_levels(),
-                                            target_date.strftime("%Y-%m-%d"))
-            if _n_held:
-                print(f"   📌 v17.21: {_n_held} held stock(s) shown with their tracked "
-                      f"entry / SL / Target / allocation")
-        except Exception as _tle:
-            print(f"   ⚠️  v17.21 tracked-levels display skipped (non-fatal): {_tle}")
+            _open_before_tracker = {_rec_key(r) for r in get_open_recommendation_levels()}
+        except Exception as _obe:
+            _open_before_tracker = set()
+            print(f"   ⚠️  v17.22.4 open-position snapshot skipped (non-fatal): {_obe}")
         # ── v17.20: say WHY the Gold sheet is empty ─────────────────────────
         # Prints nothing when Gold has stocks. When it is empty: on a BEARISH
         # day, the regime gate (and how many stocks it held back); on any other
@@ -4242,6 +4306,36 @@ def run_master_pipeline():
             _tracker_main()
         except Exception as _tex:
             print(f"   ⚠️  v14.1.3 tracker run skipped: {_tex}")
+        # ── v17.21: stocks already held show the levels being tracked ───────
+        # Entry / SL / Target / horizon / allocation of every OPEN position
+        # logged before today replace the values re-computed from today's
+        # price, on all sheets and in the AI-card inputs (levels are frozen at
+        # log time — rule 19). Gold gates do not read these fields.
+        # v17.22.4: applied AFTER the tracker, so a position it closed in this
+        # run is no longer shown as held; such a stock keeps today's levels and
+        # its Sizing Rationale says the previous pick closed (_note_closed_this_run).
+        try:
+            from database.data_bridge import (get_open_recommendation_levels,
+                                              get_closed_recommendations)
+            _open_after_tracker = get_open_recommendation_levels()
+            _held_stocks = list(final_100_list) + list(_held_monitor_map.values())
+            _n_held = _apply_tracked_levels(excel_gen.df, _held_stocks,
+                                            _open_after_tracker,
+                                            target_date.strftime("%Y-%m-%d"))
+            if _n_held:
+                print(f"   📌 v17.21: {_n_held} held stock(s) shown with their tracked "
+                      f"entry / SL / Target / allocation")
+            _closed_now = _open_before_tracker - {_rec_key(r) for r in _open_after_tracker}
+            if _closed_now:
+                _closed_rows = [r for r in get_closed_recommendations(_CLOSED_OUTCOMES)
+                                if _rec_key(r) in _closed_now]
+                _n_closed = _note_closed_this_run(excel_gen.df, _held_stocks, _closed_rows)
+                if _n_closed:
+                    print(f"   📌 v17.22.4: {_n_closed} stock(s) whose position closed in this "
+                          f"run shown with today's levels (not held any more): "
+                          + ", ".join(sorted({_rec_key(r)[0] for r in _closed_rows})))
+        except Exception as _tle:
+            print(f"   ⚠️  v17.21 tracked-levels display skipped (non-fatal): {_tle}")
         # ─────────────────────────────────────────────────────────────────────
         # NOW build the Excel — Performance sheet will see today's freshly-logged
         # Gold picks AND refreshed price/P&L data from the tracker.
