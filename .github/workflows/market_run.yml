@@ -23,6 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      # v17.22.5: print every Python line when it happens. Block-buffered
+      # stdout sent ~90 lines (11 minutes of work) to the log in one burst on
+      # 27-Nov-2026, all stamped 05:00:35, so the log could not show which
+      # section took the time — and a process killed before it exits loses them.
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout Repository
