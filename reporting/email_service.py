@@ -13,16 +13,42 @@ Fixes:
 - Stripped redundant "SKIP: " prefix from body (reason already says "Pipeline skipped:")
 - Cleaned subject line: shows short reason only, no raw prefix
 - Fixed delivery time: "05:00 IST" (was incorrectly "07:00 IST"; later updated to current schedule)
+- v17.22.4: the report subject comes from report_subject(), which the Excel
+  Delivery Preview also uses (its "subject preview" showed a subject that was
+  never sent: "… | 0 Early Movers | Top: — +0.0% Upside"); dates are the
+  India date (IST), not the runner's clock (UTC on GitHub Actions); the
+  skip email no longer promises a 05:00 IST run (cron 04:30 IST, and GitHub
+  starts scheduled runs late — 2 h to 7 h 46 min in Oct–Nov 2026)
 """
 
 import smtplib
 import os
 import re
 from email.message import EmailMessage
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# India has no daylight saving: IST is always UTC+05:30. A fixed offset needs
+# no time-zone database (zoneinfo needs the tzdata package on Windows).
+_IST = timezone(timedelta(hours=5, minutes=30), "IST")
+
+
+def ist_today_str(now=None) -> str:
+    """Today's date in India as YYYY-MM-DD. `now` (aware or UTC-naive
+    datetime) is for tests; by default the current time."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(_IST).strftime("%Y-%m-%d")
+
+
+def report_subject(run_date_str: str = None) -> str:
+    """Subject line of the normal report email — the one place it is built,
+    so the Delivery Preview sheet shows exactly what is sent."""
+    return f"NSE/BSE Analyser Report | {run_date_str or ist_today_str()} | Dashboards Attached"
 
 
 def _clean_reason(raw_reason: str) -> str:
@@ -110,9 +136,9 @@ def send_analysis_email(
         print("⚠️  Email config incomplete (SENDER_EMAIL / SENDER_APP_PASSWORD / USER_EMAIL_ID).")
         return
 
-    # Use today's run date for the header.
+    # Use today's run date (India date — v17.22.4) for the header.
     # For skip emails the body also shows the market date extracted from the reason.
-    run_date_str = datetime.now().strftime("%Y-%m-%d")
+    run_date_str = ist_today_str()
     msg          = EmailMessage()
 
     # ── Required headers (Gmail rejects without these) ────────────────────────
@@ -140,7 +166,7 @@ def send_analysis_email(
             f"─────────────────\n"
             f"{clean_reason}\n\n"
             f"System status:    OK — no action needed.\n"
-            f"Next scheduled:   Next trading day at 05:00 IST."
+            f"Next scheduled:   next trading day (cron 04:30 IST; GitHub usually starts it later)."
         )
 
     elif is_error:
@@ -153,7 +179,7 @@ def send_analysis_email(
         )
 
     else:
-        msg["Subject"] = f"NSE/BSE Analyser Report | {run_date_str} | Dashboards Attached"
+        msg["Subject"] = report_subject(run_date_str)
         msg.set_content(
             f"NSE/BSE Analyser · {run_date_str}\n\n"
             f"Today's institutional-grade research dashboards are attached.\n\n"
