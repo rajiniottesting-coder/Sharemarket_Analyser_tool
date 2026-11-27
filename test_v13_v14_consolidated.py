@@ -7689,6 +7689,180 @@ def test_g61_v17_22_4_closed_in_run_not_shown_as_held_and_subject_matches():
     return "✅ v17.22.4: a position closed in this run is not shown as held; the preview shows the subject that is sent (A–C)"
 
 
+
+def test_g62_v17_22_5_run_log_lines_tell_the_truth():
+    """v17.22.5 (27-Nov-2026 run log, run 45942002574): the log is the only
+    place some checks can be made, and five of its lines misled.
+      A. news: "not informed" showed most_common(4) — 82 of 84 stocks, so the
+         2 hidden ones could have been LLM failures. Every reason is listed now
+         (downgrades in one bucket), the counts add up, failed calls are
+         counted and named. An ETF row the v15.8 check already flagged is not
+         sent to the LLM (8 such rows on 26-Nov, pruned later, were sent when they had headlines).
+      B. NSE snapshot: load_snapshot(quiet=True) still printed the stale
+         warning, so each run showed it twice. quiet prints nothing now.
+      C. Section 1.5: "N+ inactive/delisted skipped" was 8,711 − N, a fixed
+         number. The stored-symbol count comes from the DB now.
+      D. Stage 3: "Verdicts: {}" printed every run (verdicts come later).
+      E. workflow: PYTHONUNBUFFERED=1 — ~90 lines (11 min of work) reached the
+         log in one burst, all stamped 05:00:35.
+    The real code runs in A–D with only HTTP / DB helpers stubbed.
+    """
+    import re, json as _json, io, contextlib, sqlite3, datetime as _d
+    import analysis.news_sentiment as ns
+
+    # ── A. news enrichment, real code, HTTP stubbed ──
+    class _Resp:
+        def __init__(self, status, payload, text=None):
+            self.status_code, self._p = status, payload
+            self.text = text if text is not None else _json.dumps(payload)
+        def json(self):
+            return self._p
+
+    REPLY = {"NEU": ("NEUTRAL", 0.8), "D50": ("POSITIVE", 0.5), "D40": ("NEGATIVE", 0.4),
+             "D30": ("POSITIVE", 0.3), "POS": ("POSITIVE", 0.9)}
+
+    class _FakeHTTP:
+        def __init__(self):
+            self.calls = []
+        def post(self, url, headers=None, json=None, timeout=None):
+            user = json["messages"][1]["content"]
+            sym = re.search(r"^Stock: (\S+)", user, flags=re.M).group(1)
+            self.calls.append(sym)
+            if sym == "F500":
+                return _Resp(500, {"error": "boom"}, text="boom")
+            body = "sorry, I cannot help" if sym == "NJS" else _json.dumps(
+                {"sentiment": REPLY[sym][0], "confidence": REPLY[sym][1], "catalyst": "", "risk": ""})
+            return _Resp(200, {"choices": [{"message": {"content": body}, "finish_reason": "stop"}]})
+
+    tmp = _tempfile.mkdtemp(prefix="g62_")
+    saved = {k: getattr(ns, k) for k in ("requests", "NEWS_AVAILABLE", "_API_KEY", "_API_BASE", "_MODEL",
+                                         "_RATE_LIMIT_S", "_NEWS_CACHE_ENABLED", "_NEWS_CACHE_DIR",
+                                         "fetch_headlines", "_SHADOW")}
+    try:
+        http = _FakeHTTP()
+        ns.requests, ns.NEWS_AVAILABLE, ns._RATE_LIMIT_S, ns._SHADOW = http, True, 0, False
+        ns._API_KEY, ns._API_BASE, ns._MODEL = "k", "https://llm.invalid/v1", "model-g62"
+        ns._NEWS_CACHE_ENABLED, ns._NEWS_CACHE_DIR = True, os.path.join(tmp, "news")
+        hl = [{"title": "Company news", "source": "s", "published": "Thu, 26 Nov 2026"}]
+        ns.fetch_headlines = lambda sym, co="": [] if sym == "NOH" else [dict(h) for h in hl]
+        syms = ["NEU", "D50", "D40", "D30", "POS", "F500", "NJS", "NOH", "ETFX"]
+        stocks = [{"symbol": x} for x in syms]
+        stocks[-1]["_v158_etf_filtered"] = True
+        lines = []
+        informed = ns.enrich_stocks_with_news(stocks, log_fn=lines.append)
+        assert informed == 1, f"A: only POS is informed: {informed}"
+        assert "ETFX" not in http.calls and "NOH" not in http.calls and len(http.calls) == 7, \
+            f"A: an ETF-flagged row must not be sent to the LLM: {http.calls}"
+        etf = stocks[-1]
+        assert etf["news_sentiment"] == "NEUTRAL" and etf["news_detail"]["news_llm_source"] == "" \
+            and etf["news_detail"]["news_reason"] == ns._NOT_SENT_ETF, "A: ETF row → NEUTRAL, no LLM source"
+        calls = [l for l in lines if "News LLM calls:" in l]
+        assert calls and "News LLM calls: 7 · failed: 2 · from cache: 0 · no LLM needed: 2" in calls[0], \
+            f"A: call line must count the 2 failures: {calls}"
+        why = [l for l in lines if "not informed" in l]
+        assert why, f"A: the not-informed line is missing: {lines}"
+        counts = [int(n) for n in re.findall(r"×(\d+)", why[0])]
+        assert sum(counts) == len(stocks) - informed == 8 and "not informed (8)" in why[0], \
+            f"A: every not-informed stock must be listed (counts must add up to 8): {why[0]}"
+        for part in ("downgraded (confidence < 0.6) ×3", "headlines neutral ×1",
+                     "no recent headlines found ×1", f"{ns._NOT_SENT_ETF} ×1",
+                     "LLM: HTTP 500", "LLM: reply was not JSON ×1"):
+            assert part in why[0], f"A: '{part}' missing from: {why[0]}"
+        fail = [l for l in lines if "News LLM failed for" in l]
+        assert fail and "2 stock(s)" in fail[0] and "F500" in fail[0] and "NJS" in fail[0], \
+            f"A: failed stocks must be named: {fail}"
+        lines2 = []
+        ns.enrich_stocks_with_news([{"symbol": "NEU"}, {"symbol": "POS"}], log_fn=lines2.append)
+        assert not any("News LLM failed" in l for l in lines2) and \
+            any("failed: 0 · from cache: 2" in l for l in lines2), f"A: no failure → no failure line: {lines2}"
+    finally:
+        for k, v in saved.items():
+            setattr(ns, k, v)
+
+    # ── B. NSE snapshot loader: quiet prints nothing ──
+    from ingestion.nse_snapshot import load_snapshot
+    def _snap(age_days, path):
+        f = (_d.datetime.now(_d.timezone.utc) - _d.timedelta(days=age_days)).isoformat()
+        with open(path, "w", encoding="utf-8") as fh:
+            _json.dump({"version": 1, "fetched_at": f, "pledge": {"AAA": 1.0},
+                        "shareholding": {"AAA": {"promoter": 50.0}}}, fh)
+        return path
+    stale, fresh = _snap(16, os.path.join(tmp, "stale.json")), _snap(2, os.path.join(tmp, "fresh.json"))
+    missing = os.path.join(tmp, "none.json")
+    for path, want in ((stale, {}), (fresh, "pledge"), (missing, {})):
+        for quiet in (True, False):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                got = load_snapshot(path, quiet=quiet)
+            n = len([l for l in out.getvalue().splitlines() if l.strip()])
+            assert n == (0 if quiet else 1), \
+                f"B: {os.path.basename(path)} quiet={quiet} printed {n} line(s): {out.getvalue()!r}"
+            assert (got == {}) if want == {} else (want in got), f"B: {path}: wrong result"
+
+    # ── C. Section 1.5: stored-symbol count from the DB ──
+    _argv = sys.argv[:]
+    sys.argv = sys.argv[:1]          # backfill_history reads argv[1] at import
+    try:
+        import backfill_history as bh
+    finally:
+        sys.argv = _argv
+    dbp = os.path.join(tmp, "c.db")
+    conn = sqlite3.connect(dbp)
+    try:
+        conn.execute("CREATE TABLE daily_prices (symbol TEXT, date TEXT, exchange TEXT, open REAL, high REAL, "
+                     "low REAL, close REAL, volume REAL, PRIMARY KEY (symbol, date, exchange))")
+        rows = []
+        for sym, last in (("AAA", "2026-11-26"), ("BBB", "2026-11-25"), ("CCC", "2026-11-20"),
+                          ("OLD1", "2026-11-10"), ("OLD2", "2026-10-01"), ("OLD3", "2026-09-15")):
+            for ex in ("NSE", "BSE"):
+                rows.append((sym, last, ex, 10, 11, 9, 10, 1000))
+        conn.executemany("INSERT INTO daily_prices VALUES (?,?,?,?,?,?,?,?)", rows)
+        conn.commit()
+        active, n_all, anchor = bh._active_symbols(conn)
+        assert (active, n_all, anchor) == (["AAA", "BBB", "CCC"], 6, "2026-11-26"), \
+            f"C: active / stored / anchor wrong: {active, n_all, anchor}"
+        with contextlib.redirect_stdout(io.StringIO()):
+            bh.init_all_tables(conn)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bh._compute_all_indicators(conn)
+        assert "3 active symbols to process (traded in the 7 days to 2026-11-26 — 3 of 6 stored symbols " \
+               "not traded, skipped)" in out.getvalue(), f"C: Section 1.5 line: {out.getvalue()[:300]!r}"
+        assert "8711" not in open(_src_path("backfill_history.py"), encoding="utf-8").read(), \
+            "C: the fixed 8711 must be gone"
+    finally:
+        conn.close()
+
+    # ── D. Stage 3 summary: no empty verdict count ──
+    import screening.priority_ranker as pr
+    saved_pr = (pr.get_20d_avg_vol_batch, pr.get_prior_analysis_map)
+    try:
+        pr.get_20d_avg_vol_batch = lambda syms: {x: 1000.0 for x in syms}
+        pr.get_prior_analysis_map = lambda *a, **k: {}
+        base = [{"symbol": f"S{i:03d}", "volume": 1000 + 10 * i, "delivery_pct": 55, "stage2_score": 20,
+                 "turnover_lacs": 500 + i, "close": 100 + i,
+                 "cap_category": ["LARGE", "MID", "SMALL", "MICRO"][i % 4]} for i in range(120)]
+        for with_verdict in (False, True):
+            df = pd.DataFrame([dict(r, **({"verdict": "BUY"} if with_verdict else {})) for r in base])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                top = pr.get_top_100_candidates(df)
+            line = [l for l in out.getvalue().splitlines() if "Stage 3 Complete" in l]
+            assert len(top) == 100 and line, f"D: Stage 3 must still pick 100: {len(top)}"
+            assert ("Verdicts:" in line[0]) == with_verdict and "Caps: {" in line[0], \
+                f"D: verdicts shown only when present (with_verdict={with_verdict}): {line[0]}"
+    finally:
+        pr.get_20d_avg_vol_batch, pr.get_prior_analysis_map = saved_pr
+
+    # ── E. workflow: Python output unbuffered for the whole job ──
+    import yaml
+    wf = yaml.safe_load(open(_src_path('.github/workflows/market_run.yml'), encoding='utf-8'))
+    job = wf["jobs"][list(wf["jobs"])[0]]
+    assert str(job.get("env", {}).get("PYTHONUNBUFFERED")) == "1", "E: job env must set PYTHONUNBUFFERED=1"
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
+    return "✅ v17.22.5: run-log lines are accurate — all news reasons + failures, one snapshot line, real counts (A–E)"
+
 # ════════════════════════════════════════════════════════════════════════
 # RUN
 # ════════════════════════════════════════════════════════════════════════
@@ -7892,6 +8066,7 @@ if __name__ == '__main__':
     v14_1_results.append(_run_one_test(test_g59_v17_22_2_probation_evidence_keeps_decision_line_and_adds_recheck))
     v14_1_results.append(_run_one_test(test_g60_v17_22_3_llm_replies_are_never_paid_for_twice))
     v14_1_results.append(_run_one_test(test_g61_v17_22_4_closed_in_run_not_shown_as_held_and_subject_matches))
+    v14_1_results.append(_run_one_test(test_g62_v17_22_5_run_log_lines_tell_the_truth))
     v14_1_results.append(_run_one_test(test_g11_tracker_invoked_from_master_funnel))
     v14_1_results.append(_run_one_test(test_g10_v14_hook_fires_before_excel_generation))
     v14_1_results.append(_run_one_test(test_g9_column_name_consistency_time_horizon_everywhere))
