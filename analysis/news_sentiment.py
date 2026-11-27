@@ -422,7 +422,14 @@ def enrich_stocks_with_news(stocks: list, log_fn=print) -> int:
             sym = str(st.get("symbol", "") or "").strip()
             if not sym:
                 continue
-            res = get_news_sentiment(sym, str(st.get("company_name", "") or ""))
+            # v17.22.5: a row the v15.8 name check already marked as an ETF /
+            # fund is pruned before anything renders or saves it, so judging
+            # its headlines only spent an LLM call (8 such rows on 26-Nov-2026,
+            # each sent when Google News had headlines for it).
+            if st.get("_v158_etf_filtered"):
+                res = _neutral(_NOT_SENT_ETF)
+            else:
+                res = get_news_sentiment(sym, str(st.get("company_name", "") or ""))
             st["news_detail"] = res
             if not _SHADOW:
                 st["news_sentiment"] = res["news_sentiment"]
@@ -449,27 +456,52 @@ def enrich_stocks_with_news(stocks: list, log_fn=print) -> int:
         except Exception as e:
             st["news_detail"] = _neutral(f"enrich error: {e}")
     log_fn(f"   📰 News sentiment: {informed}/{len(stocks)} stocks got an informed signal")
+    _det = lambda st: (st.get("news_detail") or {})
     # v17.22.3: how many LLM calls this run actually made.
+    # v17.22.5: and how many of them failed (a failed reply is never stored,
+    # so that stock is asked again on the next run).
+    _failed = []
     try:
-        _src = [str((st.get("news_detail") or {}).get("news_llm_source", "") or "") for st in stocks]
+        _src = [str(_det(st).get("news_llm_source", "") or "") for st in stocks]
         _n_llm, _n_cache = _src.count("llm"), _src.count("cache")
-        log_fn(f"   📰 News LLM calls: {_n_llm} · from cache: {_n_cache} · "
+        _failed = [st for st in stocks
+                   if _det(st).get("news_llm_source") == "llm"
+                   and str(_det(st).get("news_reason", "")).startswith("LLM:")]
+        log_fn(f"   📰 News LLM calls: {_n_llm} · failed: {len(_failed)} · from cache: {_n_cache} · "
                f"no LLM needed: {len(stocks) - _n_llm - _n_cache}"
                + ("" if _NEWS_CACHE_ENABLED else " · cache OFF (AI_CACHE/NEWS_CACHE=0)"))
     except Exception:
         pass
     # v17.16: show why the rest were not informed, so a silent LLM failure
     # (e.g. output cut off) is visible instead of looking like "no news".
+    # v17.22.5: EVERY reason is listed (most_common(4) hid 2 of 84 stocks on
+    # 26-Nov-2026 — exactly where a failure would sit); the per-confidence
+    # downgrades are one bucket so the line stays short.
     try:
         from collections import Counter as _C
-        def _lbl(st):
-            r = str((st.get("news_detail") or {}).get("news_reason", "?"))[:60]
-            # "ok" = headlines were read and judged NEUTRAL (routine news) — not a failure
-            return "headlines neutral" if r == "ok" else r
-        _why = _C(_lbl(st) for st in stocks
-                  if not (st.get("news_detail") or {}).get("news_informed"))
+        _why = _C(_reason_bucket(_det(st).get("news_reason", "?")) for st in stocks
+                  if not _det(st).get("news_informed"))
         if _why:
-            log_fn("   📰   not informed: " + " · ".join(f"{k} ×{v}" for k, v in _why.most_common(4)))
+            log_fn(f"   📰   not informed ({sum(_why.values())}): "
+                   + " · ".join(f"{k} ×{v}" for k, v in _why.most_common()))
+        if _failed:
+            _names = ", ".join(f"{st.get('symbol', '?')} ({str(_det(st).get('news_reason', ''))[5:45]})"
+                               for st in _failed[:10])
+            log_fn(f"   ⚠️  News LLM failed for {len(_failed)} stock(s): {_names}"
+                   f"{' …' if len(_failed) > 10 else ''} — not stored; asked again next run")
     except Exception:
         pass
     return informed
+
+
+_NOT_SENT_ETF = "ETF/fund row — not sent to the LLM"
+
+
+def _reason_bucket(reason) -> str:
+    """Group a news_reason for the run-log summary (v17.22.5)."""
+    r = str(reason or "?")
+    if r == "ok":   # headlines were read and judged NEUTRAL (routine news) — not a failure
+        return "headlines neutral"
+    if r.startswith("downgraded (conf"):
+        return "downgraded (confidence < 0.6)"
+    return r[:60]
