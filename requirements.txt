@@ -1,12 +1,15 @@
-pandas
-numpy
-openpyxl
-requests
-pytz
-twilio
-python-dotenv
-flask
-bse
-cloudscraper
-yfinance
-curl_cffi
+# Upper bounds stop a new MAJOR release from reaching the daily run untested
+# (v17.22.4). Every bound admits the version production installed on
+# 27-Nov-2026 (run 45942002574) and the test suite passes on it (Python 3.11.18).
+pandas<4          # 3.1.1 in production
+numpy<3           # 2.4.6
+openpyxl<4        # 3.1.5
+requests<3        # 2.34.2
+pytz              # 2026.6 (calendar versions — no major to cap)
+twilio<10         # 9.13.0
+python-dotenv<2   # 1.2.4
+flask<4           # 3.1.3
+bse<4             # 3.3.4
+cloudscraper<2    # 1.2.71
+yfinance<2        # 1.8.0
+curl_cffi<1       # 0.17.0
