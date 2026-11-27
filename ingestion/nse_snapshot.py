@@ -31,22 +31,26 @@ _REQUIRED_KEYS = ("version", "fetched_at", "pledge", "shareholding")
 def load_snapshot(path: str = SNAPSHOT_PATH, max_age_days: int = None,
                   quiet: bool = False) -> dict:
     """Return the validated snapshot dict, or {} if it must be ignored.
-    Prints exactly one line explaining the decision."""
+    Prints exactly one line explaining the decision — none with quiet=True.
+    v17.22.5: quiet now silences every line, not only the ✅ one; the
+    Section 4B pledge fallback (quiet) printed the stale warning a second
+    time in each run log, beside the Section 5A.3b load that reports it."""
     max_age_days = MAX_AGE_DAYS if max_age_days is None else max_age_days
+    _say = (lambda *a, **k: None) if quiet else print
     if not os.path.exists(path):
-        print(f"   ℹ️  NSE snapshot: {path} not present — pledge/DII fallback unavailable")
+        _say(f"   ℹ️  NSE snapshot: {path} not present — pledge/DII fallback unavailable")
         return {}
     try:
         with open(path, "r", encoding="utf-8") as fh:
             snap = json.load(fh)
     except Exception as e:
-        print(f"   ⚠️  NSE snapshot: unreadable ({e}) — ignored")
+        _say(f"   ⚠️  NSE snapshot: unreadable ({e}) — ignored")
         return {}
     if not isinstance(snap, dict) or any(k not in snap for k in _REQUIRED_KEYS):
-        print(f"   ⚠️  NSE snapshot: missing keys {[k for k in _REQUIRED_KEYS if k not in snap]} — ignored")
+        _say(f"   ⚠️  NSE snapshot: missing keys {[k for k in _REQUIRED_KEYS if k not in snap]} — ignored")
         return {}
     if not isinstance(snap.get("pledge"), dict) or not isinstance(snap.get("shareholding"), dict):
-        print("   ⚠️  NSE snapshot: pledge/shareholding must be objects — ignored")
+        _say("   ⚠️  NSE snapshot: pledge/shareholding must be objects — ignored")
         return {}
     # freshness
     try:
@@ -55,19 +59,18 @@ def load_snapshot(path: str = SNAPSHOT_PATH, max_age_days: int = None,
             fetched = fetched.replace(tzinfo=_dt.timezone.utc)
         age = (_dt.datetime.now(_dt.timezone.utc) - fetched.astimezone(_dt.timezone.utc)).days
     except Exception as e:
-        print(f"   ⚠️  NSE snapshot: bad fetched_at ({e}) — ignored")
+        _say(f"   ⚠️  NSE snapshot: bad fetched_at ({e}) — ignored")
         return {}
     if age > max_age_days:
-        print(f"   ⚠️  NSE snapshot: {age}d old (> {max_age_days}d) — ignored as stale; "
+        _say(f"   ⚠️  NSE snapshot: {age}d old (> {max_age_days}d) — ignored as stale; "
               f"pledge/DII stay —. Run fetch_nse_local.py to refresh.")
         return {}
     n_pl, n_sh = len(snap["pledge"]), len(snap["shareholding"])
     if n_pl == 0 and n_sh == 0:
-        print("   ⚠️  NSE snapshot: contains no records — ignored")
+        _say("   ⚠️  NSE snapshot: contains no records — ignored")
         return {}
-    if not quiet:
-        print(f"   ✅ NSE snapshot: {n_pl} pledge + {n_sh} shareholding records, "
-              f"{age}d old (≤ {max_age_days}d) — used as fallback for blanks")
+    _say(f"   ✅ NSE snapshot: {n_pl} pledge + {n_sh} shareholding records, "
+          f"{age}d old (≤ {max_age_days}d) — used as fallback for blanks")
     # v17.13.6: expose provenance so the Excel can show WHEN this data was
     # fetched. _age_days and _fetched_display are derived, not stored.
     snap["_age_days"] = age
